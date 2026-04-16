@@ -1,4 +1,4 @@
-# download_ukdale_16khz.ps1 - High Performance Dataset Downloader (Auto-Aria2 Version)
+# download_ukdale_16khz.ps1 - High Performance Dataset Downloader (Multi-File Turbo)
 
 # ==========================================
 # 1. SETTINGS
@@ -16,56 +16,46 @@ $toolsDir = Join-Path $PSScriptRoot "tools"
 # ==========================================
 $ariaExe = "aria2c.exe"
 $ariaPath = Get-Command $ariaExe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+$localAria = Join-Path $toolsDir "aria2-1.37.0-win-64bit-build1\aria2c.exe"
 
-if (!$ariaPath) {
-    # Check if we already downloaded it to the tools folder
-    $localAria = Join-Path $toolsDir "aria2-1.37.0-win-64bit-build1\aria2c.exe"
-    if (Test-Path $localAria) {
-        $ariaPath = $localAria
-    } else {
-        Write-Host "Aria2 not found. Automatically downloading for high-speed support..." -ForegroundColor Yellow
-        if (!(Test-Path $toolsDir)) { New-Item -ItemType Directory -Path $toolsDir }
-        
-        $ariaZipUrl = "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip"
-        $zipPath = Join-Path $toolsDir "aria2.zip"
-        
-        Write-Host "Downloading Aria2 from GitHub..." -ForegroundColor Cyan
-        Invoke-WebRequest -Uri $ariaZipUrl -OutFile $zipPath
-        
-        Write-Host "Extracting Aria2..." -ForegroundColor Cyan
-        Expand-Archive -Path $zipPath -DestinationPath $toolsDir -Force
-        Remove-Item $zipPath
-        
-        $ariaPath = $localAria
-        Write-Host "Aria2 installed successfully in tools folder!" -ForegroundColor Green
-    }
+if (!$ariaPath -and !(Test-Path $localAria)) {
+    Write-Host "Aria2 not found. Automatically downloading for high-speed support..." -ForegroundColor Yellow
+    if (!(Test-Path $toolsDir)) { New-Item -ItemType Directory -Path $toolsDir }
+    $ariaZipUrl = "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip"
+    $zipPath = Join-Path $toolsDir "aria2.zip"
+    Invoke-WebRequest -Uri $ariaZipUrl -OutFile $zipPath
+    Expand-Archive -Path $zipPath -DestinationPath $toolsDir -Force
+    Remove-Item $zipPath
 }
+$ariaPath = if ($ariaPath) { $ariaPath } else { $localAria }
 
 # ==========================================
 # 3. PREPARATION
 # ==========================================
-if (!(Test-Path $targetDir)) {
-    New-Item -ItemType Directory -Path $targetDir
-}
+if (!(Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir }
 
 Write-Host "Fetching file list for House $houseNum Week $weekNum..." -ForegroundColor Cyan
 $response = Invoke-WebRequest -Uri $baseUrl -UseBasicParsing
 $links = $response.Links | Where-Object { $_.href -like "*.flac" }
-Write-Host "Found $($links.Count) files." -ForegroundColor Green
+
+# Create a links file for Aria2
+$linksFilePath = Join-Path $targetDir "download_links.txt"
+$linksContent = ""
+foreach ($link in $links) {
+    $linksContent += ($baseUrl + $link.href) + "`n"
+}
+[System.IO.File]::WriteAllText($linksFilePath, $linksContent)
 
 # ==========================================
-# 4. DOWNLOAD (TURBO MODE)
+# 4. MULTI-FILE TURBO DOWNLOAD
 # ==========================================
-Write-Host "Starting TURBO DOWNLOAD using Aria2..." -ForegroundColor Magenta
-foreach ($link in $links) {
-    $outPath = Join-Path $targetDir $link.href
-    if (!(Test-Path $outPath) -or (Get-Item $outPath).Length -eq 0) {
-        $fullUrl = $baseUrl + $link.href
-        # Run aria2c with 16 connections per file
-        Start-Process -FilePath $ariaPath -ArgumentList "-x16", "-s16", "-d", "`"$targetDir`"", "`"$fullUrl`"" -Wait -NoNewWindow
-    } else {
-        Write-Host "Skipping $($link.href) (already exists)" -ForegroundColor Gray
-    }
-}
+Write-Host "Starting MULTI-FILE TURBO DOWNLOAD using Aria2..." -ForegroundColor Magenta
+Write-Host "Concurrent files: 5 | Connections per file: 10" -ForegroundColor Cyan
+
+# -i: Input from file
+# -j5: Download 5 files at once
+# -x10: 10 connections per file
+# --min-split-size=1M: Encourage segmenting
+& $ariaPath -i "$linksFilePath" -j5 -x10 -s10 --dir="$targetDir" --min-split-size=1M --continue=true
 
 Write-Host "`nAll tasks completed!" -ForegroundColor Green
