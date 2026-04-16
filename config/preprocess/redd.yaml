@@ -1,0 +1,63 @@
+# redd.yaml - Parameters for Original REDD Preprocessing
+# Source: c:\Users\Raymond Tie\Desktop\PhD\Code\multi-domain NILM\high_low_freq_NILM\dataset_preprocess\redd_processing.py
+
+paths:
+  data_dir: "../../datasets/redd"
+  save_path: "dataset_preprocess/created_data/REDD"
+  naming:
+    train: "{appliance}_training.csv"
+    val: "{appliance}_validation.csv"
+    test: "{appliance}_test.csv"
+
+global_params:
+  aggregate_mean: 522
+  aggregate_std: 814
+  # Timeframe filtering (e.g., '2011-04-18')
+  start_date: null
+  end_date: null
+  sample_seconds: 1
+  validation_percent: 10
+  testing_percent: 10
+  appliances_to_process: ["microwave", "fridge", "dishwasher", "washingmachine"]
+
+# Extracted from original REDD params
+appliances:
+  fridge:
+    windowlength: 599
+    on_power_threshold: 50
+    max_on_power: 2848
+    mean: 157
+    std: 157
+    s2s_length: 512
+    houses: [1, 2, 3]
+    channels: [5, 9, 7]
+  
+  dishwasher:
+    windowlength: 599
+    on_power_threshold: 10
+    max_on_power: 3964
+    mean: 700
+    std: 1000
+    s2s_length: 1536
+    houses: [1, 2, 3]
+    channels: [6, 10, 9]
+
+  microwave:
+    windowlength: 599
+    on_power_threshold: 200
+    max_on_power: 3969
+    mean: 500
+    std: 800
+    s2s_length: 128
+    houses: [1, 2, 3]
+    channels: [11, 6, 16]
+
+  washingmachine:
+    windowlength: 599
+    on_power_threshold: 20
+    max_on_power: 3999
+    mean: 400
+    std: 700
+    s2s_length: 2000
+    houses: [1, 2, 3]
+    channels: [20, 7, 13]
