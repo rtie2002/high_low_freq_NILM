@@ -1,75 +1,71 @@
-# download_ukdale_16khz.ps1 - High Performance Dataset Downloader
+# download_ukdale_16khz.ps1 - High Performance Dataset Downloader (Auto-Aria2 Version)
 
 # ==========================================
-# 1. SETTINGS (Edit these to change dataset)
+# 1. SETTINGS
 # ==========================================
 $houseNum = "1"
 $weekNum = "30"
 
-# Auto-generate URL and Folder name
 $baseUrl = "https://dap.ceda.ac.uk/edc/d1/887733b3-4c04-471f-9404-9f7459c4a1a0/data/version_0/house_$houseNum/2013/wk$weekNum/"
 $folderName = "house" + $houseNum + "_wk" + $weekNum
 $targetDir = Join-Path $PSScriptRoot $folderName
+$toolsDir = Join-Path $PSScriptRoot "tools"
 
 # ==========================================
-# 2. PREPARATION
+# 2. AUTO-ARIA2 CHECK & INSTALL
+# ==========================================
+$ariaExe = "aria2c.exe"
+$ariaPath = Get-Command $ariaExe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+
+if (!$ariaPath) {
+    # Check if we already downloaded it to the tools folder
+    $localAria = Join-Path $toolsDir "aria2-1.37.0-win-64bit-build1\aria2c.exe"
+    if (Test-Path $localAria) {
+        $ariaPath = $localAria
+    } else {
+        Write-Host "Aria2 not found. Automatically downloading for high-speed support..." -ForegroundColor Yellow
+        if (!(Test-Path $toolsDir)) { New-Item -ItemType Directory -Path $toolsDir }
+        
+        $ariaZipUrl = "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip"
+        $zipPath = Join-Path $toolsDir "aria2.zip"
+        
+        Write-Host "Downloading Aria2 from GitHub..." -ForegroundColor Cyan
+        Invoke-WebRequest -Uri $ariaZipUrl -OutFile $zipPath
+        
+        Write-Host "Extracting Aria2..." -ForegroundColor Cyan
+        Expand-Archive -Path $zipPath -DestinationPath $toolsDir -Force
+        Remove-Item $zipPath
+        
+        $ariaPath = $localAria
+        Write-Host "Aria2 installed successfully in tools folder!" -ForegroundColor Green
+    }
+}
+
+# ==========================================
+# 3. PREPARATION
 # ==========================================
 if (!(Test-Path $targetDir)) {
     New-Item -ItemType Directory -Path $targetDir
-    Write-Host "Created directory: $targetDir" -ForegroundColor Green
 }
 
-Write-Host "Fetching file list for House $houseNum Week $weekNum from CEDA..." -ForegroundColor Cyan
-try {
-    # Fetch webpage and extract links
-    $response = Invoke-WebRequest -Uri $baseUrl -UseBasicParsing -ErrorAction Stop
-}
-catch {
-    Write-Host "Error: Could not reach CEDA server. Check your URL or Internet connection." -ForegroundColor Red
-    exit
-}
-
+Write-Host "Fetching file list for House $houseNum Week $weekNum..." -ForegroundColor Cyan
+$response = Invoke-WebRequest -Uri $baseUrl -UseBasicParsing
 $links = $response.Links | Where-Object { $_.href -like "*.flac" }
-Write-Host "Found $($links.Count) files. Preparing parallel download..." -ForegroundColor Green
+Write-Host "Found $($links.Count) files." -ForegroundColor Green
 
 # ==========================================
-# 3. DOWNLOAD (High-Speed BITS Mode)
+# 4. DOWNLOAD (TURBO MODE)
 # ==========================================
-$tasks = @()
-
+Write-Host "Starting TURBO DOWNLOAD using Aria2..." -ForegroundColor Magenta
 foreach ($link in $links) {
-    $fileName = $link.href
-    $outPath = Join-Path $targetDir $fileName
-    
-    if ((Test-Path $outPath) -and ((Get-Item $outPath).Length -gt 0)) {
-        continue
+    $outPath = Join-Path $targetDir $link.href
+    if (!(Test-Path $outPath) -or (Get-Item $outPath).Length -eq 0) {
+        $fullUrl = $baseUrl + $link.href
+        # Run aria2c with 16 connections per file
+        Start-Process -FilePath $ariaPath -ArgumentList "-x16", "-s16", "-d", "`"$targetDir`"", "`"$fullUrl`"" -Wait -NoNewWindow
+    } else {
+        Write-Host "Skipping $($link.href) (already exists)" -ForegroundColor Gray
     }
-
-    $sourceUrl = $baseUrl + $link.href
-    Write-Host "Queuing: $fileName" -ForegroundColor Yellow
-
-    # Use BITS (Background Intelligent Transfer Service) - Native Windows Engine
-    # -Priority Foreground makes it as fast as possible
-    # -Asynchronous allows starting multiple tasks at once
-    $job = Start-BitsTransfer -Source $sourceUrl -Destination $outPath -Priority Foreground -Asynchronous
-    $tasks += $job
 }
 
-if ($tasks.Count -eq 0) {
-    Write-Host "All files are already current!" -ForegroundColor Green
-} else {
-    Write-Host "Waiting for $($tasks.Count) high-speed transfers to complete..." -ForegroundColor Magenta
-    
-    $completed = 0
-    while ($completed -lt $tasks.Count) {
-        $completed = ($tasks | Where-Object { $_.JobState -eq "Transferred" -or $_.JobState -eq "Error" }).Count
-        $percent = [math]::Round(($completed / $tasks.Count) * 100, 2)
-        Write-Progress -Activity "Downloading UK-DALE High-Freq" -Status "$percent% Done ($completed/$($tasks.Count))" -PercentComplete $percent
-        
-        # Complete finished jobs
-        $tasks | Where-Object { $_.JobState -eq "Transferred" } | ForEach-Object { $_ | Complete-BitsTransfer }
-        
-        Start-Sleep -Seconds 2
-    }
-    Write-Host "`nAll transfers finished!" -ForegroundColor Green
-}
+Write-Host "`nAll tasks completed!" -ForegroundColor Green
