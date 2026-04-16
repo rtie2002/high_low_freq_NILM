@@ -33,24 +33,39 @@ def download_files(url, target_dir):
     total = len(file_links)
     print(f"Found {total} .flac files to download.")
     
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        print("Installing tqdm for progress monitoring...")
+        os.system('pip install tqdm')
+        from tqdm import tqdm
+
     for i, (f_url, f_name) in enumerate(file_links, 1):
         target_path = os.path.join(target_dir, f_name)
         
-        # Check if file exists and has size (rough check for completion)
         if os.path.exists(target_path) and os.path.getsize(target_path) > 0:
             print(f"[{i}/{total}] Skipping {f_name} (already exists)")
             continue
             
-        print(f"[{i}/{total}] Downloading {f_name}...")
         try:
-            with requests.get(f_url, stream=True) as r:
-                r.raise_for_status()
-                with open(target_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
+            # Added timeout and stream
+            response = requests.get(f_url, stream=True, timeout=30)
+            response.raise_for_status()
+            total_size = int(response.headers.get('content-length', 0))
+            
+            with open(target_path, 'wb') as f, tqdm(
+                desc=f"[{i}/{total}] {f_name}",
+                total=total_size,
+                unit='iB',
+                unit_scale=True,
+                unit_divisor=1024,
+            ) as bar:
+                for chunk in response.iter_content(chunk_size=8192):
+                    size = f.write(chunk)
+                    bar.update(size)
+                    
         except Exception as e:
-            print(f"Error downloading {f_name}: {e}")
+            print(f"\nError downloading {f_name}: {e}")
             if os.path.exists(target_path):
                 os.remove(target_path)
 
