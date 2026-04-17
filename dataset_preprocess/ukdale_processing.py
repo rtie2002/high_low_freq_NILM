@@ -210,20 +210,24 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance):
     test.reset_index(drop=True, inplace=True)
     if test_len > 0:
         train.drop(train.index[-test_len:], inplace=True)
-    test_file = paths['naming']['test'].format(appliance=appliance_name)
-    test.to_csv(os.path.join(paths['save_path'], test_file), index=False, header=True)
+        test_file = paths['naming']['test'].format(appliance=appliance_name)
+        test.to_csv(os.path.join(paths['save_path'], test_file), index=False, header=True)
+        print(f"  -> Saved Testing set: {len(test)} rows.")
 
     # Validation Set
     val = train.tail(val_len)
     val.reset_index(drop=True, inplace=True)
     if val_len > 0:
         train.drop(train.index[-val_len:], inplace=True)
-    val_file = paths['naming']['val'].format(appliance=appliance_name)
-    val.to_csv(os.path.join(paths['save_path'], val_file), index=False, header=True)
+        val_file = paths['naming']['val'].format(appliance=appliance_name)
+        val.to_csv(os.path.join(paths['save_path'], val_file), index=False, header=True)
+        print(f"  -> Saved Validation set: {len(val)} rows.")
 
     # Training Set
-    train_file = paths['naming']['train'].format(appliance=appliance_name)
-    train.to_csv(os.path.join(paths['save_path'], train_file), index=False, header=True)
+    if len(train) > 0:
+        train_file = paths['naming']['train'].format(appliance=appliance_name)
+        train.to_csv(os.path.join(paths['save_path'], train_file), index=False, header=True)
+        print(f"  -> Saved Training set: {len(train)} rows.")
 
     print(f"Data processing finished.")
     print(f"Size of training set: {len(train) / 10**6:.4f} M rows.")
