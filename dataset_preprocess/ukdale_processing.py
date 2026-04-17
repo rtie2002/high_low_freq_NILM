@@ -98,7 +98,7 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance):
         
         mains_df = pd.read_csv(mains_path, sep='\s+', header=None, 
                                usecols=[0, 1], # Strictly read only Timestamp and Active Power, to save memory
-                               dtype={0: np.int64, 1: np.float32}, # Force downcast to 32-bit float to reduce RAM by 50%
+                               dtype={0: np.float64, 1: np.float32}, # Use float64 for timestamps to avoid casting errors
                                engine='c')
         mains_df.columns = ['time', 'aggregate']
         
@@ -125,7 +125,7 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance):
         
         app_df = pd.read_csv(app_path, sep='\s+', header=None,
                              usecols=[0, 1],
-                             dtype={0: np.int64, 1: np.float32},
+                             dtype={0: np.float64, 1: np.float32},
                              engine='c')
         app_df.columns = ['time', appliance_name]
         
