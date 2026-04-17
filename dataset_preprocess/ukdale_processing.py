@@ -208,14 +208,16 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance):
     # Testing Set
     test = train.tail(test_len)
     test.reset_index(drop=True, inplace=True)
-    train.drop(train.index[-test_len:], inplace=True)
+    if test_len > 0:
+        train.drop(train.index[-test_len:], inplace=True)
     test_file = paths['naming']['test'].format(appliance=appliance_name)
     test.to_csv(os.path.join(paths['save_path'], test_file), index=False, header=True)
 
     # Validation Set
     val = train.tail(val_len)
     val.reset_index(drop=True, inplace=True)
-    train.drop(train.index[-val_len:], inplace=True)
+    if val_len > 0:
+        train.drop(train.index[-val_len:], inplace=True)
     val_file = paths['naming']['val'].format(appliance=appliance_name)
     val.to_csv(os.path.join(paths['save_path'], val_file), index=False, header=True)
 
