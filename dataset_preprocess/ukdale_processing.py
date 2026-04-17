@@ -97,9 +97,12 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance):
         t0 = time.time()
         
         mains_df = pd.read_csv(mains_path, sep='\s+', header=None, 
-                               usecols=[0, 1], # Strictly read only Timestamp and Active Power, to save memory
-                               dtype={0: np.float64, 1: np.float32}, # Use float64 for timestamps to avoid casting errors
+                               usecols=[0, 1, 2], # UK-DALE House 1 has 2 mains channels! We need both.
+                               dtype={0: np.float64, 1: np.float32, 2: np.float32}, 
                                engine='c')
+        # Sum both mains channels to get the real aggregate power
+        mains_df['aggregate'] = mains_df[1] + mains_df[2]
+        mains_df = mains_df[[0, 'aggregate']]
         mains_df.columns = ['time', 'aggregate']
         
         # Ultra-fast Duduplication (Dropping duplicates as raw integers saves massive RAM)
@@ -114,7 +117,7 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance):
         mains_df.set_index('time', inplace=True)
         mains_df.sort_index(inplace=True)
         
-        print(f"  -> [Step 1/4 Done - {time.time() - t0:.1f}s] Successfully loaded Mains dataframe ({len(mains_df)} lines).")
+        print(f"  -> [Step 1/4 Done] Loaded Mains: {mains_df.index.min()} to {mains_df.index.max()} ({len(mains_df)} lines)")
 
         # 2. Load Appliance (Memory Optimized)
         channel_id = params_appliance[appliance_name]['channels'][params_appliance[appliance_name]['houses'].index(h)]
@@ -139,7 +142,8 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance):
         app_df['time'] = pd.to_datetime(app_df['time'], unit='s')
         app_df.set_index('time', inplace=True)
         app_df.sort_index(inplace=True)
-        # Note: Index duplicated check removed here, already safely handled at integer level.
+        
+        print(f"  -> [Step 2/4 Done] Loaded Appliance: {app_df.index.min()} to {app_df.index.max()} ({len(app_df)} lines)")
 
         # ==========================================
         # TIME FILTERING (ALREADY DONE NUMERICALLY ABOVE)
@@ -159,15 +163,19 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance):
         t2 = time.time()
         sample_period = f"{sample_seconds}S" # Pandas prefers capital 'S' for seconds
         
-        # BIG SPEEDUP: Instead of outer joining 1.5 billion mismatched secondary indices,
-        # we compress them individually down to the rigid 6-second grid FIRST.
+        # BIG SPEEDUP: Resample individually
         mains_df_resampled = mains_df.resample(sample_period).mean()
         app_df_resampled = app_df.resample(sample_period).mean()
         
-        # Now, joining them takes less than a second because their indices are perfectly identical.
-        df_align = mains_df_resampled.join(app_df_resampled, how='outer').bfill(limit=1)
-            
-        print(f"  -> [Step 3/4 Done - {time.time() - t2:.1f}s] Global Timeline Grid successfully aligned!")
+        # Use inner join to force finding ONLY overlapping timestamps
+        df_align = mains_df_resampled.join(app_df_resampled, how='inner')
+        
+        if df_align.empty:
+            print("  !! [ERROR] Zero overlap found between Mains and Appliance timelines!")
+            print(f"     Mains Range: {mains_df.index.min()} -- {mains_df.index.max()}")
+            print(f"     App   Range: {app_df.index.min()} -- {app_df.index.max()}")
+        else:
+            print(f"  -> [Step 3/4 Done] Successfully aligned grid. Found {len(df_align)} overlapping rows.")
         
         df_align = df_align.dropna()
         df_align.reset_index(inplace=True)
