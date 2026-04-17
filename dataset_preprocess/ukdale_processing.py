@@ -67,8 +67,8 @@ def main():
 
 def _process_appliance(appliance_name, paths, global_params, params_appliance):
     """Process and save CSV data for a single appliance."""
-    if not os.path.exists(paths['save_path']):
-        os.makedirs(paths['save_path'])
+    # Ensure the entire directory tree exists
+    os.makedirs(paths['save_path'], exist_ok=True)
 
     start_time = time.time()
     sample_seconds = global_params['sample_seconds']
@@ -161,7 +161,7 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance):
         # 3. Resample and Align (High-Speed Separated Strategy)
         print(f"  -> [Step 3/4] Aligning and Resampling timestamps... (This requires CPU computation)")
         t2 = time.time()
-        sample_period = f"{sample_seconds}S" # Pandas prefers capital 'S' for seconds
+        sample_period = f"{sample_seconds}s" # Use lowercase 's' to avoid FutureWarning
         
         # BIG SPEEDUP: Resample individually
         mains_df_resampled = mains_df.resample(sample_period).mean()
@@ -177,7 +177,6 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance):
         else:
             print(f"  -> [Step 3/4 Done] Successfully aligned grid. Found {len(df_align)} overlapping rows.")
         
-        df_align = df_align.dropna()
         df_align.reset_index(inplace=True)
         
         # Physical constraint: appliance power must not exceed aggregate power
