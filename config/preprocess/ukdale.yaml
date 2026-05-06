@@ -12,10 +12,13 @@ paths:
 global_params:
   aggregate_mean: 522
   aggregate_std: 814
+  # Timezone for processing (Options: "UTC", "Europe/London")
+  timezone: "Europe/London"
+  
   # Timeframe filtering (e.g., '2013-02-17' or '2013-02-17 07:00:00')
   # Example for Week 30: '2013-07-22 07:00:00' to '2013-07-29 07:00:00'
-  start_time: '2013-07-22 07:00:00'
-  end_time: '2013-07-29 07:00:00'
+  start_time: '2013-07-22 00:00:00'
+  end_time: '2013-07-29 00:00:00'
 
 
 

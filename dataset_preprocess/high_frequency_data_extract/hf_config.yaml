@@ -1,0 +1,31 @@
+paths:
+  # Destination directory for the extracted high-frequency feature CSVs
+  save_path: "output"
+
+hyperparameters:
+  # Expected sampling rate of the audio files (will trigger a warning if mismatched)
+  sampling_rate: 16000     
+  
+  # Sliding window size for extraction (Aligned perfectly with the submeter 6s resolution)
+  window_size_seconds: 6   
+  
+  # Timezone for logging (Options: "UTC", "Europe/London")
+  timezone: "Europe/London"
+
+  # Channel Mapping configuration
+  channel_config:
+    voltage_idx: 0         # 0 = Left channel (Standard UK-DALE Voltage tracking)
+    current_idx: 1         # 1 = Right channel (Standard UK-DALE Current tracking)
+
+features_to_extract:
+  # STEP 2 Feature Management Toggles
+  # You can switch these to true/false to dynamically run ablation studies on features.
+  v_rms: true
+  i_rms: true
+  real_power: true
+  apparent_power: false     # Default disabled, focusing on real_power
+  power_factor: true
+  crest_factor: true        # Peak distortion factor
+  harmonics_ratio: true     # FFT extraction for 3rd/5th/7th harmonic ratios
+  thd_distortion: false     # (Upcoming) Total Harmonic Distortion
+  vi_trajectory: false      # (Upcoming) V-I Trajectory spatial features

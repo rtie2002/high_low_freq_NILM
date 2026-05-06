@@ -84,10 +84,18 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance):
         # Use numeric filtering for speed (filter BEFORE datetime conversion)
         start_t = global_params.get('start_time')
         end_t = global_params.get('end_time')
+        target_tz = global_params.get('timezone', 'UTC')
         
-        # Convert config times to float Unix timestamps
-        start_ts = pd.to_datetime(start_t).timestamp() if start_t else None
-        end_ts = pd.to_datetime(end_t).timestamp() if end_t else None
+        # Convert config times to float Unix timestamps, respecting the timezone
+        if start_t:
+            start_ts = pd.to_datetime(start_t).tz_localize(target_tz).timestamp()
+        else:
+            start_ts = None
+            
+        if end_t:
+            end_ts = pd.to_datetime(end_t).tz_localize(target_tz).timestamp()
+        else:
+            end_ts = None
 
         # 1. Load Mains (Memory Optimized Version)
         mains_path = os.path.join(paths['data_dir'], f"house_{h}", "mains.dat")
@@ -112,8 +120,8 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance):
         if start_ts: mains_df = mains_df[mains_df['time'] >= start_ts]
         if end_ts:   mains_df = mains_df[mains_df['time'] <= end_ts]
         
-        # Convert subset to datetime
-        mains_df['time'] = pd.to_datetime(mains_df['time'], unit='s')
+        # Convert subset to datetime and localize
+        mains_df['time'] = pd.to_datetime(mains_df['time'], unit='s', utc=True).dt.tz_convert(target_tz)
         mains_df.set_index('time', inplace=True)
         mains_df.sort_index(inplace=True)
         
@@ -138,8 +146,8 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance):
         if start_ts: app_df = app_df[app_df['time'] >= start_ts]
         if end_ts:   app_df = app_df[app_df['time'] <= end_ts]
 
-        # Convert subset to datetime
-        app_df['time'] = pd.to_datetime(app_df['time'], unit='s')
+        # Convert subset to datetime and localize
+        app_df['time'] = pd.to_datetime(app_df['time'], unit='s', utc=True).dt.tz_convert(target_tz)
         app_df.set_index('time', inplace=True)
         app_df.sort_index(inplace=True)
         
