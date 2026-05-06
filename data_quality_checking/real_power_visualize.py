@@ -65,11 +65,17 @@ def interactive_viewer(file_path, config, denormalize=True):
     
     # Process all numeric power columns into full sequences
     sequences = {}
+    on_off_mask = None
+    
     for i, col in enumerate(cols):
         if i == 0: continue # Skip time column
         
+        # Handle the special 'on_off' label column separately for visualization
+        if col == 'on_off':
+            on_off_mask = df[col].values
+            continue
+
         data = df.iloc[:, i].values
-        label = col
         
         if denormalize:
             if i == 1: # Aggregate
@@ -85,16 +91,33 @@ def interactive_viewer(file_path, config, denormalize=True):
     total_points = len(df)
     print(f"Total points in sequence: {total_points:,}")
 
+    # Pre-compute ALL global ON segments from the entire dataset
+    global_on_segments = []  # list of (global_start, global_end, segment_number)
+    if on_off_mask is not None:
+        diff = np.diff(np.concatenate([[0], on_off_mask, [0]]))
+        seg_starts = np.where(diff == 1)[0]
+        seg_ends   = np.where(diff == -1)[0]
+        for idx, (s, e) in enumerate(zip(seg_starts, seg_ends)):
+            global_on_segments.append((s, e, idx + 1))  # 1-indexed
+        print(f"Total ON periods detected: {len(global_on_segments)}")
+
     # Initial State
     state = {
         'start_idx': 0,
         'view_span': 1024, # How many points to show at once
         'selection_rect': None,
-        'sel_start': None
+        'sel_start': None,
+        'on_off_patches': [], # Store span patches for clearing
+        'on_off_labels': [],  # Store number text labels for clearing
+        'show_on_off': True   # Toggle for highlights
     }
 
     fig, ax = plt.subplots(figsize=(14, 8))
-    plt.subplots_adjust(bottom=0.25, left=0.08, right=0.95, top=0.95)
+    plt.subplots_adjust(bottom=0.30, left=0.08, right=0.95, top=0.92)
+
+    # Status text below plot (for total ON count)
+    fig_text = fig.text(0.5, 0.01, '', ha='center', va='bottom', fontsize=10,
+                        color='darkgreen', fontweight='bold')
     
     lines = {}
     label_to_legline = {}
@@ -132,9 +155,12 @@ def interactive_viewer(file_path, config, denormalize=True):
     ax_prev = plt.axes([0.65, 0.09, 0.08, 0.04])
     ax_next = plt.axes([0.74, 0.09, 0.08, 0.04])
     ax_fit  = plt.axes([0.83, 0.09, 0.12, 0.04])
+    ax_toggle = plt.axes([0.65, 0.04, 0.17, 0.04]) # Position for the toggle button
+
     btn_prev = Button(ax_prev, '◀ Back')
     btn_next = Button(ax_next, 'Forward ▶')
     btn_fit  = Button(ax_fit, 'Fit Waveform')
+    btn_toggle = Button(ax_toggle, 'Toggle Highlights (ON)')
 
     def redraw_view(val=None):
         state['start_idx'] = int(pos_slider.val)
@@ -149,7 +175,46 @@ def interactive_viewer(file_path, config, denormalize=True):
             
         ax.set_xlim(state['start_idx'], end_idx)
         ax.set_title(f"Visualizing: {appliance_name} | {state['start_idx']:,} → {end_idx:,} (Span: {state['view_span']:,})")
+        
+        # --- Redraw ON/OFF Highlights ---
+        for p in state['on_off_patches']: p.remove()
+        for t in state['on_off_labels']: t.remove()
+        state['on_off_patches'] = []
+        state['on_off_labels'] = []
+        
+        if on_off_mask is not None and state['show_on_off']:
+            # Get y-axis range for label placement
+            y_lim = ax.get_ylim()
+            label_y = y_lim[1] - (y_lim[1] - y_lim[0]) * 0.05
+
+            # Find segments that overlap the current view window
+            visible_segs = [
+                (gs, ge, num) for (gs, ge, num) in global_on_segments
+                if ge > state['start_idx'] and gs < end_idx
+            ]
+
+            for gs, ge, num in visible_segs:
+                p = ax.axvspan(gs, ge, color='lightgreen', alpha=0.3, zorder=-1)
+                state['on_off_patches'].append(p)
+
+                # Draw segment number in center of visible portion
+                label_x = (max(gs, state['start_idx']) + min(ge, end_idx)) / 2
+                t = ax.text(label_x, label_y, str(num),
+                            ha='center', va='top', fontsize=8,
+                            color='darkgreen', fontweight='bold', zorder=5)
+                state['on_off_labels'].append(t)
+
+            # Update the bottom status text
+            fig_text.set_text(f'Total ON Periods: {len(global_on_segments)} | Visible in this view: {len(visible_segs)}')
+        else:
+            fig_text.set_text('')
+
         fig.canvas.draw_idle()
+
+    def toggle_highlights(event):
+        state['show_on_off'] = not state['show_on_off']
+        btn_toggle.label.set_text(f"Highlights ({'ON' if state['show_on_off'] else 'OFF'})")
+        redraw_view()
 
     def auto_fit(event):
         y_min, y_max = float('inf'), float('-inf')
@@ -212,6 +277,7 @@ def interactive_viewer(file_path, config, denormalize=True):
     btn_prev.on_clicked(lambda e: pos_slider.set_val(max(0, state['start_idx'] - state['view_span']//2)))
     btn_next.on_clicked(lambda e: pos_slider.set_val(min(total_points, state['start_idx'] + state['view_span']//2)))
     btn_fit.on_clicked(auto_fit)
+    btn_toggle.on_clicked(toggle_highlights)
     
     fig.canvas.mpl_connect('pick_event', on_pick)
     fig.canvas.mpl_connect('button_press_event', on_mouse_press)

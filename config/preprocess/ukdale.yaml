@@ -1,5 +1,4 @@
 # ukdale.yaml - Parameters for Original UK-DALE Preprocessing
-# Source: c:\Users\Raymond Tie\Desktop\PhD\Code\multi-domain NILM\high_low_freq_NILM\dataset_preprocess\ukdale_processing.py
 
 paths:
   data_dir: "dataset_preprocess/UK_DALE"
@@ -8,83 +7,118 @@ paths:
     train: "{appliance}_training.csv"
     val: "{appliance}_validation.csv"
     test: "{appliance}_test.csv"
+    # Real-power (no normalization) output filenames
+    train_real: "{appliance}_training_real.csv"
+    val_real: "{appliance}_validation_real.csv"
+    test_real: "{appliance}_test_real.csv"
 
 global_params:
-  aggregate_mean: 522
-  aggregate_std: 814
-  # Timezone for processing (Options: "UTC", "Europe/London")
+  # ==========================================
+  # OUTPUT MODE: choose what version to save
+  #   "zscore" - Z-score normalized only (default for model training)
+  #   "real"   - Raw Watts only (for inspection / HF alignment)
+  #   "both"   - Save both versions side by side
+  # ==========================================
+  output_mode: "both"
+
+  # Global fallback house list (used if an appliance doesn't have a local 'houses' list)
+  houses: [2]  
+
   timezone: "Europe/London"
-  
-  # Timeframe filtering (e.g., '2013-02-17' or '2013-02-17 07:00:00')
-  # Example for Week 30: '2013-07-22 07:00:00' to '2013-07-29 07:00:00'
   start_time: '2013-07-22 00:00:00'
   end_time: '2013-07-29 00:00:00'
 
-
-
+  aggregate_mean: 522
+  aggregate_std: 814
   sample_seconds: 6
-  validation_percent: 20
-  testing_percent: 20
+  validation_percent: 0   
+  testing_percent: 100    
   appliances_to_process: ["kettle", "microwave", "fridge", "dishwasher", "washingmachine"]
 
-# Extracted from params_appliance in ukdale_processing.py
+# ====================================================================================================
+# PART 2: APPLIANCE PARAMETERS (Kelly et al. Table 4 Reference)
+# ====================================================================================================
+# Reference Table 4 from "Neural NILM" (Kelly 2015):
+# | Appliance   | Max power | On threshold | Min. on | Min. off |
+# |-------------|-----------|--------------|---------|----------|
+# | Kettle      | 3100 W    | 2000 W       | 12 s    | 0 s      |
+# | Fridge      | 300 W     | 50 W         | 60 s    | 12 s     |
+# | Washing m.  | 2500 W    | 20 W         | 1800 s  | 160 s    |
+# | Microwave   | 3000 W    | 200 W        | 12 s    | 30 s     |
+# | Dish washer | 2500 W    | 10 W         | 1800 s  | 1800 s   |
+# ====================================================================================================
+
 appliances:
   kettle:
-    windowlength: 599
-    on_power_threshold: 2000
-    max_on_power: 3998
     mean: 700
     std: 1000
-    s2s_length: 128
-    houses: [1]
-    channels: [10]
-    train_build: [2]
-    test_build: 2
+    max_power: 3998          # User defined
+    on_power_threshold: 200   # User defined
+    min_off_duration: 0      # Kelly Table 4 (0s)
+    min_on_duration: 2       # Kelly Table 4 (12s @ 6s rate)
+    houses: [2]
+    channel_map: {1: 10, 2: 8, 3: 2, 5: 18}
   
   microwave:
-    windowlength: 599
-    on_power_threshold: 200
-    max_on_power: 3969
     mean: 500
     std: 800
-    s2s_length: 128
-    houses: [1]
-    channels: [13]
-    train_build: [2]
-    test_build: 2
+    max_power: 3969          # User defined
+    on_power_threshold: 200   # User defined
+    min_off_duration: 5      # Kelly Table 4 (30s @ 6s rate)
+    min_on_duration: 2       # Kelly Table 4 (12s @ 6s rate)
+    houses: [2]
+    channel_map: {1: 13, 2: 15, 5: 23}
 
   fridge:
-    windowlength: 599
-    on_power_threshold: 50
-    max_on_power: 3323
     mean: 200
     std: 400
-    s2s_length: 512
-    houses: [1]
-    channels: [12]
-    train_build: [2]
-    test_build: 2
+    max_power: 350           # User defined
+    on_power_threshold: 50    # User defined
+    min_off_duration: 2      # Kelly Table 4 (12s @ 6s rate)
+    min_on_duration: 10      # Kelly Table 4 (60s @ 6s rate)
+    houses: [2]
+    channel_map: {1: 12, 2: 14, 5: 19}
 
   dishwasher:
-    windowlength: 599
-    on_power_threshold: 10
-    max_on_power: 3964
     mean: 700
     std: 1000
-    s2s_length: 1536
-    houses: [1]
-    channels: [6]
-    train_build: [2]
-    test_build: 2
+    max_power: 3964          # User defined
+    on_power_threshold: 50    # User defined
+    min_off_duration: 300    # Kelly Table 4 (1800s @ 6s rate)
+    min_on_duration: 300     # Kelly Table 4 (1800s @ 6s rate)
+    houses: [2]
+    channel_map: {1: 6, 2: 13, 5: 22}
 
   washingmachine:
-    windowlength: 599
-    on_power_threshold: 20
-    max_on_power: 3999
     mean: 400
     std: 700
-    s2s_length: 2000
-    houses: [1]
-    channels: [5]
-    train_build: [2]
-    test_build: 2
+    max_power: 3999          # User defined
+    on_power_threshold: 15    # User defined
+    min_off_duration: 100    # User optimized (Kelly: 27)
+    min_on_duration: 300     # Kelly Table 4 (1800s @ 6s rate)
+    houses: [2]
+    channel_map: {1: 5, 2: 12, 5: 24}
+
+# ====================================================================================================
+# PART 3: ALGORITHM 1 (Data Filtering & Selection)
+# ====================================================================================================
+# Files using this section:
+#   - dataset_preprocess\algorithm1_v2_multivariate.py
+# Purpose: Parameters for selecting "effective" windows of data used to train the Diffusion Model.
+
+algorithm1:
+  window_length: 0          # Number of samples to keep BEFORE and AFTER an event
+  x_noise: 0                 # Zero out any values below this absolute floor
+  
+  # Spike Removal (NeuralNILM style)
+  remove_spikes: true        # Enable/Disable pre-cleaning of isolated spikes
+  spike_window: 5            # Window size for detecting spikes
+  spike_threshold: 3.0       # Multiplier (value > 3.0 * median = spike)
+  background_threshold: 50   # Threshold below which signal is considered background (Watts)
+  
+  # Kelly / NILMTK Logic Defaults (If not specified in appliance section)
+  min_off_duration_default: 10 # 1 minute bridge (at 6s sampling)
+  min_on_duration_default: 1   # 1 sample minimum
+  
+  # Normalization & Limits
+  clip_max: null             # (Optional) Hard cap on power values before normalization
