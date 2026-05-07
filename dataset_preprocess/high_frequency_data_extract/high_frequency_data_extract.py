@@ -8,15 +8,16 @@ import yaml
 import pandas as pd
 import configparser
 import math
+from hf_feature import compute_hf_features
+
+# --- Official UK-DALE Calibration Logic ---
+ADC_SCALE = 2**31 
 
 def get_arguments():
     parser = argparse.ArgumentParser(description='NILM High-Frequency Feature Extractor (Calibrated & Rich UI)')
     parser.add_argument('--config', type=str, default='hf_config.yaml', help='Path to config')
     parser.add_argument('--input_path', type=str, required=True, help='Path to .flac file or directory')
     return parser.parse_args()
-
-# --- Official UK-DALE Calibration Logic ---
-ADC_SCALE = 2**31 
 
 def get_calibration(file_path, config_house_id=None):
     parent_dir = os.path.dirname(os.path.abspath(file_path))
@@ -25,7 +26,10 @@ def get_calibration(file_path, config_house_id=None):
         if 'house_2' in file_path.lower(): house_id = 2
         elif 'house_1' in file_path.lower(): house_id = 1
         elif 'house_5' in file_path.lower(): house_id = 5
-        else: house_id = 2 # Default to 2 for Week 30
+        else:
+            raise ValueError(f"CRITICAL: Could not determine house_id from path: {file_path}. "
+                             "Please ensure the path contains 'house_1', 'house_2', or 'house_5', "
+                             "or specify house_id in the configuration.")
         
     search_dir = parent_dir
     for _ in range(4):
@@ -38,61 +42,12 @@ def get_calibration(file_path, config_house_id=None):
             return v_step, i_step, cal_file, house_id
         search_dir = os.path.dirname(search_dir)
         if not search_dir or search_dir == os.path.dirname(search_dir): break
-    return 1.88296904357e-07, 4.77518864497e-08, "Defaults (H2)", 2
+    
+    raise FileNotFoundError(f"CRITICAL: Calibration file 'calibration_house_{house_id}.cfg' not found "
+                            f"in {parent_dir} or its parent directories up to 4 levels.")
 
 def decode_unix_time(ts, tz_name="UTC"):
     return datetime.datetime.fromtimestamp(int(ts), tz=ZoneInfo(tz_name)).strftime('%Y-%m-%d %H:%M:%S')
-
-def compute_features(block, config, v_step, i_step):
-    """
-    Converts raw block to physical units and extracts a 12-dimensional feature vector.
-    Features: V_rms, I_rms, P_active, Q_reactive, S_apparent, PF, THD, H3, H5, H7, H9, H11
-    """
-    v_col = config['hyperparameters']['channel_config']['voltage_idx']
-    i_col = config['hyperparameters']['channel_config']['current_idx']
-    
-    # 1. Official UK-DALE Conversion: Extract Instantaneous Waveforms v(t), i(t)
-    v_t = block[:, v_col] * ADC_SCALE * v_step
-    i_t = block[:, i_col] * ADC_SCALE * i_step
-    
-    # 2. Fundamental Electrical Parameters (RMS and Power)
-    V_rms = np.sqrt(np.mean(np.square(v_t))) #Root Mean Square of voltage
-    I_rms = np.sqrt(np.mean(np.square(i_t))) #Root Mean Square of current
-
-    P_active = np.mean(v_t * i_t) #Active Power, P(W)
-    S_apparent = V_rms * I_rms #Apparent Power, S(VA)
-    Q_reactive = np.sqrt(max(0, S_apparent**2 - P_active**2)) #Reactive Power, Q(VAR)
-    
-    #Power Factor, PF = cos(theta)
-    PF = P_active / S_apparent if S_apparent > 1e-6 else 1.0
-    
-    # 3. Harmonic Content (Cycle-averaging Analysis)
-    samples_per_cycle = 320 
-    num_cycles = len(v_t) // samples_per_cycle
-    i_cycles = i_t[:num_cycles*samples_per_cycle].reshape(num_cycles, samples_per_cycle)
-    
-    fft_avg = np.mean(np.abs(np.fft.rfft(i_cycles, axis=1)), axis=0)
-    fund = fft_avg[1] if fft_avg[1] > 1e-6 else 1e-6
-    
-    # Extract ratios for odd harmonics (H3 to H11)
-    H_ratios = {}
-    for h in [3, 5, 7, 9, 11]:
-        H_ratios[f'H{h}_ratio'] = round(fft_avg[h] / fund, 6)
-        
-    # 4. Total Harmonic Distortion (THD)
-    harmonic_energy = np.sum(np.square(fft_avg[2:20])) 
-    THD = np.sqrt(harmonic_energy) / fund
-    
-    return {
-        'V_rms': round(V_rms, 4),
-        'I_rms': round(I_rms, 6),
-        'P_active': round(P_active, 2),
-        'Q_reactive': round(Q_reactive, 2),
-        'S_apparent': round(S_apparent, 2),
-        'PF': round(PF, 4),
-        'THD': round(THD, 6),
-        **H_ratios
-    }
 
 def process_file(flac_path, config):
     basename = os.path.basename(flac_path)
