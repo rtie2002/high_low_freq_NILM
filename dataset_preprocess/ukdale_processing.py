@@ -16,6 +16,17 @@ def get_arguments():
                           help='The path to the config file')
     parser.add_argument('--appliance_name', type=str, default='all',
                           help='Appliance to process. Use "all" to process all appliances defined in config.')
+    # ── Pipeline override args (used when called by high_frequency_data_extract.py) ──
+    parser.add_argument('--override_start', type=str, default=None,
+                          help='Override start_time from config (format: YYYY-MM-DD HH:MM:SS, in config timezone)')
+    parser.add_argument('--override_end', type=str, default=None,
+                          help='Override end_time from config (format: YYYY-MM-DD HH:MM:SS, in config timezone)')
+    parser.add_argument('--override_house', type=int, default=None,
+                          help='Override houses list with a single house ID')
+    parser.add_argument('--no_split', action='store_true',
+                          help='Disable train/val/test split. All data saved as train.')
+    parser.add_argument('--save_path_override', type=str, default=None,
+                          help='Override save_path from config (useful for temp output during fusion)')
     return parser.parse_args()
 
 def load_dataframe(directory, building, channel, col_names=['time', 'data'], nrows=None):
@@ -113,6 +124,15 @@ def main():
     paths = config['paths']
     global_params = config['global_params']
     params_appliance = config['appliances']
+
+    # ── Apply CLI overrides (when called by the HF pipeline) ────────────────
+    if args.override_start:     global_params['start_time']  = args.override_start
+    if args.override_end:       global_params['end_time']    = args.override_end
+    if args.override_house:     global_params['houses']      = [args.override_house]
+    if args.save_path_override: paths['save_path']           = args.save_path_override
+    if args.no_split:
+        global_params['validation_percent'] = 0
+        global_params['testing_percent']    = 0
     
     # Determine Project Root for path resolution
     script_dir = os.path.dirname(os.path.abspath(__file__))

@@ -1,16 +1,16 @@
 """
 Algorithm 1: Data Cleaning and Selection for Multivariate Appliance Power Data
-Based on the paper: "A diffusion model-based framework to enhance the robustness 
+Based on the paper: "A model-based framework to enhance the robustness 
 of non-intrusive load disaggregation"
 
 This script implements Algorithm 1 to select effective parts of appliance data
-and prepare it for multivariate diffusion model training.
+and prepare it for multivariate model training.
 
 IMPORTANT: According to the paper (Section 4.1), Algorithm 1 is applied ONLY to 
 TRAINING data: "When synthesizing data, we execute Algorithm 1 on the training data, 
-send it to the diffusion model for synthetic data training..."
+send it to the model for synthetic data training..."
 
-- Training data: Apply Algorithm 1 → Used for diffusion model training
+- Training data: Apply Algorithm 1 → Used for model training
 - Validation/Test data: NOT processed by Algorithm 1 → Used for NILM model evaluation
 
 Input: Multivariate CSV file (format: aggregate, appliance, minute_sin, minute_cos, hour_sin, hour_cos, dow_sin, dow_cos, month_sin, month_cos)
@@ -406,10 +406,10 @@ def main():
     
     According to the paper (Section 4.1): 
     "When synthesizing data, we execute Algorithm 1 on the training data, 
-    send it to the diffusion model for synthetic data training..."
+    send it to the model for synthetic data training..."
     """
     parser = argparse.ArgumentParser(
-        description='Apply Algorithm 1 to multivariate TRAINING data for diffusion model')
+        description='Apply Algorithm 1 to multivariate TRAINING data for the model')
     parser.add_argument('--appliance_name', type=str, required=True,
                         help='Appliance name: microwave, fridge, dishwasher, washingmachine, kettle')
     parser.add_argument('--input_file', type=str, 

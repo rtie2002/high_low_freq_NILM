@@ -20,46 +20,56 @@ hyperparameters:
     current_idx: 1         # 1 = Right channel (Standard UK-DALE Current tracking)
 
 features_to_extract:
-  # --- Time Domain (Atomic) ---
+  # --- Level 1: Time Domain (Waveform Stats) ---
   time_domain:
     enabled: true          # Master switch for time-domain layer
     v_rms: true            # Voltage Root Mean Square
     i_rms: true            # Current Root Mean Square
-    p_active: true         # Active Power (Watts) - Real work done
-    q_reactive: true       # Reactive Power (Vars) - Inductive/Capacitive energy
-    s_apparent: true       # Apparent Power (VA) - Total power envelope
-    pf: true               # Power Factor (P/S) - Efficiency metric
-    fcv: true              # Voltage Crest Factor (Peak/RMS)
-    fci: true              # Current Crest Factor (Peak/RMS) - Detects spiky loads
+    p_active: true         # Active Power (Watts)
+    s_apparent: true       # Apparent Power (VA)
+    pf: true               # Power Factor (P/S)
+    fcv: true              # Voltage Crest Factor
+    fci: true              # Current Crest Factor
 
-  # --- Harmonic Analysis (Atomic) ---
+  shape_statistics:        # Morphological descriptors
+    enabled: true          # Master switch
+    i_skew: true           # Current asymmetry
+    i_kurt: true           # Current peakedness
+    v_skew: true           # Voltage asymmetry
+    i_std: true            # Current standard deviation
+    v_std: true            # Voltage standard deviation
+
+  # --- Level 2: Spectral Analysis (FFT) ---
   harmonic_analysis:
-    enabled: true          # Master switch for FFT harmonic layer
-    # Specific orders to compute (Example: [1, 3, 5] for odd harmonics only)
+    enabled: true          # Master switch
     orders: [1, 3, 5, 7, 9, 11, 13, 15] 
-    # Metrics to save for EACH requested order k
-    pk: true               # Active Power at harmonic k
-    qk: true               # Reactive Power at harmonic k
+    harmonic_band_hz: 15.0
     ik: true               # Current Magnitude at harmonic k
-    sk: true               # Apparent Power at harmonic k
     vk: true               # Voltage Magnitude at harmonic k
 
-  # --- Distortion Metrics (Atomic) ---
   distortion_metrics:
-    enabled: true          # Master switch for power quality/distortion layer
-    ph: true               # Sum of Active Power for all harmonics (k >= 2)
-    qh: true               # Sum of Reactive Power for all harmonics (k >= 2)
+    enabled: true          # Master switch
     ih: true               # Aggregate Harmonic Current (I_H)
     vh: true               # Aggregate Harmonic Voltage (V_H)
-    sh: true               # Aggregate Harmonic Apparent Power (S_H)
-    d: true                # Distortion Power (D = sqrt(S^2 - P^2 - Q^2))
-    sn: true               # Non-fundamental Apparent Power (S_N)
-    di: true               # Current Distortion Power (D_I)
-    dv: true               # Voltage Distortion Power (D_V)
     thdi: true             # Total Harmonic Distortion - Current (THD_i)
     thdv: true             # Total Harmonic Distortion - Voltage (THD_v)
 
-  # --- Wavelet Domain ---
+  band_power:              # Broad spectral energy bands
+    enabled: true          # Master switch
+    i_bp_low: true         # 50–500 Hz
+    i_bp_mid: true         # 500–2000 Hz
+    i_bp_high: true        # 2000–8000 Hz
+    v_bp_low: true         # 50–500 Hz
+
+  spectral_descriptors:
+    enabled: true          # Master switch
+    i_spec_entropy: true   # Spectral complexity (0-3kHz)
+
+  spectral_envelope:       # Log-Frequency Spectral Shape
+    enabled: true          # Master switch
+    bands: 8               # Number of log-octave bands (0-8kHz)
+
+  # --- Level 3: Time-Frequency Domain (Transients) ---
   wavelet_domain:
-    enabled: true          # Master switch for DWT transient layer
-    levels: 4              # Decomposition depth (0-4). Higher = more frequency bands
+    enabled: true          # Master switch for DWT layer
+    levels: 4              # Decomposition depth (0-4)
