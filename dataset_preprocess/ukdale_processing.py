@@ -210,8 +210,13 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance, c
         
         mains_df = pd.read_csv(mains_path, sep='\s+', header=None, engine='c')
         
-        # House 1 has 2 mains (cols 1,2), House 2 has 1 mains (col 1)
-        if mains_df.shape[1] >= 3:
+        # House 1/5 have 2 separate mains branches. 
+        # House 2 mains.dat has Col 1=Active, Col 2=Apparent (per NILMTK metadata).
+        if h == 2:
+            print(f"  -> [House 2 Mode] Selecting Column 1 (Active Power) as aggregate.")
+            mains_df['aggregate'] = mains_df[1]
+        elif mains_df.shape[1] >= 3:
+            print(f"  -> [Multi-Branch Mode] Summing Columns 1 and 2 as aggregate.")
             mains_df['aggregate'] = mains_df[1] + mains_df[2]
         else:
             mains_df['aggregate'] = mains_df[1]

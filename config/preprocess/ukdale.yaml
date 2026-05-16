@@ -33,7 +33,7 @@ global_params:
   sample_seconds: 6
   validation_percent: 0   
   testing_percent: 100    
-  appliances_to_process: ["washingmachine"]
+  appliances_to_process: ["washingmachine", "kettle", "microwave", "fridge", "dishwasher"]
 
 # ====================================================================================================
 # PART 2: APPLIANCE PARAMETERS (Kelly et al. Table 4 Reference)
