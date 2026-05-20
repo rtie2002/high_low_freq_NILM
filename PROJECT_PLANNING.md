@@ -1,5 +1,7 @@
 # Project Planning: Multi-Domain NILM With HF Feature Selection
 
+Chinese companion version: `PROJECT_PLANNING_ZH.md`.
+
 ## 1. Current Project Direction
 
 This project aims to build a hybrid NILM system that combines:
@@ -463,3 +465,539 @@ The strongest claim should not be only that more HF features improve NILM. The s
 9. Train multi-branch LF-HF model.
 10. Run ablation experiments by HF feature domain.
 11. Compare all methods using MAE, RMSE/CVRMSE, F1-score, precision, recall, and MCC.
+
+---
+
+## 7. Detailed Explanation of the Feature Selection Plan
+
+This section explains the idea in plain technical language, with simple mathematical examples. The goal is to make the feature selection stage reproducible and easy to justify in a thesis.
+
+### 7.1 Big Picture
+
+The current HF extractor produces many electrical signatures. Some features describe power level, some describe waveform shape, some describe harmonics, and some describe time-frequency transients.
+
+The problem is:
+
+```text
+More features does not always mean better NILM.
+```
+
+If many features are duplicated, noisy, or irrelevant, the model may overfit. For example, if `I_rms`, `I_std`, `I1`, and `I_BP_low` all describe nearly the same current magnitude, using all of them can make the model unnecessarily complex.
+
+The goal is to find a compact feature subset:
+
+```text
+F_final = useful HF features with high target relevance and low redundancy
+```
+
+This selected subset is then fused with low-frequency aggregate power for the final NILM model.
+
+---
+
+### 7.2 Dataset View
+
+For each appliance CSV, the table looks like:
+
+| readable_time | V_rms | I_rms | P_active | I3 | THDI | DWT_E1 | aggregate | kettle_power | on_off |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2013-07-22 01:00:00 | 240.4 | 0.58 | 107.3 | 0.33 | 0.74 | 0.057 | 105.9 | 1.0 | 0 |
+| 2013-07-22 01:00:06 | 240.5 | 0.58 | 107.1 | 0.33 | 0.74 | 0.058 | 105.8 | 1.0 | 0 |
+
+For feature selection:
+
+```text
+X_hf = [V_rms, I_rms, P_active, I3, THDI, DWT_E1, ...]
+y_reg = kettle_power
+y_cls = on_off
+```
+
+Do not include these as candidate HF features:
+
+```text
+readable_time
+aggregate
+kettle_power
+on_off
+```
+
+Why exclude `aggregate`? Because `aggregate` is the LF input, not an HF feature. We want to know which high-frequency signatures are useful independently before fusion.
+
+---
+
+### 7.3 Stage 0: Feature Cleaning
+
+Before ranking features, remove obviously bad columns.
+
+#### 7.3.1 Constant or Near-Constant Features
+
+If a feature barely changes, it cannot help the model.
+
+Example:
+
+| window | feature_A |
+| ---: | ---: |
+| 1 | 0.001 |
+| 2 | 0.001 |
+| 3 | 0.001 |
+| 4 | 0.001 |
+
+Variance:
+
+```text
+Var(feature_A) ≈ 0
+```
+
+So `feature_A` should be removed.
+
+Default threshold:
+
+```text
+near_constant_variance_threshold = 1e-8
+```
+
+#### 7.3.2 Invalid Values
+
+If a feature contains too many `NaN`, `Inf`, or invalid values, it is unreliable.
+
+Default:
+
+```text
+drop feature if invalid_ratio > 0.05
+```
+
+Meaning: if more than 5% of rows are invalid, remove the feature.
+
+Output:
+
+```text
+feature_cleaning_report.csv
+```
+
+Example report:
+
+| feature | action | reason |
+| :--- | :--- | :--- |
+| V_rms | keep | valid |
+| I_env_7 | drop | invalid_ratio > 0.05 |
+| V_skew | drop | near_constant |
+
+---
+
+### 7.4 Stage 1: Correlation and Collinearity Filtering
+
+This step removes duplicated information.
+
+#### 7.4.1 Pearson Correlation
+
+Pearson correlation measures linear relationship:
+
+```text
+r(x, y) = cov(x, y) / (std(x) * std(y))
+```
+
+If:
+
+```text
+abs(r) > 0.95
+```
+
+then two features are almost duplicated.
+
+#### 7.4.2 Simple Example
+
+Suppose:
+
+| sample | I_rms | I_std |
+| ---: | ---: | ---: |
+| 1 | 0.50 | 0.50 |
+| 2 | 0.60 | 0.60 |
+| 3 | 0.70 | 0.70 |
+| 4 | 0.80 | 0.80 |
+
+Then:
+
+```text
+corr(I_rms, I_std) = 1.0
+```
+
+They carry the same information. Keep only one.
+
+#### 7.4.3 Which One To Keep?
+
+Use this rule:
+
+```text
+1. Keep the feature with higher target relevance.
+2. If relevance is similar, keep the more physically interpretable feature.
+```
+
+Example:
+
+```text
+I_rms and I_std are highly correlated.
+I_rms has clearer electrical meaning.
+Keep I_rms, drop I_std.
+```
+
+Expected duplicated groups:
+
+```text
+I_rms / I_std / I1 / I_BP_low
+V_rms / V_std / V1 / V_BP_low
+P_active / S_apparent / PF
+THDI / IH / higher-order harmonics
+```
+
+Output:
+
+```text
+correlation_drop_report.csv
+```
+
+Example:
+
+| dropped_feature | kept_feature | pearson | spearman | reason |
+| :--- | :--- | ---: | ---: | :--- |
+| I_std | I_rms | 0.998 | 0.997 | duplicated current magnitude |
+| V_std | V_rms | 0.999 | 0.999 | duplicated voltage magnitude |
+
+---
+
+### 7.5 Stage 2: mRMR Ranking
+
+mRMR means:
+
+```text
+minimum Redundancy Maximum Relevance
+```
+
+It chooses features that:
+
+```text
+1. are relevant to the target
+2. are not redundant with already selected features
+```
+
+#### 7.5.1 Mutual Information Idea
+
+Mutual information measures how much knowing one variable reduces uncertainty about another variable.
+
+General form:
+
+```text
+I(X;Y) = sum_x sum_y p(x,y) log( p(x,y) / (p(x)p(y)) )
+```
+
+Interpretation:
+
+```text
+I(feature; target) is high
+=> feature contains useful information about the target
+```
+
+For this project:
+
+```text
+I(I3; on_off)
+```
+
+means: how much the 3rd harmonic helps identify ON/OFF state.
+
+```text
+I(P_active; kettle_power)
+```
+
+means: how much active power helps predict kettle power.
+
+#### 7.5.2 mRMR Score
+
+For a candidate feature `f`:
+
+```text
+score(f) = relevance(f, target) - redundancy(f, selected_features)
+```
+
+More explicitly:
+
+```text
+score(f) = I(f; y) - (1 / |S|) * sum I(f; s)
+```
+
+Where:
+
+```text
+f = candidate feature
+y = target, either on_off or appliance_power
+S = already selected feature set
+I(f; y) = mutual information between feature and target
+I(f; s) = mutual information between candidate feature and already selected feature
+```
+
+#### 7.5.3 Simple Example
+
+Assume we want to select features for `on_off`.
+
+| feature | MI with on_off | redundancy with selected | mRMR score |
+| :--- | ---: | ---: | ---: |
+| P_active | 0.80 | 0.00 | 0.80 |
+| I_rms | 0.78 | 0.75 | 0.03 |
+| THDI | 0.45 | 0.10 | 0.35 |
+| DWT_E1 | 0.40 | 0.05 | 0.35 |
+
+Even though `I_rms` has high relevance, it is very redundant with `P_active`. Therefore, mRMR may prefer `THDI` or `DWT_E1` because they add new information.
+
+This is the key reason mRMR is useful.
+
+#### 7.5.4 Two Targets
+
+This project has two targets:
+
+```text
+y_cls = on_off
+y_reg = appliance_power
+```
+
+So produce two rankings:
+
+```text
+rank_mrmr_cls.csv
+rank_mrmr_reg.csv
+```
+
+A feature can be important for classification but less important for regression.
+
+Example:
+
+```text
+DWT_E1 may help detect switching transients, so it helps on_off.
+P_active may help estimate continuous power, so it helps appliance_power.
+```
+
+---
+
+### 7.6 Stage 3: Random Forest Importance
+
+mRMR is a filter method. It looks at statistical dependency before training a complex model. Random Forest is a model-based method. It checks which features are actually useful inside a predictive model.
+
+Use:
+
+```text
+RandomForestClassifier -> on_off
+RandomForestRegressor  -> appliance_power
+```
+
+#### 7.6.1 Why Random Forest?
+
+Random Forest is useful here because:
+
+* It handles nonlinear relationships.
+* It works well with tabular feature data.
+* It gives feature importance.
+* It is easier to explain than a deep neural network.
+
+#### 7.6.2 Impurity Importance
+
+Impurity importance measures how much a feature reduces decision-tree impurity.
+
+But it can be biased, so it should not be the only importance score.
+
+#### 7.6.3 Permutation Importance
+
+Permutation importance is more intuitive.
+
+Idea:
+
+```text
+1. Train model normally.
+2. Measure validation performance.
+3. Shuffle one feature column.
+4. Measure how much performance drops.
+5. Larger drop = more important feature.
+```
+
+Example:
+
+| feature | F1 before shuffle | F1 after shuffle | importance |
+| :--- | ---: | ---: | ---: |
+| P_active | 0.90 | 0.65 | 0.25 |
+| THDI | 0.90 | 0.82 | 0.08 |
+| V_rms | 0.90 | 0.89 | 0.01 |
+
+Here, `P_active` is most important.
+
+Outputs:
+
+```text
+rank_rf_cls.csv
+rank_rf_reg.csv
+```
+
+---
+
+### 7.7 Stage 4: Multi-Task Feature Union
+
+Because NILM has two objectives, we should not select features for only one task.
+
+Create:
+
+```text
+F_cls = features useful for ON/OFF classification
+F_reg = features useful for appliance power regression
+F_final = F_cls union F_reg
+```
+
+Default:
+
+```text
+top_k = 15 features per task
+final target = 20 to 30 features
+```
+
+#### 7.7.1 Example
+
+Suppose:
+
+```text
+F_cls = [DWT_E1, THDI, I3, I_kurt, Fci]
+F_reg = [P_active, I_rms, I1, PF, S_apparent]
+```
+
+Then:
+
+```text
+F_final = [DWT_E1, THDI, I3, I_kurt, Fci, P_active, I_rms, I1, PF, S_apparent]
+```
+
+This final set supports both:
+
+```text
+state detection + power prediction
+```
+
+#### 7.7.2 Rank Fusion
+
+If too many features are selected, combine rankings:
+
+```text
+fused_rank_score = 0.35 * normalized_mrmr_rank
+                 + 0.35 * normalized_rf_permutation_rank
+                 + 0.20 * normalized_target_relevance_rank
+                 + 0.10 * normalized_domain_priority_rank
+```
+
+Lower score means better rank.
+
+This avoids trusting only one method.
+
+---
+
+### 7.8 Stage 5: Stability Selection
+
+A feature should not be selected only because it worked in one random split.
+
+Use time-based folds:
+
+```text
+Fold 1 = day/time block 1
+Fold 2 = day/time block 2
+Fold 3 = day/time block 3
+Fold 4 = day/time block 4
+Fold 5 = day/time block 5
+```
+
+Do not use random row split, because adjacent NILM windows are highly similar. Random row split can leak near-identical windows into train and test.
+
+#### 7.8.1 Stability Frequency
+
+```text
+stability_frequency(feature) = selected_fold_count / total_fold_count
+```
+
+Example:
+
+| feature | selected folds | stability |
+| :--- | ---: | ---: |
+| P_active | 5/5 | 1.00 |
+| THDI | 4/5 | 0.80 |
+| DWT_E3 | 3/5 | 0.60 |
+| V_skew | 1/5 | 0.20 |
+
+Default rule:
+
+```text
+keep feature if stability >= 0.60
+```
+
+So keep:
+
+```text
+P_active, THDI, DWT_E3
+```
+
+Drop:
+
+```text
+V_skew
+```
+
+unless ablation shows it is useful for a specific appliance.
+
+---
+
+### 7.9 Stage 6: Ablation Validation
+
+Feature ranking alone is not enough. The final proof must come from experiments.
+
+Compare:
+
+```text
+LF only
+LF + all HF features
+LF + correlation-filtered HF
+LF + mRMR-selected HF
+LF + mRMR + RF selected HF
+LF + selected time-domain HF only
+LF + selected harmonics only
+LF + selected spectral envelope only
+LF + selected wavelet only
+```
+
+The important thesis result should look like:
+
+```text
+LF + selected HF > LF only
+LF + selected HF >= LF + all HF
+```
+
+If this happens, the claim is strong:
+
+```text
+Selected HF signatures improve NILM more reliably than blindly using all HF features.
+```
+
+#### 7.9.1 Example Result Table
+
+| Method | Feature Count | MAE lower better | F1 higher better |
+| :--- | ---: | ---: | ---: |
+| LF only | 1 | 42.0 | 0.71 |
+| LF + all HF | 52 | 36.5 | 0.78 |
+| LF + mRMR HF | 20 | 34.0 | 0.81 |
+| LF + mRMR + RF HF | 24 | 32.8 | 0.84 |
+
+This would support the proposed feature selection method.
+
+---
+
+### 7.10 How To Explain This In The Thesis
+
+A concise thesis explanation:
+
+> The high-frequency feature extractor produces a rich but redundant multi-domain representation. To prevent overfitting and improve interpretability, a hybrid feature selection strategy is introduced. First, invalid and collinear features are removed. Second, mRMR is used to select features with high target dependency and low inter-feature redundancy. Third, Random Forest permutation importance validates feature usefulness in nonlinear predictive models. Finally, time-based stability selection and ablation experiments identify appliance-specific and global feature subsets for LF-HF NILM fusion.
+
+The main novelty is not just using feature selection. The stronger idea is:
+
+```text
+multi-task, literature-backed, stability-aware feature selection for LF-HF NILM fusion
+```
+
+---
