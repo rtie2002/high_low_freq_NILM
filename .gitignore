@@ -39,3 +39,7 @@ dataset_preprocess/created_data/
 # Logs
 *.log
 *.cfg
+
+# 5. Literature and papers
+/frequency domain/
+
