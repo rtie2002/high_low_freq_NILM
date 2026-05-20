@@ -105,6 +105,1544 @@ res.update(get_wavelet_features(i_t, config['features_to_extract']))
 
 ## 3. Math Behind
 
+### 3.0 Equation-by-Equation Real Scenario Tutorial
+
+This tutorial explains the equations using one realistic 6-second NILM timestep.
+
+Real project setting:
+
+```text
+sampling_rate = 16000 Hz
+window_size   = 6 s
+N             = 96000 samples
+```
+
+To make the arithmetic readable, each example uses summary values that could come from one 6-second window. The real code performs the same operations over all 96000 samples.
+
+Assume one appliance is ON during this 6-second window:
+
+```text
+readable_time = 2013-07-22 01:00:00
+appliance     = kettle-like / heater-like load, but with slight distortion
+```
+
+For simple hand calculation, use these realistic window summaries:
+
+```text
+V_rms    = 230 V
+I_rms    = 1.20 A
+P_active = 250 W
+I_peak   = 2.80 A
+V_peak   = 325 V
+I1       = 1.10 A
+I3       = 0.25 A
+I5       = 0.12 A
+I7       = 0.05 A
+```
+
+#### 3.0.0 LaTeX Worked Example Summary
+
+This subsection gives the same tutorial in a cleaner report-style format. Each feature is shown as:
+
+```text
+equation -> numerical substitution -> result -> meaning
+```
+
+Window setting:
+
+$$
+f_s=16000\ \mathrm{Hz},
+\qquad
+T_w=6\ \mathrm{s},
+\qquad
+N=f_sT_w=96000.
+$$
+
+So one output row is:
+
+$$
+\text{one HF row}
+=
+\phi\left(
+\{v[n]\}_{n=0}^{95999},
+\{i[n]\}_{n=0}^{95999}
+\right).
+$$
+
+ADC calibration example:
+
+$$
+v[n]=x_v[n]\cdot 2^{31}\cdot c_v.
+$$
+
+If:
+
+$$
+x_v[n]=1.50\times 10^{-6},
+\qquad
+c_v=0.0716,
+$$
+
+then:
+
+$$
+v[n]
+=
+(1.50\times 10^{-6})(2^{31})(0.0716)
+=
+230.6\ \mathrm{V}.
+$$
+
+Meaning:
+
+```text
+The stored .flac value is converted into physical voltage before feature extraction.
+```
+
+RMS example:
+
+$$
+V_{\mathrm{rms}}
+=
+\sqrt{
+\frac{325^2+0^2+(-325)^2+0^2}{4}
+}
+=
+\sqrt{52812.5}
+=
+229.8\ \mathrm{V}.
+$$
+
+$$
+I_{\mathrm{rms}}
+=
+\sqrt{
+\frac{1.70^2+0^2+(-1.70)^2+0^2}{4}
+}
+=
+\sqrt{1.445}
+=
+1.20\ \mathrm{A}.
+$$
+
+Meaning:
+
+```text
+RMS gives the effective voltage/current magnitude inside the 6-second window.
+```
+
+Active power example:
+
+$$
+p[n]=v[n]i[n].
+$$
+
+For four readable toy samples:
+
+$$
+\mathbf{v}=[325,0,-325,0],
+\qquad
+\mathbf{i}=[1.70,0,-1.70,0],
+$$
+
+therefore:
+
+$$
+\mathbf{p}
+=
+[325(1.70),0(0),(-325)(-1.70),0(0)]
+=
+[552.5,0,552.5,0].
+$$
+
+$$
+P
+=
+\frac{552.5+0+552.5+0}{4}
+=
+276.25\ \mathrm{W}.
+$$
+
+Meaning:
+
+```text
+Active power is the average real power over the 6-second timestep.
+```
+
+Apparent power and power factor example:
+
+$$
+S=V_{\mathrm{rms}}I_{\mathrm{rms}}
+=(230)(1.20)
+=276\ \mathrm{VA}.
+$$
+
+$$
+\mathrm{PF}
+=
+\frac{P}{S}
+=
+\frac{250}{276}
+=
+0.906.
+$$
+
+Meaning:
+
+```text
+PF near 1 means mostly real-power behavior.
+PF lower than 1 suggests phase shift and/or waveform distortion.
+```
+
+Crest factor example:
+
+$$
+\mathrm{Fci}
+=
+\frac{I_{\mathrm{peak}}}{I_{\mathrm{rms}}}
+=
+\frac{2.80}{1.20}
+=
+2.33.
+$$
+
+$$
+\mathrm{Fcv}
+=
+\frac{V_{\mathrm{peak}}}{V_{\mathrm{rms}}}
+=
+\frac{325}{230}
+=
+1.413.
+$$
+
+Meaning:
+
+```text
+Fci = 2.33 is peakier than a clean sine wave. Fcv = 1.413 is normal for mains voltage.
+```
+
+Standard deviation example:
+
+For:
+
+$$
+\mathbf{i}=[1.70,0,-1.70,0],
+\qquad
+\mu_i=0,
+$$
+
+the standard deviation is:
+
+$$
+\sigma_i
+=
+\sqrt{
+\frac{
+(1.70-0)^2+(0-0)^2+(-1.70-0)^2+(0-0)^2
+}{4}
+}
+=
+1.20\ \mathrm{A}.
+$$
+
+Meaning:
+
+```text
+For near-zero-mean AC waveforms, current standard deviation is often close to I_rms.
+```
+
+Skewness example:
+
+Using:
+
+$$
+\mathbf{i}=[1.70,0,-1.70,0],
+\qquad
+\mu_i=0,
+\qquad
+\sigma_i=1.20,
+$$
+
+normalized samples are:
+
+$$
+\mathbf{z}
+=
+\left[
+\frac{1.70}{1.20},
+0,
+\frac{-1.70}{1.20},
+0
+\right]
+=
+[1.417,0,-1.417,0].
+$$
+
+Then:
+
+$$
+\operatorname{skew}(i)
+=
+\frac{1.417^3+0^3+(-1.417)^3+0^3}{4}
+=
+0.
+$$
+
+Meaning:
+
+```text
+Skewness near zero means the positive and negative halves are balanced.
+```
+
+Kurtosis example:
+
+For a peaky toy current:
+
+$$
+\mathbf{i}=[0,0,0,4],
+\qquad
+\mu_i=1,
+\qquad
+\sigma_i=1.732.
+$$
+
+The normalized values are:
+
+$$
+\mathbf{z}
+=
+[-0.577,-0.577,-0.577,1.732].
+$$
+
+The excess kurtosis is:
+
+$$
+\operatorname{kurt}(i)
+=
+\frac{
+(-0.577)^4+(-0.577)^4+(-0.577)^4+(1.732)^4
+}{4}
+-3
+=
+-0.667.
+$$
+
+Meaning:
+
+```text
+Kurtosis is a shape descriptor. It changes when the current becomes impulsive or unusually peaked.
+```
+
+Hann window example:
+
+For a toy length \(N=4\):
+
+$$
+w[n]
+=
+\frac{1}{2}
+\left(
+1-\cos\frac{2\pi n}{N-1}
+\right).
+$$
+
+Thus:
+
+$$
+\mathbf{w}=[0,0.75,0.75,0],
+\qquad
+\bar{w}=0.375.
+$$
+
+After normalization:
+
+$$
+\widetilde{\mathbf{w}}
+=
+\frac{\mathbf{w}}{\bar{w}}
+=
+[0,2,2,0].
+$$
+
+Meaning:
+
+```text
+Hann windowing reduces FFT boundary leakage; normalization preserves comparable amplitude scale.
+```
+
+FFT amplitude example:
+
+$$
+A_i[k]
+=
+\frac{2}{N\sqrt{2}}|I[k]|.
+$$
+
+If:
+
+$$
+N=96000,
+\qquad
+|I[k]|=74670,
+$$
+
+then:
+
+$$
+A_i[k]
+=
+\frac{2(74670)}{96000\sqrt{2}}
+=
+1.10\ \mathrm{A}.
+$$
+
+Meaning:
+
+```text
+The FFT magnitude is converted into an RMS-like current amplitude.
+```
+
+Harmonic band example:
+
+For the third harmonic:
+
+$$
+f_3=3f_0=3(50)=150\ \mathrm{Hz}.
+$$
+
+Suppose the amplitudes inside the \(\pm 15\ \mathrm{Hz}\) band around 150 Hz are:
+
+$$
+[0.05,\ 0.23,\ 0.08]\ \mathrm{A}.
+$$
+
+Then:
+
+$$
+I_3
+=
+\sqrt{0.05^2+0.23^2+0.08^2}
+=
+\sqrt{0.0618}
+=
+0.249\ \mathrm{A}.
+$$
+
+Meaning:
+
+```text
+I3 is the integrated current magnitude around 150 Hz, not only one FFT bin.
+```
+
+Harmonic aggregate and THDI example:
+
+$$
+I_H
+=
+\sqrt{I_3^2+I_5^2+I_7^2}
+=
+\sqrt{0.25^2+0.12^2+0.05^2}
+=
+0.282\ \mathrm{A}.
+$$
+
+$$
+\mathrm{THDI}
+=
+\frac{I_H}{I_1}
+=
+\frac{0.282}{1.10}
+=
+0.256.
+$$
+
+Meaning:
+
+```text
+THDI = 0.256 means selected harmonic current is 25.6% of the 50 Hz current.
+```
+
+Band-power example:
+
+$$
+I_{\mathrm{BP,low}}
+=
+1.10^2+0.25^2+0.12^2+0.05^2
+=
+1.2894.
+$$
+
+Meaning:
+
+```text
+I_BP_low is low-frequency spectral energy, not watts.
+```
+
+Spectral entropy example:
+
+Suppose normalized spectral energy is:
+
+$$
+\mathbf{p}=[0.80,0.10,0.06,0.04].
+$$
+
+Then:
+
+$$
+H_i
+=
+-\sum p_r\log(p_r)
+$$
+
+$$
+=
+-[
+0.80\log(0.80)
++0.10\log(0.10)
++0.06\log(0.06)
++0.04\log(0.04)
+]
+=
+0.706.
+$$
+
+Meaning:
+
+```text
+Lower entropy means energy is concentrated; higher entropy means energy is spread across frequencies.
+```
+
+Spectral envelope example:
+
+Suppose band energies are:
+
+$$
+\mathbf{E}
+=
+[1.00,0.25,0.10,0.05,0.03,0.02,0.01,0.00].
+$$
+
+Log compression gives:
+
+$$
+L_j=\log(1+E_j).
+$$
+
+For the first three bands:
+
+$$
+L_0=\log(2.00)=0.693,
+\quad
+L_1=\log(1.25)=0.223,
+\quad
+L_2=\log(1.10)=0.095.
+$$
+
+If:
+
+$$
+\sum_{m=0}^{7}L_m=1.120,
+$$
+
+then:
+
+$$
+I_{\mathrm{env},0}
+=
+\frac{0.693}{1.120}
+=
+0.619,
+\qquad
+I_{\mathrm{env},1}
+=
+\frac{0.223}{1.120}
+=
+0.199.
+$$
+
+Meaning:
+
+```text
+The envelope describes spectral shape. Dominant I_env_0 means mostly low-frequency current.
+```
+
+DWT energy example:
+
+For one wavelet coefficient band:
+
+$$
+\mathbf{c}_j=[0.20,-0.10,0.30,-0.20].
+$$
+
+Then:
+
+$$
+DWT\_E_j
+=
+\frac{0.20^2+(-0.10)^2+0.30^2+(-0.20)^2}{4}
+=
+\frac{0.18}{4}
+=
+0.045.
+$$
+
+Meaning:
+
+```text
+DWT_Ej is the average energy in one time-frequency band.
+Higher DWT_E3/DWT_E4 suggests faster transient or switching content.
+```
+
+#### 3.0.1 ADC Calibration
+
+Equation:
+
+$$
+v[n] = x_v[n]\cdot 2^{31}\cdot c_v,
+\qquad
+i[n] = x_i[n]\cdot 2^{31}\cdot c_i.
+$$
+
+Calculation example:
+
+```text
+Suppose one raw voltage sample from .flac is:
+x_v[n] = 0.00000150
+
+Suppose calibration says:
+c_v = 0.0716 volts per ADC step / 2^31 equivalent scaling
+
+Then:
+v[n] = 0.00000150 * 2^31 * 0.0716
+     = 0.00000150 * 2147483648 * 0.0716
+     = 230.6 V
+```
+
+Meaning:
+
+```text
+The .flac file does not directly store volts and amps.
+It stores normalized audio-like values.
+Calibration converts those stored values into physical voltage/current.
+All later features must be calculated after this step.
+```
+
+Real code:
+
+```python
+v_t = block[:, v_idx] * ADC_SCALE * v_step
+i_t = block[:, i_idx] * ADC_SCALE * i_step
+```
+
+#### 3.0.2 RMS Voltage and RMS Current
+
+Equation:
+
+$$
+V_{\mathrm{rms}}
+=
+\sqrt{
+\frac{1}{N}
+\sum_{n=0}^{N-1} v[n]^2
+},
+\qquad
+I_{\mathrm{rms}}
+=
+\sqrt{
+\frac{1}{N}
+\sum_{n=0}^{N-1} i[n]^2
+}.
+$$
+
+Calculation example:
+
+```text
+Toy samples from one window:
+v_t = [325, 0, -325, 0]
+i_t = [1.70, 0, -1.70, 0]
+
+V_rms = sqrt((325^2 + 0^2 + (-325)^2 + 0^2) / 4)
+      = sqrt((105625 + 0 + 105625 + 0) / 4)
+      = sqrt(52812.5)
+      = 229.8 V
+
+I_rms = sqrt((1.70^2 + 0^2 + (-1.70)^2 + 0^2) / 4)
+      = sqrt((2.89 + 0 + 2.89 + 0) / 4)
+      = sqrt(1.445)
+      = 1.20 A
+```
+
+Meaning:
+
+```text
+RMS is the effective magnitude of the waveform.
+V_rms tells whether the voltage level is normal, around 230 V.
+I_rms tells how much current the appliance draws during this 6-second window.
+If the appliance turns ON, I_rms usually increases.
+```
+
+Real code:
+
+```python
+v_rms = float(np.sqrt(np.mean(v_t ** 2)))
+i_rms = float(np.sqrt(np.mean(i_t ** 2)))
+```
+
+#### 3.0.3 Instantaneous Power and Active Power
+
+Equation:
+
+$$
+p[n] = v[n]i[n].
+$$
+
+Calculation example:
+
+```text
+Using toy samples:
+v_t = [325, 0, -325, 0]
+i_t = [1.70, 0, -1.70, 0]
+
+p[n] = [325*1.70, 0*0, (-325)*(-1.70), 0*0]
+     = [552.5, 0, 552.5, 0] W
+```
+
+Meaning:
+
+```text
+Instantaneous power is the power at each raw sample.
+When voltage and current have the same sign, instantaneous power is positive.
+```
+
+Equation:
+
+$$
+P
+=
+\frac{1}{N}
+\sum_{n=0}^{N-1} v[n]i[n].
+$$
+
+Calculation example:
+
+```text
+P_active = mean([552.5, 0, 552.5, 0])
+         = (552.5 + 0 + 552.5 + 0) / 4
+         = 276.25 W
+```
+
+Meaning:
+
+```text
+Active power is the average real power over the 6-second window.
+This is the value most directly related to actual energy consumption.
+In the real code, this average uses 96000 instantaneous power samples.
+```
+
+Real code:
+
+```python
+p_active = float(np.mean(v_t * i_t))
+```
+
+#### 3.0.4 Apparent Power
+
+Equation:
+
+$$
+S = V_{\mathrm{rms}} I_{\mathrm{rms}}.
+$$
+
+Calculation example:
+
+```text
+V_rms = 230 V
+I_rms = 1.20 A
+
+S = 230 * 1.20
+  = 276 VA
+```
+
+Meaning:
+
+```text
+Apparent power measures the voltage-current capacity used by the load.
+It does not know whether voltage and current are phase-aligned.
+For nonlinear or inductive loads, S can be much larger than active power P.
+```
+
+Real code:
+
+```python
+s_apparent = float(v_rms * i_rms)
+```
+
+#### 3.0.5 Power Factor
+
+Equation:
+
+$$
+\mathrm{PF}
+=
+\frac{P}{S + \varepsilon}.
+$$
+
+Calculation example:
+
+```text
+P = 250 W
+S = 276 VA
+
+PF = 250 / 276
+   = 0.906
+```
+
+Meaning:
+
+```text
+PF tells how efficiently the voltage-current magnitude becomes real power.
+PF near 1: mostly resistive, voltage and current are well aligned.
+PF much lower than 1: phase shift and/or waveform distortion exists.
+```
+
+Real code:
+
+```python
+pf = float(p_active / (s_apparent + 1e-9))
+```
+
+#### 3.0.6 Crest Factor
+
+Equation:
+
+$$
+\mathrm{Fci}
+=
+\frac{\max_n |i[n]|}{I_{\mathrm{rms}} + \varepsilon}.
+$$
+
+Calculation example:
+
+```text
+I_peak = 2.80 A
+I_rms  = 1.20 A
+
+Fci = 2.80 / 1.20
+    = 2.33
+```
+
+Meaning:
+
+```text
+Fci measures how peaky the current waveform is.
+A clean sine wave has crest factor about 1.414.
+Fci = 2.33 means the current has sharper peaks than a sine wave.
+This often happens in rectifier or switching-power-supply loads.
+```
+
+Equation:
+
+$$
+\mathrm{Fcv}
+=
+\frac{\max_n |v[n]|}{V_{\mathrm{rms}} + \varepsilon}.
+$$
+
+Calculation example:
+
+```text
+V_peak = 325 V
+V_rms  = 230 V
+
+Fcv = 325 / 230
+    = 1.413
+```
+
+Meaning:
+
+```text
+Fcv checks voltage waveform shape.
+For normal sinusoidal mains voltage, Fcv should be close to sqrt(2), around 1.414.
+```
+
+Real code:
+
+```python
+fci = float(i_peak / (i_rms + 1e-9))
+fcv = float(v_peak / (v_rms + 1e-9))
+```
+
+#### 3.0.7 Standard Deviation
+
+Equation:
+
+$$
+\sigma_x =
+\sqrt{
+\frac{1}{N}
+\sum_{n=0}^{N-1} (x[n] - \mu_x)^2
+}.
+$$
+
+Calculation example:
+
+```text
+i_t = [1.70, 0, -1.70, 0]
+mean(i_t) = 0
+
+I_std = sqrt(((1.70-0)^2 + (0-0)^2 + (-1.70-0)^2 + (0-0)^2) / 4)
+      = sqrt((2.89 + 0 + 2.89 + 0) / 4)
+      = 1.20 A
+```
+
+Meaning:
+
+```text
+For AC waveforms with near-zero mean, standard deviation is often close to RMS.
+It describes how widely the waveform spreads around its mean.
+```
+
+Real code:
+
+```python
+res['I_std'] = float(np.std(i_t))
+res['V_std'] = float(np.std(v_t))
+```
+
+#### 3.0.8 Skewness
+
+Equation:
+
+$$
+\operatorname{skew}(x)
+=
+\frac{1}{N}
+\sum_{n=0}^{N-1}
+\left(
+\frac{x[n] - \mu_x}{\sigma_x + \varepsilon}
+\right)^3.
+$$
+
+Calculation example:
+
+```text
+Symmetric current:
+i_t = [1.70, 0, -1.70, 0]
+mean = 0
+std  = 1.20
+
+normalized values:
+[1.70/1.20, 0/1.20, -1.70/1.20, 0/1.20]
+= [1.417, 0, -1.417, 0]
+
+cubed:
+[2.846, 0, -2.846, 0]
+
+skew = mean([2.846, 0, -2.846, 0])
+     = 0
+```
+
+Meaning:
+
+```text
+Skewness near 0 means positive and negative halves are balanced.
+Large positive or negative skewness means the waveform is asymmetric.
+In NILM, asymmetry can indicate rectification or unusual appliance behavior.
+```
+
+Real code:
+
+```python
+res['I_skew'] = float(scipy_stats.skew(i_t))
+res['V_skew'] = float(scipy_stats.skew(v_t))
+```
+
+#### 3.0.9 Kurtosis
+
+Equation:
+
+$$
+\operatorname{kurt}(x)
+=
+\frac{1}{N}
+\sum_{n=0}^{N-1}
+\left(
+\frac{x[n] - \mu_x}{\sigma_x + \varepsilon}
+\right)^4
+- 3.
+$$
+
+Calculation example:
+
+```text
+Peaky current:
+i_t = [0, 0, 0, 4]
+mean = 1
+std  = 1.732
+
+normalized:
+[(0-1)/1.732, (0-1)/1.732, (0-1)/1.732, (4-1)/1.732]
+= [-0.577, -0.577, -0.577, 1.732]
+
+fourth power:
+[0.111, 0.111, 0.111, 8.997]
+
+mean fourth power = (0.111 + 0.111 + 0.111 + 8.997) / 4
+                  = 2.333
+
+excess kurtosis = 2.333 - 3
+                = -0.667
+```
+
+Meaning:
+
+```text
+Kurtosis describes peakedness compared with a Gaussian-like reference.
+In practice, very impulsive current windows tend to change kurtosis strongly.
+It is useful as a waveform-shape descriptor, not as an electrical power quantity.
+```
+
+Real code:
+
+```python
+res['I_kurt'] = float(scipy_stats.kurtosis(i_t))
+```
+
+#### 3.0.10 Hann Window for FFT
+
+Equation:
+
+$$
+w[n]
+=
+\frac{1}{2}
+\left(
+1 - \cos\frac{2\pi n}{N-1}
+\right).
+$$
+
+Calculation example:
+
+```text
+Toy N = 4:
+
+w[0] = 0.5 * (1 - cos(0))           = 0
+w[1] = 0.5 * (1 - cos(2*pi/3))      = 0.75
+w[2] = 0.5 * (1 - cos(4*pi/3))      = 0.75
+w[3] = 0.5 * (1 - cos(2*pi))        = 0
+
+window = [0, 0.75, 0.75, 0]
+```
+
+Meaning:
+
+```text
+The Hann window reduces sharp boundary jumps at the start/end of the 6-second block.
+That makes FFT harmonic estimates more stable when the window does not start exactly
+at a perfect mains-cycle boundary.
+```
+
+Real code:
+
+```python
+window = np.hanning(N)
+```
+
+Equation:
+
+$$
+\widetilde{w}[n]
+=
+\frac{w[n]}{\frac{1}{N}\sum_{m=0}^{N-1}w[m]}.
+$$
+
+Calculation example:
+
+```text
+window = [0, 0.75, 0.75, 0]
+mean(window) = (0 + 0.75 + 0.75 + 0) / 4 = 0.375
+
+window_norm = window / 0.375
+            = [0, 2, 2, 0]
+```
+
+Meaning:
+
+```text
+Window normalization compensates for the amplitude reduction introduced by Hann windowing.
+This helps the FFT amplitude descriptors stay comparable across windows.
+```
+
+Real code:
+
+```python
+window_norm = window / (window.sum() / N)
+```
+
+#### 3.0.11 RMS-like FFT Amplitude
+
+Equation:
+
+$$
+A_i[k]
+=
+\frac{2}{N\sqrt{2}} |I[k]|.
+$$
+
+Calculation example:
+
+```text
+Suppose after FFT, the magnitude near 50 Hz is:
+|I[k]| = 74670
+
+Real window:
+N = 96000
+
+A_i[k] = (2 * 74670) / (96000 * sqrt(2))
+       = 149340 / 135764.5
+       = 1.10 A
+```
+
+Meaning:
+
+```text
+This converts the FFT magnitude into an RMS-like current amplitude.
+If the current has a strong 50 Hz component, the 50 Hz amplitude is large.
+```
+
+Real code:
+
+```python
+i_amp = (np.abs(i_fft) * (2.0 / N)) / np.sqrt(2)
+```
+
+#### 3.0.12 Harmonic Band Feature
+
+Equation:
+
+$$
+I_k
+=
+\sqrt{
+\sum_{r \in \mathcal{B}_k}
+A_i[r]^2
+}.
+$$
+
+Calculation example:
+
+```text
+For the 3rd harmonic, target frequency is:
+3 * 50 Hz = 150 Hz
+
+Suppose the RMS-like FFT amplitudes inside the +/-15 Hz band around 150 Hz are:
+[0.05, 0.23, 0.08]
+
+I3 = sqrt(0.05^2 + 0.23^2 + 0.08^2)
+   = sqrt(0.0025 + 0.0529 + 0.0064)
+   = sqrt(0.0618)
+   = 0.249 A
+```
+
+Meaning:
+
+```text
+I3 is not just one FFT bin.
+It is the integrated current magnitude around 150 Hz.
+This is robust when mains frequency drifts slightly away from exactly 50 Hz.
+```
+
+Real code:
+
+```python
+ik = float(np.sqrt(np.sum(i_amp[s_idx:e_idx] ** 2)))
+```
+
+#### 3.0.13 Harmonic Aggregate Current
+
+Equation:
+
+$$
+I_H
+=
+\sqrt{
+\sum_{k \in \mathcal{K}_H}
+I_k^2
+}.
+$$
+
+Calculation example:
+
+```text
+I3 = 0.25 A
+I5 = 0.12 A
+I7 = 0.05 A
+
+IH = sqrt(0.25^2 + 0.12^2 + 0.05^2)
+   = sqrt(0.0625 + 0.0144 + 0.0025)
+   = sqrt(0.0794)
+   = 0.282 A
+```
+
+Meaning:
+
+```text
+IH summarizes selected non-fundamental harmonic current.
+Higher IH means more harmonic distortion in the current waveform.
+```
+
+Real code:
+
+```python
+ih_sq += ik ** 2
+ih_h = float(np.sqrt(ih_sq))
+```
+
+#### 3.0.14 Selected-Harmonic THDI
+
+Equation:
+
+$$
+\mathrm{THD}_I^{(\mathcal{K})}
+=
+\frac{I_H}{I_1 + \varepsilon}.
+$$
+
+Calculation example:
+
+```text
+IH = 0.282 A
+I1 = 1.10 A
+
+THDI = 0.282 / 1.10
+     = 0.256
+```
+
+Meaning:
+
+```text
+THDI = 0.256 means the selected harmonic current is about 25.6%
+of the fundamental 50 Hz current.
+
+A clean resistive load usually has low THDI.
+A nonlinear load often has higher THDI.
+```
+
+Real code:
+
+```python
+f['THDI'] = float(ih_h / (i1_amp + 1e-9))
+```
+
+#### 3.0.15 Spectral Band Energy
+
+Equation:
+
+$$
+E_i(\mathcal{L})
+=
+\sum_{r: f_r \in \mathcal{L}} A_i[r]^2.
+$$
+
+Calculation example:
+
+```text
+Low band = 50-500 Hz
+Suppose selected RMS-like amplitudes in this band are:
+[1.10, 0.25, 0.12, 0.05]
+
+I_BP_low = 1.10^2 + 0.25^2 + 0.12^2 + 0.05^2
+         = 1.2100 + 0.0625 + 0.0144 + 0.0025
+         = 1.2894
+```
+
+Meaning:
+
+```text
+I_BP_low is spectral energy in the low-frequency current band.
+It is not active power in watts.
+It tells how much current-spectrum content is concentrated in 50-500 Hz.
+```
+
+Real code:
+
+```python
+return float(np.sum(amp_spectrum[mask] ** 2))
+```
+
+#### 3.0.16 Spectral Entropy
+
+Equation:
+
+$$
+p_r
+=
+\frac{A_i[r]^2}
+{\sum_{q \in \mathcal{F}_E} A_i[q]^2 + \varepsilon}.
+$$
+
+Calculation example:
+
+```text
+Suppose spectral energy is distributed across 4 frequency bins:
+energy = [0.80, 0.10, 0.06, 0.04]
+total  = 1.00
+
+p = [0.80, 0.10, 0.06, 0.04]
+```
+
+Meaning:
+
+```text
+p_r is the fraction of spectral energy at each frequency bin.
+If one bin dominates, the spectrum is simple.
+If many bins share energy, the spectrum is more complex.
+```
+
+Equation:
+
+$$
+H_i
+=
+-
+\sum_{r \in \mathcal{F}_E}
+p_r \log(p_r + \varepsilon).
+$$
+
+Calculation example:
+
+```text
+H = -[
+  0.80*log(0.80)
+  + 0.10*log(0.10)
+  + 0.06*log(0.06)
+  + 0.04*log(0.04)
+]
+
+Using natural log:
+H = -[
+  0.80*(-0.223)
+  + 0.10*(-2.303)
+  + 0.06*(-2.813)
+  + 0.04*(-3.219)
+]
+
+H = -[-0.178 -0.230 -0.169 -0.129]
+  = 0.706
+```
+
+Meaning:
+
+```text
+Lower entropy means energy is concentrated in a few frequency components.
+Higher entropy means energy is spread across many components.
+In NILM, higher entropy can indicate switching, noisy, or complex current waveforms.
+```
+
+Real code:
+
+```python
+prob = i_amp_sq_ent / total_power_ent
+spec_entropy = float(-np.sum(prob * np.log(prob + 1e-12)))
+```
+
+#### 3.0.17 Spectral Envelope
+
+Equation:
+
+$$
+E_j
+=
+\sum_{r: f_r \in \mathcal{E}_j}
+A_i[r]^2.
+$$
+
+Calculation example:
+
+```text
+Suppose current spectral energy in 8 envelope bands is:
+E = [1.00, 0.25, 0.10, 0.05, 0.03, 0.02, 0.01, 0.00]
+```
+
+Meaning:
+
+```text
+Each E_j is the spectral energy inside one frequency band.
+For example, I_env_0 is around 0-100 Hz, I_env_1 is 100-200 Hz, etc.
+```
+
+Equation:
+
+$$
+L_j = \log(1 + E_j).
+$$
+
+Calculation example:
+
+```text
+L0 = log(1 + 1.00) = log(2.00) = 0.693
+L1 = log(1 + 0.25) = log(1.25) = 0.223
+L2 = log(1 + 0.10) = log(1.10) = 0.095
+```
+
+Meaning:
+
+```text
+log(1 + energy) compresses very large values.
+This prevents one huge low-frequency band from completely hiding smaller high-frequency bands.
+```
+
+Equation:
+
+$$
+\widehat{L}_j
+=
+\frac{L_j}
+{\sum_{m=0}^{7} L_m + \varepsilon}.
+$$
+
+Calculation example:
+
+```text
+Suppose after log compression:
+L = [0.693, 0.223, 0.095, 0.049, 0.030, 0.020, 0.010, 0.000]
+
+sum(L) = 1.120
+
+I_env_0 = 0.693 / 1.120 = 0.619
+I_env_1 = 0.223 / 1.120 = 0.199
+I_env_2 = 0.095 / 1.120 = 0.085
+```
+
+Meaning:
+
+```text
+The final I_env values describe spectral shape, not absolute magnitude.
+If I_env_0 dominates, the current is mostly low-frequency.
+If higher I_env bands increase, the current has more high-frequency content.
+```
+
+Real code:
+
+```python
+f[f'I_env_{i}'] = float(np.log1p(energy))
+f[k] = float(f[k] / env_total)
+```
+
+#### 3.0.18 DWT Energy
+
+Equation:
+
+$$
+\{cA_4, cD_4, cD_3, cD_2, cD_1\}
+=
+\operatorname{DWT}_{\mathrm{db4},4}(\mathbf{i}).
+$$
+
+Calculation example:
+
+```text
+The code decomposes the 6-second current waveform into wavelet sub-bands:
+
+cA4 -> low-frequency approximation
+cD4 -> detail band
+cD3 -> detail band
+cD2 -> detail band
+cD1 -> highest-frequency detail band
+```
+
+Meaning:
+
+```text
+DWT separates the current waveform into time-frequency components.
+It is useful because appliance switching/transient behavior may occur briefly
+inside the 6-second window.
+```
+
+Equation:
+
+$$
+E^{\mathrm{DWT}}_j
+=
+\frac{1}{N_j}
+\sum_{n=0}^{N_j-1}
+c_j[n]^2.
+$$
+
+Calculation example:
+
+```text
+Suppose one wavelet coefficient band is:
+c_j = [0.20, -0.10, 0.30, -0.20]
+
+DWT_Ej = mean([0.20^2, (-0.10)^2, 0.30^2, (-0.20)^2])
+       = mean([0.04, 0.01, 0.09, 0.04])
+       = 0.18 / 4
+       = 0.045
+```
+
+Meaning:
+
+```text
+DWT_Ej is the average energy in one wavelet band.
+High DWT_E0 means strong low-frequency current.
+High DWT_E3 or DWT_E4 means more fast transient or switching content.
+```
+
+Real code:
+
+```python
+coeffs = pywt.wavedec(i_t, 'db4', level=cfg['levels'])
+for i, c in enumerate(coeffs):
+    f[f'DWT_E{i}'] = float(np.mean(np.square(c)))
+```
+
+#### 3.0.19 Complete One-Window Reading
+
+Suppose the final feature row for one 6-second timestep is:
+
+```text
+V_rms      = 230.0
+I_rms      = 1.20
+P_active   = 250.0
+S_apparent = 276.0
+PF         = 0.906
+Fci        = 2.33
+I1         = 1.10
+I3         = 0.25
+I5         = 0.12
+IH         = 0.282
+THDI       = 0.256
+I_BP_low   = 1.289
+I_env_0    = 0.619
+DWT_E0     = high
+DWT_E3     = moderate/low
+```
+
+Tutorial interpretation:
+
+```text
+1. Voltage is normal because V_rms is around 230 V.
+2. Appliance is drawing current because I_rms is 1.20 A.
+3. Active power is 250 W, so this window contains real energy consumption.
+4. PF = 0.906, so the load is mostly real-power consuming but not perfectly ideal.
+5. Fci = 2.33, so current is peakier than a clean sine wave.
+6. I3 and I5 are visible, so the current has harmonic distortion.
+7. THDI = 0.256 means selected harmonic current is 25.6% of the fundamental.
+8. I_env_0 is dominant, so most spectral shape is low-frequency.
+9. DWT higher bands tell whether there are fast transients or switching edges.
+```
+
+This is the practical way to read one HF feature row:
+
+```text
+Time-domain features tell magnitude and power.
+Harmonic features tell periodic distortion.
+Band/envelope features tell where the spectrum energy is located.
+Wavelet features tell whether transient or switching behavior appears inside the 6-second window.
+```
+
 ### 3.1 Time-Domain Electrical Quantities
 
 #### 3.1.1 RMS Voltage and Current
@@ -1754,6 +3292,487 @@ of the fundamental current.
 
 Most band/wavelet energy is still low-frequency, so it is not extremely
 high-frequency noisy, but it is not a perfect resistive sine-wave load either.
+```
+
+### 6.0.4 Real-Scenario Equation Examples for Every Feature Group
+
+This section gives real NILM-style scenarios for the equations used in this document. Every example is still one 6-second timestep:
+
+```text
+one timestep = one 6-second window = 96000 samples at 16 kHz
+```
+
+The numbers below are realistic example values to show how to substitute values into the equations. In the real script, these values come from the 96000 calibrated samples in `v_t` and `i_t`.
+
+#### Scenario 1: Kettle / Heater-Like Resistive Load
+
+Assume one 6-second window where a kettle is steadily ON:
+
+```text
+V_rms      = 230 V
+I_rms      = 8.70 A
+P_active   = 1980 W
+I_peak     = 12.3 A
+V_peak     = 325 V
+I1         = 8.60 A
+I3         = 0.20 A
+I5         = 0.10 A
+I7         = 0.05 A
+```
+
+RMS equations:
+
+```text
+V_rms = sqrt(mean(v_t^2)) = 230 V
+I_rms = sqrt(mean(i_t^2)) = 8.70 A
+```
+
+Interpretation:
+
+```text
+The 6-second current waveform has effective current around 8.70 A.
+This is typical for a high-power resistive appliance.
+```
+
+Active power:
+
+```text
+P_active = mean(v_t * i_t)
+         = 1980 W
+```
+
+Apparent power:
+
+```text
+S_apparent = V_rms * I_rms
+           = 230 * 8.70
+           = 2001 VA
+```
+
+Power factor:
+
+```text
+PF = P_active / S_apparent
+   = 1980 / 2001
+   = 0.9895
+```
+
+Voltage crest factor:
+
+```text
+Fcv = V_peak / V_rms
+    = 325 / 230
+    = 1.413
+```
+
+Current crest factor:
+
+```text
+Fci = I_peak / I_rms
+    = 12.3 / 8.70
+    = 1.414
+```
+
+Harmonic distortion:
+
+```text
+IH = sqrt(I3^2 + I5^2 + I7^2)
+   = sqrt(0.20^2 + 0.10^2 + 0.05^2)
+   = sqrt(0.04 + 0.01 + 0.0025)
+   = sqrt(0.0525)
+   = 0.229 A
+
+THDI = IH / I1
+     = 0.229 / 8.60
+     = 0.0266
+```
+
+Readable interpretation:
+
+```text
+THDI is about 2.7%, so the current is close to sinusoidal.
+PF is close to 1, so this looks like a resistive appliance.
+Feature selection may keep P_active, I_rms, I1, PF, and Fci for this type of load.
+```
+
+#### Scenario 2: Fridge / Motor-Like Load
+
+Assume one 6-second window where a fridge compressor is running:
+
+```text
+V_rms      = 230 V
+I_rms      = 1.20 A
+P_active   = 180 W
+I_peak     = 2.60 A
+I1         = 1.05 A
+I3         = 0.22 A
+I5         = 0.12 A
+I7         = 0.06 A
+I_BP_low   = 1.25
+I_BP_mid   = 0.18
+I_BP_high  = 0.03
+```
+
+Apparent power:
+
+```text
+S_apparent = V_rms * I_rms
+           = 230 * 1.20
+           = 276 VA
+```
+
+Power factor:
+
+```text
+PF = P_active / S_apparent
+   = 180 / 276
+   = 0.652
+```
+
+Current crest factor:
+
+```text
+Fci = I_peak / I_rms
+    = 2.60 / 1.20
+    = 2.167
+```
+
+Harmonic aggregate:
+
+```text
+IH = sqrt(0.22^2 + 0.12^2 + 0.06^2)
+   = sqrt(0.0484 + 0.0144 + 0.0036)
+   = sqrt(0.0664)
+   = 0.258 A
+```
+
+Selected-harmonic THD:
+
+```text
+THDI = IH / I1
+     = 0.258 / 1.05
+     = 0.246
+```
+
+Band-power interpretation:
+
+```text
+I_BP_low  = 1.25
+I_BP_mid  = 0.18
+I_BP_high = 0.03
+```
+
+Readable interpretation:
+
+```text
+The fridge draws modest real power, but PF is lower than the kettle.
+Fci and THDI are higher than a clean resistive load.
+Most spectral energy is still low-frequency, but the mid-band is not zero.
+This is consistent with motor/compressor behavior.
+```
+
+#### Scenario 3: Laptop Charger / SMPS-Like Nonlinear Load
+
+Assume one 6-second window where a laptop charger or electronic power supply is ON:
+
+```text
+V_rms      = 230 V
+I_rms      = 0.35 A
+P_active   = 45 W
+I_peak     = 1.80 A
+I1         = 0.25 A
+I3         = 0.18 A
+I5         = 0.12 A
+I7         = 0.08 A
+I9         = 0.04 A
+I_BP_low   = 0.12
+I_BP_mid   = 0.10
+I_BP_high  = 0.05
+```
+
+Apparent power:
+
+```text
+S_apparent = 230 * 0.35
+           = 80.5 VA
+```
+
+Power factor:
+
+```text
+PF = 45 / 80.5
+   = 0.559
+```
+
+Current crest factor:
+
+```text
+Fci = 1.80 / 0.35
+    = 5.143
+```
+
+Harmonic aggregate:
+
+```text
+IH = sqrt(0.18^2 + 0.12^2 + 0.08^2 + 0.04^2)
+   = sqrt(0.0324 + 0.0144 + 0.0064 + 0.0016)
+   = sqrt(0.0548)
+   = 0.234 A
+```
+
+Selected-harmonic THD:
+
+```text
+THDI = 0.234 / 0.25
+     = 0.936
+```
+
+Readable interpretation:
+
+```text
+This appliance has low real power but very peaky current.
+Fci is high and THDI is high.
+This is a strong nonlinear-load signature.
+For feature selection, Fci, THDI, I3, I5, I_BP_mid, I_BP_high,
+and DWT high-band features may be useful.
+```
+
+#### Scenario 4: Shape Statistics in a Real Current Window
+
+Shape statistics use all 96000 current samples. For easy explanation, imagine the 6-second current waveform has this behavior:
+
+```text
+Most samples are near zero.
+A few samples have sharp positive current spikes.
+Negative half-cycle is smaller than positive half-cycle.
+```
+
+Example feature values:
+
+```text
+I_std   = 0.35
+I_skew  = 1.80
+I_kurt  = 6.50
+V_std   = 230
+V_skew  = 0.02
+```
+
+Standard deviation:
+
+```text
+I_std = std(i_t)
+      = 0.35 A
+```
+
+Skewness:
+
+```text
+I_skew > 0
+```
+
+means:
+
+```text
+The current distribution has stronger positive-side peaks.
+This may happen in asymmetric or rectified current waveforms.
+```
+
+Kurtosis:
+
+```text
+I_kurt = 6.50
+```
+
+means:
+
+```text
+The current distribution is very peaky compared with a smooth waveform.
+This supports the same conclusion as high Fci.
+```
+
+Readable interpretation:
+
+```text
+Shape features help the model detect waveform morphology even before FFT.
+They are useful when two appliances have similar power but different waveform shape.
+```
+
+#### Scenario 5: Spectral Entropy in Real Terms
+
+Spectral entropy measures whether current spectral energy is concentrated or spread out.
+
+Case A: clean kettle-like current:
+
+```text
+Energy probabilities up to 3000 Hz:
+50 Hz component       p = 0.90
+other frequencies     p = 0.10 total
+
+I_spec_entropy = low
+```
+
+Readable interpretation:
+
+```text
+Most energy is concentrated at the fundamental frequency.
+The spectrum is simple.
+```
+
+Case B: switching/nonlinear current:
+
+```text
+Energy probabilities up to 3000 Hz:
+50 Hz component       p = 0.35
+150 Hz component      p = 0.20
+250 Hz component      p = 0.12
+other frequencies     p = 0.33 total
+
+I_spec_entropy = higher
+```
+
+Readable interpretation:
+
+```text
+Energy is spread across many frequencies.
+The spectrum is more complex.
+```
+
+#### Scenario 6: Spectral Envelope with Real Appliance Meaning
+
+The code outputs normalized envelope features:
+
+```text
+I_env_0 ... I_env_7
+```
+
+Kettle-like example:
+
+```text
+I_env_0 = 0.72
+I_env_1 = 0.14
+I_env_2 = 0.06
+I_env_3 = 0.03
+I_env_4 = 0.02
+I_env_5 = 0.01
+I_env_6 = 0.01
+I_env_7 = 0.01
+```
+
+Readable interpretation:
+
+```text
+The spectrum shape is mostly low-frequency.
+This matches a smooth high-power load.
+```
+
+SMPS-like example:
+
+```text
+I_env_0 = 0.32
+I_env_1 = 0.15
+I_env_2 = 0.13
+I_env_3 = 0.11
+I_env_4 = 0.10
+I_env_5 = 0.09
+I_env_6 = 0.06
+I_env_7 = 0.04
+```
+
+Readable interpretation:
+
+```text
+The spectral shape is spread across more bands.
+This is more typical of nonlinear or switching behavior.
+```
+
+#### Scenario 7: DWT Energy with Real Appliance Meaning
+
+DWT features describe where current energy appears in time-frequency bands.
+
+Kettle-like steady window:
+
+```text
+DWT_E0 = 0.90
+DWT_E1 = 0.04
+DWT_E2 = 0.03
+DWT_E3 = 0.02
+DWT_E4 = 0.01
+```
+
+Readable interpretation:
+
+```text
+Most energy is in the low-frequency approximation band.
+The current is smooth and stable.
+```
+
+Washing-machine or motor transient window:
+
+```text
+DWT_E0 = 0.55
+DWT_E1 = 0.10
+DWT_E2 = 0.12
+DWT_E3 = 0.14
+DWT_E4 = 0.09
+```
+
+Readable interpretation:
+
+```text
+More energy appears in higher wavelet bands.
+This means the 6-second window contains sharper changes,
+switching edges, or transient behavior.
+```
+
+#### Scenario 8: How One Real 6-Second Row Becomes a Model Input
+
+For a kettle-like 6-second row:
+
+```text
+readable_time = 2013-07-22 01:00:00
+V_rms         = 230
+I_rms         = 8.70
+P_active      = 1980
+S_apparent    = 2001
+PF            = 0.989
+Fci           = 1.414
+THDI          = 0.027
+I_BP_low      = high
+I_BP_mid      = low
+I_BP_high     = very low
+DWT_E0        = high
+DWT_E4        = low
+```
+
+Model meaning:
+
+```text
+This row strongly indicates a high-power, mostly resistive appliance.
+```
+
+For an SMPS-like 6-second row:
+
+```text
+readable_time = 2013-07-22 01:00:00
+V_rms         = 230
+I_rms         = 0.35
+P_active      = 45
+S_apparent    = 80.5
+PF            = 0.559
+Fci           = 5.143
+THDI          = 0.936
+I_BP_low      = moderate
+I_BP_mid      = moderate/high
+I_BP_high     = visible
+DWT_E0        = moderate
+DWT_E3        = visible
+DWT_E4        = visible
+```
+
+Model meaning:
+
+```text
+This row indicates a low-power but strongly nonlinear/switching appliance.
 ```
 
 ### 6.1 Window Splitting in This Project
