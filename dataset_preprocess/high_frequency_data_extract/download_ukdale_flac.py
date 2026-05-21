@@ -265,7 +265,7 @@ def download_single_file(file_info, target_dir, headers):
             update_status(f_name, "RETRYING", "error → retry 5s")
             time.sleep(RETRY_DELAY)
             continue
-        
+
 # =========================================================
 # DOWNLOAD WEEK
 # =========================================================
@@ -338,8 +338,12 @@ def main():
 
     weeks = [w.strip() for w in args.weeks.split(",")]
 
+    BASE_PROJECT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..")
+)
+
     base_dir = os.path.join(
-        os.path.dirname(__file__),
+        BASE_PROJECT,
         "dataset_preprocess",
         "UK_DALE_16khz"
     )
