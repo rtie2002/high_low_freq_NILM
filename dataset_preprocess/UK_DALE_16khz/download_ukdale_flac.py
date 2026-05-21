@@ -1,355 +1,553 @@
-import os
-import sys
-import re
-import time
-import threading
-import subprocess
+"""
+UK-DALE 16kHz FLAC Downloader
+==============================
+Single-file downloader. Everything is self-contained — no external helper
+files needed.
+
+What it does automatically
+---------------------------
+  1. Installs missing Python packages (soundfile)
+  2. Installs wget if not found (scoop → choco → winget → direct .exe download)
+  3. Fetches a CEDA Bearer token using username/password, caches it for 71h
+  4. Runs wget to mirror the full week folder from CEDA
+  5. Validates every downloaded FLAC (duration check)
+  6. Re-runs wget if any files are corrupt/incomplete
+
+Usage
+-----
+    python download_ukdale_flac.py                        # downloads DEFAULT_WEEKS
+    python download_ukdale_flac.py --weeks 31
+    python download_ukdale_flac.py --weeks 30,31,32
+    python download_ukdale_flac.py --weeks 31 --check_only   # validate only
+    python download_ukdale_flac.py --weeks 31 --no_validate  # skip validation
+"""
+
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
+import os
+import re
+import subprocess
+import sys
+import time
 
-# =========================================================
-# AUTO INSTALL DEPENDENCIES
-# =========================================================
-
-def ensure_package(pkg):
+if sys.platform == "win32":
     try:
-        __import__(pkg)
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+# Ensure virtualenv's bin/Scripts directory is in PATH so tools like wget.exe are found
+_py_dir = os.path.dirname(sys.executable)
+if _py_dir and _py_dir not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = _py_dir + os.pathsep + os.environ.get("PATH", "")
+
+# ── auto-install Python packages ──────────────────────────────────────────────
+for _pkg in ("soundfile",):
+    try:
+        __import__(_pkg)
     except ImportError:
-        print(f"[Auto-Install] Missing {pkg}, installing...")
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", pkg]
-        )
+        print(f"[deps] Installing {_pkg}...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", _pkg])
 
-ensure_package("requests")
-ensure_package("soundfile")   # ✅ NEW
-ensure_package("rich")
+import soundfile as sf  # noqa: E402
 
-import requests
-import soundfile as sf
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIG  — edit these to change defaults
+# ─────────────────────────────────────────────────────────────────────────────
+CEDA_USERNAME = "rtie2002"
+CEDA_PASSWORD = "RtiE2002"
 
-from rich.live import Live
-from rich.table import Table
-from rich.console import Console
+DEFAULT_HOUSE = "2"
+DEFAULT_YEAR = "2013"
+DEFAULT_WEEKS = ["31"]
 
-# =========================================================
-# CONFIG
-# =========================================================
+EXPECTED_DURATION_SEC = 3600  # each UK-DALE FLAC is ~1 hour
+DURATION_TOLERANCE = 5  # seconds
 
-HOUSE = "2"
-YEAR = "2013"
-WEEKS = ["31"]
+# ─────────────────────────────────────────────────────────────────────────────
+# PATHS
+# ─────────────────────────────────────────────────────────────────────────────
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
+DEFAULT_SAVE = SCRIPT_DIR  # files land in dataset_preprocess/UK_DALE_16khz/
 
-MAX_WORKERS = 180
-
-EXPECTED_DURATION_SEC = 3600   # ✅ 1-hour UK-DALE check
-DURATION_TOLERANCE = 5        # seconds
-
-# =========================================================
-
-download_status = {}
-status_lock = threading.Lock()
-
-console = Console()
-
-# =========================================================
-# CEDA AUTH
-# =========================================================
-
-sys.path.append(
-    os.path.join(
-        os.path.dirname(__file__),
-        'dataset_preprocess',
-        'UK_DALE_16khz'
-    )
+CEDA_BASE = (
+    "https://data.ceda.ac.uk/edc/d1/887733b3-4c04-471f-9404-9f7459c4a1a0/data/version_0"
 )
 
-try:
-    from ceda_auth import get_ceda_token
-except ImportError:
-    print("Warning: ceda_auth not found.")
-    get_ceda_token = lambda: None
+TOKEN_URL = "https://services.ceda.ac.uk/api/token/create/"
+TOKEN_CACHE_FILE = os.path.join(SCRIPT_DIR, ".ceda_token_cache")
+TOKEN_LIFETIME_SEC = 3 * 24 * 3600 - 3600  # 71 h  (tokens last 3 days)
 
-# =========================================================
-# STATUS
-# =========================================================
 
-def update_status(file_name, status, extra=""):
-    with status_lock:
-        download_status[file_name] = {
-            "status": status,
-            "extra": extra,
-            "time": time.time()
-        }
+# ═════════════════════════════════════════════════════════════════════════════
+# SECTION 1 — CEDA TOKEN
+# ═════════════════════════════════════════════════════════════════════════════
 
-# =========================================================
-# FLAC VALIDATION (IMPORTANT)
-# =========================================================
 
-def validate_flac(file_path):
-    """
-    Ensure file is not corrupted and is ~1 hour long
-    """
+def _fetch_token_from_api(username: str, password: str) -> str | None:
+    """POST credentials to CEDA token API, return token string or None."""
+    import base64
+    import urllib.request
+
+    auth_str = f"{username}:{password}"
+    auth_b64 = base64.b64encode(auth_str.encode("utf-8")).decode("utf-8")
+
+    req = urllib.request.Request(
+        TOKEN_URL,
+        method="POST",
+        headers={
+            "Authorization": f"Basic {auth_b64}",
+            "User-Agent": "NILM-downloader/1.0",
+        },
+    )
     try:
-        data, sr = sf.read(file_path)
-        duration = len(data) / sr
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8").strip()
+    except Exception as e:
+        print(f"[auth] ❌  Token request failed: {e}")
+        return None
 
-        if len(data) == 0:
-            return False, "empty file"
+    # Response can be plain-text token or JSON {"token": "..."}
+    if body.startswith("{"):
+        try:
+            data = json.loads(body)
+            token = data.get("token") or data.get("access_token", "")
+        except Exception:
+            token = ""
+    else:
+        token = body
 
+    if token and len(token) > 20:
+        return token
+
+    print(f"[auth] ⚠️  Unexpected API response: {body[:200]}")
+    return None
+
+
+def _load_cached_token() -> str | None:
+    """Return cached token if still fresh, else None."""
+    if not os.path.exists(TOKEN_CACHE_FILE):
+        return None
+    try:
+        with open(TOKEN_CACHE_FILE, "r") as f:
+            data = json.load(f)
+        age = time.time() - data.get("fetched_at", 0)
+        token = data.get("token", "")
+        if age < TOKEN_LIFETIME_SEC and token:
+            print(f"[auth] ✅  Using cached token  (age {age / 3600:.1f}h)")
+            return token
+    except Exception:
+        pass
+    return None
+
+
+def _save_token_cache(token: str) -> None:
+    try:
+        with open(TOKEN_CACHE_FILE, "w") as f:
+            json.dump({"token": token, "fetched_at": time.time()}, f)
+    except Exception:
+        pass
+
+
+def get_token() -> str | None:
+    """
+    Return a valid CEDA Bearer token.
+    Uses cache if fresh; otherwise fetches a new one from the API.
+    """
+    token = _load_cached_token()
+    if token:
+        return token
+
+    print(f"[auth] 🔑  Fetching token for '{CEDA_USERNAME}'...")
+    token = _fetch_token_from_api(CEDA_USERNAME, CEDA_PASSWORD)
+    if token:
+        _save_token_cache(token)
+        print("[auth] ✅  Token obtained and cached")
+        return token
+
+    print("[auth] ❌  Could not obtain token — downloads may fail for restricted files")
+    return None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SECTION 2 — WGET INSTALL
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def _tool_on_path(name: str) -> bool:
+    try:
+        r = subprocess.run([name, "--version"], capture_output=True, timeout=5)
+        return r.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+def _install_wget_windows() -> bool:
+    """Try scoop → choco → winget → direct .exe download."""
+    print("[wget] Attempting automatic installation...")
+
+    # 1. scoop
+    if _tool_on_path("scoop"):
+        r = subprocess.run(["scoop", "install", "wget"], timeout=120)
+        if r.returncode == 0 and _tool_on_path("wget"):
+            return True
+
+    # 2. chocolatey
+    if _tool_on_path("choco"):
+        r = subprocess.run(["choco", "install", "-y", "wget"], timeout=120)
+        if r.returncode == 0 and _tool_on_path("wget"):
+            return True
+
+    # 3. winget
+    if _tool_on_path("winget"):
+        r = subprocess.run(
+            [
+                "winget",
+                "install",
+                "--id",
+                "GnuWin32.Wget",
+                "--silent",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+            ],
+            timeout=180,
+        )
+        if r.returncode == 0:
+            gnuwin = r"C:\Program Files (x86)\GnuWin32\bin"
+            if os.path.isfile(os.path.join(gnuwin, "wget.exe")):
+                os.environ["PATH"] = gnuwin + os.pathsep + os.environ["PATH"]
+            if _tool_on_path("wget"):
+                return True
+
+    # 4. direct binary download (last resort)
+    try:
+        import urllib.request
+
+        print("  → downloading wget.exe directly from eternallybored.org ...")
+        wget_url = "https://eternallybored.org/misc/wget/1.21.4/64/wget.exe"
+        candidates = [
+            os.path.join(PROJECT_ROOT, ".venv", "Scripts"),
+            os.path.join(PROJECT_ROOT, ".venv", "bin"),
+            SCRIPT_DIR,
+        ]
+        dest_dir = next((d for d in candidates if os.path.isdir(d)), SCRIPT_DIR)
+        dest = os.path.join(dest_dir, "wget.exe")
+        urllib.request.urlretrieve(wget_url, dest)
+        os.environ["PATH"] = dest_dir + os.pathsep + os.environ["PATH"]
+        if _tool_on_path("wget"):
+            print(f"  ✅ wget.exe saved to {dest}")
+            return True
+    except Exception as e:
+        print(f"  direct download failed: {e}")
+
+    return False
+
+
+def ensure_wget() -> bool:
+    """Make sure wget is on PATH, installing it if necessary."""
+    if _tool_on_path("wget"):
+        r = subprocess.run(
+            ["wget", "--version"], capture_output=True, text=True, timeout=5
+        )
+        print(f"[wget] ✅  {r.stdout.splitlines()[0]}")
+        return True
+
+    print("[wget] ⚠️  wget not found — attempting auto-install...")
+
+    if os.name == "nt":
+        success = _install_wget_windows()
+    else:
+        success = False
+        for mgr in ("apt-get", "apt", "brew"):
+            if _tool_on_path(mgr):
+                try:
+                    r = subprocess.run(
+                        ["sudo", mgr, "install", "-y", "wget"], timeout=120
+                    )
+                    if r.returncode == 0 and _tool_on_path("wget"):
+                        success = True
+                        break
+                except Exception:
+                    continue
+
+    if success and _tool_on_path("wget"):
+        r = subprocess.run(
+            ["wget", "--version"], capture_output=True, text=True, timeout=5
+        )
+        print(f"[wget] ✅  Installed: {r.stdout.splitlines()[0]}")
+        return True
+
+    print("[wget] ❌  Auto-install failed. Install manually:")
+    print("    Windows : scoop install wget  |  choco install wget")
+    print("    Linux   : sudo apt install wget")
+    print("    macOS   : brew install wget")
+    return False
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SECTION 3 — FLAC VALIDATION
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def validate_flac(path: str) -> tuple[bool, str]:
+    try:
+        info = sf.info(path)
+        duration = info.frames / info.samplerate
         if abs(duration - EXPECTED_DURATION_SEC) > DURATION_TOLERANCE:
-            return False, f"bad duration {duration:.1f}s"
-
+            return (
+                False,
+                f"bad duration {duration:.1f}s (expected ~{EXPECTED_DURATION_SEC}s)",
+            )
         return True, f"{duration:.1f}s OK"
-
     except Exception as e:
         return False, str(e)
 
-# =========================================================
-# MONITOR
-# =========================================================
 
-def monitor_status(total_files):
-
-    while True:
-
-        os.system('cls' if os.name == 'nt' else 'clear')
-
-        print("=" * 90)
-        print("UK-DALE DOWNLOAD + VALIDATION MONITOR")
-        print("=" * 90)
-
-        with status_lock:
-            items = list(download_status.items())
-
-        items.sort()
-
-        done = failed = downloading = retrying = queued = 0
-
-        for idx, (fname, info) in enumerate(items, 1):
-
-            status = info["status"]
-            extra = info["extra"]
-
-            print(f"[{idx:03d}] {status:<14} {extra:<25} {fname}")
-
-            if status == "DONE":
-                done += 1
-            elif status == "FAILED":
-                failed += 1
-            elif status == "DOWNLOADING":
-                downloading += 1
-            elif status == "RETRYING":
-                retrying += 1
-            elif status == "QUEUED":
-                queued += 1
-
-        print("\n" + "=" * 90)
-        print(f"DONE:{done} | DOWN:{downloading} | RETRY:{retrying} | QUEUE:{queued} | FAIL:{failed}")
-        print("=" * 90)
-
-        if done + failed >= total_files:
-            break
-
-        time.sleep(1)
-
-# =========================================================
-# SESSION
-# =========================================================
-
-def create_session(headers):
-    session = requests.Session()
-    session.headers.update(headers)
-
-    adapter = requests.adapters.HTTPAdapter(
-        pool_connections=MAX_WORKERS,
-        pool_maxsize=MAX_WORKERS
+def validate_week(week_dir: str) -> dict:
+    """Validate all FLAC files in a week directory. Returns summary dict."""
+    flac_files = sorted(
+        os.path.join(week_dir, f) for f in os.listdir(week_dir) if f.endswith(".flac")
     )
+    if not flac_files:
+        print(f"  [validate] No FLAC files found in {week_dir}")
+        return {"total": 0, "ok": 0, "bad": []}
 
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
+    ok_count = 0
+    bad_files = []
+    for i, path in enumerate(flac_files, 1):
+        valid, msg = validate_flac(path)
+        tag = "✅" if valid else "❌"
+        print(f"  [{i:03d}/{len(flac_files)}] {tag}  {os.path.basename(path)}  {msg}")
+        if valid:
+            ok_count += 1
+        else:
+            bad_files.append(os.path.basename(path))
 
-    return session
-
-# =========================================================
-# TOKEN CLEAN
-# =========================================================
-
-def clean_token(token):
-    token_clean = re.sub(r'[^A-Za-z0-9\-_=.+/]', '', token)
-
-    if len(token_clean) > 4:
-        second_start = token_clean.find('ey', 2)
-        if second_start > 0 and token_clean[second_start:] == token_clean[:second_start]:
-            token_clean = token_clean[:second_start]
-
-    return token_clean
-
-# =========================================================
-# DOWNLOAD WORKER
-# =========================================================
-
-def download_single_file(file_info, target_dir, headers):
-
-    f_name = file_info["name"]
-    f_url = file_info["url"]
-    f_size = file_info["size"]
-
-    target_path = os.path.join(target_dir, f_name)
-
-    session = create_session(headers)
-
-    RETRY_DELAY = 5   # ✅ FIXED 5 seconds (NO backoff)
-
-    attempt = 0
-
-    while True:   # 🔥 INFINITE RETRY LOOP
-
-        attempt += 1
-
-        try:
-            update_status(f_name, "REQUESTING", f"try {attempt}")
-
-            with session.get(f_url, stream=True, timeout=60) as r:
-
-                # =========================
-                # 503 HANDLING
-                # =========================
-                if r.status_code == 503:
-                    update_status(f_name, "RETRYING", "503 → retry 5s")
-                    time.sleep(RETRY_DELAY)
-                    continue
-
-                r.raise_for_status()
-
-                total_size = int(r.headers.get("content-length", f_size))
-                downloaded = 0
-                start = time.time()
-
-                with open(target_path, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=1024 * 1024):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
-
-                            percent = downloaded / total_size * 100 if total_size else 0
-                            speed = downloaded / (time.time() - start + 1e-6) / 1024 / 1024
-
-                            update_status(
-                                f_name,
-                                "DOWNLOADING",
-                                f"{percent:.1f}% {speed:.2f}MB/s"
-                            )
-
-                # =========================
-                # SIZE CHECK
-                # =========================
-                if total_size > 0 and os.path.getsize(target_path) != total_size:
-                    update_status(f_name, "RETRYING", "size mismatch → retry 5s")
-                    time.sleep(RETRY_DELAY)
-                    continue
-
-                # =========================
-                # FLAC VALIDATION
-                # =========================
-                ok, msg = validate_flac(target_path)
-
-                if not ok:
-                    update_status(f_name, "RETRYING", f"corrupt → retry 5s")
-                    time.sleep(RETRY_DELAY)
-                    continue
-
-                update_status(f_name, "DONE", msg)
-                return   # ✅ SUCCESS EXIT
-
-        except Exception as e:
-            update_status(f_name, "RETRYING", "error → retry 5s")
-            time.sleep(RETRY_DELAY)
-            continue
-
-# =========================================================
-# DOWNLOAD WEEK
-# =========================================================
-
-def download_week(house, year, week, base_dir):
-
-    week_str = f"wk{str(week).zfill(2)}"
-
-    base_url = (
-        "https://data.ceda.ac.uk/edc/d1/"
-        "887733b3-4c04-471f-9404-9f7459c4a1a0/"
-        "data/version_0"
+    print(
+        f"\n  [validate] {ok_count}/{len(flac_files)} OK"
+        + (f"  |  BAD: {bad_files}" if bad_files else "")
     )
+    return {"total": len(flac_files), "ok": ok_count, "bad": bad_files}
 
-    url = f"{base_url}/house_{house}/{year}/{week_str}/"
 
-    target_dir = os.path.join(base_dir, f"house_{house}", str(year), week_str)
-    os.makedirs(target_dir, exist_ok=True)
+# ═════════════════════════════════════════════════════════════════════════════
+# SECTION 4 — DOWNLOAD
+# ═════════════════════════════════════════════════════════════════════════════
 
-    token = get_ceda_token()
-    headers = {}
 
+def _list_flac_files(base_url: str, token: str | None) -> list[str]:
+    """
+    Query the CEDA JSON directory index and return a sorted list of .flac filenames.
+    The CEDA UI is JS-rendered, so wget -r never finds .flac href links in the HTML.
+    We must use the '?json' endpoint to enumerate files.
+    """
+    import urllib.request as _urlreq
+
+    json_url = base_url.rstrip("/") + "/?json"
+    headers = {"User-Agent": "NILM-downloader/1.0"}
     if token:
-        headers["Authorization"] = f"Bearer {clean_token(token)}"
+        token_clean = re.sub(r"[^A-Za-z0-9\-_=.+/]", "", token)
+        headers["Authorization"] = f"Bearer {token_clean}"
 
-    data = requests.get(url + "?json", headers=headers).json()
+    req = _urlreq.Request(json_url, headers=headers)
+    try:
+        with _urlreq.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        print(f"  [list] ❌  Could not fetch directory listing: {e}")
+        return []
 
-    file_links = [
-        {
-            "name": x["name"],
-            "url": x["download"].replace("dap.ceda.ac.uk", "data.ceda.ac.uk"),
-            "size": x.get("size", 0)
-        }
-        for x in data.get("items", [])
-        if x.get("type") == "file" and x.get("name", "").endswith(".flac")
-    ]
-
-    print(f"\nDetected {len(file_links)} files")
-
-    for f in file_links:
-        update_status(f["name"], "QUEUED")
-
-    monitor_thread = threading.Thread(
-        target=monitor_status,
-        args=(len(file_links),),
-        daemon=True
+    items = data.get("items", [])
+    flac_names = sorted(
+        item["name"] for item in items
+        if item.get("type") == "file" and item.get("name", "").endswith(".flac")
     )
-    monitor_thread.start()
+    print(f"  [list] 📋  Found {len(flac_names)} FLAC files on server")
+    return flac_names
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = [
-            executor.submit(download_single_file, f, target_dir, headers)
-            for f in file_links
-        ]
 
-        for f in as_completed(futures):
-            f.result()
+def _build_wget_single(file_url: str, save_dir: str, token: str | None) -> list[str]:
+    """Build a wget command to download one file directly."""
+    cmd = [
+        "wget",
+        "--no-verbose",
+        "--show-progress",
+        "--timeout=60",
+        "--tries=5",
+        "--waitretry=5",
+        "-c",           # resume partial downloads
+        f"-P{save_dir}",
+        file_url,
+    ]
+    if token:
+        token_clean = re.sub(r"[^A-Za-z0-9\-_=.+/]", "", token)
+        cmd.insert(1, f"--header=Authorization: Bearer {token_clean}")
+    return cmd
 
-# =========================================================
-# MAIN
-# =========================================================
+
+def download_week(
+    house: str,
+    year: str,
+    week: str,
+    save_dir: str,
+    token: str | None,
+    check_after: bool = True,
+) -> bool:
+    """Download one week of FLAC files. Returns True if all files validated OK."""
+    week_str = f"wk{str(week).zfill(2)}"
+    base_url = f"{CEDA_BASE}/house_{house}/{year}/{week_str}"
+    week_dir = os.path.join(save_dir, f"house_{house}", year, week_str)
+    os.makedirs(week_dir, exist_ok=True)
+
+    print()
+    print("=" * 65)
+    print(f"  DOWNLOADING  house={house}  year={year}  week={week_str}")
+    print("=" * 65)
+    print(f"  Base URL : {base_url}/")
+    print(f"  Save dir : {week_dir}")
+    print()
+
+    # Step 1: enumerate filenames via JSON API
+    flac_names = _list_flac_files(base_url, token)
+    if not flac_names:
+        print("  ❌  No FLAC files found on server — check URL or token.")
+        return False
+
+    # Step 2: determine which files still need downloading
+    existing = set(os.listdir(week_dir))
+    to_download = []
+    for name in flac_names:
+        dest = os.path.join(week_dir, name)
+        if name in existing and os.path.getsize(dest) > 0:
+            pass  # already present — wget -c will skip/resume anyway
+        to_download.append(name)
+
+    print(f"  [dl] Downloading {len(to_download)} files ...")
+    t0 = time.time()
+    failed = []
+    for i, name in enumerate(to_download, 1):
+        file_url = f"{base_url}/{name}"
+        dest = os.path.join(week_dir, name)
+        already_done = name in existing and os.path.getsize(dest) > 0
+        tag = "(resume)" if already_done else ""
+        print(f"  [{i:03d}/{len(to_download)}] {name} {tag}")
+        cmd = _build_wget_single(file_url, week_dir, token)
+        result = subprocess.run(cmd)
+        if result.returncode not in (0, 8):
+            print(f"    ⚠️  wget exit code {result.returncode}")
+            failed.append(name)
+
+    elapsed = time.time() - t0
+    print(f"\n  Download finished in {elapsed / 60:.1f} min  ({len(failed)} failures)")
+
+    if not check_after or not os.path.isdir(week_dir):
+        return len(failed) == 0
+
+    print(f"\n  [validate] Checking {week_dir} ...")
+    summary = validate_week(week_dir)
+
+    if summary["bad"]:
+        print(f"\n  ⚠️  {len(summary['bad'])} bad files — retrying ...")
+        for name in summary["bad"]:
+            file_url = f"{base_url}/{name}"
+            cmd = _build_wget_single(file_url, week_dir, token)
+            subprocess.run(cmd)
+        summary = validate_week(week_dir)
+
+    return len(summary["bad"]) == 0
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SECTION 5 — MAIN
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def get_arguments():
+    parser = argparse.ArgumentParser(
+        description="Download UK-DALE 16kHz FLAC files using wget"
+    )
+    parser.add_argument("--house", default=DEFAULT_HOUSE)
+    parser.add_argument("--year", default=DEFAULT_YEAR)
+    parser.add_argument(
+        "--weeks",
+        default=",".join(DEFAULT_WEEKS),
+        help="Comma-separated week numbers, e.g. 30,31,32",
+    )
+    parser.add_argument(
+        "--save_dir",
+        default=DEFAULT_SAVE,
+        help="Root directory to save downloaded files",
+    )
+    parser.add_argument(
+        "--check_only",
+        action="store_true",
+        help="Skip download, only validate existing FLAC files",
+    )
+    parser.add_argument(
+        "--no_validate", action="store_true", help="Skip post-download FLAC validation"
+    )
+    return parser.parse_args()
+
 
 def main():
+    args = get_arguments()
+    weeks = [w.strip() for w in args.weeks.split(",") if w.strip()]
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--house", default=HOUSE)
-    parser.add_argument("--year", default=YEAR)
-    parser.add_argument("--weeks", default=",".join(WEEKS))
-    args = parser.parse_args()
+    print()
+    print("=" * 65)
+    print("  UK-DALE 16kHz FLAC DOWNLOADER")
+    print("=" * 65)
+    print(f"  House    : {args.house}")
+    print(f"  Year     : {args.year}")
+    print(f"  Weeks    : {weeks}")
+    print(f"  Save dir : {args.save_dir}")
+    print("=" * 65)
 
-    weeks = [w.strip() for w in args.weeks.split(",")]
+    # check_only — just validate, no download
+    if args.check_only:
+        for week in weeks:
+            week_str = f"wk{str(week).zfill(2)}"
+            week_dir = os.path.join(
+                args.save_dir, f"house_{args.house}", args.year, week_str
+            )
+            print(f"\n[check] {week_str}  →  {week_dir}")
+            if not os.path.isdir(week_dir):
+                print("  Directory not found — skipping")
+                continue
+            validate_week(week_dir)
+        return
 
-    BASE_PROJECT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..")
-)
+    # ensure wget is installed
+    if not ensure_wget():
+        sys.exit(1)
 
-    base_dir = os.path.join(
-        BASE_PROJECT,
-        "dataset_preprocess",
-        "UK_DALE_16khz"
-    )
+    # get CEDA token
+    token = get_token()
+    if not token:
+        print("\n[auth] ⚠️  Proceeding without token (only public files will download)")
 
-    for w in weeks:
-        download_week(args.house, args.year, w, base_dir)
+    # download each week
+    for week in weeks:
+        ok = download_week(
+            house=args.house,
+            year=args.year,
+            week=week,
+            save_dir=args.save_dir,
+            token=token,
+            check_after=not args.no_validate,
+        )
+        status = (
+            "✅  all files validated" if ok else "⚠️  some files may need re-downloading"
+        )
+        print(f"\n  Week {week}: {status}")
+
+    print()
+    print("=" * 65)
+    print("  DONE")
+    print("=" * 65)
+
 
 if __name__ == "__main__":
     main()
