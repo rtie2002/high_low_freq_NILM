@@ -1,28 +1,139 @@
+import os
+import subprocess
+import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.normpath(os.path.join(SCRIPT_DIR, '..', '..'))
+
+# (import_name for importlib, pip package name)
+_REQUIRED_PACKAGES = [
+    ("numpy", "numpy"),
+    ("pandas", "pandas"),
+    ("yaml", "pyyaml"),
+    ("soundfile", "soundfile"),
+    ("scipy", "scipy"),
+    ("tzdata", "tzdata"),
+]
+
+
+def ensure_dependencies() -> None:
+    """Install missing Python packages into the current interpreter (.venv)."""
+    import importlib
+
+    missing_pip: list[str] = []
+    for import_name, pip_name in _REQUIRED_PACKAGES:
+        try:
+            importlib.import_module(import_name)
+        except ImportError:
+            missing_pip.append(pip_name)
+
+    if not missing_pip:
+        return
+
+    req_file = os.path.join(PROJECT_ROOT, "requirements.txt")
+    print("\n[deps] Missing packages:", ", ".join(sorted(set(missing_pip))))
+    print("[deps] Installing via pip (this may take a few minutes)...\n")
+
+    if os.path.isfile(req_file):
+        cmd = [sys.executable, "-m", "pip", "install", "-r", req_file]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", *sorted(set(missing_pip))]
+
+    subprocess.check_call(cmd)
+
+    still_missing = []
+    for import_name, pip_name in _REQUIRED_PACKAGES:
+        try:
+            importlib.import_module(import_name)
+        except ImportError:
+            still_missing.append(pip_name)
+    if still_missing:
+        raise ImportError(
+            "Could not import after pip install: "
+            + ", ".join(still_missing)
+            + "\nTry manually: pip install -r requirements.txt"
+        )
+    print("[deps] All required packages are ready.\n")
+
+
+ensure_dependencies()
+
 import numpy as np
 import soundfile as sf
 import datetime
 from zoneinfo import ZoneInfo
-import os
-import sys
 import argparse
 import yaml
 import pandas as pd
 import configparser
 import math
-import subprocess
 import tempfile
 from hf_feature import compute_hf_features
 
 # --- Official UK-DALE Calibration Logic ---
-ADC_SCALE = 2**31 
+ADC_SCALE = 2**31
+
 
 def get_arguments():
-    parser = argparse.ArgumentParser(description='NILM High-Frequency Feature Extractor + LF Fusion Pipeline')
-    parser.add_argument('--config', type=str, default='hf_config.yaml', help='Path to HF config (hf_config.yaml)')
-    parser.add_argument('--input_path', type=str, required=True, help='Path to .flac file or directory')
-    parser.add_argument('--lf_config', type=str, default=None,
-                        help='Path to ukdale.yaml. If provided, auto-runs LF processing and fuses output.')
+    parser = argparse.ArgumentParser(
+        description='NILM HF extractor + LF fusion. '
+                    'With no --input_path, runs batch from hf_config.yaml (weeks + appliances).'
+    )
+    parser.add_argument(
+        '--config', type=str,
+        default=os.path.join(SCRIPT_DIR, 'hf_config.yaml'),
+        help='Path to hf_config.yaml',
+    )
+    parser.add_argument(
+        '--input_path', type=str, default=None,
+        help='Single .flac or folder. If omitted, uses batch section in hf_config.yaml.',
+    )
+    parser.add_argument('--lf_config', type=str, default=None, help='Override ukdale.yaml path')
+    parser.add_argument(
+        '--weeks', type=str, default=None,
+        help='Override batch weeks, e.g. wk30,wk31',
+    )
+    parser.add_argument(
+        '--appliances', type=str, default=None,
+        help='Override appliances, e.g. kettle,fridge (default: ukdale.yaml list)',
+    )
     return parser.parse_args()
+
+
+def load_hf_config(config_path: str) -> tuple[dict, str]:
+    """Resolve hf_config.yaml whether you run from repo root or this script folder."""
+    candidates = []
+    if os.path.isabs(config_path):
+        candidates.append(config_path)
+    else:
+        candidates.append(os.path.abspath(config_path))
+        candidates.append(os.path.join(SCRIPT_DIR, config_path))
+        candidates.append(os.path.join(SCRIPT_DIR, os.path.basename(config_path)))
+
+    config_path = next((p for p in candidates if os.path.isfile(p)), None)
+    if not config_path:
+        tried = "\n  ".join(dict.fromkeys(candidates))
+        raise FileNotFoundError(
+            f"hf_config not found. Tried:\n  {tried}\n"
+            f"Use --config or run from {SCRIPT_DIR}"
+        )
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+    config_dir = os.path.dirname(config_path)
+    resolve_config_paths(config, config_dir)
+    return config, config_dir
+
+
+def resolve_config_paths(config: dict, config_dir: str) -> None:
+    paths = config.setdefault('paths', {})
+    for key in ('save_path', 'data_root', 'lf_config'):
+        val = paths.get(key)
+        if val and not os.path.isabs(val):
+            paths[key] = os.path.normpath(os.path.join(config_dir, val))
+    if not os.path.isabs(paths.get('save_path', 'output')):
+        paths['save_path'] = os.path.normpath(
+            os.path.join(config_dir, paths.get('save_path', 'output'))
+        )
 
 def get_calibration(file_path, config_house_id=None):
     parent_dir = os.path.dirname(os.path.abspath(file_path))
@@ -58,7 +169,7 @@ def decode_unix_time(ts, tz_name="UTC"):
 # ─────────────────────────────────────────────────────────────────────────────
 # PHASE 2: HF + LF FUSION
 # ─────────────────────────────────────────────────────────────────────────────
-def fuse_with_lf(df_hf, start_unix, end_unix, house_id, hf_config, lf_config_path):
+def fuse_with_lf(df_hf, start_unix, end_unix, house_id, hf_config, lf_config_path, appliances_filter=None):
     """
     Automatically calls ukdale_processing.py for the exact time window of the
     processed FLAC file, then performs a time-key inner join between:
@@ -106,12 +217,25 @@ def fuse_with_lf(df_hf, start_unix, end_unix, house_id, hf_config, lf_config_pat
             '--no_split',
             '--save_path_override',  tmpdir,
         ]
+        # Force UTF-8 in the LF child process (Windows cp1252 console breaks on → etc.)
+        lf_env = os.environ.copy()
+        lf_env["PYTHONIOENCODING"] = "utf-8"
+        lf_env["PYTHONUTF8"] = "1"
+
         print(f"  [FUSION] Running LF script... (may take 30-60s on first load)")
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=lf_env,
+        )
 
         if result.returncode != 0:
             print(f"  [FUSION] ⚠️  LF processing FAILED.")
-            print(f"  [FUSION] stderr: {result.stderr[-500:]}")
+            err_tail = (result.stderr or result.stdout or "")[-500:]
+            print(f"  [FUSION] stderr: {err_tail}")
             return fused_dfs
 
         print(f"  [FUSION] LF processing complete.")
@@ -120,6 +244,8 @@ def fuse_with_lf(df_hf, start_unix, end_unix, house_id, hf_config, lf_config_pat
             lf_cfg = yaml.safe_load(f)
         appliances = lf_cfg['global_params'].get('appliances_to_process',
                      ['kettle', 'microwave', 'fridge', 'dishwasher', 'washingmachine'])
+        if appliances_filter:
+            appliances = [a for a in appliances if a in appliances_filter]
 
         merged_count = 0
         for appliance in appliances:
@@ -161,7 +287,7 @@ def fuse_with_lf(df_hf, start_unix, end_unix, house_id, hf_config, lf_config_pat
 # ─────────────────────────────────────────────────────────────────────────────
 # PHASE 1: HF FEATURE EXTRACTION
 # ─────────────────────────────────────────────────────────────────────────────
-def process_file(flac_path, config, lf_config_path=None, save_hf_csv=True):
+def process_file(flac_path, config, lf_config_path=None, save_hf_csv=True, appliances_filter=None):
     basename = os.path.basename(flac_path)
     
     print("\n" + "━"*60)
@@ -262,80 +388,207 @@ def process_file(flac_path, config, lf_config_path=None, save_hf_csv=True):
     # --- Phase 2: Optional LF Fusion ---
     fused_dfs = {}
     if lf_config_path and os.path.exists(lf_config_path):
-        fused_dfs = fuse_with_lf(df_hf, start_unix, end_unix, house_id, config, lf_config_path)
+        fused_dfs = fuse_with_lf(
+            df_hf, start_unix, end_unix, house_id, config, lf_config_path,
+            appliances_filter=appliances_filter,
+        )
     elif lf_config_path:
         print(f"  [FUSION] ⚠️  --lf_config path not found: {lf_config_path}. Skipping fusion.")
     
     return fused_dfs  # {appliance_name: df_merged}
 
 
-if __name__ == "__main__":
-    args = get_arguments()
-    with open(args.config, 'r') as f:
-        config = yaml.safe_load(f)
-    
-    path = args.input_path
-    output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-    os.makedirs(output_dir, exist_ok=True)
+def get_appliances_filter(config: dict, cli_appliances: str | None) -> list[str] | None:
+    if cli_appliances:
+        return [a.strip() for a in cli_appliances.split(',') if a.strip()]
+    batch_apps = config.get('batch', {}).get('appliances') or []
+    if batch_apps:
+        return list(batch_apps)
+    return None
 
-    if os.path.isfile(path) and path.endswith('.flac'):
-        flac_files = [path]
-    elif os.path.isdir(path):
-        flac_files = sorted([os.path.join(path, f) for f in os.listdir(path) if f.endswith('.flac')])
+
+def week_directory(config: dict, week: str) -> str:
+    batch = config.get('batch', {})
+    house = batch.get('house', config['hyperparameters'].get('house_id', 2))
+    year = batch.get('year', 2013)
+    data_root = config['paths']['data_root']
+    return os.path.join(data_root, f"house_{house}", str(year), week)
+
+
+def save_fused_chunk(
+    app_name: str,
+    df_chunk: pd.DataFrame,
+    output_dir: str,
+    house_id: int,
+    week_label: str | None,
+    batch_output_files: dict,
+    single_file_mode: bool,
+    flac_path: str,
+) -> None:
+    house_tag = f"house{house_id}"
+    if single_file_mode:
+        try:
+            start_unix = int(os.path.basename(flac_path).split('-')[1].split('_')[0])
+        except (IndexError, ValueError):
+            start_unix = 0
+        out_name = f"{app_name}_{house_tag}_{start_unix}.csv"
+        out_path = os.path.join(output_dir, out_name)
+        df_chunk.to_csv(out_path, index=False)
+        print(f"  [SAVE] {app_name} → {out_name}  ({len(df_chunk)} rows)")
+        return
+
+    key = (app_name, week_label or 'batch')
+    if key not in batch_output_files:
+        if week_label:
+            out_name = f"{app_name}_{house_tag}_{week_label}.csv"
+        else:
+            start_t = pd.to_datetime(df_chunk['readable_time'].iloc[0]).strftime('%Y-%m-%d')
+            out_name = f"{app_name}_{house_tag}_batch_{start_t}.csv"
+        out_path = os.path.join(output_dir, out_name)
+        batch_output_files[key] = out_path
+        df_chunk.to_csv(out_path, index=False, mode='w')
+        print(f"  [BATCH] Created  → {out_name}")
     else:
-        print(f"Error: {path} is not a valid file or directory.")
-        sys.exit(1)
+        out_path = batch_output_files[key]
+        df_chunk.to_csv(out_path, index=False, mode='a', header=False)
+        print(f"  [BATCH] Appended → {os.path.basename(out_path)}  (+{len(df_chunk)} rows)")
+
+
+def run_flac_pipeline(
+    flac_files: list[str],
+    config: dict,
+    lf_config_path: str | None,
+    appliances_filter: list[str] | None,
+    save_hf_csv: bool,
+    week_label: str | None = None,
+) -> dict:
+    """Process a list of FLAC paths; return batch output file map."""
+    output_dir = config['paths']['save_path']
+    os.makedirs(output_dir, exist_ok=True)
+    house_id = config['hyperparameters'].get('house_id', 2)
 
     batch_mode = len(flac_files) > 1
-    # In batch mode, track the output filenames (set on first successful flush)
-    batch_output_files = {}  # {appliance_name: output_csv_path}
+    batch_output_files = {}
 
     for i, f_path in enumerate(flac_files):
         print(f"\n[{i+1}/{len(flac_files)}] Processing: {os.path.basename(f_path)}")
-
-        fused_dfs = process_file(f_path, config, args.lf_config, save_hf_csv=not batch_mode)
-
+        fused_dfs = process_file(
+            f_path, config, lf_config_path,
+            save_hf_csv=save_hf_csv,
+            appliances_filter=appliances_filter,
+        )
         if not fused_dfs:
-            # No fusion result (single-file mode or LF not provided) — done
             continue
-
         for app_name, df_chunk in fused_dfs.items():
-            if not batch_mode:
-                # ── Single-file mode: save with timestamp filename ──────────
-                try:
-                    start_unix = int(os.path.basename(f_path).split('-')[1].split('_')[0])
-                except:
-                    start_unix = 0
-                house_id_str = 'house2'
-                out_name = f"{app_name}_{house_id_str}_{start_unix}.csv"
-                out_path = os.path.join(output_dir, out_name)
-                df_chunk.to_csv(out_path, index=False)
-                print(f"  [SAVE] {app_name} → {out_name}  ({len(df_chunk)} rows)")
-            else:
-                # ── Batch mode: append to ONE file per appliance ──────────
-                if app_name not in batch_output_files:
-                    # First time seeing this appliance — create output filename
-                    start_t = pd.to_datetime(df_chunk['readable_time'].iloc[0]).strftime('%Y-%m-%d')
-                    out_name = f"{app_name}_house2_batch_{start_t}.csv"
-                    out_path = os.path.join(output_dir, out_name)
-                    batch_output_files[app_name] = out_path
-                    # Write with header
-                    df_chunk.to_csv(out_path, index=False, mode='w')
-                    print(f"  [BATCH] Created  → {out_name}")
-                else:
-                    # Append (no header)
-                    out_path = batch_output_files[app_name]
-                    df_chunk.to_csv(out_path, index=False, mode='a', header=False)
-                    print(f"  [BATCH] Appended → {os.path.basename(out_path)}  (+{len(df_chunk)} rows)")
+            save_fused_chunk(
+                app_name, df_chunk, output_dir, house_id, week_label,
+                batch_output_files, single_file_mode=not batch_mode, flac_path=f_path,
+            )
 
-    # --- Summary ---
     if batch_mode and batch_output_files:
         print("\n" + "━"*60)
-        print("  BATCH COMPLETE — FINAL OUTPUT FILES")
+        label = week_label or "batch"
+        print(f"  WEEK/BATCH COMPLETE — {label}")
         print("━"*60)
-        for app_name, out_path in batch_output_files.items():
+        for (_, _), out_path in sorted(batch_output_files.items(), key=lambda x: x[1]):
             total = len(pd.read_csv(out_path))
-            print(f"  ✅ {app_name:<15} | Total rows: {total:>6} → {os.path.basename(out_path)}")
+            print(f"  ✅ {os.path.basename(out_path):<40} | rows: {total:>6}")
         print("━"*60)
 
-    print("\n[DONE] All tasks finished.")
+    return batch_output_files
+
+
+def run_batch_from_config(config: dict, lf_config_path: str | None, weeks_override: str | None,
+                          appliances_filter: list[str] | None) -> None:
+    batch = config.get('batch', {})
+    if not batch.get('enabled', True):
+        print("[BATCH] batch.enabled is false in hf_config.yaml. Nothing to run.")
+        sys.exit(1)
+
+    weeks = [w.strip() for w in (weeks_override or ','.join(batch.get('weeks', []))).split(',') if w.strip()]
+    if not weeks:
+        print("[BATCH] No weeks configured. Set batch.weeks in hf_config.yaml or use --weeks wk30")
+        sys.exit(1)
+
+    fuse_lf = batch.get('fuse_lf', True)
+    lf_path = lf_config_path if lf_config_path else config['paths'].get('lf_config')
+    if fuse_lf and (not lf_path or not os.path.exists(lf_path)):
+        print(f"[BATCH] LF fusion enabled but lf_config not found: {lf_path}")
+        sys.exit(1)
+    if not fuse_lf:
+        lf_path = None
+
+    save_hf = batch.get('save_hf_csv_per_flac', False)
+    apps = appliances_filter
+    if apps:
+        print(f"[BATCH] Appliances: {apps}")
+    else:
+        print("[BATCH] Appliances: all from ukdale.yaml")
+
+    print("\n" + "═"*60)
+    print("  CONFIG-DRIVEN BATCH — HF + LF FUSION")
+    print("═"*60)
+    print(f"  Data root:  {config['paths']['data_root']}")
+    print(f"  Output:     {config['paths']['save_path']}")
+    print(f"  Weeks:      {weeks}")
+    print(f"  LF config:  {lf_path or '(disabled)'}")
+    print("═"*60)
+
+    all_outputs = {}
+    for week in weeks:
+        week_dir = week_directory(config, week)
+        if not os.path.isdir(week_dir):
+            print(f"\n[BATCH] ⚠️  Skip {week}: folder not found:\n         {week_dir}")
+            continue
+        flac_files = sorted(
+            os.path.join(week_dir, f) for f in os.listdir(week_dir) if f.endswith('.flac')
+        )
+        if not flac_files:
+            print(f"\n[BATCH] ⚠️  Skip {week}: no .flac files in {week_dir}")
+            continue
+
+        print(f"\n{'═'*60}\n  WEEK {week} — {len(flac_files)} FLAC file(s)\n{'═'*60}")
+        out = run_flac_pipeline(
+            flac_files, config, lf_path, apps, save_hf_csv=save_hf, week_label=week,
+        )
+        all_outputs.update(out)
+
+    print("\n" + "═"*60)
+    print("  ALL WEEKS FINISHED")
+    print("═"*60)
+    if all_outputs:
+        for out_path in sorted(set(all_outputs.values())):
+            print(f"  📄 {out_path}")
+    else:
+        print("  No output files were written.")
+    print("═"*60 + "\n[DONE]")
+
+
+if __name__ == "__main__":
+    args = get_arguments()
+    config, _ = load_hf_config(args.config)
+    appliances_filter = get_appliances_filter(config, args.appliances)
+    lf_override = args.lf_config
+
+    if args.input_path:
+        path = os.path.abspath(args.input_path)
+        if os.path.isfile(path) and path.endswith('.flac'):
+            flac_files = [path]
+        elif os.path.isdir(path):
+            flac_files = sorted(
+                os.path.join(path, f) for f in os.listdir(path) if f.endswith('.flac')
+            )
+        else:
+            print(f"Error: {path} is not a valid file or directory.")
+            sys.exit(1)
+        lf_path = lf_override or config['paths'].get('lf_config')
+        batch_cfg = config.get('batch', {})
+        save_hf = True if len(flac_files) == 1 else batch_cfg.get('save_hf_csv_per_flac', False)
+        run_flac_pipeline(
+            flac_files, config, lf_path, appliances_filter,
+            save_hf_csv=save_hf,
+            week_label=None,
+        )
+        print("\n[DONE] All tasks finished.")
+    else:
+        run_batch_from_config(config, lf_override, args.weeks, appliances_filter)
