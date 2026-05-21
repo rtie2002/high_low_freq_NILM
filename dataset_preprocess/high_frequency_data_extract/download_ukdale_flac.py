@@ -198,20 +198,25 @@ def download_single_file(file_info, target_dir, headers):
 
     session = create_session(headers)
 
-    max_retries = 10
-    retry_delay = 10
+    RETRY_DELAY = 5   # ✅ FIXED 5 seconds (NO backoff)
 
-    for attempt in range(max_retries):
+    attempt = 0
+
+    while True:   # 🔥 INFINITE RETRY LOOP
+
+        attempt += 1
 
         try:
-            update_status(f_name, "REQUESTING", f"try {attempt+1}")
+            update_status(f_name, "REQUESTING", f"try {attempt}")
 
             with session.get(f_url, stream=True, timeout=60) as r:
 
+                # =========================
+                # 503 HANDLING
+                # =========================
                 if r.status_code == 503:
-                    update_status(f_name, "RETRYING", "503 busy")
-                    time.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, 300)
+                    update_status(f_name, "RETRYING", "503 → retry 5s")
+                    time.sleep(RETRY_DELAY)
                     continue
 
                 r.raise_for_status()
@@ -235,40 +240,32 @@ def download_single_file(file_info, target_dir, headers):
                                 f"{percent:.1f}% {speed:.2f}MB/s"
                             )
 
-                # =====================================================
-                # FILE SIZE CHECK
-                # =====================================================
-
+                # =========================
+                # SIZE CHECK
+                # =========================
                 if total_size > 0 and os.path.getsize(target_path) != total_size:
-                    update_status(f_name, "RETRYING", "size mismatch")
+                    update_status(f_name, "RETRYING", "size mismatch → retry 5s")
+                    time.sleep(RETRY_DELAY)
                     continue
 
-                # =====================================================
-                # FLAC VALIDATION (IMPORTANT)
-                # =====================================================
-
+                # =========================
+                # FLAC VALIDATION
+                # =========================
                 ok, msg = validate_flac(target_path)
 
                 if not ok:
-                    update_status(f_name, "RETRYING", f"corrupt: {msg}")
+                    update_status(f_name, "RETRYING", f"corrupt → retry 5s")
+                    time.sleep(RETRY_DELAY)
                     continue
 
                 update_status(f_name, "DONE", msg)
-                return
+                return   # ✅ SUCCESS EXIT
 
         except Exception as e:
-            update_status(f_name, "RETRYING", str(e)[:30])
-            time.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, 300)
-
-    update_status(f_name, "FAILED")
-
-    if os.path.exists(target_path):
-        try:
-            os.remove(target_path)
-        except:
-            pass
-
+            update_status(f_name, "RETRYING", "error → retry 5s")
+            time.sleep(RETRY_DELAY)
+            continue
+        
 # =========================================================
 # DOWNLOAD WEEK
 # =========================================================
