@@ -1,0 +1,7 @@
+numpy
+pandas
+pyyaml
+soundfile
+scipy
+requests
+tzdata
