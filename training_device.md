@@ -55,6 +55,13 @@ Pull the latest committed code:
 git pull
 ```
 
+If Git reports `detected dubious ownership`, run this once on the training
+device, then retry `git pull`:
+
+```powershell
+git config --global --add safe.directory D:/Raymond/high_low_freq_NILM
+```
+
 ## 3. Run Code On Training Device
 
 Check GPU:
