@@ -30,6 +30,7 @@ import re
 import subprocess
 import sys
 import time
+from typing import List, Optional, Tuple
 
 if sys.platform == "win32":
     try:
@@ -84,7 +85,7 @@ TOKEN_LIFETIME_SEC = 3 * 24 * 3600 - 3600  # 71 h
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def _fetch_token_from_api(username: str, password: str) -> str | None:
+def _fetch_token_from_api(username: str, password: str) -> Optional[str]:
     """POST credentials to CEDA token API using Basic auth, return token or None."""
     import base64
     import urllib.request
@@ -121,7 +122,7 @@ def _fetch_token_from_api(username: str, password: str) -> str | None:
     return None
 
 
-def _load_cached_token() -> str | None:
+def _load_cached_token() -> Optional[str]:
     if not os.path.exists(TOKEN_CACHE_FILE):
         return None
     try:
@@ -145,7 +146,7 @@ def _save_token_cache(token: str) -> None:
         pass
 
 
-def get_token() -> str | None:
+def get_token() -> Optional[str]:
     token = _load_cached_token()
     if token:
         return token
@@ -164,7 +165,7 @@ def get_token() -> str | None:
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def list_remote_flac(house: str, year: str, week_str: str, token: str | None) -> list[str]:
+def list_remote_flac(house: str, year: str, week_str: str, token: Optional[str]) -> List[str]:
     """Fetch FLAC filenames from the CEDA JSON directory index."""
     import urllib.request
 
@@ -195,7 +196,7 @@ def list_remote_flac(house: str, year: str, week_str: str, token: str | None) ->
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def validate_flac(path: str) -> tuple[bool, str]:
+def validate_flac(path: str) -> Tuple[bool, str]:
     """Check that a FLAC file is readable and has the expected duration."""
     try:
         info = sf.info(path)
@@ -216,7 +217,7 @@ def verify_week(
     week: str,
     save_dir: str,
     remote_check: bool = True,
-    token: str | None = None,
+    token: Optional[str] = None,
 ) -> dict:
     """
     Verify all FLAC files in a week directory.
@@ -302,7 +303,7 @@ def verify_week(
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def parse_weeks(weeks_text: str) -> list[str]:
+def parse_weeks(weeks_text: str) -> List[str]:
     """Parse week input such as '30', 'wk30', '30,31', or a path ending in wk30."""
     weeks = []
     for item in weeks_text.split(","):
@@ -319,7 +320,7 @@ def parse_weeks(weeks_text: str) -> list[str]:
     return weeks
 
 
-def prompt_for_weeks() -> list[str]:
+def prompt_for_weeks() -> List[str]:
     while True:
         raw = input(
             "Enter week folder(s) to verify, e.g. 30, wk30, 30,31, or a path ending in wk30: "
