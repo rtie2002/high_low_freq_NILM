@@ -434,6 +434,7 @@ def run_cleaning(
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str], list[str]]:
     feat_cols = get_hf_columns(df)
     records = []
+    decision_logs = []
     dropped: list[str] = []
     kept: list[str] = []
 
@@ -484,11 +485,11 @@ def run_cleaning(
         })
 
         tag = "DROP" if status == "dropped" else "keep"
-        print(
+        decision_logs.append((
             f"  [{tag}] {feat:<20} var={variance:12.4e}  "
-            f"invalid={invalid_ratio:.6f} ({n_invalid}/{n_total})"
-        )
-        print(f"         -> {reason}")
+            f"invalid={invalid_ratio:.6f} ({n_invalid}/{n_total})",
+            f"         -> {reason}",
+        ))
 
     df_clean = df.copy()
     fill_log = []
@@ -504,6 +505,11 @@ def run_cleaning(
             fill_log.append(f"    filled {feat}: {n_filled} values -> median={median_val:.6g}")
 
     df_clean.drop(columns=dropped, inplace=True, errors="ignore")
+
+    if dropped:
+        for log_line, reason_line in decision_logs:
+            print(log_line)
+            print(reason_line)
 
     if fill_log:
         print("\n  Median fills applied:")
@@ -701,12 +707,15 @@ def _write_explanation(
         "=== Stage 0: Cleaning (why each feature was dropped) ===",
     ]
 
-    for _, row in cleaning_report.iterrows():
-        lines.append(
-            f"  [{row['status'].upper():6}] {row['feature']:<20} "
-            f"domain={row['domain']}"
-        )
-        lines.append(f"           {row['reason']}")
+    if dropped_clean:
+        for _, row in cleaning_report.iterrows():
+            lines.append(
+                f"  [{row['status'].upper():6}] {row['feature']:<20} "
+                f"domain={row['domain']}"
+            )
+            lines.append(f"           {row['reason']}")
+    else:
+        lines.append("  (no features dropped in cleaning stage)")
 
     lines.extend(["", "=== Target relevance (all kept-after-cleaning features) ==="])
     if len(target_corr_df):
@@ -823,7 +832,8 @@ def run_one_appliance(
     summary_path = os.path.join(output_dir, "stage01_feature_summary.csv")
     explain_path = os.path.join(output_dir, "stage01_explanation.txt")
 
-    cleaning_report.to_csv(cleaning_path, index=False)
+    if dropped_s0:
+        cleaning_report.to_csv(cleaning_path, index=False)
     target_corr_df.to_csv(target_corr_path, index=False)
     pairs_df.to_csv(pairs_path, index=False)
     corr_report.to_csv(corr_path, index=False)
@@ -837,9 +847,11 @@ def run_one_appliance(
 
     print(f"\n  Reports saved under {output_dir}:")
     report_paths = [
-        cleaning_path, target_corr_path, pairs_path, corr_path,
-        summary_path, explain_path, *matrix_paths,
+        target_corr_path, pairs_path, corr_path, summary_path, explain_path,
+        *matrix_paths,
     ]
+    if dropped_s0:
+        report_paths.insert(0, cleaning_path)
     for p in report_paths:
         print(f"    {p}")
 

@@ -80,6 +80,7 @@ CEDA_BASE = (
 TOKEN_URL = "https://services.ceda.ac.uk/api/token/create/"
 TOKEN_CACHE_FILE = os.path.join(SCRIPT_DIR, ".ceda_token_cache")
 TOKEN_LIFETIME_SEC = 3 * 24 * 3600 - 3600  # 71 h  (tokens last 3 days)
+WGET_EXE = "wget"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -181,24 +182,90 @@ def _tool_on_path(name: str) -> bool:
     try:
         r = subprocess.run([name, "--version"], capture_output=True, timeout=5)
         return r.returncode == 0
-    except FileNotFoundError:
+    except (FileNotFoundError, PermissionError, OSError):
         return False
+
+
+def _prepend_path_once(path: str) -> None:
+    path = os.path.abspath(path)
+    path_parts = [
+        os.path.abspath(p)
+        for p in os.environ.get("PATH", "").split(os.pathsep)
+        if p
+    ]
+    if path not in path_parts:
+        os.environ["PATH"] = path + os.pathsep + os.environ.get("PATH", "")
+
+
+def _wget_version_line(wget_cmd: str) -> Optional[str]:
+    try:
+        r = subprocess.run(
+            [wget_cmd, "--version"], capture_output=True, text=True, timeout=5
+        )
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    if r.returncode != 0:
+        return None
+    lines = (r.stdout or r.stderr).splitlines()
+    return lines[0] if lines else wget_cmd
+
+
+def _use_wget(wget_cmd: str, source: str) -> bool:
+    global WGET_EXE
+
+    version = _wget_version_line(wget_cmd)
+    if not version:
+        return False
+
+    WGET_EXE = wget_cmd
+    wget_dir = os.path.dirname(os.path.abspath(wget_cmd)) if os.path.dirname(wget_cmd) else ""
+    if wget_dir:
+        _prepend_path_once(wget_dir)
+    print(f"[wget] ✅  {version}  ({source})")
+    return True
+
+
+def _local_wget_candidates() -> List[str]:
+    candidates = [
+        os.path.join(SCRIPT_DIR, "wget.exe"),
+        os.path.join(os.path.dirname(sys.executable), "wget.exe"),
+        os.path.join(PROJECT_ROOT, ".venv", "Scripts", "wget.exe"),
+        os.path.join(PROJECT_ROOT, ".venv", "bin", "wget"),
+    ]
+    seen = set()
+    unique = []
+    for path in candidates:
+        norm = os.path.abspath(path)
+        if norm not in seen:
+            seen.add(norm)
+            unique.append(norm)
+    return unique
+
+
+def _find_local_wget() -> bool:
+    for path in _local_wget_candidates():
+        if os.path.isfile(path) and _use_wget(path, f"local: {path}"):
+            return True
+    return False
 
 
 def _install_wget_windows() -> bool:
     """Try scoop → choco → winget → direct .exe download."""
     print("[wget] Attempting automatic installation...")
 
+    if _find_local_wget():
+        return True
+
     # 1. scoop
     if _tool_on_path("scoop"):
         r = subprocess.run(["scoop", "install", "wget"], timeout=120)
-        if r.returncode == 0 and _tool_on_path("wget"):
+        if r.returncode == 0 and _use_wget("wget", "scoop"):
             return True
 
     # 2. chocolatey
     if _tool_on_path("choco"):
         r = subprocess.run(["choco", "install", "-y", "wget"], timeout=120)
-        if r.returncode == 0 and _tool_on_path("wget"):
+        if r.returncode == 0 and _use_wget("wget", "chocolatey"):
             return True
 
     # 3. winget
@@ -218,8 +285,8 @@ def _install_wget_windows() -> bool:
         if r.returncode == 0:
             gnuwin = r"C:\Program Files (x86)\GnuWin32\bin"
             if os.path.isfile(os.path.join(gnuwin, "wget.exe")):
-                os.environ["PATH"] = gnuwin + os.pathsep + os.environ["PATH"]
-            if _tool_on_path("wget"):
+                _prepend_path_once(gnuwin)
+            if _use_wget("wget", "winget"):
                 return True
 
     # 4. direct binary download (last resort)
@@ -229,17 +296,22 @@ def _install_wget_windows() -> bool:
         print("  → downloading wget.exe directly from eternallybored.org ...")
         wget_url = "https://eternallybored.org/misc/wget/1.21.4/64/wget.exe"
         candidates = [
+            SCRIPT_DIR,
             os.path.join(PROJECT_ROOT, ".venv", "Scripts"),
             os.path.join(PROJECT_ROOT, ".venv", "bin"),
-            SCRIPT_DIR,
         ]
-        dest_dir = next((d for d in candidates if os.path.isdir(d)), SCRIPT_DIR)
-        dest = os.path.join(dest_dir, "wget.exe")
-        urllib.request.urlretrieve(wget_url, dest)
-        os.environ["PATH"] = dest_dir + os.pathsep + os.environ["PATH"]
-        if _tool_on_path("wget"):
-            print(f"  ✅ wget.exe saved to {dest}")
-            return True
+        for dest_dir in candidates:
+            if not os.path.isdir(dest_dir):
+                continue
+            dest = os.path.join(dest_dir, "wget.exe")
+            try:
+                urllib.request.urlretrieve(wget_url, dest)
+            except PermissionError:
+                print(f"  cannot write to {dest_dir}; trying another folder")
+                continue
+            if _use_wget(dest, f"downloaded: {dest}"):
+                print(f"  ✅ wget.exe saved to {dest}")
+                return True
     except Exception as e:
         print(f"  direct download failed: {e}")
 
@@ -248,11 +320,10 @@ def _install_wget_windows() -> bool:
 
 def ensure_wget() -> bool:
     """Make sure wget is on PATH, installing it if necessary."""
-    if _tool_on_path("wget"):
-        r = subprocess.run(
-            ["wget", "--version"], capture_output=True, text=True, timeout=5
-        )
-        print(f"[wget] ✅  {r.stdout.splitlines()[0]}")
+    if _find_local_wget():
+        return True
+
+    if _use_wget("wget", "PATH"):
         return True
 
     print("[wget] ⚠️  wget not found — attempting auto-install...")
@@ -267,17 +338,13 @@ def ensure_wget() -> bool:
                     r = subprocess.run(
                         ["sudo", mgr, "install", "-y", "wget"], timeout=120
                     )
-                    if r.returncode == 0 and _tool_on_path("wget"):
+                    if r.returncode == 0 and _use_wget("wget", mgr):
                         success = True
                         break
                 except Exception:
                     continue
 
-    if success and _tool_on_path("wget"):
-        r = subprocess.run(
-            ["wget", "--version"], capture_output=True, text=True, timeout=5
-        )
-        print(f"[wget] ✅  Installed: {r.stdout.splitlines()[0]}")
+    if success and _use_wget(WGET_EXE, "installed"):
         return True
 
     print("[wget] ❌  Auto-install failed. Install manually:")
@@ -384,7 +451,7 @@ def _list_flac_files(base_url: str, token: Optional[str]) -> List[str]:
 def _build_wget_single(file_url: str, save_dir: str, token: Optional[str]) -> List[str]:
     """Build a wget command to download one file directly."""
     cmd = [
-        "wget",
+        WGET_EXE,
         "--no-verbose",
         "--show-progress",
         "--timeout=60",
