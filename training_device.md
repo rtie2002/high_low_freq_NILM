@@ -40,7 +40,7 @@ ssh raymond@100.110.55.5
 Password:
 
 ```text
-RtiE2002
+Enter the training-device password when prompted.
 ```
 
 Go to the training workspace:
@@ -80,6 +80,25 @@ Run the requested script or training command from:
 
 ```powershell
 D:\Raymond\high_low_freq_NILM
+```
+
+## Visible Automated Run
+
+To let the AI automate the training-device command while you watch the output,
+run this from the local project:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\run_training_device_visible.ps1
+```
+
+This opens a visible PowerShell window, logs into the training device with
+`plink`, enters `D:\Raymond\high_low_freq_NILM`, runs the remote command, and
+keeps the window open after finishing.
+
+To run a different command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\run_training_device_visible.ps1 -RemoteCommand "git pull; nvidia-smi"
 ```
 
 ## Notes For Future AI
