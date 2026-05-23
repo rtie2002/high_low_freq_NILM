@@ -29,6 +29,7 @@ import re
 import subprocess
 import sys
 import time
+from typing import List, Optional, Tuple
 
 if sys.platform == "win32":
     try:
@@ -60,7 +61,7 @@ CEDA_PASSWORD = "RtiE2002"
 
 DEFAULT_HOUSE = "2"
 DEFAULT_YEAR = "2013"
-DEFAULT_WEEKS = ["31"]
+DEFAULT_WEEKS = ["32"]
 
 EXPECTED_DURATION_SEC = 3600  # each UK-DALE FLAC is ~1 hour
 DURATION_TOLERANCE = 5  # seconds
@@ -86,7 +87,7 @@ TOKEN_LIFETIME_SEC = 3 * 24 * 3600 - 3600  # 71 h  (tokens last 3 days)
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def _fetch_token_from_api(username: str, password: str) -> str | None:
+def _fetch_token_from_api(username: str, password: str) -> Optional[str]:
     """POST credentials to CEDA token API, return token string or None."""
     import base64
     import urllib.request
@@ -126,7 +127,7 @@ def _fetch_token_from_api(username: str, password: str) -> str | None:
     return None
 
 
-def _load_cached_token() -> str | None:
+def _load_cached_token() -> Optional[str]:
     """Return cached token if still fresh, else None."""
     if not os.path.exists(TOKEN_CACHE_FILE):
         return None
@@ -151,7 +152,7 @@ def _save_token_cache(token: str) -> None:
         pass
 
 
-def get_token() -> str | None:
+def get_token() -> Optional[str]:
     """
     Return a valid CEDA Bearer token.
     Uses cache if fresh; otherwise fetches a new one from the API.
@@ -291,10 +292,22 @@ def ensure_wget() -> bool:
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def validate_flac(path: str) -> tuple[bool, str]:
+def validate_flac(path: str) -> Tuple[bool, str]:
     try:
-        info = sf.info(path)
-        duration = info.frames / info.samplerate
+        with sf.SoundFile(path) as f:
+            expected_frames = f.frames
+            samplerate = f.samplerate
+            duration = expected_frames / samplerate
+
+            decoded_frames = 0
+            for block in f.blocks(blocksize=262144, dtype="float32"):
+                decoded_frames += len(block)
+
+        if decoded_frames != expected_frames:
+            return (
+                False,
+                f"incomplete decode {decoded_frames}/{expected_frames} frames",
+            )
         if abs(duration - EXPECTED_DURATION_SEC) > DURATION_TOLERANCE:
             return (
                 False,
@@ -337,7 +350,7 @@ def validate_week(week_dir: str) -> dict:
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def _list_flac_files(base_url: str, token: str | None) -> list[str]:
+def _list_flac_files(base_url: str, token: Optional[str]) -> List[str]:
     """
     Query the CEDA JSON directory index and return a sorted list of .flac filenames.
     The CEDA UI is JS-rendered, so wget -r never finds .flac href links in the HTML.
@@ -368,7 +381,7 @@ def _list_flac_files(base_url: str, token: str | None) -> list[str]:
     return flac_names
 
 
-def _build_wget_single(file_url: str, save_dir: str, token: str | None) -> list[str]:
+def _build_wget_single(file_url: str, save_dir: str, token: Optional[str]) -> List[str]:
     """Build a wget command to download one file directly."""
     cmd = [
         "wget",
@@ -392,7 +405,7 @@ def download_week(
     year: str,
     week: str,
     save_dir: str,
-    token: str | None,
+    token: Optional[str],
     check_after: bool = True,
 ) -> bool:
     """Download one week of FLAC files. Returns True if all files validated OK."""

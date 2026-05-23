@@ -18,6 +18,7 @@ Usage
     python verify_week_flac.py                          # prompt for week(s)
     python verify_week_flac.py --weeks 31
     python verify_week_flac.py --weeks 30,31,32
+    python verify_week_flac.py --weeks 31 --strict      # full FLAC decode check
     python verify_week_flac.py --weeks 31 --house 2 --year 2013
     python verify_week_flac.py --weeks 31 --no_remote   # skip CEDA cross-check
     python verify_week_flac.py --weeks 31 --save_dir /path/to/data
@@ -65,6 +66,7 @@ DEFAULT_YEAR = "2013"
 
 EXPECTED_DURATION_SEC = 3600  # each UK-DALE FLAC is ~1 hour
 DURATION_TOLERANCE = 5        # seconds
+MIN_EXPECTED_SIZE_MB = 5      # catches obviously interrupted hour-long FLAC files
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PATHS
@@ -196,16 +198,37 @@ def list_remote_flac(house: str, year: str, week_str: str, token: Optional[str])
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def validate_flac(path: str) -> Tuple[bool, str]:
+def validate_flac(path: str, strict: bool = False) -> Tuple[bool, str]:
     """Check that a FLAC file is readable and has the expected duration."""
     try:
         info = sf.info(path)
         duration = info.frames / info.samplerate
+        size_mb = os.path.getsize(path) / 1024 / 1024
+
+        if size_mb < MIN_EXPECTED_SIZE_MB:
+            return (
+                False,
+                f"suspiciously small {size_mb:.1f} MB (likely incomplete)",
+            )
         if abs(duration - EXPECTED_DURATION_SEC) > DURATION_TOLERANCE:
             return (
                 False,
                 f"bad duration {duration:.1f}s (expected ~{EXPECTED_DURATION_SEC}s)",
             )
+
+        if strict:
+            with sf.SoundFile(path) as f:
+                expected_frames = f.frames
+                decoded_frames = 0
+                for block in f.blocks(blocksize=262144, dtype="float32"):
+                    decoded_frames += len(block)
+
+            if decoded_frames != expected_frames:
+                return (
+                    False,
+                    f"incomplete decode {decoded_frames}/{expected_frames} frames",
+                )
+
         return True, f"{duration:.1f}s OK"
     except Exception as e:
         return False, f"unreadable: {e}"
@@ -218,6 +241,7 @@ def verify_week(
     save_dir: str,
     remote_check: bool = True,
     token: Optional[str] = None,
+    strict: bool = False,
 ) -> dict:
     """
     Verify all FLAC files in a week directory.
@@ -250,7 +274,7 @@ def verify_week(
     bad_files = []
     for i, fname in enumerate(local_files, 1):
         path = os.path.join(week_dir, fname)
-        valid, msg = validate_flac(path)
+        valid, msg = validate_flac(path, strict=strict)
         tag = "✅" if valid else "❌"
         size_mb = os.path.getsize(path) / 1024 / 1024
         print(f"  [{i:03d}/{len(local_files)}] {tag}  {fname}  {msg}  ({size_mb:.1f} MB)")
@@ -352,6 +376,11 @@ def get_arguments():
         action="store_true",
         help="Skip the CEDA remote cross-check (faster, no token needed)",
     )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Decode every FLAC fully. Slower, but catches deeper corruption.",
+    )
     return parser.parse_args()
 
 
@@ -372,6 +401,7 @@ def main():
     print(f"  Weeks    : {weeks}")
     print(f"  Save dir : {args.save_dir}")
     print(f"  Remote   : {'disabled' if args.no_remote else 'enabled'}")
+    print(f"  Strict   : {'enabled' if args.strict else 'disabled'}")
     print("=" * 65)
 
     token = None
@@ -389,6 +419,7 @@ def main():
             save_dir=args.save_dir,
             remote_check=(not args.no_remote),
             token=token,
+            strict=args.strict,
         )
         week_str = f"wk{str(week).zfill(2)}"
         issues = result["bad"] + result["missing"]
