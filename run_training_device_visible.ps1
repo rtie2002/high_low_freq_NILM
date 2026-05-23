@@ -1,5 +1,5 @@
 param(
-    [string]$RemoteCommand = "git pull; powershell -NoProfile -ExecutionPolicy Bypass -File .\hello_training_device.ps1"
+    [string]$RemoteCommand = "git pull; git status --short"
 )
 
 $HostKey = "SHA256:lX6KCWyehRD5pUp9u/aliLZ7S/BVc2A2KFohf3q4hK4"
