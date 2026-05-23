@@ -15,7 +15,7 @@ What it does
 
 Usage
 -----
-    python verify_week_flac.py                          # verify DEFAULT_WEEKS
+    python verify_week_flac.py                          # prompt for week(s)
     python verify_week_flac.py --weeks 31
     python verify_week_flac.py --weeks 30,31,32
     python verify_week_flac.py --weeks 31 --house 2 --year 2013
@@ -61,7 +61,6 @@ CEDA_PASSWORD = "RtiE2002"
 
 DEFAULT_HOUSE = "2"
 DEFAULT_YEAR = "2013"
-DEFAULT_WEEKS = ["30"]
 
 EXPECTED_DURATION_SEC = 3600  # each UK-DALE FLAC is ~1 hour
 DURATION_TOLERANCE = 5        # seconds
@@ -303,6 +302,34 @@ def verify_week(
 # ═════════════════════════════════════════════════════════════════════════════
 
 
+def parse_weeks(weeks_text: str) -> list[str]:
+    """Parse week input such as '30', 'wk30', '30,31', or a path ending in wk30."""
+    weeks = []
+    for item in weeks_text.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        week_name = os.path.basename(os.path.normpath(item))
+        match = re.fullmatch(r"(?:wk)?(\d+)", week_name, flags=re.IGNORECASE)
+        if not match:
+            raise ValueError(f"Invalid week value: {item!r}")
+        weeks.append(match.group(1))
+    if not weeks:
+        raise ValueError("No week value was entered")
+    return weeks
+
+
+def prompt_for_weeks() -> list[str]:
+    while True:
+        raw = input(
+            "Enter week folder(s) to verify, e.g. 30, wk30, 30,31, or a path ending in wk30: "
+        )
+        try:
+            return parse_weeks(raw)
+        except ValueError as e:
+            print(f"  {e}. Please try again.")
+
+
 def get_arguments():
     parser = argparse.ArgumentParser(
         description="Verify UK-DALE 16kHz FLAC files for one or more weeks"
@@ -311,8 +338,8 @@ def get_arguments():
     parser.add_argument("--year", default=DEFAULT_YEAR, help="Year (default: 2013)")
     parser.add_argument(
         "--weeks",
-        default=",".join(DEFAULT_WEEKS),
-        help="Comma-separated week numbers, e.g. 30,31,32",
+        default=None,
+        help="Comma-separated week numbers or week folders, e.g. 30,31,32 or wk30",
     )
     parser.add_argument(
         "--save_dir",
@@ -329,7 +356,11 @@ def get_arguments():
 
 def main():
     args = get_arguments()
-    weeks = [w.strip() for w in args.weeks.split(",") if w.strip()]
+    try:
+        weeks = parse_weeks(args.weeks) if args.weeks else prompt_for_weeks()
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(2)
 
     print()
     print("=" * 65)
