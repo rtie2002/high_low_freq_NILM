@@ -167,8 +167,23 @@ def get_token() -> Optional[str]:
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def list_remote_flac(house: str, year: str, week_str: str, token: Optional[str]) -> List[str]:
-    """Fetch FLAC filenames from the CEDA JSON directory index."""
+def _metadata_size_bytes(item: dict) -> Optional[int]:
+    """Best-effort extraction of file size from a CEDA JSON item."""
+    for key in ("size", "bytes", "length", "content_length", "contentLength"):
+        val = item.get(key)
+        if val is None:
+            continue
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def list_remote_flac_metadata(
+    house: str, year: str, week_str: str, token: Optional[str]
+) -> dict[str, dict]:
+    """Fetch FLAC metadata from the CEDA JSON directory index."""
     import urllib.request
 
     base_url = f"{CEDA_BASE}/house_{house}/{year}/{week_str}"
@@ -183,14 +198,112 @@ def list_remote_flac(house: str, year: str, week_str: str, token: Optional[str])
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
-        print(f"  [remote] ⚠️  Could not fetch remote listing: {e}")
-        return []
+        print(f"  [remote] Could not fetch remote listing: {e}")
+        return {}
 
-    items = data.get("items", [])
-    return sorted(
-        item["name"] for item in items
-        if item.get("type") == "file" and item.get("name", "").endswith(".flac")
-    )
+    out = {}
+    for item in data.get("items", []):
+        name = item.get("name", "")
+        if item.get("type") == "file" and name.endswith(".flac"):
+            out[name] = {
+                "name": name,
+                "size_bytes": _metadata_size_bytes(item),
+                "raw": item,
+            }
+    return out
+
+
+def list_remote_flac(house: str, year: str, week_str: str, token: Optional[str]) -> List[str]:
+    """Fetch FLAC filenames from the CEDA JSON directory index."""
+    return sorted(list_remote_flac_metadata(house, year, week_str, token).keys())
+
+
+def remote_content_length(
+    house: str,
+    year: str,
+    week_str: str,
+    fname: str,
+    token: Optional[str],
+) -> Optional[int]:
+    """Try a HEAD request for remote Content-Length when JSON lacks size."""
+    import urllib.request
+
+    url = f"{CEDA_BASE}/house_{house}/{year}/{week_str}/{fname}"
+    headers = {"User-Agent": "NILM-verifier/1.0"}
+    if token:
+        token_clean = re.sub(r"[^A-Za-z0-9\-_=.+/]", "", token)
+        headers["Authorization"] = f"Bearer {token_clean}"
+
+    req = urllib.request.Request(url, method="HEAD", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            length = resp.headers.get("Content-Length")
+    except Exception:
+        return None
+    try:
+        return int(length) if length else None
+    except ValueError:
+        return None
+
+
+def diagnose_bad_remote_files(
+    bad_details: list[dict],
+    remote_meta: dict[str, dict],
+    house: str,
+    year: str,
+    week_str: str,
+    week_dir: str,
+    token: Optional[str],
+) -> None:
+    """Compare bad local files against remote listing/size to classify likely cause."""
+    if not bad_details:
+        return
+
+    print("\n  [remote] Double-checking bad local files against CEDA ...")
+    for rec in bad_details:
+        fname = rec["file"]
+        local_path = os.path.join(week_dir, fname)
+        local_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
+        meta = remote_meta.get(fname)
+
+        if not meta:
+            print(
+                f"    {fname}: not listed on CEDA for this week; "
+                "local file may be stale/extra or path/house/week may be wrong"
+            )
+            continue
+
+        remote_size = meta.get("size_bytes")
+        if remote_size is None:
+            remote_size = remote_content_length(house, year, week_str, fname, token)
+
+        if remote_size is None:
+            print(
+                f"    {fname}: listed on CEDA, but remote size unavailable; "
+                f"local validation failed ({rec['reason']}). Re-download cleanly to confirm."
+            )
+            continue
+
+        diff = remote_size - local_size
+        remote_mb = remote_size / 1024 / 1024
+        local_mb = local_size / 1024 / 1024
+        if diff > 1024 * 1024:
+            print(
+                f"    {fname}: likely incomplete local download "
+                f"(local {local_mb:.1f} MB vs remote {remote_mb:.1f} MB)."
+            )
+        elif abs(diff) <= 1024 * 1024:
+            print(
+                f"    {fname}: local size matches remote ({local_mb:.1f} MB), "
+                "but duration is still bad. This suggests the source FLAC itself "
+                "may be short/bad, not just a local download problem."
+            )
+        else:
+            print(
+                f"    {fname}: local file is larger than remote "
+                f"(local {local_mb:.1f} MB vs remote {remote_mb:.1f} MB); "
+                "clean re-download recommended."
+            )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -272,6 +385,7 @@ def verify_week(
 
     ok_count = 0
     bad_files = []
+    bad_details = []
     for i, fname in enumerate(local_files, 1):
         path = os.path.join(week_dir, fname)
         valid, msg = validate_flac(path, strict=strict)
@@ -282,6 +396,7 @@ def verify_week(
             ok_count += 1
         else:
             bad_files.append(fname)
+            bad_details.append({"file": fname, "reason": msg})
 
     print(
         f"\n  Local check : {ok_count}/{len(local_files)} OK"
@@ -293,7 +408,8 @@ def verify_week(
     extra = []
     if remote_check:
         print("\n  [remote] Fetching CEDA directory listing ...")
-        remote_files = list_remote_flac(house, year, week_str, token)
+        remote_meta = list_remote_flac_metadata(house, year, week_str, token)
+        remote_files = sorted(remote_meta.keys())
         if remote_files:
             remote_set = set(remote_files)
             local_set = set(local_files)
@@ -310,6 +426,9 @@ def verify_week(
                 print(f"  [remote] ℹ️  {len(extra)} extra local files not on server:")
                 for f in extra:
                     print(f"    + {f}")
+            diagnose_bad_remote_files(
+                bad_details, remote_meta, house, year, week_str, week_dir, token
+            )
         else:
             print("  [remote] ⚠️  Could not retrieve remote listing — skipping cross-check")
 
@@ -317,6 +436,7 @@ def verify_week(
         "total_local": len(local_files),
         "ok": ok_count,
         "bad": bad_files,
+        "bad_details": bad_details,
         "missing": missing,
         "extra": extra,
     }
