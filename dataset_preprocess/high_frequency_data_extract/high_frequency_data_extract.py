@@ -36,11 +36,11 @@ def ensure_dependencies() -> None:
     print("[deps] Installing via pip (this may take a few minutes)...\n")
 
     if os.path.isfile(req_file):
-        cmd = [sys.executable, "-m", "pip", "install", "-r", req_file]
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", req_file])
     else:
-        cmd = [sys.executable, "-m", "pip", "install", *sorted(set(missing_pip))]
-
-    subprocess.check_call(cmd)
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "install", *sorted(set(missing_pip))
+        ])
 
     still_missing = []
     for import_name, pip_name in _REQUIRED_PACKAGES:
@@ -48,6 +48,22 @@ def ensure_dependencies() -> None:
             importlib.import_module(import_name)
         except ImportError:
             still_missing.append(pip_name)
+
+    # requirements.txt can lag behind this script. Install the exact unresolved
+    # packages too, so a missing optional entry does not leave the env broken.
+    if still_missing:
+        print("\n[deps] Installing unresolved packages:", ", ".join(sorted(set(still_missing))))
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "install", *sorted(set(still_missing))
+        ])
+
+        still_missing = []
+        for import_name, pip_name in _REQUIRED_PACKAGES:
+            try:
+                importlib.import_module(import_name)
+            except ImportError:
+                still_missing.append(pip_name)
+
     if still_missing:
         raise ImportError(
             "Could not import after pip install: "
