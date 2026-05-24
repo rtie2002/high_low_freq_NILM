@@ -1,4 +1,4 @@
-"""
+﻿"""
 UK-DALE 16kHz FLAC Downloader
 ==============================
 Single-file downloader. Everything is self-contained — no external helper
@@ -30,7 +30,7 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 if sys.platform == "win32":
     try:
@@ -66,6 +66,8 @@ DEFAULT_WEEKS = ["31"]
 
 EXPECTED_DURATION_SEC = 3600  # each UK-DALE FLAC is ~1 hour
 DURATION_TOLERANCE = 5  # seconds
+MIN_EXPECTED_SIZE_MB = 50
+SIZE_TOLERANCE_BYTES = 1024 * 1024
 MAX_DOWNLOAD_ROUNDS = 0  # 0 means unlimited outer retry rounds
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -361,36 +363,60 @@ def ensure_wget() -> bool:
 # 
 
 
-def validate_flac(path: str) -> Tuple[bool, str]:
+def validate_flac(
+    path: str,
+    strict: bool = False,
+    expected_size: Optional[int] = None,
+) -> Tuple[bool, str]:
     try:
+        local_size = os.path.getsize(path)
+        size_mb = local_size / 1024 / 1024
+        if expected_size is not None:
+            remote_mb = expected_size / 1024 / 1024
+            if local_size + SIZE_TOLERANCE_BYTES < expected_size:
+                return False, f"incomplete size {size_mb:.1f} MB (server {remote_mb:.1f} MB)"
+            if local_size > expected_size + SIZE_TOLERANCE_BYTES:
+                return False, f"larger than server {size_mb:.1f} MB (server {remote_mb:.1f} MB)"
+        if size_mb < MIN_EXPECTED_SIZE_MB:
+            return False, f"suspiciously small {size_mb:.1f} MB"
+
         with sf.SoundFile(path) as f:
             expected_frames = f.frames
             samplerate = f.samplerate
             duration = expected_frames / samplerate
 
-            decoded_frames = 0
-            for block in f.blocks(blocksize=262144, dtype="float32"):
-                decoded_frames += len(block)
-
-        if decoded_frames != expected_frames:
-            return (
-                False,
-                f"incomplete decode {decoded_frames}/{expected_frames} frames",
-            )
+            if strict:
+                decoded_frames = 0
+                for block in f.blocks(blocksize=262144, dtype="float32"):
+                    decoded_frames += len(block)
+                if decoded_frames != expected_frames:
+                    return (
+                        False,
+                        f"incomplete decode {decoded_frames}/{expected_frames} frames",
+                    )
         if abs(duration - EXPECTED_DURATION_SEC) > DURATION_TOLERANCE:
             return (
                 False,
                 f"bad duration {duration:.1f}s (expected ~{EXPECTED_DURATION_SEC}s)",
             )
-        return True, f"{duration:.1f}s OK"
+        mode = "strict" if strict else "fast"
+        return True, f"{duration:.1f}s OK ({mode})"
     except Exception as e:
         return False, str(e)
 
 
-def validate_week(week_dir: str) -> dict:
+def validate_week(
+    week_dir: str,
+    skip_files: Optional[set] = None,
+    strict: bool = False,
+    remote_meta: Optional[Dict[str, dict]] = None,
+) -> dict:
     """Validate all FLAC files in a week directory. Returns summary dict."""
+    skip_files = skip_files or set()
     flac_files = sorted(
-        os.path.join(week_dir, f) for f in os.listdir(week_dir) if f.endswith(".flac")
+        os.path.join(week_dir, f)
+        for f in os.listdir(week_dir)
+        if f.endswith(".flac") and f not in skip_files
     )
     if not flac_files:
         print(f"  [validate] No FLAC files found in {week_dir}")
@@ -400,13 +426,15 @@ def validate_week(week_dir: str) -> dict:
     bad_files = []
     bad_details = []
     for i, path in enumerate(flac_files, 1):
-        valid, msg = validate_flac(path)
+        name = os.path.basename(path)
+        expected_size = (remote_meta or {}).get(name, {}).get("size")
+        valid, msg = validate_flac(path, strict=strict, expected_size=expected_size)
         tag = "✅" if valid else ""
-        print(f"  [{i:03d}/{len(flac_files)}] {tag}  {os.path.basename(path)}  {msg}")
+        size_mb = os.path.getsize(path) / 1024 / 1024
+        print(f"  [{i:03d}/{len(flac_files)}] {tag}  {name}  {msg}  ({size_mb:.1f} MB)")
         if valid:
             ok_count += 1
         else:
-            name = os.path.basename(path)
             bad_files.append(name)
             bad_details.append({"file": name, "reason": msg})
 
@@ -458,6 +486,47 @@ def _list_flac_files(base_url: str, token: Optional[str]) -> List[str]:
     return flac_names
 
 
+def _metadata_size_bytes(item: dict) -> Optional[int]:
+    for key in ("size", "bytes", "length", "content_length", "contentLength"):
+        value = item.get(key)
+        if value is None:
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+    return None
+
+
+def _list_flac_metadata(base_url: str, token: Optional[str]) -> Dict[str, dict]:
+    """Return server-side FLAC metadata by filename from the CEDA JSON endpoint."""
+    import urllib.request as _urlreq
+
+    json_url = base_url.rstrip("/") + "/?json"
+    headers = {"User-Agent": "NILM-downloader/1.0"}
+    if token:
+        token_clean = re.sub(r"[^A-Za-z0-9\-_=.+/]", "", token)
+        headers["Authorization"] = f"Bearer {token_clean}"
+
+    req = _urlreq.Request(json_url, headers=headers)
+    try:
+        with _urlreq.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        print(f"  [list]   Could not fetch directory listing: {e}")
+        return {}
+
+    flac_meta = {}
+    for item in data.get("items", []):
+        name = item.get("name", "")
+        if item.get("type") == "file" and name.endswith(".flac"):
+            flac_meta[name] = {"size": _metadata_size_bytes(item)}
+    print(f"  [list] Found {len(flac_meta)} FLAC files on server")
+    return flac_meta
+
+
 def _build_wget_single(file_url: str, save_dir: str, token: Optional[str]) -> List[str]:
     """Build a wget command to download one file directly."""
     cmd = [
@@ -490,6 +559,18 @@ def _quarantine_bad_file(path: str) -> Optional[str]:
     return quarantined
 
 
+def _bad_backup_paths(week_dir: str, name: str) -> set:
+    bad_dir = os.path.join(week_dir, "_bad_flac_retry")
+    if not os.path.isdir(bad_dir):
+        return set()
+    prefix = f"{name}."
+    return {
+        os.path.join(bad_dir, f)
+        for f in os.listdir(bad_dir)
+        if f.startswith(prefix) and f.endswith(".bad")
+    }
+
+
 def _download_single_flac(
     base_url: str,
     name: str,
@@ -515,6 +596,7 @@ def _retry_bad_files_clean(
     base_url: str,
     week_dir: str,
     token: Optional[str],
+    strict: bool = False,
 ) -> list[dict]:
     """Force clean re-download for validation failures, then revalidate each file."""
     still_bad = []
@@ -526,7 +608,9 @@ def _retry_bad_files_clean(
         name = rec["file"]
         print(f"  [repair] {name}")
         print(f"    original validation error: {rec['reason']}")
+        old_backups = _bad_backup_paths(week_dir, name)
         rc = _download_single_flac(base_url, name, week_dir, token, clean=True)
+        new_backups = _bad_backup_paths(week_dir, name) - old_backups
         if rc not in (0, 8):
             still_bad.append({
                 "file": name,
@@ -534,9 +618,15 @@ def _retry_bad_files_clean(
             })
             continue
 
-        valid, msg = validate_flac(os.path.join(week_dir, name))
+        valid, msg = validate_flac(os.path.join(week_dir, name), strict=strict)
         if valid:
             print(f"    repaired OK: {msg}")
+            for backup in new_backups:
+                try:
+                    os.remove(backup)
+                    print(f"    deleted old .bad backup: {backup}")
+                except OSError as e:
+                    print(f"    warning: could not delete .bad backup {backup}: {e}")
         else:
             print(f"    still bad after clean re-download: {msg}")
             still_bad.append({"file": name, "reason": msg})
@@ -552,6 +642,14 @@ def _missing_or_empty_files(expected_names: List[str], week_dir: str) -> List[st
         if not os.path.exists(path) or os.path.getsize(path) == 0:
             missing.append(name)
     return missing
+
+
+def _present_expected_files(expected_names: List[str], week_dir: str) -> List[str]:
+    return [
+        name for name in expected_names
+        if os.path.exists(os.path.join(week_dir, name))
+        and os.path.getsize(os.path.join(week_dir, name)) > 0
+    ]
 
 
 def _download_file_list(
@@ -586,8 +684,9 @@ def download_week(
     token: Optional[str],
     check_after: bool = True,
     max_rounds: int = MAX_DOWNLOAD_ROUNDS,
+    strict_validate: bool = False,
 ) -> bool:
-    """Download one week of FLAC files. Returns True if all files validated OK."""
+    """Download one week of FLAC files. Returns True only if all server files validate."""
     week_str = f"wk{str(week).zfill(2)}"
     base_url = f"{CEDA_BASE}/house_{house}/{year}/{week_str}"
     week_dir = os.path.join(save_dir, f"house_{house}", year, week_str)
@@ -601,81 +700,105 @@ def download_week(
     print(f"  Save dir : {week_dir}")
     print()
 
-    # Step 1: enumerate filenames via JSON API
-    flac_names = _list_flac_files(base_url, token)
+    # Step 1: enumerate filenames and metadata via JSON API
+    remote_meta = _list_flac_metadata(base_url, token)
+    flac_names = sorted(remote_meta.keys())
     if not flac_names:
         print("  [error] No FLAC files found on server - check URL or token.")
         return False
 
     t0 = time.time()
-    failed = []
-    summary = {"bad": [], "bad_details": []}
     round_idx = 0
+    source_bad_names = set()
 
     while True:
         round_idx += 1
+        round_label = f"{round_idx}/{max_rounds}" if max_rounds > 0 else f"{round_idx}/unlimited"
         print()
-        if max_rounds > 0:
-            round_label = f"{round_idx}/{max_rounds}"
-        else:
-            round_label = f"{round_idx}/unlimited"
         print(f"  [round {round_label}] Checking local files against server list ...")
+
         missing = _missing_or_empty_files(flac_names, week_dir)
-
-        if round_idx == 1:
-            to_download = flac_names
-            print(f"  [dl] Downloading/resuming {len(to_download)} server-listed files ...")
-        else:
-            to_download = missing
-            if to_download:
-                print(f"  [dl] Re-downloading {len(to_download)} missing/empty files ...")
-
-        failed = _download_file_list(
-            to_download, base_url, week_dir, token, clean=False
+        present = _present_expected_files(flac_names, week_dir)
+        print(
+            f"  [pre-validate] Server files: {len(flac_names)} | "
+            f"local present: {len(present)} | missing/empty: {len(missing)}"
         )
 
-        if not check_after or not os.path.isdir(week_dir):
-            return len(failed) == 0
-
-        missing = _missing_or_empty_files(flac_names, week_dir)
         if missing:
-            print(f"\n  [pre-validate] {len(missing)} server-listed files still missing locally:")
-            for name in missing[:20]:
-                print(f"    - {name}")
-            if len(missing) > 20:
-                print(f"    ... plus {len(missing) - 20} more")
-            print("  [pre-validate] Validation is skipped until all server files exist locally.")
+            print(f"  [dl] Downloading {len(missing)} missing/empty files ...")
+            failed = _download_file_list(missing, base_url, week_dir, token)
+            if not check_after:
+                return len(failed) == 0
+
+            missing = _missing_or_empty_files(flac_names, week_dir)
+            present = _present_expected_files(flac_names, week_dir)
             print(
-                f"\n  [round {round_label}] unresolved: "
-                f"{len(failed)} wget failures, {len(missing)} missing/empty, "
-                "validation pending"
+                f"  [pre-validate] Server files: {len(flac_names)} | "
+                f"local present: {len(present)} | missing/empty: {len(missing)}"
             )
-            if max_rounds > 0 and round_idx >= max_rounds:
-                break
-            continue
+            if missing:
+                print("  [pre-validate] Still missing locally; validation skipped.")
+                for name in missing[:20]:
+                    print(f"    - {name}")
+                if len(missing) > 20:
+                    print(f"    ... plus {len(missing) - 20} more")
+                if max_rounds > 0 and round_idx >= max_rounds:
+                    break
+                continue
+        else:
+            print("  [dl] All server-listed files already exist locally.")
 
-        print(f"\n  [validate] Checking {week_dir} ...")
-        summary = validate_week(week_dir)
+        if not check_after:
+            return True
 
-        still_bad = []
-        if summary["bad"]:
-            still_bad = _retry_bad_files_clean(
-                summary.get("bad_details", []), base_url, week_dir, token
-            )
-            summary = validate_week(week_dir)
-
-        missing = _missing_or_empty_files(flac_names, week_dir)
-        unresolved_bad = still_bad or summary.get("bad_details", [])
-        if not failed and not missing and not unresolved_bad:
+        mode = "strict full-decode" if strict_validate else "fast header-duration"
+        print(f"\n  [validate] Checking {week_dir} ({mode}) ...")
+        summary = validate_week(
+            week_dir,
+            skip_files=source_bad_names,
+            strict=strict_validate,
+            remote_meta=remote_meta,
+        )
+        if not summary["bad"]:
             elapsed = time.time() - t0
+            if source_bad_names:
+                print(
+                    f"\n  Download finished in {elapsed / 60:.1f} min, "
+                    f"but {len(source_bad_names)} source-side file issue(s) were skipped:"
+                )
+                for name in sorted(source_bad_names):
+                    print(f"    {name}")
+                return False
             print(f"\n  Download + validation succeeded in {elapsed / 60:.1f} min")
             return True
 
-        print(
-            f"\n  [round {round_label}] unresolved: "
-            f"{len(failed)} wget failures, {len(missing)} missing/empty, "
-            f"{len(unresolved_bad)} bad FLAC"
-        )
+        retry_bad = []
+        for rec in summary.get("bad_details", []):
+            name = rec["file"]
+            local_path = os.path.join(week_dir, name)
+            local_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
+            server_size = remote_meta.get(name, {}).get("size")
+            if server_size is not None and abs(local_size - server_size) <= SIZE_TOLERANCE_BYTES:
+                source_bad_names.add(name)
+                print(
+                    f"  [source-check] {name}: {rec['reason']} "
+                    f"(local size matches server; skip as source issue)"
+                )
+            else:
+                retry_bad.append(rec)
+
+        if retry_bad:
+            _retry_bad_files_clean(
+                retry_bad, base_url, week_dir, token, strict=strict_validate
+            )
+
+        if not retry_bad and source_bad_names:
+            elapsed = time.time() - t0
+            print(
+                f"\n  Download + validation finished in {elapsed / 60:.1f} min "
+                f"({len(source_bad_names)} source-side file issue(s) skipped)"
+            )
+            return False
 
         if max_rounds > 0 and round_idx >= max_rounds:
             break
@@ -689,15 +812,10 @@ def download_week(
         for name in missing:
             print(f"    {name}")
 
-    if summary.get("bad"):
-        print("\n  [source-check] Files still failing after repeated clean re-download:")
-        for rec in summary.get("bad_details", []):
-            print(f"    {rec['file']}: {rec['reason']}")
-        print(
-            "  [source-check] These are unlikely to be simple partial downloads. "
-            "They may indicate a server-side/source FLAC issue, a genuinely short "
-            "raw file, or a dataset gap that needs to be documented."
-        )
+    if source_bad_names:
+        print("\n  [source-check] Source-side file issue(s) skipped:")
+        for name in sorted(source_bad_names):
+            print(f"    {name}")
 
     return False
 
@@ -728,6 +846,11 @@ def get_arguments():
     )
     parser.add_argument(
         "--no_validate", action="store_true", help="Skip post-download FLAC validation"
+    )
+    parser.add_argument(
+        "--strict_validate",
+        action="store_true",
+        help="Decode the full FLAC during validation. Slower, but catches block-level corruption.",
     )
     parser.add_argument(
         "--max_rounds",
@@ -766,7 +889,7 @@ def main():
             if not os.path.isdir(week_dir):
                 print("  Directory not found — skipping")
                 continue
-            validate_week(week_dir)
+            validate_week(week_dir, strict=args.strict_validate)
         return
 
     # ensure wget is installed
@@ -788,10 +911,9 @@ def main():
             token=token,
             check_after=not args.no_validate,
             max_rounds=args.max_rounds,
+            strict_validate=args.strict_validate,
         )
-        status = (
-            "✅  all files validated" if ok else "⚠  some files may need re-downloading"
-        )
+        status = "✅  all files validated" if ok else "⚠  week not fully validated"
         print(f"\n  Week {week}: {status}")
 
     print()
