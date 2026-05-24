@@ -639,11 +639,20 @@ def download_week(
 
         missing = _missing_or_empty_files(flac_names, week_dir)
         if missing:
-            print(f"\n  [validate] {len(missing)} server-listed files still missing locally:")
+            print(f"\n  [pre-validate] {len(missing)} server-listed files still missing locally:")
             for name in missing[:20]:
                 print(f"    - {name}")
             if len(missing) > 20:
                 print(f"    ... plus {len(missing) - 20} more")
+            print("  [pre-validate] Validation is skipped until all server files exist locally.")
+            print(
+                f"\n  [round {round_label}] unresolved: "
+                f"{len(failed)} wget failures, {len(missing)} missing/empty, "
+                "validation pending"
+            )
+            if max_rounds > 0 and round_idx >= max_rounds:
+                break
+            continue
 
         print(f"\n  [validate] Checking {week_dir} ...")
         summary = validate_week(week_dir)
