@@ -66,6 +66,7 @@ DEFAULT_WEEKS = ["31"]
 
 EXPECTED_DURATION_SEC = 3600  # each UK-DALE FLAC is ~1 hour
 DURATION_TOLERANCE = 5  # seconds
+MAX_DOWNLOAD_ROUNDS = 0  # 0 means unlimited outer retry rounds
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PATHS
@@ -543,6 +544,40 @@ def _retry_bad_files_clean(
     return still_bad
 
 
+def _missing_or_empty_files(expected_names: List[str], week_dir: str) -> List[str]:
+    """Return expected server files that are absent locally or have zero bytes."""
+    missing = []
+    for name in expected_names:
+        path = os.path.join(week_dir, name)
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            missing.append(name)
+    return missing
+
+
+def _download_file_list(
+    names: List[str],
+    base_url: str,
+    week_dir: str,
+    token: Optional[str],
+    clean: bool = False,
+) -> List[str]:
+    """Download a list of files and return names where wget reported failure."""
+    failed = []
+    if not names:
+        return failed
+
+    for i, name in enumerate(names, 1):
+        dest = os.path.join(week_dir, name)
+        already_present = os.path.exists(dest) and os.path.getsize(dest) > 0
+        tag = "(resume)" if already_present and not clean else ""
+        print(f"  [{i:03d}/{len(names)}] {name} {tag}")
+        rc = _download_single_flac(base_url, name, week_dir, token, clean=clean)
+        if rc not in (0, 8):
+            print(f"    [warning] wget exit code {rc}")
+            failed.append(name)
+    return failed
+
+
 def download_week(
     house: str,
     year: str,
@@ -550,6 +585,7 @@ def download_week(
     save_dir: str,
     token: Optional[str],
     check_after: bool = True,
+    max_rounds: int = MAX_DOWNLOAD_ROUNDS,
 ) -> bool:
     """Download one week of FLAC files. Returns True if all files validated OK."""
     week_str = f"wk{str(week).zfill(2)}"
@@ -571,54 +607,90 @@ def download_week(
         print("  [error] No FLAC files found on server - check URL or token.")
         return False
 
-    # Step 2: download/resume all files listed by the server
-    existing = set(os.listdir(week_dir))
-    to_download = []
-    for name in flac_names:
-        dest = os.path.join(week_dir, name)
-        if name in existing and os.path.getsize(dest) > 0:
-            pass  # already present - wget -c will skip/resume anyway
-        to_download.append(name)
-
-    print(f"  [dl] Downloading {len(to_download)} files ...")
     t0 = time.time()
     failed = []
-    for i, name in enumerate(to_download, 1):
-        dest = os.path.join(week_dir, name)
-        already_done = name in existing and os.path.getsize(dest) > 0
-        tag = "(resume)" if already_done else ""
-        print(f"  [{i:03d}/{len(to_download)}] {name} {tag}")
-        rc = _download_single_flac(base_url, name, week_dir, token, clean=False)
-        if rc not in (0, 8):
-            print(f"    [warning] wget exit code {rc}")
-            failed.append(name)
+    summary = {"bad": [], "bad_details": []}
+    round_idx = 0
+
+    while True:
+        round_idx += 1
+        print()
+        if max_rounds > 0:
+            round_label = f"{round_idx}/{max_rounds}"
+        else:
+            round_label = f"{round_idx}/unlimited"
+        print(f"  [round {round_label}] Checking local files against server list ...")
+        missing = _missing_or_empty_files(flac_names, week_dir)
+
+        if round_idx == 1:
+            to_download = flac_names
+            print(f"  [dl] Downloading/resuming {len(to_download)} server-listed files ...")
+        else:
+            to_download = missing
+            if to_download:
+                print(f"  [dl] Re-downloading {len(to_download)} missing/empty files ...")
+
+        failed = _download_file_list(
+            to_download, base_url, week_dir, token, clean=False
+        )
+
+        if not check_after or not os.path.isdir(week_dir):
+            return len(failed) == 0
+
+        missing = _missing_or_empty_files(flac_names, week_dir)
+        if missing:
+            print(f"\n  [validate] {len(missing)} server-listed files still missing locally:")
+            for name in missing[:20]:
+                print(f"    - {name}")
+            if len(missing) > 20:
+                print(f"    ... plus {len(missing) - 20} more")
+
+        print(f"\n  [validate] Checking {week_dir} ...")
+        summary = validate_week(week_dir)
+
+        still_bad = []
+        if summary["bad"]:
+            still_bad = _retry_bad_files_clean(
+                summary.get("bad_details", []), base_url, week_dir, token
+            )
+            summary = validate_week(week_dir)
+
+        missing = _missing_or_empty_files(flac_names, week_dir)
+        unresolved_bad = still_bad or summary.get("bad_details", [])
+        if not failed and not missing and not unresolved_bad:
+            elapsed = time.time() - t0
+            print(f"\n  Download + validation succeeded in {elapsed / 60:.1f} min")
+            return True
+
+        print(
+            f"\n  [round {round_label}] unresolved: "
+            f"{len(failed)} wget failures, {len(missing)} missing/empty, "
+            f"{len(unresolved_bad)} bad FLAC"
+        )
+
+        if max_rounds > 0 and round_idx >= max_rounds:
+            break
 
     elapsed = time.time() - t0
-    print(f"\n  Download finished in {elapsed / 60:.1f} min  ({len(failed)} failures)")
+    print(f"\n  Download stopped after {round_idx} round(s) in {elapsed / 60:.1f} min")
 
-    if not check_after or not os.path.isdir(week_dir):
-        return len(failed) == 0
+    missing = _missing_or_empty_files(flac_names, week_dir)
+    if missing:
+        print("\n  [source-check] Files listed by server but still missing locally:")
+        for name in missing:
+            print(f"    {name}")
 
-    print(f"\n  [validate] Checking {week_dir} ...")
-    summary = validate_week(week_dir)
-
-    if summary["bad"]:
-        still_bad = _retry_bad_files_clean(
-            summary.get("bad_details", []), base_url, week_dir, token
+    if summary.get("bad"):
+        print("\n  [source-check] Files still failing after repeated clean re-download:")
+        for rec in summary.get("bad_details", []):
+            print(f"    {rec['file']}: {rec['reason']}")
+        print(
+            "  [source-check] These are unlikely to be simple partial downloads. "
+            "They may indicate a server-side/source FLAC issue, a genuinely short "
+            "raw file, or a dataset gap that needs to be documented."
         )
-        summary = validate_week(week_dir)
-        if still_bad or summary["bad"]:
-            unresolved = still_bad or summary.get("bad_details", [])
-            print("\n  [source-check] Files still failing after clean re-download:")
-            for rec in unresolved:
-                print(f"    {rec['file']}: {rec['reason']}")
-            print(
-                "  [source-check] These are unlikely to be simple partial downloads. "
-                "They may indicate a server-side/source FLAC issue, a genuinely short "
-                "raw file, or a dataset gap that needs to be documented."
-            )
 
-    return len(summary["bad"]) == 0
+    return False
 
 # SECTION 5 — MAIN
 # 
@@ -647,6 +719,15 @@ def get_arguments():
     )
     parser.add_argument(
         "--no_validate", action="store_true", help="Skip post-download FLAC validation"
+    )
+    parser.add_argument(
+        "--max_rounds",
+        type=int,
+        default=MAX_DOWNLOAD_ROUNDS,
+        help=(
+            "Maximum outer retry rounds for server-listed files that are missing, "
+            "empty, or fail FLAC validation. Use 0 for unlimited retry."
+        ),
     )
     return parser.parse_args()
 
@@ -697,6 +778,7 @@ def main():
             save_dir=args.save_dir,
             token=token,
             check_after=not args.no_validate,
+            max_rounds=args.max_rounds,
         )
         status = (
             "✅  all files validated" if ok else "⚠  some files may need re-downloading"
