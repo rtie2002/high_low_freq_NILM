@@ -742,16 +742,21 @@ def save_merged_week_outputs(all_outputs: dict, output_dir: str, weeks: list[str
         ]
         if not existing:
             continue
+        if len(existing) < 2:
+            print(
+                f"  [SKIP] {app_name}: only {existing[0][0]} output found; "
+                "merged multi-week CSV not written"
+            )
+            continue
 
         dfs = []
         for week_label, out_path in existing:
             df = pd.read_csv(out_path)
-            df.insert(0, "source_week", week_label)
             dfs.append(df)
 
         merged = pd.concat(dfs, ignore_index=True)
         if "readable_time" in merged.columns:
-            merged = merged.sort_values(["readable_time", "source_week"]).reset_index(drop=True)
+            merged = merged.sort_values("readable_time").reset_index(drop=True)
 
         first_week, last_week = existing[0][0], existing[-1][0]
         house_token = os.path.basename(existing[0][1]).split("_")[1]
@@ -838,6 +843,14 @@ def run_batch_from_config(
             week_label=week,
         )
         all_outputs.update(out)
+
+    processed_weeks = sorted({week_label for (_, week_label) in all_outputs.keys()})
+    missing_weeks = [week for week in weeks if week not in processed_weeks]
+    if missing_weeks:
+        print(
+            "\n[BATCH] WARNING: no output was produced for configured week(s): "
+            + ", ".join(missing_weeks)
+        )
 
     merged_outputs = save_merged_week_outputs(
         all_outputs, config["paths"]["save_path"], weeks
