@@ -45,3 +45,5 @@ dataset_preprocess/created_data/
 
 /feature_selection_outputs
 /.history
+/dataset_preprocess
+/feature_selection_outputs(on only)

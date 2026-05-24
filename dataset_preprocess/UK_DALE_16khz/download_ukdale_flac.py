@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -61,7 +62,7 @@ CEDA_PASSWORD = "RtiE2002"
 
 DEFAULT_HOUSE = "2"
 DEFAULT_YEAR = "2013"
-DEFAULT_WEEKS = ["32"]
+DEFAULT_WEEKS = ["31"]
 
 EXPECTED_DURATION_SEC = 3600  # each UK-DALE FLAC is ~1 hour
 DURATION_TOLERANCE = 5  # seconds
@@ -83,9 +84,9 @@ TOKEN_LIFETIME_SEC = 3 * 24 * 3600 - 3600  # 71 h  (tokens last 3 days)
 WGET_EXE = "wget"
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# 
 # SECTION 1 — CEDA TOKEN
-# ═════════════════════════════════════════════════════════════════════════════
+# 
 
 
 def _fetch_token_from_api(username: str, password: str) -> Optional[str]:
@@ -108,7 +109,7 @@ def _fetch_token_from_api(username: str, password: str) -> Optional[str]:
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = resp.read().decode("utf-8").strip()
     except Exception as e:
-        print(f"[auth] ❌  Token request failed: {e}")
+        print(f"[auth]   Token request failed: {e}")
         return None
 
     # Response can be plain-text token or JSON {"token": "..."}
@@ -124,7 +125,7 @@ def _fetch_token_from_api(username: str, password: str) -> Optional[str]:
     if token and len(token) > 20:
         return token
 
-    print(f"[auth] ⚠️  Unexpected API response: {body[:200]}")
+    print(f"[auth] ⚠  Unexpected API response: {body[:200]}")
     return None
 
 
@@ -169,13 +170,13 @@ def get_token() -> Optional[str]:
         print("[auth] ✅  Token obtained and cached")
         return token
 
-    print("[auth] ❌  Could not obtain token — downloads may fail for restricted files")
+    print("[auth]   Could not obtain token — downloads may fail for restricted files")
     return None
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# 
 # SECTION 2 — WGET INSTALL
-# ═════════════════════════════════════════════════════════════════════════════
+# 
 
 
 def _tool_on_path(name: str) -> bool:
@@ -326,7 +327,7 @@ def ensure_wget() -> bool:
     if _use_wget("wget", "PATH"):
         return True
 
-    print("[wget] ⚠️  wget not found — attempting auto-install...")
+    print("[wget] ⚠  wget not found — attempting auto-install...")
 
     if os.name == "nt":
         success = _install_wget_windows()
@@ -347,16 +348,16 @@ def ensure_wget() -> bool:
     if success and _use_wget(WGET_EXE, "installed"):
         return True
 
-    print("[wget] ❌  Auto-install failed. Install manually:")
+    print("[wget]   Auto-install failed. Install manually:")
     print("    Windows : scoop install wget  |  choco install wget")
     print("    Linux   : sudo apt install wget")
     print("    macOS   : brew install wget")
     return False
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# 
 # SECTION 3 — FLAC VALIDATION
-# ═════════════════════════════════════════════════════════════════════════════
+# 
 
 
 def validate_flac(path: str) -> Tuple[bool, str]:
@@ -396,25 +397,33 @@ def validate_week(week_dir: str) -> dict:
 
     ok_count = 0
     bad_files = []
+    bad_details = []
     for i, path in enumerate(flac_files, 1):
         valid, msg = validate_flac(path)
-        tag = "✅" if valid else "❌"
+        tag = "✅" if valid else ""
         print(f"  [{i:03d}/{len(flac_files)}] {tag}  {os.path.basename(path)}  {msg}")
         if valid:
             ok_count += 1
         else:
-            bad_files.append(os.path.basename(path))
+            name = os.path.basename(path)
+            bad_files.append(name)
+            bad_details.append({"file": name, "reason": msg})
 
     print(
         f"\n  [validate] {ok_count}/{len(flac_files)} OK"
         + (f"  |  BAD: {bad_files}" if bad_files else "")
     )
-    return {"total": len(flac_files), "ok": ok_count, "bad": bad_files}
+    return {
+        "total": len(flac_files),
+        "ok": ok_count,
+        "bad": bad_files,
+        "bad_details": bad_details,
+    }
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# 
 # SECTION 4 — DOWNLOAD
-# ═════════════════════════════════════════════════════════════════════════════
+# 
 
 
 def _list_flac_files(base_url: str, token: Optional[str]) -> List[str]:
@@ -436,7 +445,7 @@ def _list_flac_files(base_url: str, token: Optional[str]) -> List[str]:
         with _urlreq.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
-        print(f"  [list] ❌  Could not fetch directory listing: {e}")
+        print(f"  [list]   Could not fetch directory listing: {e}")
         return []
 
     items = data.get("items", [])
@@ -467,6 +476,73 @@ def _build_wget_single(file_url: str, save_dir: str, token: Optional[str]) -> Li
     return cmd
 
 
+def _quarantine_bad_file(path: str) -> Optional[str]:
+    """Move a failed local FLAC aside before clean re-download."""
+    if not os.path.exists(path):
+        return None
+
+    bad_dir = os.path.join(os.path.dirname(path), "_bad_flac_retry")
+    os.makedirs(bad_dir, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    quarantined = os.path.join(bad_dir, f"{os.path.basename(path)}.{stamp}.bad")
+    shutil.move(path, quarantined)
+    return quarantined
+
+
+def _download_single_flac(
+    base_url: str,
+    name: str,
+    week_dir: str,
+    token: Optional[str],
+    clean: bool = False,
+) -> int:
+    """Download one FLAC. If clean=True, move existing local file aside first."""
+    dest = os.path.join(week_dir, name)
+    if clean:
+        quarantined = _quarantine_bad_file(dest)
+        if quarantined:
+            print(f"    moved bad local file aside: {quarantined}")
+
+    file_url = f"{base_url}/{name}"
+    cmd = _build_wget_single(file_url, week_dir, token)
+    result = subprocess.run(cmd)
+    return result.returncode
+
+
+def _retry_bad_files_clean(
+    bad_details: list[dict],
+    base_url: str,
+    week_dir: str,
+    token: Optional[str],
+) -> list[dict]:
+    """Force clean re-download for validation failures, then revalidate each file."""
+    still_bad = []
+    if not bad_details:
+        return still_bad
+
+    print(f"\n  [repair] {len(bad_details)} bad files found; forcing clean re-download ...")
+    for rec in bad_details:
+        name = rec["file"]
+        print(f"  [repair] {name}")
+        print(f"    original validation error: {rec['reason']}")
+        rc = _download_single_flac(base_url, name, week_dir, token, clean=True)
+        if rc not in (0, 8):
+            still_bad.append({
+                "file": name,
+                "reason": f"wget exit code {rc} during clean retry",
+            })
+            continue
+
+        valid, msg = validate_flac(os.path.join(week_dir, name))
+        if valid:
+            print(f"    repaired OK: {msg}")
+        else:
+            print(f"    still bad after clean re-download: {msg}")
+            still_bad.append({"file": name, "reason": msg})
+
+    return still_bad
+
+
 def download_week(
     house: str,
     year: str,
@@ -492,31 +568,29 @@ def download_week(
     # Step 1: enumerate filenames via JSON API
     flac_names = _list_flac_files(base_url, token)
     if not flac_names:
-        print("  ❌  No FLAC files found on server — check URL or token.")
+        print("  [error] No FLAC files found on server - check URL or token.")
         return False
 
-    # Step 2: determine which files still need downloading
+    # Step 2: download/resume all files listed by the server
     existing = set(os.listdir(week_dir))
     to_download = []
     for name in flac_names:
         dest = os.path.join(week_dir, name)
         if name in existing and os.path.getsize(dest) > 0:
-            pass  # already present — wget -c will skip/resume anyway
+            pass  # already present - wget -c will skip/resume anyway
         to_download.append(name)
 
     print(f"  [dl] Downloading {len(to_download)} files ...")
     t0 = time.time()
     failed = []
     for i, name in enumerate(to_download, 1):
-        file_url = f"{base_url}/{name}"
         dest = os.path.join(week_dir, name)
         already_done = name in existing and os.path.getsize(dest) > 0
         tag = "(resume)" if already_done else ""
         print(f"  [{i:03d}/{len(to_download)}] {name} {tag}")
-        cmd = _build_wget_single(file_url, week_dir, token)
-        result = subprocess.run(cmd)
-        if result.returncode not in (0, 8):
-            print(f"    ⚠️  wget exit code {result.returncode}")
+        rc = _download_single_flac(base_url, name, week_dir, token, clean=False)
+        if rc not in (0, 8):
+            print(f"    [warning] wget exit code {rc}")
             failed.append(name)
 
     elapsed = time.time() - t0
@@ -529,19 +603,25 @@ def download_week(
     summary = validate_week(week_dir)
 
     if summary["bad"]:
-        print(f"\n  ⚠️  {len(summary['bad'])} bad files — retrying ...")
-        for name in summary["bad"]:
-            file_url = f"{base_url}/{name}"
-            cmd = _build_wget_single(file_url, week_dir, token)
-            subprocess.run(cmd)
+        still_bad = _retry_bad_files_clean(
+            summary.get("bad_details", []), base_url, week_dir, token
+        )
         summary = validate_week(week_dir)
+        if still_bad or summary["bad"]:
+            unresolved = still_bad or summary.get("bad_details", [])
+            print("\n  [source-check] Files still failing after clean re-download:")
+            for rec in unresolved:
+                print(f"    {rec['file']}: {rec['reason']}")
+            print(
+                "  [source-check] These are unlikely to be simple partial downloads. "
+                "They may indicate a server-side/source FLAC issue, a genuinely short "
+                "raw file, or a dataset gap that needs to be documented."
+            )
 
     return len(summary["bad"]) == 0
 
-
-# ═════════════════════════════════════════════════════════════════════════════
 # SECTION 5 — MAIN
-# ═════════════════════════════════════════════════════════════════════════════
+# 
 
 
 def get_arguments():
@@ -606,7 +686,7 @@ def main():
     # get CEDA token
     token = get_token()
     if not token:
-        print("\n[auth] ⚠️  Proceeding without token (only public files will download)")
+        print("\n[auth] ⚠  Proceeding without token (only public files will download)")
 
     # download each week
     for week in weeks:
@@ -619,7 +699,7 @@ def main():
             check_after=not args.no_validate,
         )
         status = (
-            "✅  all files validated" if ok else "⚠️  some files may need re-downloading"
+            "✅  all files validated" if ok else "⚠  some files may need re-downloading"
         )
         print(f"\n  Week {week}: {status}")
 

@@ -701,6 +701,54 @@ def run_flac_pipeline(
     return batch_output_files
 
 
+def save_merged_week_outputs(all_outputs: dict, output_dir: str, weeks: list[str]) -> dict:
+    """Create one merged CSV per appliance across processed week outputs."""
+    by_app: dict[str, list[tuple[str, str]]] = {}
+    for (app_name, week_label), out_path in all_outputs.items():
+        if not week_label or week_label == "batch":
+            continue
+        by_app.setdefault(app_name, []).append((week_label, out_path))
+
+    if not by_app:
+        return {}
+
+    week_tag = "_".join(weeks) if weeks else "weeks"
+    merged_outputs = {}
+    print("\n" + "=" * 60)
+    print(f"  MERGING WEEKLY OUTPUTS - {week_tag}")
+    print("=" * 60)
+
+    for app_name, week_paths in sorted(by_app.items()):
+        existing = [
+            (week_label, out_path)
+            for week_label, out_path in sorted(week_paths)
+            if os.path.exists(out_path)
+        ]
+        if not existing:
+            continue
+
+        dfs = []
+        for week_label, out_path in existing:
+            df = pd.read_csv(out_path)
+            df.insert(0, "source_week", week_label)
+            dfs.append(df)
+
+        merged = pd.concat(dfs, ignore_index=True)
+        if "readable_time" in merged.columns:
+            merged = merged.sort_values(["readable_time", "source_week"]).reset_index(drop=True)
+
+        first_week, last_week = existing[0][0], existing[-1][0]
+        house_token = os.path.basename(existing[0][1]).split("_")[1]
+        out_name = f"{app_name}_{house_token}_{first_week}_to_{last_week}_merged.csv"
+        out_path = os.path.join(output_dir, out_name)
+        merged.to_csv(out_path, index=False)
+        merged_outputs[app_name] = out_path
+        print(f"  {out_name:<48} | rows: {len(merged):>7}")
+
+    print("=" * 60)
+    return merged_outputs
+
+
 def run_batch_from_config(
     config: dict,
     lf_config_path: str | None,
@@ -775,12 +823,20 @@ def run_batch_from_config(
         )
         all_outputs.update(out)
 
+    merged_outputs = save_merged_week_outputs(
+        all_outputs, config["paths"]["save_path"], weeks
+    )
+
     print("\n" + "═" * 60)
     print("  ALL WEEKS FINISHED")
     print("═" * 60)
     if all_outputs:
         for out_path in sorted(set(all_outputs.values())):
             print(f"  📄 {out_path}")
+        if merged_outputs:
+            print("\n  Merged outputs:")
+            for out_path in sorted(merged_outputs.values()):
+                print(f"  {out_path}")
     else:
         print("  No output files were written.")
     print("═" * 60 + "\n[DONE]")

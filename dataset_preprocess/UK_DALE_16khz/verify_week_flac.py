@@ -327,30 +327,64 @@ def verify_week(
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def parse_weeks(weeks_text: str) -> List[str]:
-    """Parse week input such as '30', 'wk30', '30,31', or a path ending in wk30."""
-    weeks = []
+def parse_verify_targets(
+    weeks_text: str,
+    default_house: str,
+    default_year: str,
+    default_save_dir: str,
+) -> List[dict]:
+    """
+    Parse week input such as '30', 'wk30', '30,31', or a full path ending in wk30.
+
+    If a full path contains house_X/year/wkYY, infer house, year, and save_dir
+    from that path instead of falling back to the command-line defaults.
+    """
+    targets = []
     for item in weeks_text.split(","):
         item = item.strip()
         if not item:
             continue
-        week_name = os.path.basename(os.path.normpath(item))
+
+        norm = os.path.normpath(item)
+        normalized_for_match = norm.replace("\\", "/")
+        path_match = re.search(
+            r"^(?P<save_dir>.*?)/house_(?P<house>\d+)/(?P<year>\d{4})/wk(?P<week>\d+)$",
+            normalized_for_match,
+            flags=re.IGNORECASE,
+        )
+        if path_match:
+            save_dir = path_match.group("save_dir").replace("/", os.sep)
+            targets.append({
+                "house": path_match.group("house"),
+                "year": path_match.group("year"),
+                "week": path_match.group("week"),
+                "save_dir": save_dir,
+            })
+            continue
+
+        week_name = os.path.basename(norm)
         match = re.fullmatch(r"(?:wk)?(\d+)", week_name, flags=re.IGNORECASE)
         if not match:
             raise ValueError(f"Invalid week value: {item!r}")
-        weeks.append(match.group(1))
-    if not weeks:
+        targets.append({
+            "house": str(default_house),
+            "year": str(default_year),
+            "week": match.group(1),
+            "save_dir": default_save_dir,
+        })
+    if not targets:
         raise ValueError("No week value was entered")
-    return weeks
+    return targets
 
 
-def prompt_for_weeks() -> List[str]:
+def prompt_for_week_text() -> str:
     while True:
         raw = input(
             "Enter week folder(s) to verify, e.g. 30, wk30, 30,31, or a path ending in wk30: "
         )
         try:
-            return parse_weeks(raw)
+            parse_verify_targets(raw, DEFAULT_HOUSE, DEFAULT_YEAR, DEFAULT_SAVE)
+            return raw
         except ValueError as e:
             print(f"  {e}. Please try again.")
 
@@ -387,7 +421,13 @@ def get_arguments():
 def main():
     args = get_arguments()
     try:
-        weeks = parse_weeks(args.weeks) if args.weeks else prompt_for_weeks()
+        weeks_text = args.weeks if args.weeks else prompt_for_week_text()
+        targets = parse_verify_targets(
+            weeks_text,
+            default_house=args.house,
+            default_year=args.year,
+            default_save_dir=args.save_dir,
+        )
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(2)
@@ -396,10 +436,12 @@ def main():
     print("=" * 65)
     print("  UK-DALE 16kHz FLAC VERIFIER")
     print("=" * 65)
-    print(f"  House    : {args.house}")
-    print(f"  Year     : {args.year}")
-    print(f"  Weeks    : {weeks}")
-    print(f"  Save dir : {args.save_dir}")
+    print("  Targets  :")
+    for target in targets:
+        print(
+            f"    house={target['house']} year={target['year']} "
+            f"wk{str(target['week']).zfill(2)}  save_dir={target['save_dir']}"
+        )
     print(f"  Remote   : {'disabled' if args.no_remote else 'enabled'}")
     print(f"  Strict   : {'enabled' if args.strict else 'disabled'}")
     print("=" * 65)
@@ -408,26 +450,32 @@ def main():
     if not args.no_remote:
         token = get_token()
         if not token:
-            print("\n[auth] ⚠️  Proceeding without token — remote cross-check disabled\n")
+            print("\n[auth] Warning: proceeding without token - remote cross-check disabled\n")
 
     all_ok = True
-    for week in weeks:
+    for target in targets:
         result = verify_week(
-            house=args.house,
-            year=args.year,
-            week=week,
-            save_dir=args.save_dir,
+            house=target["house"],
+            year=target["year"],
+            week=target["week"],
+            save_dir=target["save_dir"],
             remote_check=(not args.no_remote),
             token=token,
             strict=args.strict,
         )
-        week_str = f"wk{str(week).zfill(2)}"
+        week_str = f"wk{str(target['week']).zfill(2)}"
         issues = result["bad"] + result["missing"]
         if issues:
             all_ok = False
-            print(f"\n  Week {week_str}: ⚠️  {len(issues)} issue(s) found")
+            print(
+                f"\n  House {target['house']} {week_str}: "
+                f"{len(issues)} issue(s) found"
+            )
         else:
-            print(f"\n  Week {week_str}: ✅  All {result['ok']} files OK")
+            print(
+                f"\n  House {target['house']} {week_str}: "
+                f"All {result['ok']} files OK"
+            )
 
     print()
     print("=" * 65)
