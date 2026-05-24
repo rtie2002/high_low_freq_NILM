@@ -46,4 +46,7 @@ dataset_preprocess/created_data/
 /feature_selection_outputs
 /.history
 /dataset_preprocess
+!/dataset_preprocess/
+!/dataset_preprocess/UK_DALE_16khz/
+!/dataset_preprocess/UK_DALE_16khz/calibration_house_*.cfg
 /feature_selection_outputs(on only)
