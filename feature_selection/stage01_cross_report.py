@@ -52,6 +52,13 @@ APP_LABELS = {
     "dishwasher": "Dishwasher",
     "washingmachine": "Washing machine",
 }
+FEATURE_ORDER = {feat: i for i, feat in enumerate(HF_FEATURES)}
+
+
+def sort_by_domain_order(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["_feature_order"] = df["feature"].map(FEATURE_ORDER).fillna(999)
+    return df.sort_values(["_feature_order", "feature"]).drop(columns="_feature_order")
 
 
 def _load_appliance_data(output_root: Path, appliances: list[str]) -> dict:
@@ -102,7 +109,7 @@ def build_summary_pivot(data: dict, appliances: list[str]) -> pd.DataFrame:
     pivot["globally_kept"] = pivot["n_kept"] == len(app_cols)
     pivot["globally_dropped"] = pivot["n_dropped"] == len(app_cols)
     pivot["tier"] = pivot["n_kept"].map(_tier_label)
-    return pivot.sort_values(["n_kept", "feature"], ascending=[False, True])
+    return sort_by_domain_order(pivot)
 
 
 def build_global_drop_partners(data: dict, appliances: list[str]) -> pd.DataFrame:
@@ -197,30 +204,54 @@ def fig01_pipeline_counts(data: dict, appliances: list[str], out_dir: Path) -> N
     _save_caption(out_dir, "fig01", "Figure 1. HF feature counts before and after Stage 01.")
 
 
-def fig02_stability_heatmap(pivot: pd.DataFrame, appliances: list[str], out_dir: Path) -> None:
+def fig02_stability_heatmap(
+    pivot: pd.DataFrame,
+    appliances: list[str],
+    out_dir: Path,
+    data: dict,
+) -> None:
+    pivot = sort_by_domain_order(pivot)
     feats = pivot["feature"].tolist()
     mat = np.zeros((len(feats), len(appliances)))
+    labels = np.full((len(feats), len(appliances)), "", dtype=object)
     for i, feat in enumerate(feats):
         for j, app in enumerate(appliances):
-            mat[i, j] = 1.0 if pivot.loc[pivot["feature"] == feat, app].iloc[0] == "kept" else 0.0
+            status = pivot.loc[pivot["feature"] == feat, app].iloc[0]
+            mat[i, j] = 1.0 if status == "kept" else 0.0
+            if status == "dropped":
+                report = data[app]["corr_report"]
+                match = report[report["dropped_feature"] == feat]
+                if len(match):
+                    labels[i, j] = match["kept_feature"].iloc[0]
     fig_h = max(10, len(feats) * 0.22)
-    fig, ax = plt.subplots(figsize=(8.5, fig_h))
+    fig, ax = plt.subplots(figsize=(11, fig_h))
     sns.heatmap(
         mat,
         xticklabels=[APP_LABELS.get(a, a) for a in appliances],
         yticklabels=feats,
         cmap=sns.color_palette(["#d62728", "#2ca02c"], as_cmap=True),
         cbar_kws={"ticks": [0.25, 0.75]},
+        annot=labels,
+        fmt="",
+        annot_kws={"fontsize": 6.5, "color": "white"},
         linewidths=0.3,
         linecolor="#eee",
         ax=ax,
     )
     ax.collections[0].colorbar.set_ticklabels(["Dropped", "Kept"])
-    ax.set_title("Cross-appliance feature stability (sorted by n_kept)")
+    for tick in ax.get_yticklabels():
+        feature = tick.get_text()
+        domain = FEATURE_DOMAIN.get(feature, "unknown")
+        tick.set_color(DOMAIN_COLORS.get(domain, "#333333"))
+    ax.set_title("Cross-appliance feature stability with dropped-by feature")
     fig.tight_layout()
     fig.savefig(out_dir / "fig02_stability_heatmap.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
-    _save_caption(out_dir, "fig02", "Figure 2. Kept vs dropped per feature and appliance.")
+    _save_caption(
+        out_dir,
+        "fig02",
+        "Figure 2. Kept vs dropped per feature and appliance. Red cells show which kept feature caused the drop.",
+    )
 
 
 def fig03_target_heatmap(target_df: pd.DataFrame, appliances: list[str], out_dir: Path) -> None:
@@ -395,7 +426,7 @@ def run_report(output_root: Path, appliances: list[str]) -> None:
     )
 
     fig01_pipeline_counts(data, appliances, cross_dir)
-    fig02_stability_heatmap(pivot, appliances, cross_dir)
+    fig02_stability_heatmap(pivot, appliances, cross_dir, data)
     fig03_target_heatmap(build_target_matrix(data, appliances), appliances, cross_dir)
     fig04_flip_spotlight(
         pd.read_csv(cross_dir / "target_pearson_matrix.csv"),

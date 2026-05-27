@@ -22,6 +22,9 @@ batch:
   fuse_lf: true
   save_hf_csv_per_flac: false   # true = also save features_vi-*.csv per hour
 
+logging:
+  verbose_windows: false        # false = much faster; true = print every 6s window
+
 hyperparameters:
   house_id: 2
   # High-frequency specific settings

@@ -4,6 +4,7 @@ import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.normpath(os.path.join(SCRIPT_DIR, "..", ".."))
+EXPECTED_FLAC_DURATION_SEC = 3600
 
 # (import_name for importlib, pip package name)
 _REQUIRED_PACKAGES = [
@@ -127,6 +128,11 @@ def get_arguments():
         default=None,
         help="Override appliances, e.g. kettle,fridge (default: ukdale.yaml list)",
     )
+    parser.add_argument(
+        "--verbose_windows",
+        action="store_true",
+        help="Print every 6s window. Slower; default uses concise progress only.",
+    )
     return parser.parse_args()
 
 
@@ -212,7 +218,11 @@ def decode_unix_time(ts, tz_name="UTC"):
 # PHASE 2: HF + LF FUSION
 # ─────────────────────────────────────────────────────────────────────────────
 def load_lf_data(
-    lf_config_path: str, house_id: int, appliances_filter: list | None
+    lf_config_path: str,
+    house_id: int,
+    appliances_filter: list | None,
+    start_ts_override: float | None = None,
+    end_ts_override: float | None = None,
 ) -> dict:
     """
     Pre-load ALL low-frequency data for a given house into memory ONCE.
@@ -266,8 +276,20 @@ def load_lf_data(
     # Time window filter — same numeric-filter logic as ukdale_processing.py
     start_t = global_params.get("start_time")
     end_t = global_params.get("end_time")
-    start_ts = pd.to_datetime(start_t).tz_localize(tz).timestamp() if start_t else None
-    end_ts = pd.to_datetime(end_t).tz_localize(tz).timestamp() if end_t else None
+    start_ts = (
+        start_ts_override
+        if start_ts_override is not None
+        else pd.to_datetime(start_t).tz_localize(tz).timestamp()
+        if start_t
+        else None
+    )
+    end_ts = (
+        end_ts_override
+        if end_ts_override is not None
+        else pd.to_datetime(end_t).tz_localize(tz).timestamp()
+        if end_t
+        else None
+    )
 
     appliances = global_params.get(
         "appliances_to_process",
@@ -281,6 +303,14 @@ def load_lf_data(
     print("━" * 60)
     print(f"  House: {house_id} | Data dir: {data_dir}")
     print(f"  Appliances: {appliances}")
+    if start_ts is not None and end_ts is not None:
+        start_label = datetime.datetime.fromtimestamp(start_ts, tz=ZoneInfo(tz)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        end_label = datetime.datetime.fromtimestamp(end_ts, tz=ZoneInfo(tz)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        print(f"  Time range: {start_label} to {end_label}")
 
     # ── 1. Load Mains ONCE ──────────────────────────────────────────────────
     mains_path = os.path.join(data_dir, f"house_{house_id}", "mains.dat")
@@ -514,11 +544,15 @@ def process_file(
     chunk_idx = 0
     full_blocks = 0
     partial_blocks = []
+    verbose_windows = config.get("logging", {}).get("verbose_windows", False)
 
-    print(
-        f"  {'Index':<7} | {'Timestamp':<19} | {'V_rms':<8} | {'I_rms':<10} | {'P_active':<8}"
-    )
-    print("  " + "-" * 60)
+    if verbose_windows:
+        print(
+            f"  {'Index':<7} | {'Timestamp':<19} | {'V_rms':<8} | {'I_rms':<10} | {'P_active':<8}"
+        )
+        print("  " + "-" * 60)
+    else:
+        print("  [FAST] Per-window logging disabled; use --verbose_windows to inspect windows.")
 
     for block in sf.blocks(flac_path, blocksize=chunk_size):
         actual_len = len(block)
@@ -528,18 +562,20 @@ def process_file(
         if actual_len == chunk_size:
             full_blocks += 1
             feat = compute_hf_features(block, config, v_step, i_step)
-            print(
-                f"  [{chunk_idx:03d}]   | {readable_time} | {feat['V_rms']:.2f}V   | {feat['I_rms']:.4f}A  | {feat['P_active']:.1f}W"
-            )
+            if verbose_windows:
+                print(
+                    f"  [{chunk_idx:03d}]   | {readable_time} | {feat['V_rms']:.2f}V   | {feat['I_rms']:.4f}A  | {feat['P_active']:.1f}W"
+                )
             feat["readable_time"] = readable_time
             features.append(feat)
         else:
             # Incomplete window – still compute features (using available samples)
             partial_blocks.append((readable_time, actual_len))
             feat = compute_hf_features(block, config, v_step, i_step)
-            print(
-                f"  [{chunk_idx:03d}]*  | {readable_time} | {feat['V_rms']:.2f}V   | {feat['I_rms']:.4f}A  | {feat['P_active']:.1f}W   (partial)"
-            )
+            if verbose_windows:
+                print(
+                    f"  [{chunk_idx:03d}]*  | {readable_time} | {feat['V_rms']:.2f}V   | {feat['I_rms']:.4f}A  | {feat['P_active']:.1f}W   (partial)"
+                )
             feat["readable_time"] = readable_time
             features.append(feat)
 
@@ -613,6 +649,18 @@ def week_directory(config: dict, week: str) -> str:
     return os.path.join(data_root, f"house_{house}", str(year), week)
 
 
+def flac_time_range(flac_files: list[str]) -> tuple[float | None, float | None]:
+    starts = []
+    for path in flac_files:
+        try:
+            starts.append(int(os.path.basename(path).split("-")[1].split("_")[0]))
+        except (IndexError, ValueError):
+            continue
+    if not starts:
+        return None, None
+    return float(min(starts)), float(max(starts) + EXPECTED_FLAC_DURATION_SEC)
+
+
 def save_fused_chunk(
     app_name: str,
     df_chunk: pd.DataFrame,
@@ -656,6 +704,12 @@ def save_fused_chunk(
         )
 
 
+def count_csv_data_rows(path: str) -> int:
+    with open(path, "rb") as f:
+        line_count = sum(1 for _ in f)
+    return max(0, line_count - 1)
+
+
 def run_flac_pipeline(
     flac_files: list[str],
     config: dict,
@@ -663,6 +717,8 @@ def run_flac_pipeline(
     appliances_filter: list[str] | None,
     save_hf_csv: bool,
     week_label: str | None = None,
+    lf_start_ts: float | None = None,
+    lf_end_ts: float | None = None,
 ) -> dict:
     """Process a list of FLAC paths; return batch output file map."""
     output_dir = config["paths"]["save_path"]
@@ -674,7 +730,13 @@ def run_flac_pipeline(
     # Now:        1 in-process load (30-60s total) + N_flac × <5ms merge
     lf_cache = None
     if lf_config_path and os.path.exists(lf_config_path):
-        lf_cache = load_lf_data(lf_config_path, house_id, appliances_filter)
+        lf_cache = load_lf_data(
+            lf_config_path,
+            house_id,
+            appliances_filter,
+            start_ts_override=lf_start_ts,
+            end_ts_override=lf_end_ts,
+        )
     elif lf_config_path:
         print(f"[PIPELINE] ⚠️  lf_config not found: {lf_config_path}. Fusion disabled.")
 
@@ -710,7 +772,7 @@ def run_flac_pipeline(
         print(f"  WEEK/BATCH COMPLETE — {label}")
         print("━" * 60)
         for (_, _), out_path in sorted(batch_output_files.items(), key=lambda x: x[1]):
-            total = len(pd.read_csv(out_path))
+            total = count_csv_data_rows(out_path)
             print(f"  ✅ {os.path.basename(out_path):<40} | rows: {total:>6}")
         print("━" * 60)
 
@@ -834,6 +896,7 @@ def run_batch_from_config(
         print(
             f"\n{'═' * 60}\n  WEEK {week} — {len(flac_files)} FLAC file(s)\n{'═' * 60}"
         )
+        lf_start_ts, lf_end_ts = flac_time_range(flac_files)
         out = run_flac_pipeline(
             flac_files,
             config,
@@ -841,6 +904,8 @@ def run_batch_from_config(
             apps,
             save_hf_csv=save_hf,
             week_label=week,
+            lf_start_ts=lf_start_ts,
+            lf_end_ts=lf_end_ts,
         )
         all_outputs.update(out)
 
@@ -874,6 +939,8 @@ def run_batch_from_config(
 if __name__ == "__main__":
     args = get_arguments()
     config, _ = load_hf_config(args.config)
+    if args.verbose_windows:
+        config.setdefault("logging", {})["verbose_windows"] = True
     appliances_filter = get_appliances_filter(config, args.appliances)
     lf_override = args.lf_config
 

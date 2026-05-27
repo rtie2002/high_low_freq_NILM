@@ -115,6 +115,14 @@ DOMAIN_COLORS = {
     "unknown": "#7f7f7f",
 }
 
+APP_LABELS = {
+    "kettle": "Kettle",
+    "fridge": "Fridge",
+    "microwave": "Microwave",
+    "dishwasher": "Dishwasher",
+    "washingmachine": "Washing machine",
+}
+
 
 def _feature_priority(feat: str) -> int:
     return DOMAIN_PRIORITY.get(FEATURE_DOMAIN.get(feat, "unknown"), 0)
@@ -364,6 +372,45 @@ Why only 2 PNG files now?
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
     return path
+
+
+def _save_target_relevance_heatmap(results: dict, appliances: list[str], output_root: str) -> list[str]:
+    rows = []
+    for feat in HF_FEATURES:
+        row = {"feature": feat}
+        for app in appliances:
+            target_df = results[app]["target_corr_df"]
+            match = target_df[target_df["feature"] == feat]
+            row[app] = match["target_pearson_abs"].iloc[0] if len(match) else np.nan
+        rows.append(row)
+
+    target_matrix = pd.DataFrame(rows)
+    cross_dir = os.path.join(output_root, "cross_appliance")
+    os.makedirs(cross_dir, exist_ok=True)
+
+    csv_path = os.path.join(cross_dir, "target_pearson_matrix.csv")
+    png_path = os.path.join(cross_dir, "fig03_target_relevance_heatmap.png")
+    target_matrix.to_csv(csv_path, index=False)
+
+    mat = target_matrix[appliances].values
+    fig_h = max(10, len(target_matrix) * 0.22)
+    fig, ax = plt.subplots(figsize=(9, fig_h))
+    sns.heatmap(
+        mat,
+        xticklabels=[APP_LABELS.get(app, app) for app in appliances],
+        yticklabels=target_matrix["feature"],
+        cmap="YlOrRd",
+        vmin=0,
+        vmax=0.75,
+        cbar_kws={"label": "|Pearson| to appliance power"},
+        ax=ax,
+    )
+    ax.set_title("Target relevance (same HF features, different appliance power)")
+    fig.tight_layout()
+    fig.savefig(png_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    return [csv_path, png_path]
 
 
 def _save_correlation_matrix_artifacts(
@@ -863,6 +910,7 @@ def run_one_appliance(
         "dropped_clean": dropped_s0,
         "dropped_corr": dropped_s1,
         "summary_df": summary_df,
+        "target_corr_df": target_corr_df,
     }
 
 
@@ -921,6 +969,12 @@ def run_all_appliances(args) -> dict:
     summary_path = os.path.join(output_root, "stage01_summary.csv")
     pivot.to_csv(summary_path, index=False)
 
+    target_heatmap_paths: list[str] = []
+    if not getattr(args, "no_plots", False):
+        target_heatmap_paths = _save_target_relevance_heatmap(
+            results, list(results.keys()), output_root
+        )
+
     print("\n" + "=" * 72)
     print("  STAGE 01 CROSS-APPLIANCE SUMMARY")
     print("=" * 72)
@@ -939,6 +993,8 @@ def run_all_appliances(args) -> dict:
         print(f"    {f}  [{FEATURE_DOMAIN.get(f, '?')}]")
 
     print(f"\n  Cross-appliance table: {summary_path}")
+    for path in target_heatmap_paths:
+        print(f"  Target relevance output: {path}")
     print("=" * 72)
 
     return results
@@ -950,12 +1006,12 @@ def get_arguments():
     )
     parser.add_argument(
         "--data_dir",
-        default="dataset_preprocess/high_frequency_data_extract/output",
+        default="dataset_preprocess/high_frequency_data_extract/output_on_period_buffer2",
         help="Folder with fused appliance CSVs (relative to project root)",
     )
     parser.add_argument(
         "--output_dir",
-        default="feature_selection_outputs",
+        default="feature_selection/results",
         help="Root folder for outputs (relative to project root)",
     )
     parser.add_argument(
