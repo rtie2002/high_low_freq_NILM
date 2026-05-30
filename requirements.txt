@@ -6,3 +6,4 @@ scipy
 requests
 tzdata
 PyWavelets
+matplotlib

@@ -201,6 +201,8 @@ def pairwise_redundancy(X: pd.DataFrame, random_state: int) -> pd.DataFrame:
             random_state=random_state,
         )
         red.loc[feature, other_features] = mi
+    red = (red + red.T) / 2.0
+    np.fill_diagonal(red.values, 0.0)
     return red
 
 
@@ -245,7 +247,10 @@ def run_mrmr(X: pd.DataFrame, y: pd.Series, target: str, top_k: int, random_stat
                 red = 0.0
 
             # Paper Eq. (3): maximize relevance / redundancy.
-            score = rel / (red + eps) if selected else rel
+            # If MI redundancy is estimated as zero, treat the candidate as
+            # non-redundant and rank it by relevance instead of creating an
+            # artificial near-infinite quotient.
+            score = rel / red if selected and red > eps else rel
             candidates.append((feature, score, rel, red))
 
         feature, score, rel, red = max(candidates, key=lambda x: x[1])
@@ -423,7 +428,7 @@ def run_one_appliance(args, data_dir: str, output_root: str, appliance: str) -> 
         "on_rows": target_counts.get(1, np.nan),
         "n_features": len(X.columns),
         "ranking_path": ranking_path,
-        "top_features": ", ".join(ranking["feature"].head(args.top_k).tolist()),
+        "top_features": ", ".join(ranking["feature"].head(10).tolist()),
     }
 
 
