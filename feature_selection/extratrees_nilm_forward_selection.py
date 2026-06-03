@@ -16,6 +16,8 @@ DATASET_PATH = DATASET_DIR / DATASET_FILENAME
 RESULTS_DIR = Path(__file__).parent / "results"
 FORWARD_SELECTION_LOG = RESULTS_DIR / "extratrees_forward_selection_log.csv"
 FORWARD_SELECTION_PLOT = RESULTS_DIR / "extratrees_forward_selection_curve.png"
+PER_APPLIANCE_PLOT = RESULTS_DIR / "extratrees_forward_selection_per_appliance.png"
+SELECTED_FEATURES_TXT = RESULTS_DIR / "extratrees_selected_features.txt"
 
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
@@ -236,30 +238,72 @@ selection_log_df = pd.DataFrame(selection_log)
 selection_log_df.to_csv(FORWARD_SELECTION_LOG, index=False)
 
 if not selection_log_df.empty:
-    plt.figure(figsize=(10, 5))
-    plt.plot(
+    plt.style.use("seaborn-v0_8-whitegrid")
+
+    fig, ax = plt.subplots(figsize=(11, 5))
+    ax.plot(
         selection_log_df["feature_count"],
         selection_log_df["macro_f1"],
+        color="#1f77b4",
+        linewidth=2.5,
         marker="o",
+        markersize=4,
         label="Macro F1",
     )
-    plt.plot(
+    ax.plot(
         selection_log_df["feature_count"],
         selection_log_df["micro_f1"],
+        color="#ff7f0e",
+        linewidth=2.5,
         marker="s",
+        markersize=4,
         label="Micro F1",
     )
+    ax.set_title("ExtraTrees Forward Feature Selection", fontsize=14, weight="bold")
+    ax.set_xlabel("Number of Selected Features")
+    ax.set_ylabel("Classification F1 Score")
+    ax.set_ylim(0, 1.02)
+    ax.legend(loc="lower right")
+    ax.grid(True, alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(FORWARD_SELECTION_PLOT, dpi=220)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(11, 5))
     for label in ON_OFF_LABEL_COLUMNS:
         score_column = f"{label}_f1"
         if score_column in selection_log_df.columns:
-            plt.plot(
+            ax.plot(
                 selection_log_df["feature_count"],
                 selection_log_df[score_column],
-                linestyle="--",
-                alpha=0.7,
+                linewidth=2,
                 label=label,
             )
+    ax.set_title("Per-Appliance F1 During Forward Selection", fontsize=14, weight="bold")
+    ax.set_xlabel("Number of Selected Features")
+    ax.set_ylabel("Per-Appliance F1 Score")
+    ax.set_ylim(0, 1.02)
+    ax.legend(loc="lower right", ncol=2)
+    ax.grid(True, alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(PER_APPLIANCE_PLOT, dpi=220)
+    plt.close(fig)
 
+    with SELECTED_FEATURES_TXT.open("w", encoding="utf-8") as file:
+        file.write("ExtraTrees Forward Feature Selection\n")
+        file.write(f"Dataset: {DATASET_PATH}\n\n")
+        file.write("Selected feature order:\n")
+        for _, row in selection_log_df.iterrows():
+            file.write(
+                f"Round {int(row['round']):02d}: "
+                f"{row['added_feature']} | "
+                f"Macro F1={row['macro_f1']:.4f} | "
+                f"Micro F1={row['micro_f1']:.4f}\n"
+            )
+
+    """
+    Old plot style with labels on every point. Kept disabled because the
+    annotations overlap heavily once many features are selected.
     for _, row in selection_log_df.iterrows():
         plt.annotate(
             row["added_feature"],
@@ -279,6 +323,7 @@ if not selection_log_df.empty:
     plt.tight_layout()
     plt.savefig(FORWARD_SELECTION_PLOT, dpi=200)
     plt.close()
+    """
 
 
 # =============================================================================
@@ -306,6 +351,8 @@ print(f"Best Macro F1: {best_macro_f1:.4f}")
 print(f"Best Micro F1: {best_micro_f1:.4f}")
 print(f"Selection log: {FORWARD_SELECTION_LOG}")
 print(f"Selection curve: {FORWARD_SELECTION_PLOT}")
+print(f"Per-appliance curve: {PER_APPLIANCE_PLOT}")
+print(f"Selected feature order: {SELECTED_FEATURES_TXT}")
 
 if best_prediction is not None:
     print()
