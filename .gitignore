@@ -51,3 +51,6 @@ dataset_preprocess/created_data/
 !/dataset_preprocess/UK_DALE_16khz/calibration_house_*.cfg
 /feature_selection_outputs(on only)
 /feature_selection/results
+*.png
+*.pdf
+*.png

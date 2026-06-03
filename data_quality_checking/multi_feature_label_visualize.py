@@ -24,6 +24,8 @@ from typing import Iterable
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.patches import Rectangle
+from matplotlib.transforms import blended_transform_factory
 from matplotlib.widgets import Button, CheckButtons, Slider, TextBox
 
 
@@ -95,10 +97,23 @@ def detect_label_column(df: pd.DataFrame, file_path: str, requested: str | None)
     return power_cols[0]
 
 
+def detect_multi_appliance_columns(df: pd.DataFrame) -> list[str]:
+    apps = []
+    for col in df.columns:
+        if not col.endswith("_on"):
+            continue
+        app = col[: -len("_on")]
+        if f"{app}_power" in df.columns:
+            apps.append(app)
+    return apps
+
+
 def numeric_columns(df: pd.DataFrame) -> list[str]:
     cols = []
     for col in df.columns:
         if col == "on_off":
+            continue
+        if col.endswith("_on"):
             continue
         if pd.api.types.is_numeric_dtype(df[col]):
             cols.append(col)
@@ -135,9 +150,23 @@ def on_segments(mask: np.ndarray) -> list[tuple[int, int, int]]:
     return [(int(s), int(e), idx + 1) for idx, (s, e) in enumerate(zip(starts, ends))]
 
 
-def default_feature_list(df: pd.DataFrame, label_col: str, requested: list[str]) -> list[str]:
+def default_feature_list(
+    df: pd.DataFrame,
+    label_col: str,
+    requested: list[str],
+    multi_apps: list[str] | None = None,
+) -> list[str]:
     if requested:
         return requested
+    features = []
+    if multi_apps:
+        if "aggregate" in df.columns:
+            features.append("aggregate")
+        if "P_active" in df.columns:
+            features.append("P_active")
+        features.extend(f"{app}_power" for app in multi_apps if f"{app}_power" in df.columns)
+        return list(dict.fromkeys(features))
+
     features = [label_col]
     if "P_active" in df.columns and "P_active" != label_col:
         features.append("P_active")
@@ -157,26 +186,43 @@ def interactive_viewer(
         print("CSV is empty.")
         return
 
-    label_col = detect_label_column(df, file_path, label_col)
+    multi_apps = detect_multi_appliance_columns(df)
+    is_multi_appliance = len(multi_apps) >= 2
+    if is_multi_appliance and label_col is None and "aggregate" in df.columns:
+        label_col = "aggregate"
+    else:
+        label_col = detect_label_column(df, file_path, label_col)
     numeric = numeric_columns(df)
     if label_col not in numeric:
         numeric.append(label_col)
 
-    selected = default_feature_list(df, label_col, features or [])
+    selected = default_feature_list(df, label_col, features or [], multi_apps if is_multi_appliance else None)
     missing = [col for col in selected if col not in df.columns]
     if missing:
         raise ValueError(f"Feature(s) not found: {missing}")
 
-    on_mask = df["on_off"].to_numpy() if "on_off" in df.columns else None
-    segments = on_segments(on_mask)
+    if is_multi_appliance:
+        on_masks = {app: df[f"{app}_on"].to_numpy() for app in multi_apps}
+    else:
+        on_masks = {label_col.replace("_power", ""): df["on_off"].to_numpy()} if "on_off" in df.columns else {}
+    segments_by_app = {app: on_segments(mask) for app, mask in on_masks.items()}
+    segments = [seg for app_segments in segments_by_app.values() for seg in app_segments]
     total_points = len(df)
 
     raw_data = {col: clean_series(df[col]) for col in numeric if col in df.columns}
 
     print(f"Rows        : {total_points:,}")
+    print(f"Mode        : {'multi-appliance' if is_multi_appliance else 'single-appliance'}")
     print(f"Label       : {label_col}")
+    if is_multi_appliance:
+        print(f"Appliances  : {', '.join(multi_apps)}")
     print(f"Default view: {', '.join(selected)}")
-    print(f"ON segments : {len(segments)}")
+    if is_multi_appliance:
+        for app in multi_apps:
+            on_rows = int(pd.to_numeric(df[f"{app}_on"], errors="coerce").fillna(0).gt(0).sum())
+            print(f"ON segments : {app:<15} {len(segments_by_app[app]):>5} events | {on_rows:>8,} ON rows")
+    else:
+        print(f"ON segments : {len(segments)}")
     print("\nSelectable numeric columns:")
     print(", ".join(numeric))
     print("\nTip: type comma-separated feature names in the Features box, then click Apply.")
@@ -193,6 +239,10 @@ def interactive_viewer(
         "widget_refs": [],
         "feature_box_summary": "",
         "hidden_features": set(),
+    }
+    event_colors = {
+        app: plt.rcParams["axes.prop_cycle"].by_key()["color"][idx % len(plt.rcParams["axes.prop_cycle"].by_key()["color"])]
+        for idx, app in enumerate(multi_apps if is_multi_appliance else list(on_masks.keys()))
     }
 
     fig, ax = plt.subplots(figsize=(14, 7.5))
@@ -229,6 +279,54 @@ def interactive_viewer(
         clear_on_regions()
         if not state["show_on"] or not segments:
             status.set_text("")
+            return
+
+        if is_multi_appliance:
+            transform = blended_transform_factory(ax.transData, ax.transAxes)
+            lane_height = min(0.045, 0.23 / max(1, len(multi_apps)))
+            top = 0.985
+            visible_total = 0
+            summary = []
+            for app_idx, app in enumerate(multi_apps):
+                app_segments = segments_by_app.get(app, [])
+                visible = [(s, e, n) for s, e, n in app_segments if e > start and s < end]
+                visible_total += len(visible)
+                summary.append(f"{app}:{len(visible)}/{len(app_segments)}")
+                y0 = top - (app_idx + 1) * lane_height
+                color = event_colors[app]
+                for seg_start, seg_end, _number in visible:
+                    x0 = max(seg_start, start)
+                    x1 = min(seg_end, end)
+                    width = max(1, x1 - x0)
+                    patch = Rectangle(
+                        (x0, y0),
+                        width,
+                        lane_height * 0.72,
+                        transform=transform,
+                        facecolor=color,
+                        edgecolor=color,
+                        linewidth=0.5,
+                        alpha=0.78,
+                        zorder=5,
+                        clip_on=False,
+                    )
+                    ax.add_patch(patch)
+                    state["patches"].append(patch)
+                text = ax.text(
+                    1.005,
+                    y0 + lane_height * 0.36,
+                    app,
+                    transform=ax.transAxes,
+                    va="center",
+                    fontsize=8,
+                    color=color,
+                    fontweight="bold",
+                )
+                state["labels"].append(text)
+            status.set_text(
+                f"Multi ON events visible: {visible_total} | "
+                + " | ".join(summary[:5])
+            )
             return
 
         y0, y1 = ax.get_ylim()
@@ -495,9 +593,9 @@ def interactive_viewer(
                 f"min={np.min(vals):12.4f} max={np.max(vals):12.4f} "
                 f"std={np.std(vals):12.4f}"
             )
-        if on_mask is not None:
-            visible_on = np.asarray(on_mask[start:end]).astype(float) > 0
-            print(f"{'on_off ratio':24} {visible_on.mean():12.4f}")
+        for app, mask in on_masks.items():
+            visible_on = np.asarray(mask[start:end]).astype(float) > 0
+            print(f"{app + ' on ratio':24} {visible_on.mean():12.4f}")
         print("=" * 88)
 
     ax_pos = plt.axes([0.09, 0.135, 0.48, 0.028])
