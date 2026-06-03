@@ -13,7 +13,7 @@ batch:
   enabled: true
   house: 2
   year: 2013
-  weeks: ["wk30", "wk31"]
+  weeks: ["wk28", "wk29"]
   # Which appliances to fuse & save (must match ukdale.yaml names).
   # []  = all five: kettle, fridge, microwave, dishwasher, washingmachine
   # Or list only what you want, e.g.:

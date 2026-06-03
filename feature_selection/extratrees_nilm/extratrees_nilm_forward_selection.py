@@ -1,5 +1,6 @@
 from pathlib import Path
 from time import perf_counter
+import json
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -10,19 +11,41 @@ from sklearn.metrics import f1_score, classification_report
 # 1. Configuration
 # =============================================================================
 # Change these values to test another dataset or tune the baseline model.
-DATASET_DIR = Path(__file__).parent / "dataset"
-DATASET_FILENAME = "multi_appliance_house2_wk30_to_wk31_merged.csv"
+FEATURE_SELECTION_DIR = Path(__file__).resolve().parents[1]
+DATASET_DIR = FEATURE_SELECTION_DIR / "dataset"
+DATASET_FILENAME = "multi_appliance_house2_wk28_to_wk31_merged.csv"
 DATASET_PATH = DATASET_DIR / DATASET_FILENAME
-RESULTS_DIR = Path(__file__).parent / "results"
-FORWARD_SELECTION_LOG = RESULTS_DIR / "extratrees_forward_selection_log.csv"
-FORWARD_SELECTION_PLOT = RESULTS_DIR / "extratrees_forward_selection_curve.png"
-PER_APPLIANCE_PLOT = RESULTS_DIR / "extratrees_forward_selection_per_appliance.png"
-SELECTED_FEATURES_TXT = RESULTS_DIR / "extratrees_selected_features.txt"
+BASE_RESULTS_DIR = FEATURE_SELECTION_DIR / "results"
+RUN_NAME = f"extratrees_forward_selection_onoff_{Path(DATASET_FILENAME).stem}"
+RESULTS_DIR = BASE_RESULTS_DIR / RUN_NAME
+BEST_PARAMS_PATH = BASE_RESULTS_DIR / "extratrees_best_hyperparameters.json"
+FORWARD_SELECTION_LOG = RESULTS_DIR / "forward_selection_log.csv"
+FORWARD_SELECTION_PLOT = RESULTS_DIR / "forward_selection_macro_micro_f1.png"
+PER_APPLIANCE_PLOT = RESULTS_DIR / "forward_selection_per_appliance_f1.png"
+SELECTED_FEATURES_TXT = RESULTS_DIR / "selected_features.txt"
 
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
-N_ESTIMATORS = 50
-MAX_DEPTH = 20
+
+DEFAULT_EXTRATREES_PARAMS = {
+    "n_estimators": 50,
+    "max_depth": 20,
+    "min_samples_leaf": 2,
+    "min_samples_split": 2,
+    "max_features": "sqrt",
+    "criterion": "gini",
+    "class_weight": "balanced",
+    "random_state": RANDOM_STATE,
+    "n_jobs": -1,
+}
+
+if BEST_PARAMS_PATH.exists():
+    tuned_result = json.loads(BEST_PARAMS_PATH.read_text(encoding="utf-8"))
+    EXTRATREES_PARAMS = tuned_result["best_params"]
+    HYPERPARAMETER_SOURCE = f"tuned parameters from {BEST_PARAMS_PATH}"
+else:
+    EXTRATREES_PARAMS = DEFAULT_EXTRATREES_PARAMS
+    HYPERPARAMETER_SOURCE = "default parameters"
 
 
 # =============================================================================
@@ -105,15 +128,7 @@ y_on_test = y_on.iloc[split_index:]
 # This function trains one ExtraTrees model for a selected feature subset and
 # returns its validation scores. Forward selection will call this many times.
 def train_and_score(feature_subset):
-    model = ExtraTreesClassifier(
-        n_estimators=N_ESTIMATORS,
-        max_depth=MAX_DEPTH,
-        min_samples_leaf=2,
-        max_features="sqrt",
-        class_weight="balanced",
-        random_state=RANDOM_STATE,
-        n_jobs=-1,
-    )
+    model = ExtraTreesClassifier(**EXTRATREES_PARAMS)
 
     model.fit(X_train[feature_subset], y_on_train)
     prediction = model.predict(X_test[feature_subset])
@@ -291,7 +306,8 @@ if not selection_log_df.empty:
 
     with SELECTED_FEATURES_TXT.open("w", encoding="utf-8") as file:
         file.write("ExtraTrees Forward Feature Selection\n")
-        file.write(f"Dataset: {DATASET_PATH}\n\n")
+        file.write(f"Dataset: {DATASET_PATH}\n")
+        file.write(f"Run folder: {RESULTS_DIR}\n\n")
         file.write("Selected feature order:\n")
         for _, row in selection_log_df.iterrows():
             file.write(
@@ -300,30 +316,6 @@ if not selection_log_df.empty:
                 f"Macro F1={row['macro_f1']:.4f} | "
                 f"Micro F1={row['micro_f1']:.4f}\n"
             )
-
-    """
-    Old plot style with labels on every point. Kept disabled because the
-    annotations overlap heavily once many features are selected.
-    for _, row in selection_log_df.iterrows():
-        plt.annotate(
-            row["added_feature"],
-            (row["feature_count"], row["macro_f1"]),
-            textcoords="offset points",
-            xytext=(0, 8),
-            ha="center",
-            fontsize=8,
-            rotation=25,
-        )
-
-    plt.title("ExtraTrees Forward Feature Selection")
-    plt.xlabel("Number of Selected Features")
-    plt.ylabel("Classification F1 Score")
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(FORWARD_SELECTION_PLOT, dpi=200)
-    plt.close()
-    """
 
 
 # =============================================================================
@@ -339,6 +331,7 @@ print(f"Power labels ({len(POWER_LABEL_COLUMNS)}): {POWER_LABEL_COLUMNS}")
 print(f"ON/OFF labels ({len(ON_OFF_LABEL_COLUMNS)}): {ON_OFF_LABEL_COLUMNS}")
 print()
 print("ExtraTrees forward feature selection")
+print(f"Hyperparameters: {HYPERPARAMETER_SOURCE}")
 print(f"Train rows: {len(X_train):,}")
 print(f"Test rows: {len(X_test):,}")
 print()
