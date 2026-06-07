@@ -4,8 +4,9 @@ import json
 
 import matplotlib.pyplot as plt
 import pandas as pd
+from matplotlib.ticker import MultipleLocator
 from sklearn.ensemble import ExtraTreesClassifier
-from sklearn.metrics import f1_score, classification_report
+from sklearn.metrics import f1_score, precision_score, recall_score, classification_report
 
 # =============================================================================
 # 1. Configuration
@@ -13,12 +14,14 @@ from sklearn.metrics import f1_score, classification_report
 # Change these values to test another dataset or tune the baseline model.
 FEATURE_SELECTION_DIR = Path(__file__).resolve().parents[1]
 DATASET_DIR = FEATURE_SELECTION_DIR / "dataset"
-DATASET_FILENAME = "multi_appliance_house2_wk28_to_wk31_merged.csv"
+DATASET_FILENAME = "multi_appliance_house2_wk24_to_wk31_merged.csv"
 DATASET_PATH = DATASET_DIR / DATASET_FILENAME
 BASE_RESULTS_DIR = FEATURE_SELECTION_DIR / "results"
 RUN_NAME = f"extratrees_forward_selection_onoff_{Path(DATASET_FILENAME).stem}"
 RESULTS_DIR = BASE_RESULTS_DIR / RUN_NAME
-BEST_PARAMS_PATH = BASE_RESULTS_DIR / "extratrees_best_hyperparameters.json"
+TUNING_RUN_NAME = f"extratrees_hyperparameter_tuning_onoff_{Path(DATASET_FILENAME).stem}"
+BEST_PARAMS_PATH = BASE_RESULTS_DIR / TUNING_RUN_NAME / "best_hyperparameters.json"
+LEGACY_BEST_PARAMS_PATH = BASE_RESULTS_DIR / "extratrees_best_hyperparameters.json"
 FORWARD_SELECTION_LOG = RESULTS_DIR / "forward_selection_log.csv"
 FORWARD_SELECTION_PLOT = RESULTS_DIR / "forward_selection_macro_micro_f1.png"
 PER_APPLIANCE_PLOT = RESULTS_DIR / "forward_selection_per_appliance_f1.png"
@@ -28,10 +31,10 @@ TEST_SIZE = 0.2
 RANDOM_STATE = 42
 
 DEFAULT_EXTRATREES_PARAMS = {
-    "n_estimators": 50,
-    "max_depth": 20,
-    "min_samples_leaf": 2,
-    "min_samples_split": 2,
+    "n_estimators": 125,
+    "max_depth": 28,
+    "min_samples_leaf": 1,
+    "min_samples_split": 3,
     "max_features": "sqrt",
     "criterion": "gini",
     "class_weight": "balanced",
@@ -39,13 +42,8 @@ DEFAULT_EXTRATREES_PARAMS = {
     "n_jobs": -1,
 }
 
-if BEST_PARAMS_PATH.exists():
-    tuned_result = json.loads(BEST_PARAMS_PATH.read_text(encoding="utf-8"))
-    EXTRATREES_PARAMS = tuned_result["best_params"]
-    HYPERPARAMETER_SOURCE = f"tuned parameters from {BEST_PARAMS_PATH}"
-else:
-    EXTRATREES_PARAMS = DEFAULT_EXTRATREES_PARAMS
-    HYPERPARAMETER_SOURCE = "default parameters"
+EXTRATREES_PARAMS = DEFAULT_EXTRATREES_PARAMS
+HYPERPARAMETER_SOURCE = "manual tuned parameters"
 
 
 # =============================================================================
@@ -133,15 +131,47 @@ def train_and_score(feature_subset):
     model.fit(X_train[feature_subset], y_on_train)
     prediction = model.predict(X_test[feature_subset])
 
-    macro = f1_score(y_on_test, prediction, average="macro", zero_division=0)
-    micro = f1_score(y_on_test, prediction, average="micro", zero_division=0)
-    per_appliance = f1_score(y_on_test, prediction, average=None, zero_division=0)
-    per_appliance_scores = {
-        f"{label}_f1": score
-        for label, score in zip(ON_OFF_LABEL_COLUMNS, per_appliance)
+    per_precision = precision_score(y_on_test, prediction, average=None, zero_division=0)
+    per_recall = recall_score(y_on_test, prediction, average=None, zero_division=0)
+    per_f1 = f1_score(y_on_test, prediction, average=None, zero_division=0)
+
+    y_true_array = y_on_test.to_numpy()
+    per_accuracy = (y_true_array == prediction).mean(axis=0)
+
+    macro_precision = precision_score(y_on_test, prediction, average="macro", zero_division=0)
+    macro_recall = recall_score(y_on_test, prediction, average="macro", zero_division=0)
+    macro_f1 = f1_score(y_on_test, prediction, average="macro", zero_division=0)
+    macro_accuracy = float(per_accuracy.mean())
+
+    micro_precision = precision_score(y_on_test, prediction, average="micro", zero_division=0)
+    micro_recall = recall_score(y_on_test, prediction, average="micro", zero_division=0)
+    micro_f1 = f1_score(y_on_test, prediction, average="micro", zero_division=0)
+
+    subset_accuracy = float((y_true_array == prediction).all(axis=1).mean())
+
+    per_appliance_scores = {}
+    for label, precision, recall, f1, accuracy in zip(
+        ON_OFF_LABEL_COLUMNS,
+        per_precision,
+        per_recall,
+        per_f1,
+        per_accuracy,
+    ):
+        per_appliance_scores[f"{label}_precision"] = float(precision)
+        per_appliance_scores[f"{label}_recall"] = float(recall)
+        per_appliance_scores[f"{label}_f1"] = float(f1)
+        per_appliance_scores[f"{label}_accuracy"] = float(accuracy)
+
+    average_scores = {
+        "macro_precision": macro_precision,
+        "macro_recall": macro_recall,
+        "macro_accuracy": macro_accuracy,
+        "micro_precision": micro_precision,
+        "micro_recall": micro_recall,
+        "subset_accuracy": subset_accuracy,
     }
 
-    return model, prediction, macro, micro, per_appliance_scores
+    return model, prediction, macro_f1, micro_f1, per_appliance_scores, average_scores
 
 
 # =============================================================================
@@ -188,6 +218,7 @@ for round_number in range(1, len(FEATURE_COLUMNS) + 1):
             macro_f1,
             micro_f1,
             per_appliance_scores,
+            average_scores,
         ) = train_and_score(candidate_subset)
         candidate_elapsed = perf_counter() - candidate_start_time
 
@@ -208,6 +239,7 @@ for round_number in range(1, len(FEATURE_COLUMNS) + 1):
             "model": candidate_model,
             "prediction": candidate_prediction,
             "per_appliance_scores": per_appliance_scores,
+            "average_scores": average_scores,
         })
 
     best_candidate = max(round_results, key=lambda item: item["macro_f1"])
@@ -229,6 +261,7 @@ for round_number in range(1, len(FEATURE_COLUMNS) + 1):
         "micro_f1": best_micro_f1,
         "improvement": improvement,
         "selected_features": ",".join(selected_features),
+        **best_candidate["average_scores"],
         **best_candidate["per_appliance_scores"],
     })
 
@@ -238,10 +271,34 @@ for round_number in range(1, len(FEATURE_COLUMNS) + 1):
     print(f"Best Macro F1 so far: {best_macro_f1:.4f}")
     print(f"Best Micro F1 so far: {best_micro_f1:.4f}")
     print(f"Improvement this round: {improvement:.4f}")
-    print("Per-appliance F1 for this selected feature combination:")
+    print("Classification metrics for this selected feature combination:")
+    metric_rows = []
     for label in ON_OFF_LABEL_COLUMNS:
-        score = best_candidate["per_appliance_scores"][f"{label}_f1"]
-        print(f"  {label}: {score:.4f}")
+        scores = best_candidate["per_appliance_scores"]
+        metric_rows.append({
+            "label": label,
+            "precision": scores[f"{label}_precision"],
+            "recall": scores[f"{label}_recall"],
+            "f1": scores[f"{label}_f1"],
+            "accuracy": scores[f"{label}_accuracy"],
+        })
+    averages = best_candidate["average_scores"]
+    metric_rows.append({
+        "label": "macro_average",
+        "precision": averages["macro_precision"],
+        "recall": averages["macro_recall"],
+        "f1": best_macro_f1,
+        "accuracy": averages["macro_accuracy"],
+    })
+    metric_rows.append({
+        "label": "micro_average",
+        "precision": averages["micro_precision"],
+        "recall": averages["micro_recall"],
+        "f1": best_micro_f1,
+        "accuracy": averages["subset_accuracy"],
+    })
+    metric_table = pd.DataFrame(metric_rows)
+    print(metric_table.to_string(index=False, float_format=lambda value: f"{value:.4f}"))
     print(f"Elapsed time: {elapsed / 60:.1f} min")
 
 
@@ -278,8 +335,13 @@ if not selection_log_df.empty:
     ax.set_xlabel("Number of Selected Features")
     ax.set_ylabel("Classification F1 Score")
     ax.set_ylim(0, 1.02)
+    ax.xaxis.set_major_locator(MultipleLocator(5))
+    ax.xaxis.set_minor_locator(MultipleLocator(1))
+    ax.yaxis.set_major_locator(MultipleLocator(0.1))
+    ax.yaxis.set_minor_locator(MultipleLocator(0.05))
     ax.legend(loc="lower right")
-    ax.grid(True, alpha=0.25)
+    ax.grid(True, which="major", alpha=0.35, linewidth=0.8)
+    ax.grid(True, which="minor", alpha=0.18, linewidth=0.5)
     fig.tight_layout()
     fig.savefig(FORWARD_SELECTION_PLOT, dpi=220)
     plt.close(fig)
@@ -292,14 +354,21 @@ if not selection_log_df.empty:
                 selection_log_df["feature_count"],
                 selection_log_df[score_column],
                 linewidth=2,
+                marker="o",
+                markersize=3.5,
                 label=label,
             )
     ax.set_title("Per-Appliance F1 During Forward Selection", fontsize=14, weight="bold")
     ax.set_xlabel("Number of Selected Features")
     ax.set_ylabel("Per-Appliance F1 Score")
     ax.set_ylim(0, 1.02)
+    ax.xaxis.set_major_locator(MultipleLocator(5))
+    ax.xaxis.set_minor_locator(MultipleLocator(1))
+    ax.yaxis.set_major_locator(MultipleLocator(0.1))
+    ax.yaxis.set_minor_locator(MultipleLocator(0.05))
     ax.legend(loc="lower right", ncol=2)
-    ax.grid(True, alpha=0.25)
+    ax.grid(True, which="major", alpha=0.35, linewidth=0.8)
+    ax.grid(True, which="minor", alpha=0.18, linewidth=0.5)
     fig.tight_layout()
     fig.savefig(PER_APPLIANCE_PLOT, dpi=220)
     plt.close(fig)
