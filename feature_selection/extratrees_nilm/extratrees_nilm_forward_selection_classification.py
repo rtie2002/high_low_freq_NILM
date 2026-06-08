@@ -1,8 +1,10 @@
 from pathlib import Path
 from time import perf_counter
+import gc
 import json
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from matplotlib.ticker import MultipleLocator
 from sklearn.ensemble import ExtraTreesClassifier
@@ -26,9 +28,16 @@ FORWARD_SELECTION_LOG = RESULTS_DIR / "forward_selection_log.csv"
 FORWARD_SELECTION_PLOT = RESULTS_DIR / "forward_selection_macro_micro_f1.png"
 PER_APPLIANCE_PLOT = RESULTS_DIR / "forward_selection_per_appliance_f1.png"
 SELECTED_FEATURES_TXT = RESULTS_DIR / "selected_features.txt"
+CACHE_DIR = FEATURE_SELECTION_DIR / "cache" / Path(DATASET_FILENAME).stem
+CACHE_METADATA_PATH = CACHE_DIR / "metadata.json"
+X_CACHE_PATH = CACHE_DIR / "X_features_float32.dat"
+Y_ON_CACHE_PATH = CACHE_DIR / "y_on_uint8.dat"
 
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
+CSV_CHUNKSIZE = 100_000
+CACHE_FEATURE_DTYPE = "float32"
+CACHE_LABEL_DTYPE = "uint8"
 
 DEFAULT_EXTRATREES_PARAMS = {
     "n_estimators": 125,
@@ -47,17 +56,7 @@ HYPERPARAMETER_SOURCE = "manual tuned parameters"
 
 
 # =============================================================================
-# 2. Load Dataset
-# =============================================================================
-# This CSV already contains aligned timesteps:
-#   - aggregate-derived input features
-#   - appliance power labels
-#   - appliance ON/OFF labels
-df = pd.read_csv(DATASET_PATH)
-
-
-# =============================================================================
-# 3. Preprocessing: Detect Feature Columns and Label Columns
+# 2. Dataset Schema
 # =============================================================================
 # These appliance names are used to locate target columns such as:
 #   kettle_power, fridge_power, ...
@@ -88,94 +87,201 @@ ON_OFF_LABEL_COLUMNS = [
 # Exclude metadata and target columns from the model input features.
 NON_FEATURE_COLUMNS = TIME_COLUMNS + POWER_LABEL_COLUMNS + ON_OFF_LABEL_COLUMNS
 
+CSV_COLUMNS = pd.read_csv(DATASET_PATH, nrows=0).columns.tolist()
+
 # Input feature columns. This automatically keeps P_active, PF, harmonics,
 # DWT energy, bandpower, entropy, aggregate, and other engineered features.
 FEATURE_COLUMNS = [
-    column for column in df.columns
+    column for column in CSV_COLUMNS
     if column not in NON_FEATURE_COLUMNS
 ]
 
 
 # =============================================================================
-# 4. Build Model Matrices
+# 3. Disk-Backed Dataset Cache
 # =============================================================================
-# X is the input feature matrix.
-# y_on is the multi-appliance ON/OFF classification label matrix.
-# y_power is prepared for the later regression model but is not trained yet.
-X = df[FEATURE_COLUMNS]
-y_on = df[ON_OFF_LABEL_COLUMNS]
-y_power = df[POWER_LABEL_COLUMNS]
+# Long datasets should not be kept as a full pandas DataFrame. The cache below
+# stores X and y_on as disk-backed arrays. The feature-selection logic is still
+# the same; only data loading/storage changes.
+def count_csv_rows(csv_path):
+    with csv_path.open("rb") as file:
+        return max(sum(1 for _ in file) - 1, 0)
+
+
+def cache_is_valid(row_count):
+    if not CACHE_METADATA_PATH.exists():
+        return False
+    if not X_CACHE_PATH.exists() or not Y_ON_CACHE_PATH.exists():
+        return False
+
+    metadata = json.loads(CACHE_METADATA_PATH.read_text(encoding="utf-8"))
+    source_stat = DATASET_PATH.stat()
+
+    expected = {
+        "source_path": str(DATASET_PATH),
+        "source_size": source_stat.st_size,
+        "source_mtime": source_stat.st_mtime,
+        "row_count": row_count,
+        "feature_columns": FEATURE_COLUMNS,
+        "on_off_label_columns": ON_OFF_LABEL_COLUMNS,
+        "feature_dtype": CACHE_FEATURE_DTYPE,
+        "label_dtype": CACHE_LABEL_DTYPE,
+    }
+    return metadata == expected
+
+
+def build_disk_cache(row_count):
+    print("Building disk-backed dataset cache...")
+    print(f"Cache folder: {CACHE_DIR}")
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    x_cache = np.memmap(
+        X_CACHE_PATH,
+        dtype=CACHE_FEATURE_DTYPE,
+        mode="w+",
+        shape=(row_count, len(FEATURE_COLUMNS)),
+    )
+    y_cache = np.memmap(
+        Y_ON_CACHE_PATH,
+        dtype=CACHE_LABEL_DTYPE,
+        mode="w+",
+        shape=(row_count, len(ON_OFF_LABEL_COLUMNS)),
+    )
+
+    offset = 0
+    use_columns = FEATURE_COLUMNS + ON_OFF_LABEL_COLUMNS
+    for chunk_index, chunk in enumerate(
+        pd.read_csv(DATASET_PATH, usecols=use_columns, chunksize=CSV_CHUNKSIZE),
+        start=1,
+    ):
+        rows = len(chunk)
+        row_slice = slice(offset, offset + rows)
+        x_cache[row_slice, :] = chunk[FEATURE_COLUMNS].to_numpy(dtype=CACHE_FEATURE_DTYPE)
+        y_cache[row_slice, :] = chunk[ON_OFF_LABEL_COLUMNS].to_numpy(dtype=CACHE_LABEL_DTYPE)
+        offset += rows
+        print(f"  Cached chunk {chunk_index}: {offset:,}/{row_count:,} rows", flush=True)
+
+    x_cache.flush()
+    y_cache.flush()
+    del x_cache
+    del y_cache
+    gc.collect()
+
+    source_stat = DATASET_PATH.stat()
+    metadata = {
+        "source_path": str(DATASET_PATH),
+        "source_size": source_stat.st_size,
+        "source_mtime": source_stat.st_mtime,
+        "row_count": row_count,
+        "feature_columns": FEATURE_COLUMNS,
+        "on_off_label_columns": ON_OFF_LABEL_COLUMNS,
+        "feature_dtype": CACHE_FEATURE_DTYPE,
+        "label_dtype": CACHE_LABEL_DTYPE,
+    }
+    CACHE_METADATA_PATH.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+
+row_count = count_csv_rows(DATASET_PATH)
+if not cache_is_valid(row_count):
+    build_disk_cache(row_count)
+else:
+    print(f"Using existing disk-backed cache: {CACHE_DIR}")
+
+X_all = np.memmap(
+    X_CACHE_PATH,
+    dtype=CACHE_FEATURE_DTYPE,
+    mode="r",
+    shape=(row_count, len(FEATURE_COLUMNS)),
+)
+y_on_all = np.memmap(
+    Y_ON_CACHE_PATH,
+    dtype=CACHE_LABEL_DTYPE,
+    mode="r",
+    shape=(row_count, len(ON_OFF_LABEL_COLUMNS)),
+)
 
 
 # =============================================================================
-# 5. Time-Based Train/Test Split
+# 4. Time-Based Train/Test Split
 # =============================================================================
 # NILM data is time-series data, so we split by time instead of random shuffle:
 # first 80% for training, final 20% for testing.
-split_index = int(len(df) * (1 - TEST_SIZE))
+split_index = int(row_count * (1 - TEST_SIZE))
 
-X_train = X.iloc[:split_index]
-X_test = X.iloc[split_index:]
-y_on_train = y_on.iloc[:split_index]
-y_on_test = y_on.iloc[split_index:]
+X_train = X_all[:split_index]
+X_test = X_all[split_index:]
+y_on_train = y_on_all[:split_index]
+y_on_test = y_on_all[split_index:]
+y_on_test_array = np.asarray(y_on_test)
 
 
 # =============================================================================
-# 6. Model Helper: ExtraTrees Multi-Appliance ON/OFF Classifier
+# 5. Model Helper: ExtraTrees Multi-Appliance ON/OFF Classifier
 # =============================================================================
 # This function trains one ExtraTrees model for a selected feature subset and
 # returns its validation scores. Forward selection will call this many times.
 def train_and_score(feature_subset):
+    feature_indices = [FEATURE_COLUMNS.index(feature) for feature in feature_subset]
+    X_train_subset = np.asarray(X_train[:, feature_indices])
+    X_test_subset = np.asarray(X_test[:, feature_indices])
+
     model = ExtraTreesClassifier(**EXTRATREES_PARAMS)
 
-    model.fit(X_train[feature_subset], y_on_train)
-    prediction = model.predict(X_test[feature_subset])
+    try:
+        model.fit(X_train_subset, y_on_train)
+        prediction = model.predict(X_test_subset)
 
-    per_precision = precision_score(y_on_test, prediction, average=None, zero_division=0)
-    per_recall = recall_score(y_on_test, prediction, average=None, zero_division=0)
-    per_f1 = f1_score(y_on_test, prediction, average=None, zero_division=0)
+        per_precision = precision_score(y_on_test_array, prediction, average=None, zero_division=0)
+        per_recall = recall_score(y_on_test_array, prediction, average=None, zero_division=0)
+        per_f1 = f1_score(y_on_test_array, prediction, average=None, zero_division=0)
 
-    y_true_array = y_on_test.to_numpy()
-    per_accuracy = (y_true_array == prediction).mean(axis=0)
+        per_accuracy = (y_on_test_array == prediction).mean(axis=0)
 
-    macro_precision = precision_score(y_on_test, prediction, average="macro", zero_division=0)
-    macro_recall = recall_score(y_on_test, prediction, average="macro", zero_division=0)
-    macro_f1 = f1_score(y_on_test, prediction, average="macro", zero_division=0)
-    macro_accuracy = float(per_accuracy.mean())
+        macro_precision = precision_score(y_on_test_array, prediction, average="macro", zero_division=0)
+        macro_recall = recall_score(y_on_test_array, prediction, average="macro", zero_division=0)
+        macro_f1 = f1_score(y_on_test_array, prediction, average="macro", zero_division=0)
+        macro_accuracy = float(per_accuracy.mean())
 
-    micro_precision = precision_score(y_on_test, prediction, average="micro", zero_division=0)
-    micro_recall = recall_score(y_on_test, prediction, average="micro", zero_division=0)
-    micro_f1 = f1_score(y_on_test, prediction, average="micro", zero_division=0)
+        micro_precision = precision_score(y_on_test_array, prediction, average="micro", zero_division=0)
+        micro_recall = recall_score(y_on_test_array, prediction, average="micro", zero_division=0)
+        micro_f1 = f1_score(y_on_test_array, prediction, average="micro", zero_division=0)
 
-    subset_accuracy = float((y_true_array == prediction).all(axis=1).mean())
+        subset_accuracy = float((y_on_test_array == prediction).all(axis=1).mean())
 
-    per_appliance_scores = {}
-    for label, precision, recall, f1, accuracy in zip(
-        ON_OFF_LABEL_COLUMNS,
-        per_precision,
-        per_recall,
-        per_f1,
-        per_accuracy,
-    ):
-        per_appliance_scores[f"{label}_precision"] = float(precision)
-        per_appliance_scores[f"{label}_recall"] = float(recall)
-        per_appliance_scores[f"{label}_f1"] = float(f1)
-        per_appliance_scores[f"{label}_accuracy"] = float(accuracy)
+        per_appliance_scores = {}
+        for label, precision, recall, f1, accuracy in zip(
+            ON_OFF_LABEL_COLUMNS,
+            per_precision,
+            per_recall,
+            per_f1,
+            per_accuracy,
+        ):
+            per_appliance_scores[f"{label}_precision"] = float(precision)
+            per_appliance_scores[f"{label}_recall"] = float(recall)
+            per_appliance_scores[f"{label}_f1"] = float(f1)
+            per_appliance_scores[f"{label}_accuracy"] = float(accuracy)
 
-    average_scores = {
-        "macro_precision": macro_precision,
-        "macro_recall": macro_recall,
-        "macro_accuracy": macro_accuracy,
-        "micro_precision": micro_precision,
-        "micro_recall": micro_recall,
-        "subset_accuracy": subset_accuracy,
-    }
+        average_scores = {
+            "macro_precision": macro_precision,
+            "macro_recall": macro_recall,
+            "macro_accuracy": macro_accuracy,
+            "micro_precision": micro_precision,
+            "micro_recall": micro_recall,
+            "subset_accuracy": subset_accuracy,
+        }
 
-    return model, prediction, macro_f1, micro_f1, per_appliance_scores, average_scores
+        return macro_f1, micro_f1, per_appliance_scores, average_scores
+    finally:
+        del model
+        del X_train_subset
+        del X_test_subset
+        if "prediction" in locals():
+            del prediction
+        gc.collect()
 
 
 # =============================================================================
-# 7. Wrapper Feature Selection: Forward Selection
+# 6. Wrapper Feature Selection: Forward Selection
 # =============================================================================
 # Start with no feature. At each round:
 #   1. Try adding each remaining feature one by one.
@@ -189,7 +295,6 @@ start_time = perf_counter()
 
 best_macro_f1 = 0.0
 best_micro_f1 = 0.0
-best_model = None
 best_prediction = None
 
 for round_number in range(1, len(FEATURE_COLUMNS) + 1):
@@ -212,14 +317,7 @@ for round_number in range(1, len(FEATURE_COLUMNS) + 1):
             flush=True,
         )
 
-        (
-            candidate_model,
-            candidate_prediction,
-            macro_f1,
-            micro_f1,
-            per_appliance_scores,
-            average_scores,
-        ) = train_and_score(candidate_subset)
+        macro_f1, micro_f1, per_appliance_scores, average_scores = train_and_score(candidate_subset)
         candidate_elapsed = perf_counter() - candidate_start_time
 
         print(
@@ -236,8 +334,6 @@ for round_number in range(1, len(FEATURE_COLUMNS) + 1):
             "macro_f1": macro_f1,
             "micro_f1": micro_f1,
             "selected_features": ",".join(candidate_subset),
-            "model": candidate_model,
-            "prediction": candidate_prediction,
             "per_appliance_scores": per_appliance_scores,
             "average_scores": average_scores,
         })
@@ -250,8 +346,6 @@ for round_number in range(1, len(FEATURE_COLUMNS) + 1):
 
     best_macro_f1 = best_candidate["macro_f1"]
     best_micro_f1 = best_candidate["micro_f1"]
-    best_model = best_candidate["model"]
-    best_prediction = best_candidate["prediction"]
 
     selection_log.append({
         "round": round_number,
@@ -301,9 +395,13 @@ for round_number in range(1, len(FEATURE_COLUMNS) + 1):
     print(metric_table.to_string(index=False, float_format=lambda value: f"{value:.4f}"))
     print(f"Elapsed time: {elapsed / 60:.1f} min")
 
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(selection_log).to_csv(FORWARD_SELECTION_LOG, index=False)
+    gc.collect()
+
 
 # =============================================================================
-# 8. Save Forward Selection Result and Score Curve
+# 7. Save Forward Selection Result and Score Curve
 # =============================================================================
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 selection_log_df = pd.DataFrame(selection_log)
@@ -388,10 +486,10 @@ if not selection_log_df.empty:
 
 
 # =============================================================================
-# 9. Console Report
+# 8. Console Report
 # =============================================================================
 print(f"Dataset: {DATASET_PATH}")
-print(f"Rows: {len(df):,}")
+print(f"Rows: {row_count:,}")
 print(f"Input features ({len(FEATURE_COLUMNS)}):")
 for feature in FEATURE_COLUMNS:
     print(f"  - {feature}")
@@ -416,10 +514,17 @@ print(f"Selection curve: {FORWARD_SELECTION_PLOT}")
 print(f"Per-appliance curve: {PER_APPLIANCE_PLOT}")
 print(f"Selected feature order: {SELECTED_FEATURES_TXT}")
 
-if best_prediction is not None:
+if selected_features:
+    final_feature_indices = [FEATURE_COLUMNS.index(feature) for feature in selected_features]
+    final_X_train = np.asarray(X_train[:, final_feature_indices])
+    final_X_test = np.asarray(X_test[:, final_feature_indices])
+    final_model = ExtraTreesClassifier(**EXTRATREES_PARAMS)
+    final_model.fit(final_X_train, y_on_train)
+    best_prediction = final_model.predict(final_X_test)
+
     print()
     print(classification_report(
-        y_on_test,
+        y_on_test_array,
         best_prediction,
         target_names=ON_OFF_LABEL_COLUMNS,
         zero_division=0,
