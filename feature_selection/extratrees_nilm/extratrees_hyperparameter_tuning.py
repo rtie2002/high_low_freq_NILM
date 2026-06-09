@@ -23,7 +23,7 @@ from sklearn.metrics import f1_score
 # script reuse it later.
 FEATURE_SELECTION_DIR = Path(__file__).resolve().parents[1]
 DATASET_DIR = FEATURE_SELECTION_DIR / "dataset"
-DATASET_FILENAME = "multi_appliance_house2_wk26_to_wk31_merged.csv"
+DATASET_FILENAME = "multi_appliance_house2_wk24_to_wk31_merged.csv"
 DATASET_PATH = DATASET_DIR / DATASET_FILENAME
 
 BASE_RESULTS_DIR = FEATURE_SELECTION_DIR / "results"

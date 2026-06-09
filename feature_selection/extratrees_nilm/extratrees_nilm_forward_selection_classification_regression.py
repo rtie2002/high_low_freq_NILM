@@ -9,6 +9,7 @@ import pandas as pd
 from matplotlib.ticker import MultipleLocator
 from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
 from sklearn.metrics import classification_report, f1_score, precision_score, recall_score
+from sklearn.model_selection import KFold
 
 
 # =============================================================================
@@ -22,15 +23,21 @@ DATASET_PATH = DATASET_DIR / DATASET_FILENAME
 BASE_RESULTS_DIR = FEATURE_SELECTION_DIR / "results"
 RUN_NAME = f"extratrees_forward_selection_classification_regression_{Path(DATASET_FILENAME).stem}"
 RESULTS_DIR = BASE_RESULTS_DIR / RUN_NAME
+CLASSIFIER_TUNING_RUN_NAME = f"extratrees_hyperparameter_tuning_onoff_{Path(DATASET_FILENAME).stem}"
+CLASSIFIER_BEST_PARAMS_PATH = BASE_RESULTS_DIR / CLASSIFIER_TUNING_RUN_NAME / "best_hyperparameters.json"
+CLASSIFIER_SELECTION_RUN_NAME = f"extratrees_forward_selection_onoff_{Path(DATASET_FILENAME).stem}"
+CLASSIFIER_SELECTION_LOG_PATH = BASE_RESULTS_DIR / CLASSIFIER_SELECTION_RUN_NAME / "forward_selection_log.csv"
 REGRESSOR_TUNING_RUN_NAME = f"extratrees_hyperparameter_tuning_regression_{Path(DATASET_FILENAME).stem}"
 REGRESSOR_BEST_PARAMS_PATH = BASE_RESULTS_DIR / REGRESSOR_TUNING_RUN_NAME / "best_regressor_hyperparameters.json"
 FORWARD_SELECTION_LOG = RESULTS_DIR / "classification_regression_forward_selection_log.csv"
+DIRECT_FORWARD_SELECTION_LOG = RESULTS_DIR / "direct_regression_forward_selection_log.csv"
 REGRESSION_PLOT = RESULTS_DIR / "regression_forward_selection_mae_sae_ea.png"
 COMPOSITE_SELECTION_PLOT = RESULTS_DIR / "regression_forward_selection_composite_score.png"
 PER_APPLIANCE_EA_PLOT = RESULTS_DIR / "regression_per_appliance_ea.png"
 METRIC_PLOT_DIR = RESULTS_DIR / "metric_curves"
 SELECTED_FEATURES_TXT = RESULTS_DIR / "selected_regression_features.txt"
 PREDICTION_CSV = RESULTS_DIR / "final_regression_test_predictions.csv"
+FINAL_TEST_METRICS_CSV = RESULTS_DIR / "final_regression_test_metrics_per_appliance.csv"
 PREDICTION_PLOT_DIR = RESULTS_DIR / "prediction_waveforms"
 
 CACHE_DIR = FEATURE_SELECTION_DIR / "cache" / f"{Path(DATASET_FILENAME).stem}_classification_regression"
@@ -58,6 +65,7 @@ MAX_SELECTED_FEATURES = 30
 # moderate so aggregate/ground-truth/predicted curves are readable.
 PLOT_START_INDEX = 0
 PLOT_ROWS = 5000
+CLASSIFIER_OOF_SPLITS = 5
 
 # Candidate ranking uses a composite of three NILM regression metrics.
 # Ranks are computed within each forward-selection round, then combined with
@@ -74,9 +82,9 @@ SELECTION_WEIGHT_SUM = sum(SELECTION_METRIC_WEIGHTS.values())
 if SELECTION_WEIGHT_SUM <= 0:
     raise ValueError("SELECTION_METRIC_WEIGHTS must contain at least one positive weight.")
 
-# Best classification-selected feature subset from the wk24_to_wk31 classifier run.
-# This branch produces the predicted ON/OFF inputs used by the assisted regressor.
-CLASSIFIER_FEATURES = [
+# Fallback classifier feature subset. The normal pipeline path loads the
+# validation-selected classifier subset from CLASSIFIER_SELECTION_LOG_PATH.
+DEFAULT_CLASSIFIER_FEATURES = [
     "S_apparent",
     "PF",
     "I_skew",
@@ -105,7 +113,7 @@ CLASSIFIER_FEATURES = [
     "I_rms",
 ]
 
-CLASSIFIER_PARAMS = {
+DEFAULT_CLASSIFIER_PARAMS = {
     "n_estimators": 125,
     "max_depth": 28,
     "min_samples_leaf": 1,
@@ -129,6 +137,25 @@ DEFAULT_REGRESSOR_PARAMS = {
 }
 
 
+def load_classifier_params():
+    if not CLASSIFIER_BEST_PARAMS_PATH.exists():
+        print(f"Classifier tuning file not found, using default classifier params: {CLASSIFIER_BEST_PARAMS_PATH}")
+        return DEFAULT_CLASSIFIER_PARAMS.copy()
+
+    result = json.loads(CLASSIFIER_BEST_PARAMS_PATH.read_text(encoding="utf-8"))
+    params = result.get("best_params")
+    if not isinstance(params, dict):
+        raise ValueError(f"Missing best_params in {CLASSIFIER_BEST_PARAMS_PATH}")
+
+    loaded_params = DEFAULT_CLASSIFIER_PARAMS.copy()
+    loaded_params.update(params)
+    loaded_params["random_state"] = RANDOM_STATE
+    loaded_params["n_jobs"] = -1
+    print(f"Loaded tuned classifier params from: {CLASSIFIER_BEST_PARAMS_PATH}")
+    print(f"Classifier params: {loaded_params}")
+    return loaded_params
+
+
 def load_regressor_params():
     if not REGRESSOR_BEST_PARAMS_PATH.exists():
         print(f"Regressor tuning file not found, using default regressor params: {REGRESSOR_BEST_PARAMS_PATH}")
@@ -147,6 +174,7 @@ def load_regressor_params():
     return params
 
 
+CLASSIFIER_PARAMS = load_classifier_params()
 REGRESSOR_PARAMS = load_regressor_params()
 
 
@@ -169,6 +197,40 @@ NON_FEATURE_COLUMNS = TIME_COLUMNS + POWER_LABEL_COLUMNS + ON_OFF_LABEL_COLUMNS
 CSV_COLUMNS = pd.read_csv(DATASET_PATH, nrows=0).columns.tolist()
 FEATURE_COLUMNS = [column for column in CSV_COLUMNS if column not in NON_FEATURE_COLUMNS]
 
+
+def load_classifier_features():
+    if not CLASSIFIER_SELECTION_LOG_PATH.exists():
+        print(f"Classifier selection log not found, using fallback classifier features: {CLASSIFIER_SELECTION_LOG_PATH}")
+        return DEFAULT_CLASSIFIER_FEATURES.copy(), "fallback hard-coded classifier features"
+
+    selection_log_df = pd.read_csv(CLASSIFIER_SELECTION_LOG_PATH)
+    if selection_log_df.empty or "selected_features" not in selection_log_df.columns:
+        raise ValueError(f"Classifier selection log is empty or missing selected_features: {CLASSIFIER_SELECTION_LOG_PATH}")
+
+    if "macro_f1" in selection_log_df.columns:
+        best_row = selection_log_df.loc[selection_log_df["macro_f1"].idxmax()]
+        source = (
+            f"validation Macro-F1 classifier subset from round {int(best_row['round'])} "
+            f"in {CLASSIFIER_SELECTION_LOG_PATH}"
+        )
+    else:
+        best_row = selection_log_df.iloc[-1]
+        source = f"last classifier subset in {CLASSIFIER_SELECTION_LOG_PATH}"
+
+    selected_features = [
+        feature for feature in str(best_row["selected_features"]).split(",")
+        if feature
+    ]
+    if not selected_features:
+        raise ValueError(f"No classifier features found in {CLASSIFIER_SELECTION_LOG_PATH}")
+
+    print(f"Loaded classifier features from: {CLASSIFIER_SELECTION_LOG_PATH}")
+    print(f"Classifier feature source: {source}")
+    print(f"Classifier feature count: {len(selected_features)}")
+    return selected_features, source
+
+
+CLASSIFIER_FEATURES, CLASSIFIER_FEATURE_SOURCE = load_classifier_features()
 missing_classifier_features = [feature for feature in CLASSIFIER_FEATURES if feature not in FEATURE_COLUMNS]
 if missing_classifier_features:
     raise ValueError(f"Classifier feature(s) missing from dataset: {missing_classifier_features}")
@@ -338,38 +400,74 @@ def classification_scores(y_true, y_pred):
     }
 
 
+def out_of_fold_classifier_predictions(X_source, y_source):
+    n_rows = len(X_source)
+    if n_rows < 2:
+        raise ValueError("Need at least two training rows to build out-of-fold classifier predictions.")
+
+    n_splits = min(CLASSIFIER_OOF_SPLITS, n_rows)
+    predictions = np.zeros((n_rows, y_source.shape[1]), dtype=CACHE_LABEL_DTYPE)
+    fold_splitter = KFold(n_splits=n_splits, shuffle=False)
+
+    print(
+        f"Building classifier out-of-fold train predictions with {n_splits} contiguous folds...",
+        flush=True,
+    )
+    for fold_index, (fold_train_indices, fold_holdout_indices) in enumerate(fold_splitter.split(X_source), start=1):
+        fold_start = perf_counter()
+        fold_classifier = ExtraTreesClassifier(**CLASSIFIER_PARAMS)
+        fold_classifier.fit(X_source[fold_train_indices], y_source[fold_train_indices])
+        predictions[fold_holdout_indices] = fold_classifier.predict(
+            X_source[fold_holdout_indices]
+        ).astype(CACHE_LABEL_DTYPE)
+        print(
+            f"  OOF fold {fold_index}/{n_splits}: "
+            f"holdout rows={len(fold_holdout_indices):,} | "
+            f"time={perf_counter() - fold_start:.1f}s",
+            flush=True,
+        )
+        del fold_classifier
+        gc.collect()
+
+    return predictions
+
+
 print("Training fixed classifier branch using classification-selected features...")
 classifier_start = perf_counter()
 X_classifier_train = matrix_from_features(X_train, CLASSIFIER_FEATURES)
 X_classifier_validation = matrix_from_features(X_validation, CLASSIFIER_FEATURES)
 X_classifier_test = matrix_from_features(X_test, CLASSIFIER_FEATURES)
 
+predicted_on_train = out_of_fold_classifier_predictions(
+    X_classifier_train,
+    y_on_train_array,
+)
+classifier_train_oof_metrics = classification_scores(y_on_train_array, predicted_on_train)
+
 classifier = ExtraTreesClassifier(**CLASSIFIER_PARAMS)
 classifier.fit(X_classifier_train, y_on_train)
-predicted_on_train = classifier.predict(X_classifier_train).astype(CACHE_LABEL_DTYPE)
 predicted_on_validation = classifier.predict(X_classifier_validation).astype(CACHE_LABEL_DTYPE)
 predicted_on_test = classifier.predict(X_classifier_test).astype(CACHE_LABEL_DTYPE)
 classifier_validation_metrics = classification_scores(y_on_validation_array, predicted_on_validation)
-classifier_test_metrics = classification_scores(y_on_test_array, predicted_on_test)
 
 print(
     "Classifier branch ready | "
+    f"OOF train Macro F1={classifier_train_oof_metrics['macro_f1']:.4f} | "
     f"Validation Macro F1={classifier_validation_metrics['macro_f1']:.4f} | "
-    f"Test Macro F1={classifier_test_metrics['macro_f1']:.4f} | "
     f"time={(perf_counter() - classifier_start) / 60:.1f} min",
     flush=True,
 )
+print("Fixed classifier branch out-of-fold train classification report:")
+print(classification_report(
+    y_on_train_array,
+    predicted_on_train,
+    target_names=ON_OFF_LABEL_COLUMNS,
+    zero_division=0,
+))
 print("Fixed classifier branch validation classification report:")
 print(classification_report(
     y_on_validation_array,
     predicted_on_validation,
-    target_names=ON_OFF_LABEL_COLUMNS,
-    zero_division=0,
-))
-print("Fixed classifier branch test classification report:")
-print(classification_report(
-    y_on_test_array,
-    predicted_on_test,
     target_names=ON_OFF_LABEL_COLUMNS,
     zero_division=0,
 ))
@@ -469,20 +567,20 @@ def evaluate_candidate(feature_subset):
     return direct_scores, assisted_scores
 
 
-def add_composite_selection_scores(round_results):
+def add_composite_selection_scores(round_results, score_key):
     metric_names = list(SELECTION_METRIC_WEIGHTS)
 
     for metric_name in metric_names:
         reverse = metric_name in SELECTION_HIGHER_IS_BETTER
         sorted_results = sorted(
             round_results,
-            key=lambda item: item["assisted_scores"][metric_name],
+            key=lambda item: item[score_key][metric_name],
             reverse=reverse,
         )
         previous_value = None
         previous_rank = None
         for rank, result in enumerate(sorted_results, start=1):
-            value = result["assisted_scores"][metric_name]
+            value = result[score_key][metric_name]
             if previous_value is not None and np.isclose(value, previous_value):
                 metric_rank = previous_rank
             else:
@@ -558,7 +656,7 @@ for round_number in range(1, max_rounds + 1):
             "assisted_scores": assisted_scores,
         })
 
-    add_composite_selection_scores(round_results)
+    add_composite_selection_scores(round_results, score_key="assisted_scores")
     best_candidate = min(round_results, key=lambda item: item["selection_score"])
     selected_features.append(best_candidate["candidate_feature"])
     remaining_features.remove(best_candidate["candidate_feature"])
@@ -580,10 +678,10 @@ for round_number in range(1, max_rounds + 1):
         "direct_avg_sae": best_candidate["direct_scores"]["avg_sae"],
         "direct_avg_ea": best_candidate["direct_scores"]["avg_ea"],
         "improvement": improvement,
+        "classifier_train_oof_macro_f1": classifier_train_oof_metrics["macro_f1"],
+        "classifier_train_oof_micro_f1": classifier_train_oof_metrics["micro_f1"],
         "classifier_validation_macro_f1": classifier_validation_metrics["macro_f1"],
         "classifier_validation_micro_f1": classifier_validation_metrics["micro_f1"],
-        "classifier_test_macro_f1": classifier_test_metrics["macro_f1"],
-        "classifier_test_micro_f1": classifier_test_metrics["micro_f1"],
     }
     for metric_name, weight in SELECTION_METRIC_WEIGHTS.items():
         log_row[f"selection_weight_{metric_name}"] = weight
@@ -648,11 +746,109 @@ for round_number in range(1, max_rounds + 1):
 
 
 # =============================================================================
-# 8. Save Curves and Report
+# 8. Direct-Only Wrapper Feature Selection
+# =============================================================================
+# This second forward selection gives the direct regressor its own selected
+# feature subset. Without this, the final direct-vs-assisted comparison would
+# use a subset optimized for the assisted model only.
+direct_selected_features = []
+direct_remaining_features = FEATURE_COLUMNS.copy()
+direct_selection_log = []
+direct_start_time = perf_counter()
+direct_best_selection_score = float("inf")
+
+for round_number in range(1, max_rounds + 1):
+    round_results = []
+    total_candidates = len(direct_remaining_features)
+
+    print()
+    print("=" * 88)
+    print(f"Direct-regression forward selection round {round_number}/{max_rounds}")
+    print(f"Currently selected direct features: {direct_selected_features if direct_selected_features else 'none'}")
+    print(f"Testing {total_candidates} candidate feature(s)...")
+
+    for candidate_index, candidate_feature in enumerate(direct_remaining_features, start=1):
+        candidate_subset = direct_selected_features + [candidate_feature]
+        candidate_start = perf_counter()
+        print(
+            f"  [{candidate_index:02d}/{total_candidates:02d}] "
+            f"Testing add direct feature: {candidate_feature}",
+            flush=True,
+        )
+
+        direct_scores = train_regressor_and_score(
+            candidate_subset,
+            target_matrix=X_validation,
+            target_power=y_power_validation_array,
+        )
+        candidate_elapsed = perf_counter() - candidate_start
+        print(
+            f"      direct | "
+            f"MAE={direct_scores['avg_mae']:.2f} W | "
+            f"SAE={direct_scores['avg_sae']:.4f} | "
+            f"EA={direct_scores['avg_ea']:.4f} | "
+            f"time={candidate_elapsed:.1f}s",
+            flush=True,
+        )
+
+        round_results.append({
+            "candidate_feature": candidate_feature,
+            "feature_subset": candidate_subset,
+            "direct_scores": direct_scores,
+        })
+
+    add_composite_selection_scores(round_results, score_key="direct_scores")
+    best_candidate = min(round_results, key=lambda item: item["selection_score"])
+    direct_selected_features.append(best_candidate["candidate_feature"])
+    direct_remaining_features.remove(best_candidate["candidate_feature"])
+
+    current_selection_score = best_candidate["selection_score"]
+    improvement = (
+        direct_best_selection_score - current_selection_score
+        if np.isfinite(direct_best_selection_score)
+        else 0.0
+    )
+    direct_best_selection_score = current_selection_score
+
+    log_row = {
+        "round": round_number,
+        "added_feature": best_candidate["candidate_feature"],
+        "feature_count": len(direct_selected_features),
+        "selected_features": ",".join(direct_selected_features),
+        "selection_score": best_candidate["selection_score"],
+        "direct_avg_mae": best_candidate["direct_scores"]["avg_mae"],
+        "direct_avg_sae": best_candidate["direct_scores"]["avg_sae"],
+        "direct_avg_ea": best_candidate["direct_scores"]["avg_ea"],
+        "improvement": improvement,
+    }
+    for metric_name, weight in SELECTION_METRIC_WEIGHTS.items():
+        log_row[f"selection_weight_{metric_name}"] = weight
+        log_row[f"selection_rank_{metric_name}"] = best_candidate["selection_metric_ranks"][metric_name]
+    for label in POWER_LABEL_COLUMNS:
+        log_row[f"direct_{label}_mae"] = best_candidate["direct_scores"][f"{label}_mae"]
+        log_row[f"direct_{label}_sae"] = best_candidate["direct_scores"][f"{label}_sae"]
+        log_row[f"direct_{label}_ea"] = best_candidate["direct_scores"][f"{label}_ea"]
+
+    direct_selection_log.append(log_row)
+    pd.DataFrame(direct_selection_log).to_csv(DIRECT_FORWARD_SELECTION_LOG, index=False)
+
+    elapsed = perf_counter() - direct_start_time
+    print()
+    print(f"Direct round {round_number} selected: {best_candidate['candidate_feature']}")
+    print(f"Best direct composite selection score: {direct_best_selection_score:.4f}")
+    print(f"Direct composite score improvement this round: {improvement:.4f}")
+    print(f"Elapsed direct-selection time: {elapsed / 60:.1f} min")
+    gc.collect()
+
+
+# =============================================================================
+# 9. Save Curves and Report
 # =============================================================================
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 selection_log_df = pd.DataFrame(selection_log)
 selection_log_df.to_csv(FORWARD_SELECTION_LOG, index=False)
+direct_selection_log_df = pd.DataFrame(direct_selection_log)
+direct_selection_log_df.to_csv(DIRECT_FORWARD_SELECTION_LOG, index=False)
 
 if not selection_log_df.empty:
     plt.style.use("seaborn-v0_8-whitegrid")
@@ -839,10 +1035,12 @@ if not selection_log_df.empty:
         file.write(f"Dataset: {DATASET_PATH}\n")
         file.write(f"Rows: {row_count:,}\n")
         file.write(f"Classifier features ({len(CLASSIFIER_FEATURES)}): {', '.join(CLASSIFIER_FEATURES)}\n")
+        file.write(f"Classifier feature source: {CLASSIFIER_FEATURE_SOURCE}\n")
+        file.write(f"Classifier train OOF Macro F1: {classifier_train_oof_metrics['macro_f1']:.4f}\n")
         file.write(f"Classifier validation Macro F1: {classifier_validation_metrics['macro_f1']:.4f}\n")
-        file.write(f"Classifier test Macro F1: {classifier_test_metrics['macro_f1']:.4f}\n")
+        file.write(f"Classifier train OOF Micro F1: {classifier_train_oof_metrics['micro_f1']:.4f}\n")
         file.write(f"Classifier validation Micro F1: {classifier_validation_metrics['micro_f1']:.4f}\n")
-        file.write(f"Classifier test Micro F1: {classifier_test_metrics['micro_f1']:.4f}\n\n")
+        file.write("\n")
         file.write("Regression selection objective: weighted assisted-metric rank composite\n")
         for metric_name, weight in SELECTION_METRIC_WEIGHTS.items():
             direction = "higher is better" if metric_name in SELECTION_HIGHER_IS_BETTER else "lower is better"
@@ -859,47 +1057,116 @@ if not selection_log_df.empty:
                 f"assisted avg SAE={row['assisted_avg_sae']:.4f} | "
                 f"assisted avg EA={row['assisted_avg_ea']:.4f}\n"
             )
+        file.write("\n")
+        file.write("Direct-regression-selected feature order:\n")
+        for _, row in direct_selection_log_df.iterrows():
+            file.write(
+                f"Round {int(row['round']):02d}: "
+                f"{row['added_feature']} | "
+                f"selection score={row['selection_score']:.4f} | "
+                f"direct avg MAE={row['direct_avg_mae']:.2f} W | "
+                f"direct avg SAE={row['direct_avg_sae']:.4f} | "
+                f"direct avg EA={row['direct_avg_ea']:.4f}\n"
+            )
 
 
 # =============================================================================
 # 9. Save Final Test Predictions and Waveform Visualizations
 # =============================================================================
 final_direct_prediction = None
+final_direct_on_assisted_subset_prediction = None
 final_assisted_prediction = None
 
 best_final_row = selection_log_df.loc[selection_log_df["selection_score"].idxmin()] if not selection_log_df.empty else None
-final_selected_features = (
+final_assisted_selected_features = (
     [feature for feature in str(best_final_row["selected_features"]).split(",") if feature]
     if best_final_row is not None
     else selected_features
 )
+best_direct_final_row = (
+    direct_selection_log_df.loc[direct_selection_log_df["selection_score"].idxmin()]
+    if not direct_selection_log_df.empty
+    else None
+)
+final_direct_selected_features = (
+    [feature for feature in str(best_direct_final_row["selected_features"]).split(",") if feature]
+    if best_direct_final_row is not None
+    else direct_selected_features
+)
 
-if final_selected_features:
+if final_assisted_selected_features and final_direct_selected_features:
     print("Training final direct and classifier-assisted regressors for held-out test evaluation...")
     if best_final_row is not None:
         print(
-            f"Final test model uses validation-selected subset from round {int(best_final_row['round'])} "
-            f"({len(final_selected_features)} features)."
+            f"Final assisted model uses assisted-validation-selected subset from round {int(best_final_row['round'])} "
+            f"({len(final_assisted_selected_features)} features)."
+        )
+    if best_direct_final_row is not None:
+        print(
+            f"Final direct model uses direct-validation-selected subset from round {int(best_direct_final_row['round'])} "
+            f"({len(final_direct_selected_features)} features)."
         )
     final_prediction_start = perf_counter()
     final_direct_prediction = train_regressor_and_predict(
-        final_selected_features,
+        final_direct_selected_features,
+        target_matrix=X_test,
+    )
+    final_direct_on_assisted_subset_prediction = train_regressor_and_predict(
+        final_assisted_selected_features,
         target_matrix=X_test,
     )
     final_assisted_prediction = train_regressor_and_predict(
-        final_selected_features,
+        final_assisted_selected_features,
         target_matrix=X_test,
         extra_train=predicted_on_train,
         extra_target=predicted_on_test,
     )
     final_direct_scores = regression_scores(y_power_test_array, final_direct_prediction)
+    final_direct_on_assisted_subset_scores = regression_scores(
+        y_power_test_array,
+        final_direct_on_assisted_subset_prediction,
+    )
     final_assisted_scores = regression_scores(y_power_test_array, final_assisted_prediction)
 
     print("Held-out test regression metrics:")
     print(pd.DataFrame([
-        {"model": "direct", **{key: final_direct_scores[key] for key in ["avg_mae", "avg_sae", "avg_ea"]}},
-        {"model": "classifier_assisted", **{key: final_assisted_scores[key] for key in ["avg_mae", "avg_sae", "avg_ea"]}},
+        {"model": "direct_selected", **{key: final_direct_scores[key] for key in ["avg_mae", "avg_sae", "avg_ea"]}},
+        {"model": "direct_on_assisted_selected", **{key: final_direct_on_assisted_subset_scores[key] for key in ["avg_mae", "avg_sae", "avg_ea"]}},
+        {"model": "classifier_assisted_selected", **{key: final_assisted_scores[key] for key in ["avg_mae", "avg_sae", "avg_ea"]}},
     ]).to_string(index=False, float_format=lambda value: f"{value:.4f}"))
+
+    final_metric_rows = []
+    for label in POWER_LABEL_COLUMNS:
+        appliance = label.replace("_power", "")
+        final_metric_rows.append({
+            "model": "direct_selected",
+            "appliance": appliance,
+            "mae_w": final_direct_scores[f"{label}_mae"],
+            "sae": final_direct_scores[f"{label}_sae"],
+            "ea": final_direct_scores[f"{label}_ea"],
+        })
+        final_metric_rows.append({
+            "model": "direct_on_assisted_selected",
+            "appliance": appliance,
+            "mae_w": final_direct_on_assisted_subset_scores[f"{label}_mae"],
+            "sae": final_direct_on_assisted_subset_scores[f"{label}_sae"],
+            "ea": final_direct_on_assisted_subset_scores[f"{label}_ea"],
+        })
+        final_metric_rows.append({
+            "model": "classifier_assisted_selected",
+            "appliance": appliance,
+            "mae_w": final_assisted_scores[f"{label}_mae"],
+            "sae": final_assisted_scores[f"{label}_sae"],
+            "ea": final_assisted_scores[f"{label}_ea"],
+        })
+    final_metric_rows.extend([
+        {"model": "direct_selected", "appliance": "average", "mae_w": final_direct_scores["avg_mae"], "sae": final_direct_scores["avg_sae"], "ea": final_direct_scores["avg_ea"]},
+        {"model": "direct_on_assisted_selected", "appliance": "average", "mae_w": final_direct_on_assisted_subset_scores["avg_mae"], "sae": final_direct_on_assisted_subset_scores["avg_sae"], "ea": final_direct_on_assisted_subset_scores["avg_ea"]},
+        {"model": "classifier_assisted_selected", "appliance": "average", "mae_w": final_assisted_scores["avg_mae"], "sae": final_assisted_scores["avg_sae"], "ea": final_assisted_scores["avg_ea"]},
+    ])
+    final_metrics_df = pd.DataFrame(final_metric_rows)
+    final_metrics_df.to_csv(FINAL_TEST_METRICS_CSV, index=False)
+    print(f"Held-out per-appliance test metrics: {FINAL_TEST_METRICS_CSV}")
 
     readable_time = pd.read_csv(DATASET_PATH, usecols=TIME_COLUMNS).iloc[validation_end:].reset_index(drop=True)
     prediction_df = pd.DataFrame({
@@ -921,6 +1188,7 @@ if final_selected_features:
         appliance = label.replace("_power", "")
         prediction_df[f"{appliance}_true_power"] = y_power_test_array[:, appliance_index]
         prediction_df[f"{appliance}_direct_pred_power"] = final_direct_prediction[:, appliance_index]
+        prediction_df[f"{appliance}_direct_on_assisted_features_pred_power"] = final_direct_on_assisted_subset_prediction[:, appliance_index]
         prediction_df[f"{appliance}_assisted_pred_power"] = final_assisted_prediction[:, appliance_index]
         prediction_df[f"{appliance}_predicted_on"] = predicted_on_test[:, appliance_index]
 
@@ -967,6 +1235,15 @@ if final_selected_features:
         )
         ax.plot(
             x_values,
+            plot_df[f"{appliance}_direct_on_assisted_features_pred_power"],
+            color="#7c3aed",
+            linewidth=1.4,
+            alpha=0.75,
+            linestyle="--",
+            label="direct on assisted-selected features",
+        )
+        ax.plot(
+            x_values,
             plot_df[f"{appliance}_assisted_pred_power"],
             color="#dc2626",
             linewidth=1.7,
@@ -986,6 +1263,7 @@ if final_selected_features:
     print(
         "Final prediction outputs saved | "
         f"CSV: {PREDICTION_CSV} | "
+        f"metrics: {FINAL_TEST_METRICS_CSV} | "
         f"plots: {PREDICTION_PLOT_DIR} | "
         f"time={(perf_counter() - final_prediction_start) / 60:.1f} min",
         flush=True,
@@ -1000,6 +1278,8 @@ print(f"Rows: {row_count:,}")
 print(f"Train rows: {len(X_train):,}")
 print(f"Validation rows: {len(X_validation):,}")
 print(f"Test rows: {len(X_test):,}")
+print(f"Classifier feature source: {CLASSIFIER_FEATURE_SOURCE}")
+classifier_test_metrics = classification_scores(y_on_test_array, predicted_on_test)
 print(f"Classifier validation Macro F1: {classifier_validation_metrics['macro_f1']:.4f}")
 print(f"Classifier validation Micro F1: {classifier_validation_metrics['micro_f1']:.4f}")
 print(f"Classifier test Macro F1: {classifier_test_metrics['macro_f1']:.4f}")
@@ -1011,10 +1291,14 @@ print(classification_report(
     target_names=ON_OFF_LABEL_COLUMNS,
     zero_division=0,
 ))
-print("Validation-selected regression features:")
-for index, feature in enumerate(final_selected_features, start=1):
+print("Direct-validation-selected regression features:")
+for index, feature in enumerate(final_direct_selected_features, start=1):
     print(f"  {index:02d}. {feature}")
-print(f"Selection log: {FORWARD_SELECTION_LOG}")
+print("Assisted-validation-selected regression features:")
+for index, feature in enumerate(final_assisted_selected_features, start=1):
+    print(f"  {index:02d}. {feature}")
+print(f"Assisted selection log: {FORWARD_SELECTION_LOG}")
+print(f"Direct selection log: {DIRECT_FORWARD_SELECTION_LOG}")
 print(f"Regression curve: {REGRESSION_PLOT}")
 print(f"Per-appliance EA curve: {PER_APPLIANCE_EA_PLOT}")
 print(f"All metric curves: {METRIC_PLOT_DIR}")

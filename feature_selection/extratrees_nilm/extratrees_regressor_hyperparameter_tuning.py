@@ -9,7 +9,6 @@ import numpy as np
 import pandas as pd
 from matplotlib.ticker import MaxNLocator
 from sklearn.ensemble import ExtraTreesRegressor
-from sklearn.metrics import r2_score
 
 
 # =============================================================================
@@ -44,17 +43,14 @@ N_TRIALS = 100
 RANDOM_STATE = 42
 FAST_SEARCH_SPACE = True
 EPSILON = 1e-6
-SAE_WINDOW_POINTS = 600
 
 OBJECTIVE_METRIC_WEIGHTS = {
-    "avg_nmae": 0.35,
-    "avg_nrmse": 0.25,
-    "avg_relative_energy_error": 0.20,
-    "avg_sae": 0.10,
-    "avg_r2": 0.10,
+    "avg_mae": 0.40,
+    "avg_sae": 0.30,
+    "avg_ea": 0.30,
 }
 OBJECTIVE_HIGHER_IS_BETTER = {
-    "avg_r2",
+    "avg_ea",
 }
 
 
@@ -116,10 +112,10 @@ X_validation = X.iloc[train_end:validation_end]
 y_validation = y_power.iloc[train_end:validation_end]
 y_validation_array = y_validation.to_numpy(dtype=np.float64)
 
-power_scale = np.maximum(
-    y_train.max(axis=0).to_numpy(dtype=np.float64) - y_train.min(axis=0).to_numpy(dtype=np.float64),
-    EPSILON,
-)
+# The objective uses only MAE, SAE, and EA. MAE is divided by this fixed
+# train-set watt scale only so the scalar Optuna objective is numerically
+# balanced with dimensionless SAE and EA.
+mae_objective_scale = max(float(np.mean(np.abs(y_train.to_numpy(dtype=np.float64)))), EPSILON)
 
 
 # =============================================================================
@@ -128,58 +124,33 @@ power_scale = np.maximum(
 def regression_scores(y_true, y_pred):
     error = y_true - y_pred
     mae = np.mean(np.abs(error), axis=0)
-    rmse = np.sqrt(np.mean(error ** 2, axis=0))
-    nmae = mae / power_scale
-    nrmse = rmse / power_scale
 
-    sae_values = []
-    relative_energy_error_values = []
-    for column_index in range(y_true.shape[1]):
-        true_column = y_true[:, column_index]
-        pred_column = y_pred[:, column_index]
-        window_sae_values = []
-        window_relative_values = []
-        for start in range(0, len(true_column), SAE_WINDOW_POINTS):
-            end = min(start + SAE_WINDOW_POINTS, len(true_column))
-            true_energy = np.sum(true_column[start:end])
-            predicted_energy = np.sum(pred_column[start:end])
-            window_sae_values.append(np.abs(predicted_energy - true_energy))
-            window_relative_values.append(
-                np.abs(predicted_energy - true_energy) / np.maximum(np.abs(true_energy), EPSILON)
-            )
-        sae_values.append(np.mean(window_sae_values))
-        relative_energy_error_values.append(np.mean(window_relative_values))
-
-    sae = np.asarray(sae_values, dtype=np.float64)
-    relative_energy_error = np.asarray(relative_energy_error_values, dtype=np.float64)
-    r2 = r2_score(y_true, y_pred, multioutput="raw_values")
+    true_energy = np.sum(y_true, axis=0)
+    predicted_energy = np.sum(y_pred, axis=0)
+    sae = np.abs(predicted_energy - true_energy) / np.maximum(np.abs(true_energy), EPSILON)
+    ea = 1.0 - (
+        np.sum(np.abs(error), axis=0)
+        / (2.0 * np.maximum(np.sum(np.abs(y_true), axis=0), EPSILON))
+    )
+    overall_ea = 1.0 - (
+        np.sum(np.abs(error))
+        / (2.0 * np.maximum(np.sum(np.abs(y_true)), EPSILON))
+    )
 
     scores = {
         "avg_mae": float(np.mean(mae)),
-        "avg_rmse": float(np.mean(rmse)),
-        "avg_nmae": float(np.mean(nmae)),
-        "avg_nrmse": float(np.mean(nrmse)),
         "avg_sae": float(np.mean(sae)),
-        "avg_relative_energy_error": float(np.mean(relative_energy_error)),
-        "avg_r2": float(np.mean(r2)),
+        "avg_ea": float(overall_ea),
     }
-    for label, mae_value, rmse_value, nmae_value, nrmse_value, sae_value, relative_value, r2_value in zip(
+    for label, mae_value, sae_value, ea_value in zip(
         POWER_LABEL_COLUMNS,
         mae,
-        rmse,
-        nmae,
-        nrmse,
         sae,
-        relative_energy_error,
-        r2,
+        ea,
     ):
         scores[f"{label}_mae"] = float(mae_value)
-        scores[f"{label}_rmse"] = float(rmse_value)
-        scores[f"{label}_nmae"] = float(nmae_value)
-        scores[f"{label}_nrmse"] = float(nrmse_value)
         scores[f"{label}_sae"] = float(sae_value)
-        scores[f"{label}_relative_energy_error"] = float(relative_value)
-        scores[f"{label}_r2"] = float(r2_value)
+        scores[f"{label}_ea"] = float(ea_value)
     return scores
 
 
@@ -187,6 +158,8 @@ def objective_score(scores):
     score = 0.0
     for metric_name, weight in OBJECTIVE_METRIC_WEIGHTS.items():
         value = scores[metric_name]
+        if metric_name == "avg_mae":
+            value = value / mae_objective_scale
         if metric_name in OBJECTIVE_HIGHER_IS_BETTER:
             value = -value
         score += weight * value
@@ -245,11 +218,9 @@ def objective(trial):
     print(f"Trial {trial.number + 1}/{N_TRIALS} finished in {trial_elapsed:.1f}s", flush=True)
     print(
         f"Composite={composite_score:.4f} | "
-        f"NMAE={scores['avg_nmae']:.4f} | "
-        f"NRMSE={scores['avg_nrmse']:.4f} | "
-        f"SAE={scores['avg_sae']:.2f} | "
-        f"RelEnergy={scores['avg_relative_energy_error']:.4f} | "
-        f"R2={scores['avg_r2']:.4f}",
+        f"MAE={scores['avg_mae']:.2f} W | "
+        f"SAE={scores['avg_sae']:.4f} | "
+        f"EA={scores['avg_ea']:.4f}",
         flush=True,
     )
 
@@ -288,6 +259,7 @@ result = {
     "best_params": best_params,
     "objective_metric_weights": OBJECTIVE_METRIC_WEIGHTS,
     "objective_higher_is_better": sorted(OBJECTIVE_HIGHER_IS_BETTER),
+    "mae_objective_scale": mae_objective_scale,
     "features_used": FEATURES_USED,
     "dataset": str(DATASET_PATH),
     "train_rows": len(X_train),
@@ -327,10 +299,9 @@ if not complete_trials_df.empty:
 
     fig, ax = plt.subplots(figsize=(10, 5))
     metric_columns = {
-        "user_attrs_avg_nmae": "NMAE",
-        "user_attrs_avg_nrmse": "NRMSE",
-        "user_attrs_avg_relative_energy_error": "Relative energy error",
-        "user_attrs_avg_r2": "R2",
+        "user_attrs_avg_mae": "MAE (W)",
+        "user_attrs_avg_sae": "SAE",
+        "user_attrs_avg_ea": "EA",
     }
     for column, label in metric_columns.items():
         if column in complete_trials_df.columns:

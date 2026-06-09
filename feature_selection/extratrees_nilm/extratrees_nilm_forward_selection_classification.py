@@ -2,6 +2,7 @@ from pathlib import Path
 from time import perf_counter
 import gc
 import json
+import os
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -47,6 +48,7 @@ EVIDENCE_OFF_WINDOW_POINTS = 240
 EVIDENCE_OFF_MAX_TRUE_ON_FRACTION = 0.0
 EVIDENCE_OFF_MAX_PRED_ON_FRACTION = 0.0
 EVIDENCE_MAX_WINDOWS_PER_TYPE = 3
+ENABLE_HELDOUT_TEST_REPORT = os.environ.get("EXTRATREES_ENABLE_CLASSIFIER_TEST_REPORT", "0") == "1"
 
 DEFAULT_EXTRATREES_PARAMS = {
     "n_estimators": 125,
@@ -60,8 +62,26 @@ DEFAULT_EXTRATREES_PARAMS = {
     "n_jobs": -1,
 }
 
-EXTRATREES_PARAMS = DEFAULT_EXTRATREES_PARAMS
-HYPERPARAMETER_SOURCE = "manual tuned parameters"
+def load_classifier_params():
+    for params_path in [BEST_PARAMS_PATH, LEGACY_BEST_PARAMS_PATH]:
+        if not params_path.exists():
+            continue
+
+        result = json.loads(params_path.read_text(encoding="utf-8"))
+        params = result.get("best_params", result)
+        if not isinstance(params, dict):
+            raise ValueError(f"Could not read classifier parameters from {params_path}")
+
+        loaded_params = DEFAULT_EXTRATREES_PARAMS.copy()
+        loaded_params.update(params)
+        print(f"Loaded tuned classifier params from: {params_path}")
+        return loaded_params, f"tuned parameters from {params_path}"
+
+    print(f"Classifier tuning file not found, using default classifier params: {BEST_PARAMS_PATH}")
+    return DEFAULT_EXTRATREES_PARAMS.copy(), "default classifier parameters"
+
+
+EXTRATREES_PARAMS, HYPERPARAMETER_SOURCE = load_classifier_params()
 
 
 # =============================================================================
@@ -689,7 +709,7 @@ print(f"Selection curve: {FORWARD_SELECTION_PLOT}")
 print(f"Per-appliance curve: {PER_APPLIANCE_PLOT}")
 print(f"Selected feature order: {SELECTED_FEATURES_TXT}")
 
-if best_evidence_features:
+if best_evidence_features and ENABLE_HELDOUT_TEST_REPORT:
     final_feature_indices = [FEATURE_COLUMNS.index(feature) for feature in best_evidence_features]
     final_X_train = np.asarray(X_train_validation[:, final_feature_indices])
     final_X_test = np.asarray(X_test[:, final_feature_indices])
@@ -709,3 +729,9 @@ if best_evidence_features:
     evidence_paths = save_onoff_evidence_plots(best_prediction)
     print(f"ON/OFF evidence plots: {EVIDENCE_PLOT_DIR}")
     print(f"Saved evidence plot count: {len(evidence_paths)}")
+elif best_evidence_features:
+    print()
+    print(
+        "Held-out classifier test report/evidence plots skipped. "
+        "Set EXTRATREES_ENABLE_CLASSIFIER_TEST_REPORT=1 for a standalone classifier-only test report."
+    )
