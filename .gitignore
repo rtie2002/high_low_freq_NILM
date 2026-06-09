@@ -54,3 +54,6 @@ dataset_preprocess/created_data/
 *.png
 *.pdf
 *.png
+!feature_selection/
+!feature_selection/dataset/
+
