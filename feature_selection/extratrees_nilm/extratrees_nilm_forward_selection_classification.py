@@ -28,16 +28,25 @@ FORWARD_SELECTION_LOG = RESULTS_DIR / "forward_selection_log.csv"
 FORWARD_SELECTION_PLOT = RESULTS_DIR / "forward_selection_macro_micro_f1.png"
 PER_APPLIANCE_PLOT = RESULTS_DIR / "forward_selection_per_appliance_f1.png"
 SELECTED_FEATURES_TXT = RESULTS_DIR / "selected_features.txt"
+EVIDENCE_PLOT_DIR = RESULTS_DIR / "onoff_evidence_plots"
 CACHE_DIR = FEATURE_SELECTION_DIR / "cache" / Path(DATASET_FILENAME).stem
 CACHE_METADATA_PATH = CACHE_DIR / "metadata.json"
 X_CACHE_PATH = CACHE_DIR / "X_features_float32.dat"
 Y_ON_CACHE_PATH = CACHE_DIR / "y_on_uint8.dat"
 
+TRAIN_SIZE = 0.6
+VALIDATION_SIZE = 0.2
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
 CSV_CHUNKSIZE = 100_000
 CACHE_FEATURE_DTYPE = "float32"
 CACHE_LABEL_DTYPE = "uint8"
+EVIDENCE_CONTEXT_POINTS = 60
+EVIDENCE_MIN_ON_POINTS = 2
+EVIDENCE_OFF_WINDOW_POINTS = 240
+EVIDENCE_OFF_MAX_TRUE_ON_FRACTION = 0.0
+EVIDENCE_OFF_MAX_PRED_ON_FRACTION = 0.0
+EVIDENCE_MAX_WINDOWS_PER_TYPE = 3
 
 DEFAULT_EXTRATREES_PARAMS = {
     "n_estimators": 125,
@@ -202,17 +211,43 @@ y_on_all = np.memmap(
 
 
 # =============================================================================
-# 4. Time-Based Train/Test Split
+# 4. Time-Based Train/Validation/Test Split
 # =============================================================================
 # NILM data is time-series data, so we split by time instead of random shuffle:
-# first 80% for training, final 20% for testing.
-split_index = int(row_count * (1 - TEST_SIZE))
+# first 60% for training, next 20% for feature selection validation, final 20%
+# for the held-out test report and evidence plots.
+split_total = TRAIN_SIZE + VALIDATION_SIZE + TEST_SIZE
+if abs(split_total - 1.0) > 1e-9:
+    raise ValueError(
+        "TRAIN_SIZE + VALIDATION_SIZE + TEST_SIZE must equal 1.0; "
+        f"got {split_total:.6f}."
+    )
 
-X_train = X_all[:split_index]
-X_test = X_all[split_index:]
-y_on_train = y_on_all[:split_index]
-y_on_test = y_on_all[split_index:]
+train_end = int(row_count * TRAIN_SIZE)
+validation_end = int(row_count * (TRAIN_SIZE + VALIDATION_SIZE))
+
+if not (0 < train_end < validation_end < row_count):
+    raise ValueError(
+        "Invalid train/validation/test split. Check row_count, TRAIN_SIZE, "
+        "VALIDATION_SIZE, and TEST_SIZE."
+    )
+
+X_train = X_all[:train_end]
+X_validation = X_all[train_end:validation_end]
+X_train_validation = X_all[:validation_end]
+X_test = X_all[validation_end:]
+y_on_train = y_on_all[:train_end]
+y_on_validation = y_on_all[train_end:validation_end]
+y_on_train_validation = y_on_all[:validation_end]
+y_on_test = y_on_all[validation_end:]
+y_on_validation_array = np.asarray(y_on_validation)
 y_on_test_array = np.asarray(y_on_test)
+test_metadata = pd.read_csv(
+    DATASET_PATH,
+    usecols=TIME_COLUMNS + POWER_LABEL_COLUMNS + ["aggregate"],
+    skiprows=range(1, validation_end + 1),
+)
+test_time = pd.to_datetime(test_metadata[TIME_COLUMNS[0]])
 
 
 # =============================================================================
@@ -223,30 +258,30 @@ y_on_test_array = np.asarray(y_on_test)
 def train_and_score(feature_subset):
     feature_indices = [FEATURE_COLUMNS.index(feature) for feature in feature_subset]
     X_train_subset = np.asarray(X_train[:, feature_indices])
-    X_test_subset = np.asarray(X_test[:, feature_indices])
+    X_validation_subset = np.asarray(X_validation[:, feature_indices])
 
     model = ExtraTreesClassifier(**EXTRATREES_PARAMS)
 
     try:
         model.fit(X_train_subset, y_on_train)
-        prediction = model.predict(X_test_subset)
+        prediction = model.predict(X_validation_subset)
 
-        per_precision = precision_score(y_on_test_array, prediction, average=None, zero_division=0)
-        per_recall = recall_score(y_on_test_array, prediction, average=None, zero_division=0)
-        per_f1 = f1_score(y_on_test_array, prediction, average=None, zero_division=0)
+        per_precision = precision_score(y_on_validation_array, prediction, average=None, zero_division=0)
+        per_recall = recall_score(y_on_validation_array, prediction, average=None, zero_division=0)
+        per_f1 = f1_score(y_on_validation_array, prediction, average=None, zero_division=0)
 
-        per_accuracy = (y_on_test_array == prediction).mean(axis=0)
+        per_accuracy = (y_on_validation_array == prediction).mean(axis=0)
 
-        macro_precision = precision_score(y_on_test_array, prediction, average="macro", zero_division=0)
-        macro_recall = recall_score(y_on_test_array, prediction, average="macro", zero_division=0)
-        macro_f1 = f1_score(y_on_test_array, prediction, average="macro", zero_division=0)
+        macro_precision = precision_score(y_on_validation_array, prediction, average="macro", zero_division=0)
+        macro_recall = recall_score(y_on_validation_array, prediction, average="macro", zero_division=0)
+        macro_f1 = f1_score(y_on_validation_array, prediction, average="macro", zero_division=0)
         macro_accuracy = float(per_accuracy.mean())
 
-        micro_precision = precision_score(y_on_test_array, prediction, average="micro", zero_division=0)
-        micro_recall = recall_score(y_on_test_array, prediction, average="micro", zero_division=0)
-        micro_f1 = f1_score(y_on_test_array, prediction, average="micro", zero_division=0)
+        micro_precision = precision_score(y_on_validation_array, prediction, average="micro", zero_division=0)
+        micro_recall = recall_score(y_on_validation_array, prediction, average="micro", zero_division=0)
+        micro_f1 = f1_score(y_on_validation_array, prediction, average="micro", zero_division=0)
 
-        subset_accuracy = float((y_on_test_array == prediction).all(axis=1).mean())
+        subset_accuracy = float((y_on_validation_array == prediction).all(axis=1).mean())
 
         per_appliance_scores = {}
         for label, precision, recall, f1, accuracy in zip(
@@ -274,7 +309,7 @@ def train_and_score(feature_subset):
     finally:
         del model
         del X_train_subset
-        del X_test_subset
+        del X_validation_subset
         if "prediction" in locals():
             del prediction
         gc.collect()
@@ -365,7 +400,7 @@ for round_number in range(1, len(FEATURE_COLUMNS) + 1):
     print(f"Best Macro F1 so far: {best_macro_f1:.4f}")
     print(f"Best Micro F1 so far: {best_micro_f1:.4f}")
     print(f"Improvement this round: {improvement:.4f}")
-    print("Classification metrics for this selected feature combination:")
+    print("Validation classification metrics for this selected feature combination:")
     metric_rows = []
     for label in ON_OFF_LABEL_COLUMNS:
         scores = best_candidate["per_appliance_scores"]
@@ -429,9 +464,9 @@ if not selection_log_df.empty:
         markersize=4,
         label="Micro F1",
     )
-    ax.set_title("ExtraTrees Forward Feature Selection", fontsize=14, weight="bold")
+    ax.set_title("ExtraTrees Forward Feature Selection on Validation Set", fontsize=14, weight="bold")
     ax.set_xlabel("Number of Selected Features")
-    ax.set_ylabel("Classification F1 Score")
+    ax.set_ylabel("Validation F1 Score")
     ax.set_ylim(0, 1.02)
     ax.xaxis.set_major_locator(MultipleLocator(5))
     ax.xaxis.set_minor_locator(MultipleLocator(1))
@@ -456,9 +491,9 @@ if not selection_log_df.empty:
                 markersize=3.5,
                 label=label,
             )
-    ax.set_title("Per-Appliance F1 During Forward Selection", fontsize=14, weight="bold")
+    ax.set_title("Per-Appliance Validation F1 During Forward Selection", fontsize=14, weight="bold")
     ax.set_xlabel("Number of Selected Features")
-    ax.set_ylabel("Per-Appliance F1 Score")
+    ax.set_ylabel("Per-Appliance Validation F1 Score")
     ax.set_ylim(0, 1.02)
     ax.xaxis.set_major_locator(MultipleLocator(5))
     ax.xaxis.set_minor_locator(MultipleLocator(1))
@@ -475,14 +510,137 @@ if not selection_log_df.empty:
         file.write("ExtraTrees Forward Feature Selection\n")
         file.write(f"Dataset: {DATASET_PATH}\n")
         file.write(f"Run folder: {RESULTS_DIR}\n\n")
-        file.write("Selected feature order:\n")
+        file.write("Selected feature order using validation F1:\n")
         for _, row in selection_log_df.iterrows():
             file.write(
                 f"Round {int(row['round']):02d}: "
                 f"{row['added_feature']} | "
-                f"Macro F1={row['macro_f1']:.4f} | "
-                f"Micro F1={row['micro_f1']:.4f}\n"
+                f"Validation Macro F1={row['macro_f1']:.4f} | "
+                f"Validation Micro F1={row['micro_f1']:.4f}\n"
             )
+
+
+def contiguous_true_segments(mask):
+    mask = np.asarray(mask, dtype=bool)
+    if mask.size == 0:
+        return []
+    padded = np.r_[False, mask, False]
+    changes = np.diff(padded.astype(np.int8))
+    starts = np.where(changes == 1)[0]
+    ends = np.where(changes == -1)[0]
+    return list(zip(starts, ends))
+
+
+def choose_on_windows(y_true_label):
+    segments = [
+        (start, end)
+        for start, end in contiguous_true_segments(y_true_label == 1)
+        if end - start >= EVIDENCE_MIN_ON_POINTS
+    ]
+    segments = sorted(segments, key=lambda item: item[1] - item[0], reverse=True)
+    windows = []
+    for start, end in segments[:EVIDENCE_MAX_WINDOWS_PER_TYPE]:
+        window_start = max(0, start - EVIDENCE_CONTEXT_POINTS)
+        window_end = min(len(y_true_label), end + EVIDENCE_CONTEXT_POINTS)
+        windows.append((window_start, window_end, start, end))
+    return windows
+
+
+def choose_off_windows(y_true_label, y_pred_label, appliance_power):
+    n_rows = len(y_true_label)
+    if n_rows == 0:
+        return []
+
+    candidate_windows = []
+    step = max(1, EVIDENCE_OFF_WINDOW_POINTS // 2)
+    for start in range(0, max(1, n_rows - EVIDENCE_OFF_WINDOW_POINTS + 1), step):
+        end = min(n_rows, start + EVIDENCE_OFF_WINDOW_POINTS)
+        if end - start < max(12, EVIDENCE_OFF_WINDOW_POINTS // 4):
+            continue
+        true_on_fraction = float(np.mean(y_true_label[start:end]))
+        pred_on_fraction = float(np.mean(y_pred_label[start:end]))
+        if true_on_fraction > EVIDENCE_OFF_MAX_TRUE_ON_FRACTION:
+            continue
+        if pred_on_fraction > EVIDENCE_OFF_MAX_PRED_ON_FRACTION:
+            continue
+
+        aggregate_activity = float(np.mean(test_metadata["aggregate"].iloc[start:end]))
+        appliance_activity = float(np.max(appliance_power[start:end]))
+        candidate_windows.append((aggregate_activity, appliance_activity, start, end))
+
+    candidate_windows = sorted(candidate_windows, reverse=True)
+    return [(start, end, start, end) for _, _, start, end in candidate_windows[:EVIDENCE_MAX_WINDOWS_PER_TYPE]]
+
+
+def plot_onoff_evidence_window(appliance, y_true_label, y_pred_label, window, kind, index):
+    start, end, event_start, event_end = window
+    time_values = test_time.iloc[start:end]
+    power_column = f"{appliance}_power"
+    appliance_power = test_metadata[power_column].iloc[start:end].to_numpy(dtype=float)
+    aggregate_power = test_metadata["aggregate"].iloc[start:end].to_numpy(dtype=float)
+    true_state = y_true_label[start:end].astype(float)
+    pred_state = y_pred_label[start:end].astype(float)
+
+    max_power = max(float(np.nanmax(appliance_power)) if len(appliance_power) else 0.0, 1.0)
+    state_scale = max_power * 1.08
+
+    fig, ax = plt.subplots(figsize=(12, 4.8))
+    ax.plot(time_values, appliance_power, color="#1f2937", linewidth=2.2, label="ground-truth appliance power")
+    ax.step(time_values, true_state * state_scale, where="post", color="#059669", linewidth=2.0, label="ground-truth ON state")
+    ax.step(time_values, pred_state * state_scale, where="post", color="#dc2626", linewidth=1.8, linestyle="--", label="predicted ON state")
+
+    if kind == "on":
+        ax.axvspan(
+            test_time.iloc[event_start],
+            test_time.iloc[max(event_start, event_end - 1)],
+            color="#bbf7d0",
+            alpha=0.28,
+            label="selected ON interval",
+        )
+
+    ax2 = ax.twinx()
+    ax2.plot(time_values, aggregate_power, color="#94a3b8", linewidth=1.4, alpha=0.75, label="aggregate")
+    ax2.set_ylabel("Aggregate power (W)", color="#64748b")
+    ax2.tick_params(axis="y", colors="#64748b")
+
+    title_kind = "ON-period zoom" if kind == "on" else "OFF-period false-positive check"
+    ax.set_title(f"{appliance}: {title_kind}", fontsize=13, weight="bold")
+    ax.set_xlabel("Time")
+    ax.set_ylabel("Appliance power / state marker")
+    ax.grid(True, which="major", alpha=0.25)
+
+    handles, labels = ax.get_legend_handles_labels()
+    handles2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(handles + handles2, labels + labels2, loc="upper left", fontsize=8)
+    fig.autofmt_xdate(rotation=25)
+    fig.tight_layout()
+
+    out_path = EVIDENCE_PLOT_DIR / f"{appliance}_{kind}_evidence_{index:02d}.png"
+    fig.savefig(out_path, dpi=220)
+    plt.close(fig)
+    return out_path
+
+
+def save_onoff_evidence_plots(prediction):
+    EVIDENCE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
+    saved_paths = []
+
+    for label_index, label in enumerate(ON_OFF_LABEL_COLUMNS):
+        appliance = label.replace("_on", "")
+        power_column = f"{appliance}_power"
+        y_true_label = y_on_test_array[:, label_index].astype(np.uint8)
+        y_pred_label = prediction[:, label_index].astype(np.uint8)
+        appliance_power = test_metadata[power_column].to_numpy(dtype=float)
+
+        on_windows = choose_on_windows(y_true_label)
+        for index, window in enumerate(on_windows, start=1):
+            saved_paths.append(plot_onoff_evidence_window(appliance, y_true_label, y_pred_label, window, "on", index))
+
+        off_windows = choose_off_windows(y_true_label, y_pred_label, appliance_power)
+        for index, window in enumerate(off_windows, start=1):
+            saved_paths.append(plot_onoff_evidence_window(appliance, y_true_label, y_pred_label, window, "off", index))
+
+    return saved_paths
 
 
 # =============================================================================
@@ -500,6 +658,8 @@ print()
 print("ExtraTrees forward feature selection")
 print(f"Hyperparameters: {HYPERPARAMETER_SOURCE}")
 print(f"Train rows: {len(X_train):,}")
+print(f"Validation rows: {len(X_validation):,}")
+print(f"Final model train rows: {len(X_train_validation):,} (train + validation)")
 print(f"Test rows: {len(X_test):,}")
 print()
 print("Selected features:")
@@ -507,25 +667,45 @@ for index, feature in enumerate(selected_features, start=1):
     print(f"  {index:02d}. {feature}")
 
 print()
-print(f"Best Macro F1: {best_macro_f1:.4f}")
-print(f"Best Micro F1: {best_micro_f1:.4f}")
+best_evidence_row = selection_log_df.loc[selection_log_df["macro_f1"].idxmax()] if not selection_log_df.empty else None
+best_evidence_features = (
+    [feature for feature in str(best_evidence_row["selected_features"]).split(",") if feature]
+    if best_evidence_row is not None
+    else selected_features
+)
+if best_evidence_row is not None:
+    print(f"Peak validation Macro F1: {float(best_evidence_row['macro_f1']):.4f}")
+    print(f"Peak validation Micro F1 at peak Macro round: {float(best_evidence_row['micro_f1']):.4f}")
+    print(
+        f"Final test/evidence model uses validation-selected Macro-F1 subset "
+        f"from round {int(best_evidence_row['round'])} "
+        f"({len(best_evidence_features)} features)."
+    )
+else:
+    print(f"Final validation Macro F1: {best_macro_f1:.4f}")
+    print(f"Final validation Micro F1: {best_micro_f1:.4f}")
 print(f"Selection log: {FORWARD_SELECTION_LOG}")
 print(f"Selection curve: {FORWARD_SELECTION_PLOT}")
 print(f"Per-appliance curve: {PER_APPLIANCE_PLOT}")
 print(f"Selected feature order: {SELECTED_FEATURES_TXT}")
 
-if selected_features:
-    final_feature_indices = [FEATURE_COLUMNS.index(feature) for feature in selected_features]
-    final_X_train = np.asarray(X_train[:, final_feature_indices])
+if best_evidence_features:
+    final_feature_indices = [FEATURE_COLUMNS.index(feature) for feature in best_evidence_features]
+    final_X_train = np.asarray(X_train_validation[:, final_feature_indices])
     final_X_test = np.asarray(X_test[:, final_feature_indices])
     final_model = ExtraTreesClassifier(**EXTRATREES_PARAMS)
-    final_model.fit(final_X_train, y_on_train)
+    final_model.fit(final_X_train, y_on_train_validation)
     best_prediction = final_model.predict(final_X_test)
 
     print()
+    print("Held-out test classification report:")
     print(classification_report(
         y_on_test_array,
         best_prediction,
         target_names=ON_OFF_LABEL_COLUMNS,
         zero_division=0,
     ))
+
+    evidence_paths = save_onoff_evidence_plots(best_prediction)
+    print(f"ON/OFF evidence plots: {EVIDENCE_PLOT_DIR}")
+    print(f"Saved evidence plot count: {len(evidence_paths)}")

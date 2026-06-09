@@ -1,63 +1,57 @@
 # ExtraTrees NILM Feature Selection
 
-This folder contains the ExtraTrees-based mini NILM workflow.
+This folder contains the ExtraTrees-based NILM feature-selection workflow.
 
-## 1. Hyperparameter Tuning
+## 1. Classifier Hyperparameter Tuning
 
-Run this first when you want to tune the ExtraTrees model automatically:
+Run this when tuning the ON/OFF classifier:
 
 ```bash
 python feature_selection/extratrees_nilm/extratrees_hyperparameter_tuning.py
 ```
 
-This script uses Optuna surrogate optimization to tune ExtraTrees hyperparameters on the validation set.
-
-Outputs:
+Selection metric:
 
 ```text
-feature_selection/results/extratrees_best_hyperparameters.json
-feature_selection/results/extratrees_hyperparameter_trials.csv
+Macro F1
 ```
 
-If Optuna is not installed:
+## 2. Regressor Hyperparameter Tuning
+
+Run this when tuning the appliance power regressor:
 
 ```bash
-pip install optuna
+python feature_selection/extratrees_nilm/extratrees_regressor_hyperparameter_tuning.py
 ```
 
-## 2. Forward Feature Selection
+Selection objective:
 
-Run this after hyperparameter tuning:
+```text
+weighted composite of avg_nmae, avg_nrmse, avg_relative_energy_error, avg_sae, and avg_r2
+```
+
+Output used by the classification-regression forward-selection script:
+
+```text
+feature_selection/results/extratrees_hyperparameter_tuning_regression_<dataset_name>/best_regressor_hyperparameters.json
+```
+
+If this file is missing, the forward-selection script falls back to its default regressor parameters.
+
+## 3. Classification-Regression Forward Feature Selection
+
+Run this after tuning:
 
 ```bash
-python feature_selection/extratrees_nilm/extratrees_nilm_forward_selection.py
+python feature_selection/extratrees_nilm/extratrees_nilm_forward_selection_classification_regression.py
 ```
 
-This script reads the tuned hyperparameters if this file exists:
-
-```text
-feature_selection/results/extratrees_best_hyperparameters.json
-```
-
-If the JSON file does not exist, it uses default ExtraTrees parameters.
-
-Outputs:
-
-```text
-feature_selection/results/extratrees_forward_selection_log.csv
-feature_selection/results/extratrees_forward_selection_curve.png
-feature_selection/results/extratrees_forward_selection_per_appliance.png
-feature_selection/results/extratrees_selected_features.txt
-```
+The ON/OFF branch uses fixed classifier settings and selected classifier features. The regression branch uses tuned regressor parameters when the regressor tuning output exists.
 
 ## Workflow
 
 ```text
-hyperparameter tuning
-        ↓
-best ExtraTrees parameters
-        ↓
-forward feature selection
-        ↓
-selected feature subset and F1 curves
+classifier tuning -> ON/OFF classifier settings
+regressor tuning  -> power regressor settings
+forward selection -> selected regression feature subset
 ```

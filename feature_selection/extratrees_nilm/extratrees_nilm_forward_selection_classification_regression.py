@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.ticker import MultipleLocator
 from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
-from sklearn.metrics import classification_report, f1_score, precision_score, recall_score, r2_score
+from sklearn.metrics import classification_report, f1_score, precision_score, recall_score
 
 
 # =============================================================================
@@ -22,9 +22,12 @@ DATASET_PATH = DATASET_DIR / DATASET_FILENAME
 BASE_RESULTS_DIR = FEATURE_SELECTION_DIR / "results"
 RUN_NAME = f"extratrees_forward_selection_classification_regression_{Path(DATASET_FILENAME).stem}"
 RESULTS_DIR = BASE_RESULTS_DIR / RUN_NAME
+REGRESSOR_TUNING_RUN_NAME = f"extratrees_hyperparameter_tuning_regression_{Path(DATASET_FILENAME).stem}"
+REGRESSOR_BEST_PARAMS_PATH = BASE_RESULTS_DIR / REGRESSOR_TUNING_RUN_NAME / "best_regressor_hyperparameters.json"
 FORWARD_SELECTION_LOG = RESULTS_DIR / "classification_regression_forward_selection_log.csv"
-REGRESSION_PLOT = RESULTS_DIR / "regression_forward_selection_nmae.png"
-PER_APPLIANCE_NMAE_PLOT = RESULTS_DIR / "regression_per_appliance_nmae.png"
+REGRESSION_PLOT = RESULTS_DIR / "regression_forward_selection_mae_sae_ea.png"
+COMPOSITE_SELECTION_PLOT = RESULTS_DIR / "regression_forward_selection_composite_score.png"
+PER_APPLIANCE_EA_PLOT = RESULTS_DIR / "regression_per_appliance_ea.png"
 METRIC_PLOT_DIR = RESULTS_DIR / "metric_curves"
 SELECTED_FEATURES_TXT = RESULTS_DIR / "selected_regression_features.txt"
 PREDICTION_CSV = RESULTS_DIR / "final_regression_test_predictions.csv"
@@ -36,6 +39,8 @@ X_CACHE_PATH = CACHE_DIR / "X_features_float32.dat"
 Y_ON_CACHE_PATH = CACHE_DIR / "y_on_uint8.dat"
 Y_POWER_CACHE_PATH = CACHE_DIR / "y_power_float32.dat"
 
+TRAIN_SIZE = 0.6
+VALIDATION_SIZE = 0.2
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
 CSV_CHUNKSIZE = 100_000
@@ -43,7 +48,6 @@ CACHE_FEATURE_DTYPE = "float32"
 CACHE_LABEL_DTYPE = "uint8"
 CACHE_POWER_DTYPE = "float32"
 EPSILON = 1e-6
-SAE_WINDOW_POINTS = 600
 
 # Regression wrapper selection is much heavier than classification-only selection
 # because each candidate trains direct and classifier-assisted regressors.
@@ -54,6 +58,21 @@ MAX_SELECTED_FEATURES = 30
 # moderate so aggregate/ground-truth/predicted curves are readable.
 PLOT_START_INDEX = 0
 PLOT_ROWS = 5000
+
+# Candidate ranking uses a composite of three NILM regression metrics.
+# Ranks are computed within each forward-selection round, then combined with
+# these weights. Lower composite score is better.
+SELECTION_METRIC_WEIGHTS = {
+    "avg_mae": 0.40,
+    "avg_sae": 0.30,
+    "avg_ea": 0.30,
+}
+SELECTION_HIGHER_IS_BETTER = {
+    "avg_ea",
+}
+SELECTION_WEIGHT_SUM = sum(SELECTION_METRIC_WEIGHTS.values())
+if SELECTION_WEIGHT_SUM <= 0:
+    raise ValueError("SELECTION_METRIC_WEIGHTS must contain at least one positive weight.")
 
 # Best classification-selected feature subset from the wk24_to_wk31 classifier run.
 # This branch produces the predicted ON/OFF inputs used by the assisted regressor.
@@ -98,7 +117,7 @@ CLASSIFIER_PARAMS = {
     "n_jobs": -1,
 }
 
-REGRESSOR_PARAMS = {
+DEFAULT_REGRESSOR_PARAMS = {
     "n_estimators": 125,
     "max_depth": 28,
     "min_samples_leaf": 1,
@@ -108,6 +127,27 @@ REGRESSOR_PARAMS = {
     "random_state": RANDOM_STATE,
     "n_jobs": -1,
 }
+
+
+def load_regressor_params():
+    if not REGRESSOR_BEST_PARAMS_PATH.exists():
+        print(f"Regressor tuning file not found, using default regressor params: {REGRESSOR_BEST_PARAMS_PATH}")
+        return DEFAULT_REGRESSOR_PARAMS.copy()
+
+    result = json.loads(REGRESSOR_BEST_PARAMS_PATH.read_text(encoding="utf-8"))
+    params = result.get("best_params")
+    if not isinstance(params, dict):
+        raise ValueError(f"Missing best_params in {REGRESSOR_BEST_PARAMS_PATH}")
+
+    params = params.copy()
+    params["random_state"] = RANDOM_STATE
+    params["n_jobs"] = -1
+    print(f"Loaded tuned regressor params from: {REGRESSOR_BEST_PARAMS_PATH}")
+    print(f"Regressor params: {params}")
+    return params
+
+
+REGRESSOR_PARAMS = load_regressor_params()
 
 
 # =============================================================================
@@ -254,21 +294,31 @@ y_power_all = np.memmap(
 
 
 # =============================================================================
-# 4. Time-Based Train/Test Split
+# 4. Time-Based Train/Validation/Test Split
 # =============================================================================
-split_index = int(row_count * (1 - TEST_SIZE))
+train_end = int(row_count * TRAIN_SIZE)
+validation_end = int(row_count * (TRAIN_SIZE + VALIDATION_SIZE))
+if not (0 < train_end < validation_end < row_count):
+    raise ValueError(
+        "Invalid split sizes. Expected non-empty train/validation/test splits; "
+        f"got row_count={row_count}, train_end={train_end}, validation_end={validation_end}."
+    )
 
-X_train = X_all[:split_index]
-X_test = X_all[split_index:]
-y_on_train = y_on_all[:split_index]
-y_on_test = y_on_all[split_index:]
-y_power_train = y_power_all[:split_index]
-y_power_test = y_power_all[split_index:]
+X_train = X_all[:train_end]
+X_validation = X_all[train_end:validation_end]
+X_test = X_all[validation_end:]
+y_on_train = y_on_all[:train_end]
+y_on_validation = y_on_all[train_end:validation_end]
+y_on_test = y_on_all[validation_end:]
+y_power_train = y_power_all[:train_end]
+y_power_validation = y_power_all[train_end:validation_end]
+y_power_test = y_power_all[validation_end:]
 
 y_on_train_array = np.asarray(y_on_train)
+y_on_validation_array = np.asarray(y_on_validation)
 y_on_test_array = np.asarray(y_on_test)
+y_power_validation_array = np.asarray(y_power_validation)
 y_power_test_array = np.asarray(y_power_test)
-power_scale = np.maximum(np.mean(np.abs(y_power_test_array), axis=0), EPSILON)
 
 
 # =============================================================================
@@ -291,22 +341,32 @@ def classification_scores(y_true, y_pred):
 print("Training fixed classifier branch using classification-selected features...")
 classifier_start = perf_counter()
 X_classifier_train = matrix_from_features(X_train, CLASSIFIER_FEATURES)
+X_classifier_validation = matrix_from_features(X_validation, CLASSIFIER_FEATURES)
 X_classifier_test = matrix_from_features(X_test, CLASSIFIER_FEATURES)
 
 classifier = ExtraTreesClassifier(**CLASSIFIER_PARAMS)
 classifier.fit(X_classifier_train, y_on_train)
 predicted_on_train = classifier.predict(X_classifier_train).astype(CACHE_LABEL_DTYPE)
+predicted_on_validation = classifier.predict(X_classifier_validation).astype(CACHE_LABEL_DTYPE)
 predicted_on_test = classifier.predict(X_classifier_test).astype(CACHE_LABEL_DTYPE)
-classifier_metrics = classification_scores(y_on_test_array, predicted_on_test)
+classifier_validation_metrics = classification_scores(y_on_validation_array, predicted_on_validation)
+classifier_test_metrics = classification_scores(y_on_test_array, predicted_on_test)
 
 print(
     "Classifier branch ready | "
-    f"Macro F1={classifier_metrics['macro_f1']:.4f} | "
-    f"Micro F1={classifier_metrics['micro_f1']:.4f} | "
+    f"Validation Macro F1={classifier_validation_metrics['macro_f1']:.4f} | "
+    f"Test Macro F1={classifier_test_metrics['macro_f1']:.4f} | "
     f"time={(perf_counter() - classifier_start) / 60:.1f} min",
     flush=True,
 )
-print("Fixed classifier branch classification report:")
+print("Fixed classifier branch validation classification report:")
+print(classification_report(
+    y_on_validation_array,
+    predicted_on_validation,
+    target_names=ON_OFF_LABEL_COLUMNS,
+    zero_division=0,
+))
+print("Fixed classifier branch test classification report:")
 print(classification_report(
     y_on_test_array,
     predicted_on_test,
@@ -316,6 +376,7 @@ print(classification_report(
 
 del classifier
 del X_classifier_train
+del X_classifier_validation
 del X_classifier_test
 gc.collect()
 
@@ -326,135 +387,129 @@ gc.collect()
 def regression_scores(y_true, y_pred):
     error = y_true - y_pred
     mae = np.mean(np.abs(error), axis=0)
-    rmse = np.sqrt(np.mean(error ** 2, axis=0))
-    nmae = mae / power_scale
-    nrmse = rmse / power_scale
-
-    # SAE_delta follows the NILM literature definition:
-    # for each fixed time window, compare the summed true/predicted energy and
-    # divide by the number of points in that window. With 6-second samples,
-    # 600 points correspond to one hour.
-    usable_points = (len(y_true) // SAE_WINDOW_POINTS) * SAE_WINDOW_POINTS
-    if usable_points == 0:
-        usable_points = len(y_true)
-        window_points = len(y_true)
-    else:
-        window_points = SAE_WINDOW_POINTS
-    true_windows = y_true[:usable_points].reshape(-1, window_points, y_true.shape[1])
-    pred_windows = y_pred[:usable_points].reshape(-1, window_points, y_pred.shape[1])
-    sae = np.mean(
-        np.abs(np.sum(true_windows, axis=1) - np.sum(pred_windows, axis=1)) / window_points,
-        axis=0,
-    )
 
     true_energy = np.sum(y_true, axis=0)
     predicted_energy = np.sum(y_pred, axis=0)
-    relative_energy_error = (
-        np.abs(predicted_energy - true_energy)
-        / np.maximum(np.abs(true_energy), EPSILON)
+    sae = np.abs(predicted_energy - true_energy) / np.maximum(np.abs(true_energy), EPSILON)
+    ea = 1.0 - (
+        np.sum(np.abs(error), axis=0)
+        / (2.0 * np.maximum(np.sum(np.abs(y_true), axis=0), EPSILON))
     )
-    r2 = r2_score(y_true, y_pred, multioutput="raw_values")
+    overall_ea = 1.0 - (
+        np.sum(np.abs(error))
+        / (2.0 * np.maximum(np.sum(np.abs(y_true)), EPSILON))
+    )
 
     scores = {
         "avg_mae": float(np.mean(mae)),
-        "avg_rmse": float(np.mean(rmse)),
-        "avg_nmae": float(np.mean(nmae)),
-        "avg_nrmse": float(np.mean(nrmse)),
         "avg_sae": float(np.mean(sae)),
-        "avg_relative_energy_error": float(np.mean(relative_energy_error)),
-        "avg_r2": float(np.mean(r2)),
+        "avg_ea": float(overall_ea),
     }
-    for (
-        label,
-        mae_value,
-        rmse_value,
-        nmae_value,
-        nrmse_value,
-        sae_value,
-        relative_energy_error_value,
-        r2_value,
-    ) in zip(
-        POWER_LABEL_COLUMNS,
-        mae,
-        rmse,
-        nmae,
-        nrmse,
-        sae,
-        relative_energy_error,
-        r2,
-    ):
+    for label, mae_value, sae_value, ea_value in zip(POWER_LABEL_COLUMNS, mae, sae, ea):
         scores[f"{label}_mae"] = float(mae_value)
-        scores[f"{label}_rmse"] = float(rmse_value)
-        scores[f"{label}_nmae"] = float(nmae_value)
-        scores[f"{label}_nrmse"] = float(nrmse_value)
         scores[f"{label}_sae"] = float(sae_value)
-        scores[f"{label}_relative_energy_error"] = float(relative_energy_error_value)
-        scores[f"{label}_r2"] = float(r2_value)
+        scores[f"{label}_ea"] = float(ea_value)
     return scores
 
 
-def train_regressor_and_score(feature_subset, extra_train=None, extra_test=None):
+def train_regressor_and_score(feature_subset, target_matrix, target_power, extra_train=None, extra_target=None):
     X_train_subset = matrix_from_features(X_train, feature_subset)
-    X_test_subset = matrix_from_features(X_test, feature_subset)
+    X_target_subset = matrix_from_features(target_matrix, feature_subset)
 
-    if extra_train is not None and extra_test is not None:
+    if extra_train is not None and extra_target is not None:
         X_train_subset = np.hstack([X_train_subset, extra_train.astype(CACHE_FEATURE_DTYPE)])
-        X_test_subset = np.hstack([X_test_subset, extra_test.astype(CACHE_FEATURE_DTYPE)])
+        X_target_subset = np.hstack([X_target_subset, extra_target.astype(CACHE_FEATURE_DTYPE)])
 
     model = ExtraTreesRegressor(**REGRESSOR_PARAMS)
     try:
         model.fit(X_train_subset, y_power_train)
-        prediction = model.predict(X_test_subset)
-        return regression_scores(y_power_test_array, prediction)
+        prediction = model.predict(X_target_subset)
+        return regression_scores(target_power, prediction)
     finally:
         del model
         del X_train_subset
-        del X_test_subset
+        del X_target_subset
         if "prediction" in locals():
             del prediction
         gc.collect()
 
 
-def train_regressor_and_predict(feature_subset, extra_train=None, extra_test=None):
+def train_regressor_and_predict(feature_subset, target_matrix, extra_train=None, extra_target=None):
     X_train_subset = matrix_from_features(X_train, feature_subset)
-    X_test_subset = matrix_from_features(X_test, feature_subset)
+    X_target_subset = matrix_from_features(target_matrix, feature_subset)
 
-    if extra_train is not None and extra_test is not None:
+    if extra_train is not None and extra_target is not None:
         X_train_subset = np.hstack([X_train_subset, extra_train.astype(CACHE_FEATURE_DTYPE)])
-        X_test_subset = np.hstack([X_test_subset, extra_test.astype(CACHE_FEATURE_DTYPE)])
+        X_target_subset = np.hstack([X_target_subset, extra_target.astype(CACHE_FEATURE_DTYPE)])
 
     model = ExtraTreesRegressor(**REGRESSOR_PARAMS)
     try:
         model.fit(X_train_subset, y_power_train)
-        return model.predict(X_test_subset)
+        return model.predict(X_target_subset)
     finally:
         del model
         del X_train_subset
-        del X_test_subset
+        del X_target_subset
         gc.collect()
 
 
 def evaluate_candidate(feature_subset):
-    direct_scores = train_regressor_and_score(feature_subset)
+    direct_scores = train_regressor_and_score(
+        feature_subset,
+        target_matrix=X_validation,
+        target_power=y_power_validation_array,
+    )
     assisted_scores = train_regressor_and_score(
         feature_subset,
+        target_matrix=X_validation,
+        target_power=y_power_validation_array,
         extra_train=predicted_on_train,
-        extra_test=predicted_on_test,
+        extra_target=predicted_on_validation,
     )
     return direct_scores, assisted_scores
+
+
+def add_composite_selection_scores(round_results):
+    metric_names = list(SELECTION_METRIC_WEIGHTS)
+
+    for metric_name in metric_names:
+        reverse = metric_name in SELECTION_HIGHER_IS_BETTER
+        sorted_results = sorted(
+            round_results,
+            key=lambda item: item["assisted_scores"][metric_name],
+            reverse=reverse,
+        )
+        previous_value = None
+        previous_rank = None
+        for rank, result in enumerate(sorted_results, start=1):
+            value = result["assisted_scores"][metric_name]
+            if previous_value is not None and np.isclose(value, previous_value):
+                metric_rank = previous_rank
+            else:
+                metric_rank = rank
+                previous_value = value
+                previous_rank = rank
+            result.setdefault("selection_metric_ranks", {})[metric_name] = metric_rank
+
+    for result in round_results:
+        weighted_rank_sum = sum(
+            SELECTION_METRIC_WEIGHTS[metric_name] * result["selection_metric_ranks"][metric_name]
+            for metric_name in metric_names
+        )
+        result["selection_score"] = weighted_rank_sum / SELECTION_WEIGHT_SUM
 
 
 # =============================================================================
 # 7. Wrapper Feature Selection: Regression Objective
 # =============================================================================
-# Selection decision uses classifier-assisted regression average normalized MAE.
-# Direct regression is also recorded for diagnosis.
+# Selection decision uses a weighted rank composite of classifier-assisted
+# regression metrics. Direct regression is also recorded for diagnosis.
 selected_features = []
 remaining_features = FEATURE_COLUMNS.copy()
 selection_log = []
 start_time = perf_counter()
 
-best_assisted_nmae = float("inf")
+best_selection_score = float("inf")
 max_rounds = len(FEATURE_COLUMNS) if MAX_SELECTED_FEATURES is None else min(MAX_SELECTED_FEATURES, len(FEATURE_COLUMNS))
 
 for round_number in range(1, max_rounds + 1):
@@ -482,20 +537,16 @@ for round_number in range(1, max_rounds + 1):
         print("      Regression metrics, average over appliances:", flush=True)
         print(
             f"        direct   | "
-            f"NMAE={direct_scores['avg_nmae']:.4f} | "
             f"MAE={direct_scores['avg_mae']:.2f} W | "
-            f"NRMSE={direct_scores['avg_nrmse']:.4f} | "
-            f"SAE_delta={direct_scores['avg_sae']:.2f} W | "
-            f"R2={direct_scores['avg_r2']:.4f}",
+            f"SAE={direct_scores['avg_sae']:.4f} | "
+            f"EA={direct_scores['avg_ea']:.4f}",
             flush=True,
         )
         print(
             f"        assisted | "
-            f"NMAE={assisted_scores['avg_nmae']:.4f} | "
             f"MAE={assisted_scores['avg_mae']:.2f} W | "
-            f"NRMSE={assisted_scores['avg_nrmse']:.4f} | "
-            f"SAE_delta={assisted_scores['avg_sae']:.2f} W | "
-            f"R2={assisted_scores['avg_r2']:.4f} | "
+            f"SAE={assisted_scores['avg_sae']:.4f} | "
+            f"EA={assisted_scores['avg_ea']:.4f} | "
             f"time={candidate_elapsed:.1f}s",
             flush=True,
         )
@@ -507,52 +558,43 @@ for round_number in range(1, max_rounds + 1):
             "assisted_scores": assisted_scores,
         })
 
-    best_candidate = min(round_results, key=lambda item: item["assisted_scores"]["avg_nmae"])
+    add_composite_selection_scores(round_results)
+    best_candidate = min(round_results, key=lambda item: item["selection_score"])
     selected_features.append(best_candidate["candidate_feature"])
     remaining_features.remove(best_candidate["candidate_feature"])
 
-    current_assisted_nmae = best_candidate["assisted_scores"]["avg_nmae"]
-    improvement = best_assisted_nmae - current_assisted_nmae
-    best_assisted_nmae = current_assisted_nmae
+    current_selection_score = best_candidate["selection_score"]
+    improvement = best_selection_score - current_selection_score if np.isfinite(best_selection_score) else 0.0
+    best_selection_score = current_selection_score
 
     log_row = {
         "round": round_number,
         "added_feature": best_candidate["candidate_feature"],
         "feature_count": len(selected_features),
         "selected_features": ",".join(selected_features),
-        "assisted_avg_nmae": best_candidate["assisted_scores"]["avg_nmae"],
-        "assisted_avg_nrmse": best_candidate["assisted_scores"]["avg_nrmse"],
+        "selection_score": best_candidate["selection_score"],
         "assisted_avg_mae": best_candidate["assisted_scores"]["avg_mae"],
-        "assisted_avg_rmse": best_candidate["assisted_scores"]["avg_rmse"],
         "assisted_avg_sae": best_candidate["assisted_scores"]["avg_sae"],
-        "assisted_avg_relative_energy_error": best_candidate["assisted_scores"]["avg_relative_energy_error"],
-        "assisted_avg_r2": best_candidate["assisted_scores"]["avg_r2"],
-        "direct_avg_nmae": best_candidate["direct_scores"]["avg_nmae"],
-        "direct_avg_nrmse": best_candidate["direct_scores"]["avg_nrmse"],
+        "assisted_avg_ea": best_candidate["assisted_scores"]["avg_ea"],
         "direct_avg_mae": best_candidate["direct_scores"]["avg_mae"],
-        "direct_avg_rmse": best_candidate["direct_scores"]["avg_rmse"],
         "direct_avg_sae": best_candidate["direct_scores"]["avg_sae"],
-        "direct_avg_relative_energy_error": best_candidate["direct_scores"]["avg_relative_energy_error"],
-        "direct_avg_r2": best_candidate["direct_scores"]["avg_r2"],
+        "direct_avg_ea": best_candidate["direct_scores"]["avg_ea"],
         "improvement": improvement,
-        "classifier_macro_f1": classifier_metrics["macro_f1"],
-        "classifier_micro_f1": classifier_metrics["micro_f1"],
+        "classifier_validation_macro_f1": classifier_validation_metrics["macro_f1"],
+        "classifier_validation_micro_f1": classifier_validation_metrics["micro_f1"],
+        "classifier_test_macro_f1": classifier_test_metrics["macro_f1"],
+        "classifier_test_micro_f1": classifier_test_metrics["micro_f1"],
     }
+    for metric_name, weight in SELECTION_METRIC_WEIGHTS.items():
+        log_row[f"selection_weight_{metric_name}"] = weight
+        log_row[f"selection_rank_{metric_name}"] = best_candidate["selection_metric_ranks"][metric_name]
     for label in POWER_LABEL_COLUMNS:
-        log_row[f"assisted_{label}_nmae"] = best_candidate["assisted_scores"][f"{label}_nmae"]
-        log_row[f"direct_{label}_nmae"] = best_candidate["direct_scores"][f"{label}_nmae"]
-        log_row[f"assisted_{label}_nrmse"] = best_candidate["assisted_scores"][f"{label}_nrmse"]
-        log_row[f"direct_{label}_nrmse"] = best_candidate["direct_scores"][f"{label}_nrmse"]
         log_row[f"assisted_{label}_mae"] = best_candidate["assisted_scores"][f"{label}_mae"]
         log_row[f"direct_{label}_mae"] = best_candidate["direct_scores"][f"{label}_mae"]
-        log_row[f"assisted_{label}_rmse"] = best_candidate["assisted_scores"][f"{label}_rmse"]
-        log_row[f"direct_{label}_rmse"] = best_candidate["direct_scores"][f"{label}_rmse"]
         log_row[f"assisted_{label}_sae"] = best_candidate["assisted_scores"][f"{label}_sae"]
         log_row[f"direct_{label}_sae"] = best_candidate["direct_scores"][f"{label}_sae"]
-        log_row[f"assisted_{label}_relative_energy_error"] = best_candidate["assisted_scores"][f"{label}_relative_energy_error"]
-        log_row[f"direct_{label}_relative_energy_error"] = best_candidate["direct_scores"][f"{label}_relative_energy_error"]
-        log_row[f"assisted_{label}_r2"] = best_candidate["assisted_scores"][f"{label}_r2"]
-        log_row[f"direct_{label}_r2"] = best_candidate["direct_scores"][f"{label}_r2"]
+        log_row[f"assisted_{label}_ea"] = best_candidate["assisted_scores"][f"{label}_ea"]
+        log_row[f"direct_{label}_ea"] = best_candidate["direct_scores"][f"{label}_ea"]
 
     selection_log.append(log_row)
 
@@ -562,12 +604,22 @@ for round_number in range(1, max_rounds + 1):
     elapsed = perf_counter() - start_time
     print()
     print(f"Round {round_number} selected: {best_candidate['candidate_feature']}")
-    print(f"Best assisted regression avg NMAE: {best_assisted_nmae:.4f}")
-    print(f"Improvement this round: {improvement:.4f}")
+    print(f"Best composite selection score: {best_selection_score:.4f}")
+    print(f"Composite score improvement this round: {improvement:.4f}")
+    print("Selection metric ranks for chosen feature:")
+    print(pd.DataFrame([
+        {
+            "metric": metric_name,
+            "weight": weight,
+            "rank": best_candidate["selection_metric_ranks"][metric_name],
+            "value": best_candidate["assisted_scores"][metric_name],
+        }
+        for metric_name, weight in SELECTION_METRIC_WEIGHTS.items()
+    ]).to_string(index=False, float_format=lambda value: f"{value:.4f}"))
     print("Regression comparison for selected feature combination:")
     print(pd.DataFrame([
-        {"model": "direct", **{key: best_candidate["direct_scores"][key] for key in ["avg_nmae", "avg_nrmse", "avg_mae", "avg_rmse", "avg_sae", "avg_r2"]}},
-        {"model": "classifier_assisted", **{key: best_candidate["assisted_scores"][key] for key in ["avg_nmae", "avg_nrmse", "avg_mae", "avg_rmse", "avg_sae", "avg_r2"]}},
+        {"model": "direct", **{key: best_candidate["direct_scores"][key] for key in ["avg_mae", "avg_sae", "avg_ea"]}},
+        {"model": "classifier_assisted", **{key: best_candidate["assisted_scores"][key] for key in ["avg_mae", "avg_sae", "avg_ea"]}},
     ]).to_string(index=False, float_format=lambda value: f"{value:.4f}"))
     print("Per-appliance regression metrics for this selected feature combination:")
     appliance_metric_rows = []
@@ -577,23 +629,15 @@ for round_number in range(1, max_rounds + 1):
             "model": "direct",
             "appliance": appliance,
             "mae_w": best_candidate["direct_scores"][f"{label}_mae"],
-            "rmse_w": best_candidate["direct_scores"][f"{label}_rmse"],
-            "nmae": best_candidate["direct_scores"][f"{label}_nmae"],
-            "nrmse": best_candidate["direct_scores"][f"{label}_nrmse"],
-            "sae_delta_w": best_candidate["direct_scores"][f"{label}_sae"],
-            "relative_energy_error": best_candidate["direct_scores"][f"{label}_relative_energy_error"],
-            "r2": best_candidate["direct_scores"][f"{label}_r2"],
+            "sae": best_candidate["direct_scores"][f"{label}_sae"],
+            "ea": best_candidate["direct_scores"][f"{label}_ea"],
         })
         appliance_metric_rows.append({
             "model": "assisted",
             "appliance": label.replace("_power", ""),
             "mae_w": best_candidate["assisted_scores"][f"{label}_mae"],
-            "rmse_w": best_candidate["assisted_scores"][f"{label}_rmse"],
-            "nmae": best_candidate["assisted_scores"][f"{label}_nmae"],
-            "nrmse": best_candidate["assisted_scores"][f"{label}_nrmse"],
-            "sae_delta_w": best_candidate["assisted_scores"][f"{label}_sae"],
-            "relative_energy_error": best_candidate["assisted_scores"][f"{label}_relative_energy_error"],
-            "r2": best_candidate["assisted_scores"][f"{label}_r2"],
+            "sae": best_candidate["assisted_scores"][f"{label}_sae"],
+            "ea": best_candidate["assisted_scores"][f"{label}_ea"],
         })
     print(pd.DataFrame(appliance_metric_rows).to_string(
         index=False,
@@ -614,42 +658,73 @@ if not selection_log_df.empty:
     plt.style.use("seaborn-v0_8-whitegrid")
     METRIC_PLOT_DIR.mkdir(parents=True, exist_ok=True)
 
+    def style_metric_axis(ax):
+        ax.set_axisbelow(True)
+        ax.xaxis.set_major_locator(MultipleLocator(5))
+        ax.xaxis.set_minor_locator(MultipleLocator(1))
+        ax.grid(True, which="major", color="#9ca3af", alpha=0.55, linewidth=0.95)
+        ax.grid(True, which="minor", color="#d1d5db", alpha=0.45, linewidth=0.55)
+        for spine in ax.spines.values():
+            spine.set_color("#9ca3af")
+            spine.set_linewidth(0.9)
+
+    def mark_best_assisted_point(ax, metric_name, lower_is_better=True):
+        column = f"assisted_avg_{metric_name}"
+        if column not in selection_log_df.columns:
+            return
+        best_index = selection_log_df[column].idxmin() if lower_is_better else selection_log_df[column].idxmax()
+        best_row = selection_log_df.loc[best_index]
+        x_value = best_row["feature_count"]
+        y_value = best_row[column]
+        ax.scatter(
+            [x_value],
+            [y_value],
+            s=115,
+            marker="*",
+            color="#dc2626",
+            edgecolor="#7f1d1d",
+            linewidth=0.7,
+            zorder=5,
+            label=f"Best assisted ({int(x_value)} features)",
+        )
+        ax.axvline(x_value, color="#dc2626", alpha=0.25, linewidth=1.2, linestyle="--")
+
     def save_average_metric_plot(metric_name, ylabel, lower_is_better=True):
         direct_column = f"direct_avg_{metric_name}"
         assisted_column = f"assisted_avg_{metric_name}"
         if direct_column not in selection_log_df.columns or assisted_column not in selection_log_df.columns:
             return
 
-        fig, ax = plt.subplots(figsize=(11, 5))
+        fig, ax = plt.subplots(figsize=(13, 5.8))
         ax.plot(
             selection_log_df["feature_count"],
             selection_log_df[direct_column],
             marker="o",
-            linewidth=2,
+            linewidth=2.4,
+            markersize=5.2,
             label="Direct regression",
         )
         ax.plot(
             selection_log_df["feature_count"],
             selection_log_df[assisted_column],
             marker="s",
-            linewidth=2,
+            linewidth=2.4,
+            markersize=5.2,
             label="Classifier-assisted regression",
         )
+        mark_best_assisted_point(ax, metric_name, lower_is_better)
         direction_text = "lower is better" if lower_is_better else "higher is better"
         ax.set_title(f"Average {ylabel} During Forward Selection", fontsize=14, weight="bold")
         ax.set_xlabel("Number of Selected Regression Features")
         ax.set_ylabel(f"{ylabel} ({direction_text})")
-        ax.xaxis.set_major_locator(MultipleLocator(5))
-        ax.xaxis.set_minor_locator(MultipleLocator(1))
-        ax.grid(True, which="major", alpha=0.35, linewidth=0.8)
-        ax.grid(True, which="minor", alpha=0.18, linewidth=0.5)
+        style_metric_axis(ax)
         ax.legend(loc="best")
         fig.tight_layout()
         fig.savefig(METRIC_PLOT_DIR / f"average_{metric_name}_curve.png", dpi=220)
         plt.close(fig)
 
     def save_per_appliance_assisted_metric_plot(metric_name, ylabel, lower_is_better=True):
-        fig, ax = plt.subplots(figsize=(11, 5))
+        fig, ax = plt.subplots(figsize=(13, 5.8))
         plotted = False
         for label in POWER_LABEL_COLUMNS:
             column = f"assisted_{label}_{metric_name}"
@@ -660,7 +735,7 @@ if not selection_log_df.empty:
                     selection_log_df[column],
                     marker="o",
                     linewidth=2,
-                    markersize=3.5,
+                    markersize=4.5,
                     label=label.replace("_power", ""),
                 )
         if not plotted:
@@ -671,65 +746,92 @@ if not selection_log_df.empty:
         ax.set_title(f"Per-Appliance Assisted {ylabel} During Forward Selection", fontsize=14, weight="bold")
         ax.set_xlabel("Number of Selected Regression Features")
         ax.set_ylabel(f"{ylabel} ({direction_text})")
-        ax.xaxis.set_major_locator(MultipleLocator(5))
-        ax.xaxis.set_minor_locator(MultipleLocator(1))
-        ax.grid(True, which="major", alpha=0.35, linewidth=0.8)
-        ax.grid(True, which="minor", alpha=0.18, linewidth=0.5)
+        style_metric_axis(ax)
         ax.legend(loc="best", ncol=2)
         fig.tight_layout()
         fig.savefig(METRIC_PLOT_DIR / f"per_appliance_assisted_{metric_name}_curve.png", dpi=220)
         plt.close(fig)
 
     metric_specs = [
-        ("nmae", "Normalized MAE", True),
-        ("nrmse", "Normalized RMSE", True),
         ("mae", "MAE (W)", True),
-        ("rmse", "RMSE (W)", True),
-        ("sae", "SAE_delta (W)", True),
-        ("relative_energy_error", "Relative Energy Error", True),
-        ("r2", "R2", False),
+        ("sae", "SAE", True),
+        ("ea", "EA", False),
     ]
     for metric_name, ylabel, lower_is_better in metric_specs:
         save_average_metric_plot(metric_name, ylabel, lower_is_better)
         save_per_appliance_assisted_metric_plot(metric_name, ylabel, lower_is_better)
 
-    fig, ax = plt.subplots(figsize=(11, 5))
-    ax.plot(selection_log_df["feature_count"], selection_log_df["direct_avg_nmae"], marker="o", linewidth=2, label="Direct regression")
-    ax.plot(selection_log_df["feature_count"], selection_log_df["assisted_avg_nmae"], marker="s", linewidth=2, label="Classifier-assisted regression")
-    ax.set_title("ExtraTrees Classification-Regression Forward Selection", fontsize=14, weight="bold")
+    fig, ax = plt.subplots(figsize=(13, 5.8))
+    ax.plot(
+        selection_log_df["feature_count"],
+        selection_log_df["selection_score"],
+        marker="o",
+        linewidth=2.6,
+        markersize=5.2,
+        color="#1f77b4",
+    )
+    best_selection_index = selection_log_df["selection_score"].idxmin()
+    best_selection_row = selection_log_df.loc[best_selection_index]
+    ax.scatter(
+        [best_selection_row["feature_count"]],
+        [best_selection_row["selection_score"]],
+        s=115,
+        marker="*",
+        color="#dc2626",
+        edgecolor="#7f1d1d",
+        linewidth=0.7,
+        zorder=5,
+        label=f"Best score ({int(best_selection_row['feature_count'])} features)",
+    )
+    ax.axvline(best_selection_row["feature_count"], color="#dc2626", alpha=0.25, linewidth=1.2, linestyle="--")
+    ax.set_title("Composite Selection Score During Forward Selection", fontsize=14, weight="bold")
     ax.set_xlabel("Number of Selected Regression Features")
-    ax.set_ylabel("Average Normalized MAE (lower is better)")
-    ax.xaxis.set_major_locator(MultipleLocator(5))
-    ax.xaxis.set_minor_locator(MultipleLocator(1))
-    ax.grid(True, which="major", alpha=0.35, linewidth=0.8)
-    ax.grid(True, which="minor", alpha=0.18, linewidth=0.5)
+    ax.set_ylabel("Weighted rank score (lower is better)")
+    style_metric_axis(ax)
     ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(COMPOSITE_SELECTION_PLOT, dpi=220)
+    plt.close(fig)
+
+    fig, axes = plt.subplots(3, 1, figsize=(13, 13.5), sharex=True)
+    summary_specs = [
+        ("mae", "Average MAE (W)", "lower is better"),
+        ("sae", "Average SAE", "lower is better"),
+        ("ea", "Average EA", "higher is better"),
+    ]
+    for ax, (metric_name, ylabel, direction_text) in zip(axes, summary_specs):
+        lower_is_better = metric_name != "ea"
+        ax.plot(selection_log_df["feature_count"], selection_log_df[f"direct_avg_{metric_name}"], marker="o", linewidth=2.4, markersize=5.0, label="Direct regression")
+        ax.plot(selection_log_df["feature_count"], selection_log_df[f"assisted_avg_{metric_name}"], marker="s", linewidth=2.4, markersize=5.0, label="Classifier-assisted regression")
+        mark_best_assisted_point(ax, metric_name, lower_is_better)
+        ax.set_ylabel(f"{ylabel}\n({direction_text})")
+        style_metric_axis(ax)
+        ax.legend(loc="best")
+    axes[-1].set_xlabel("Number of Selected Regression Features")
+    fig.suptitle("ExtraTrees Classification-Regression Forward Selection", fontsize=14, weight="bold")
     fig.tight_layout()
     fig.savefig(REGRESSION_PLOT, dpi=220)
     plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(11, 5))
+    fig, ax = plt.subplots(figsize=(13, 5.8))
     for label in POWER_LABEL_COLUMNS:
-        column = f"assisted_{label}_nmae"
+        column = f"assisted_{label}_ea"
         if column in selection_log_df.columns:
             ax.plot(
                 selection_log_df["feature_count"],
                 selection_log_df[column],
                 marker="o",
                 linewidth=2,
-                markersize=3.5,
+                markersize=4.5,
                 label=label.replace("_power", ""),
             )
-    ax.set_title("Per-Appliance NMAE During Assisted Regression Selection", fontsize=14, weight="bold")
+    ax.set_title("Per-Appliance EA During Assisted Regression Selection", fontsize=14, weight="bold")
     ax.set_xlabel("Number of Selected Regression Features")
-    ax.set_ylabel("Normalized MAE (lower is better)")
-    ax.xaxis.set_major_locator(MultipleLocator(5))
-    ax.xaxis.set_minor_locator(MultipleLocator(1))
-    ax.grid(True, which="major", alpha=0.35, linewidth=0.8)
-    ax.grid(True, which="minor", alpha=0.18, linewidth=0.5)
+    ax.set_ylabel("EA (higher is better)")
+    style_metric_axis(ax)
     ax.legend(loc="best", ncol=2)
     fig.tight_layout()
-    fig.savefig(PER_APPLIANCE_NMAE_PLOT, dpi=220)
+    fig.savefig(PER_APPLIANCE_EA_PLOT, dpi=220)
     plt.close(fig)
 
     with SELECTED_FEATURES_TXT.open("w", encoding="utf-8") as file:
@@ -737,18 +839,25 @@ if not selection_log_df.empty:
         file.write(f"Dataset: {DATASET_PATH}\n")
         file.write(f"Rows: {row_count:,}\n")
         file.write(f"Classifier features ({len(CLASSIFIER_FEATURES)}): {', '.join(CLASSIFIER_FEATURES)}\n")
-        file.write(f"Classifier Macro F1: {classifier_metrics['macro_f1']:.4f}\n")
-        file.write(f"Classifier Micro F1: {classifier_metrics['micro_f1']:.4f}\n\n")
+        file.write(f"Classifier validation Macro F1: {classifier_validation_metrics['macro_f1']:.4f}\n")
+        file.write(f"Classifier test Macro F1: {classifier_test_metrics['macro_f1']:.4f}\n")
+        file.write(f"Classifier validation Micro F1: {classifier_validation_metrics['micro_f1']:.4f}\n")
+        file.write(f"Classifier test Micro F1: {classifier_test_metrics['micro_f1']:.4f}\n\n")
+        file.write("Regression selection objective: weighted assisted-metric rank composite\n")
+        for metric_name, weight in SELECTION_METRIC_WEIGHTS.items():
+            direction = "higher is better" if metric_name in SELECTION_HIGHER_IS_BETTER else "lower is better"
+            file.write(f"  {metric_name}: weight={weight:.2f}, {direction}\n")
+        file.write("\n")
         file.write("Regression-selected feature order:\n")
         for _, row in selection_log_df.iterrows():
             file.write(
                 f"Round {int(row['round']):02d}: "
                 f"{row['added_feature']} | "
-                f"assisted avg NMAE={row['assisted_avg_nmae']:.4f} | "
-                f"direct avg NMAE={row['direct_avg_nmae']:.4f} | "
-                f"assisted avg R2={row['assisted_avg_r2']:.4f} | "
-                f"assisted avg SAE_delta={row['assisted_avg_sae']:.2f} W | "
-                f"assisted relative energy error={row['assisted_avg_relative_energy_error']:.4f}\n"
+                f"selection score={row['selection_score']:.4f} | "
+                f"assisted avg MAE={row['assisted_avg_mae']:.2f} W | "
+                f"direct avg MAE={row['direct_avg_mae']:.2f} W | "
+                f"assisted avg SAE={row['assisted_avg_sae']:.4f} | "
+                f"assisted avg EA={row['assisted_avg_ea']:.4f}\n"
             )
 
 
@@ -758,17 +867,41 @@ if not selection_log_df.empty:
 final_direct_prediction = None
 final_assisted_prediction = None
 
-if selected_features:
-    print("Training final direct and classifier-assisted regressors for visualization...")
-    final_prediction_start = perf_counter()
-    final_direct_prediction = train_regressor_and_predict(selected_features)
-    final_assisted_prediction = train_regressor_and_predict(
-        selected_features,
-        extra_train=predicted_on_train,
-        extra_test=predicted_on_test,
-    )
+best_final_row = selection_log_df.loc[selection_log_df["selection_score"].idxmin()] if not selection_log_df.empty else None
+final_selected_features = (
+    [feature for feature in str(best_final_row["selected_features"]).split(",") if feature]
+    if best_final_row is not None
+    else selected_features
+)
 
-    readable_time = pd.read_csv(DATASET_PATH, usecols=TIME_COLUMNS).iloc[split_index:].reset_index(drop=True)
+if final_selected_features:
+    print("Training final direct and classifier-assisted regressors for held-out test evaluation...")
+    if best_final_row is not None:
+        print(
+            f"Final test model uses validation-selected subset from round {int(best_final_row['round'])} "
+            f"({len(final_selected_features)} features)."
+        )
+    final_prediction_start = perf_counter()
+    final_direct_prediction = train_regressor_and_predict(
+        final_selected_features,
+        target_matrix=X_test,
+    )
+    final_assisted_prediction = train_regressor_and_predict(
+        final_selected_features,
+        target_matrix=X_test,
+        extra_train=predicted_on_train,
+        extra_target=predicted_on_test,
+    )
+    final_direct_scores = regression_scores(y_power_test_array, final_direct_prediction)
+    final_assisted_scores = regression_scores(y_power_test_array, final_assisted_prediction)
+
+    print("Held-out test regression metrics:")
+    print(pd.DataFrame([
+        {"model": "direct", **{key: final_direct_scores[key] for key in ["avg_mae", "avg_sae", "avg_ea"]}},
+        {"model": "classifier_assisted", **{key: final_assisted_scores[key] for key in ["avg_mae", "avg_sae", "avg_ea"]}},
+    ]).to_string(index=False, float_format=lambda value: f"{value:.4f}"))
+
+    readable_time = pd.read_csv(DATASET_PATH, usecols=TIME_COLUMNS).iloc[validation_end:].reset_index(drop=True)
     prediction_df = pd.DataFrame({
         "test_row_index": np.arange(len(y_power_test_array)),
         "readable_time": readable_time[TIME_COLUMNS[0]].to_numpy(),
@@ -865,22 +998,25 @@ print("Classification-regression forward selection complete")
 print(f"Dataset: {DATASET_PATH}")
 print(f"Rows: {row_count:,}")
 print(f"Train rows: {len(X_train):,}")
+print(f"Validation rows: {len(X_validation):,}")
 print(f"Test rows: {len(X_test):,}")
-print(f"Classifier Macro F1: {classifier_metrics['macro_f1']:.4f}")
-print(f"Classifier Micro F1: {classifier_metrics['micro_f1']:.4f}")
-print("Classifier report:")
+print(f"Classifier validation Macro F1: {classifier_validation_metrics['macro_f1']:.4f}")
+print(f"Classifier validation Micro F1: {classifier_validation_metrics['micro_f1']:.4f}")
+print(f"Classifier test Macro F1: {classifier_test_metrics['macro_f1']:.4f}")
+print(f"Classifier test Micro F1: {classifier_test_metrics['micro_f1']:.4f}")
+print("Classifier test report:")
 print(classification_report(
     y_on_test_array,
     predicted_on_test,
     target_names=ON_OFF_LABEL_COLUMNS,
     zero_division=0,
 ))
-print("Selected regression features:")
-for index, feature in enumerate(selected_features, start=1):
+print("Validation-selected regression features:")
+for index, feature in enumerate(final_selected_features, start=1):
     print(f"  {index:02d}. {feature}")
 print(f"Selection log: {FORWARD_SELECTION_LOG}")
 print(f"Regression curve: {REGRESSION_PLOT}")
-print(f"Per-appliance NMAE curve: {PER_APPLIANCE_NMAE_PLOT}")
+print(f"Per-appliance EA curve: {PER_APPLIANCE_EA_PLOT}")
 print(f"All metric curves: {METRIC_PLOT_DIR}")
 print(f"Selected feature order: {SELECTED_FEATURES_TXT}")
 if final_assisted_prediction is not None:
