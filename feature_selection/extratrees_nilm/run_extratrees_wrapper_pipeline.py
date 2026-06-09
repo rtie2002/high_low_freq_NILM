@@ -171,7 +171,7 @@ def read_csv_rows(path):
         return list(csv.DictReader(file))
 
 
-def best_row(rows, metric_name, higher_is_better=True):
+def best_row(rows, metric_name, *, higher_is_better=True):
     usable_rows = [
         row for row in rows
         if row.get(metric_name) not in (None, "")
@@ -247,7 +247,8 @@ def run_step(step, logs_dir, skip_existing=False):
             env=env,
         )
 
-        assert process.stdout is not None
+        if process.stdout is None:
+            raise RuntimeError("subprocess stdout unexpectedly None")
         for line in process.stdout:
             print(line, end="")
             log_file.write(line)
@@ -440,11 +441,17 @@ def main():
         if step_result["return_code"] != 0:
             break
 
+    failed_steps = [step for step in step_results if step["return_code"] != 0]
+    pipeline_status = "failed" if failed_steps else "completed"
+    if len(step_results) < len(PIPELINE_STEPS) and not failed_steps:
+        pipeline_status = "incomplete"
+
     summary = summarize_outputs()
     snapshotted_outputs = snapshot_outputs(pipeline_dir)
     manifest = {
         "dataset": DATASET_FILENAME,
         "pipeline_dir": str(pipeline_dir),
+        "pipeline_status": pipeline_status,
         "elapsed_seconds": perf_counter() - pipeline_start,
         "steps": step_results,
         "summary": summary,
@@ -461,12 +468,12 @@ def main():
     print()
     print("=" * 96)
     print("Pipeline finished")
+    print(f"Status: {pipeline_status}")
     print(f"Manifest: {manifest_path}")
     print(f"Summary: {summary_path}")
     print(f"Logs: {logs_dir}")
     print("=" * 96)
 
-    failed_steps = [step for step in step_results if step["return_code"] != 0]
     return 1 if failed_steps else 0
 
 
