@@ -43,6 +43,8 @@ def train(t_net, train_Dataloader, vali_Dataloader, config, criterion, modelDir,
         sigClass = utils.sigGen(config)
 
     path_all = os.path.join(modelDir, "All_best_onoff.ckpt")
+    out_start = int((config.inputLength - config.outputLength) / 2)
+    out_end = out_start + config.outputLength
 
     for e_i in range(epo):
 
@@ -58,6 +60,10 @@ def train(t_net, train_Dataloader, vali_Dataloader, config, criterion, modelDir,
             Y_of = Y_of.type(torch.FloatTensor).to(device, non_blocking=True)
 
             y_pred_dish_r, y_pred_dish_c = t_net.model(X_scaled)
+            y_pred_dish_r = y_pred_dish_r[:, out_start:out_end, :]
+            y_pred_dish_c = y_pred_dish_c[:, out_start:out_end, :]
+            Y_scaled = Y_scaled[:, out_start:out_end, :]
+            Y_of = Y_of[:, out_start:out_end, :]
 
             loss_r = criterion[0](y_pred_dish_r,Y_scaled)
             loss_c = criterion[1](y_pred_dish_c, Y_of)
