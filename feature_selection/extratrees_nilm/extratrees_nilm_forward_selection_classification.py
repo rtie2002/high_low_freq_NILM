@@ -343,16 +343,60 @@ def train_and_score(feature_subset):
 #   2. Train an ExtraTrees NILM classifier for each candidate subset.
 #   3. Keep the feature that gives the best Macro F1 improvement.
 #   4. Continue until all features are selected so late improvements are visible.
-selected_features = []
-remaining_features = FEATURE_COLUMNS.copy()
-selection_log = []
+def existing_selection_log_is_current():
+    if not FORWARD_SELECTION_LOG.exists():
+        return False
+
+    freshness_inputs = [DATASET_PATH]
+    if BEST_PARAMS_PATH.exists():
+        freshness_inputs.append(BEST_PARAMS_PATH)
+    elif LEGACY_BEST_PARAMS_PATH.exists():
+        freshness_inputs.append(LEGACY_BEST_PARAMS_PATH)
+
+    newest_input_mtime = max(path.stat().st_mtime for path in freshness_inputs)
+    return FORWARD_SELECTION_LOG.stat().st_mtime >= newest_input_mtime
+
+
+def load_existing_selection_log():
+    if not existing_selection_log_is_current():
+        return [], []
+
+    existing_log = pd.read_csv(FORWARD_SELECTION_LOG)
+    if existing_log.empty or "added_feature" not in existing_log.columns:
+        return [], []
+
+    existing_features = existing_log["added_feature"].dropna().astype(str).tolist()
+    if len(existing_features) != len(set(existing_features)):
+        print(f"Ignoring resume log with duplicate selected features: {FORWARD_SELECTION_LOG}")
+        return [], []
+
+    unknown_features = [feature for feature in existing_features if feature not in FEATURE_COLUMNS]
+    if unknown_features:
+        print(f"Ignoring resume log with unknown features: {unknown_features}")
+        return [], []
+
+    print(f"Resuming forward selection from: {FORWARD_SELECTION_LOG}")
+    print(f"Completed rounds found: {len(existing_features)}")
+    print(f"Selected so far: {existing_features}")
+    return existing_features, existing_log.to_dict("records")
+
+
+selected_features, selection_log = load_existing_selection_log()
+remaining_features = [
+    feature for feature in FEATURE_COLUMNS
+    if feature not in selected_features
+]
 start_time = perf_counter()
 
-best_macro_f1 = 0.0
-best_micro_f1 = 0.0
+if selection_log:
+    best_macro_f1 = float(selection_log[-1]["macro_f1"])
+    best_micro_f1 = float(selection_log[-1]["micro_f1"])
+else:
+    best_macro_f1 = 0.0
+    best_micro_f1 = 0.0
 best_prediction = None
 
-for round_number in range(1, len(FEATURE_COLUMNS) + 1):
+for round_number in range(len(selected_features) + 1, len(FEATURE_COLUMNS) + 1):
     round_results = []
     total_candidates = len(remaining_features)
 
