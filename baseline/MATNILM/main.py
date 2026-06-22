@@ -144,8 +144,9 @@ if __name__ == '__main__':
         train_data,
         batch_size=config.batch_size,
         sampler=train_subsampler,
-        num_workers=1,
-        pin_memory=True)
+        num_workers=8,
+        pin_memory=True,
+        persistent_workers=True)
 
     sampler = utils.testSampler(val_data.cumulative_sizes[-1], config.outputLength)
     sampler_test = utils.testSampler(test_data.cumulative_sizes[-1], config.outputLength)
@@ -154,15 +155,17 @@ if __name__ == '__main__':
         val_data,
         batch_size=config.batch_size,
         sampler=sampler,
-        num_workers=1,
-        pin_memory=True)
+        num_workers=8,
+        pin_memory=True,
+        persistent_workers=True)
 
     test_Dataloader = DataLoader(
         test_data,
         batch_size=config.batch_size,
         sampler=sampler_test,
-        num_workers=1,
-        pin_memory=True)
+        num_workers=8,
+        pin_memory=True,
+        persistent_workers=True)
 
     logger.info("Initialize model")
     model = MAT(config).to(device)
