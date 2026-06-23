@@ -114,10 +114,14 @@ cd "D:\Raymond\high_low_freq_NILM\NILM_model"
 python main.py --model sgn --mode train --model_config baseline/SGN/configs/sgn_paper.json
 ```
 
-By default, `configs/sgn_paper.json` sets `"default_appliance": "all"`, so this trains one multi-output checkpoint:
+By default, `configs/sgn_paper.json` sets `"default_appliance": "all"`. In SGN paper mode, this trains separate appliance-specific checkpoints:
 
 ```text
-runs/sgn_redd/best_all.pt
+runs/sgn_redd/best_dishwasher.pt
+runs/sgn_redd/best_fridge.pt
+runs/sgn_redd/best_kettle.pt
+runs/sgn_redd/best_microwave.pt
+runs/sgn_redd/best_washingmachine.pt
 ```
 
 The train/evaluate/inference loop is shared in:
@@ -178,13 +182,15 @@ Outputs are written to:
 runs/<run_name>/
 ```
 
-The multi-output run writes:
+The paper-style all-appliance run writes one checkpoint and history per appliance:
 
 ```text
-best_all.pt
-metrics_all.json
-history_all.csv
-history_all.png
+best_<appliance>.pt
+metrics_<appliance>.json
+history_<appliance>.csv
+history_<appliance>.png
+loss_detail_<appliance>.csv
+loss_detail_<appliance>.png
 ```
 
 Metrics and plots are produced by the shared package:
@@ -248,7 +254,7 @@ Full CSV run for one appliance:
 python train.py --data_source csv --csv_config configs/training_data_house2.json --appliance fridge --epochs 200
 ```
 
-Full CSV run for all CSV appliances in one multi-output model:
+Full CSV paper-style run for all CSV appliances. This trains one model per appliance:
 
 ```powershell
 cd "D:\Raymond\high_low_freq_NILM\NILM_model"
@@ -265,13 +271,13 @@ python train.py --data_source csv --csv_config configs/training_data_house2.json
 
 ```powershell
 cd "D:\Raymond\high_low_freq_NILM\NILM_model"
-python main.py --model sgn --mode inference --checkpoint runs/sgn_redd/best_all.pt
+python main.py --model sgn --mode inference --checkpoint runs/sgn_redd/best_fridge.pt
 ```
 
 For CSV-trained checkpoints:
 
 ```powershell
-python main.py --model sgn --mode inference --data_source csv --csv_config baseline/SGN/configs/training_data_house2.json --checkpoint runs/sgn_redd/best_all.pt
+python main.py --model sgn --mode inference --data_source csv --csv_config baseline/SGN/configs/training_data_house2.json --checkpoint runs/sgn_redd/best_fridge.pt
 ```
 
 Train and then immediately run inference:

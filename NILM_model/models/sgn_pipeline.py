@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 from pathlib import Path
 import sys
 
@@ -305,17 +306,26 @@ def train_main(argv: list[str] | None = None) -> list[Path]:
     args = parse_train_args(argv)
     model_cfg = load_model_config(args.model_config)
     csv_cfg = load_csv_config(args.csv_config) if args.data_source == "csv" else None
-    cfg = make_config(args, model_cfg, csv_cfg)
-    seed_everything(cfg.seed)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     if args.data_source == "csv":
         available = sorted((csv_cfg or {}).get("appliances", CSV_APPLIANCES))
     else:
         available = sorted(APPLIANCES)
-    if args.appliance != "all" and args.appliance not in available:
-        raise ValueError(f"Appliance '{args.appliance}' is not available for {args.data_source}. Choices: {available}")
-    return [train_one(args.appliance, args, cfg, device, csv_cfg)]
+
+    target_choice = args.appliance or model_cfg.get("default_appliance", "all")
+    if target_choice != "all" and target_choice not in available:
+        raise ValueError(f"Appliance '{target_choice}' is not available for {args.data_source}. Choices: {available}")
+    target_appliances = available if target_choice == "all" else [target_choice]
+
+    checkpoints: list[Path] = []
+    for appliance in target_appliances:
+        appliance_args = copy.copy(args)
+        appliance_args.appliance = appliance
+        cfg = make_config(appliance_args, model_cfg, csv_cfg)
+        seed_everything(cfg.seed)
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        checkpoints.append(train_one(appliance, appliance_args, cfg, device, csv_cfg))
+    return checkpoints
 
 
 @torch.no_grad()

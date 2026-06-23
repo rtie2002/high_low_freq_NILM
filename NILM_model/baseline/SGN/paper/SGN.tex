@@ -1,0 +1,293 @@
+\documentclass[conference]{IEEEtran}
+
+\usepackage{amsmath,amssymb}
+\usepackage{textcomp}
+
+\begin{document}
+
+\title{SGN Loss Function Calculation}
+
+\author{\IEEEauthorblockN{Raymond Tie Siou Hin}
+\IEEEauthorblockA{\textit{Monash University Malaysia}\\
+Bandar Sunway, Malaysia}
+}
+
+\maketitle
+
+\begin{abstract}
+This note summarizes how the loss function is calculated in the original
+Subtask Gated Network (SGN) formulation and how the current implementation
+extends it to the multi-appliance case.
+\end{abstract}
+
+\begin{IEEEkeywords}
+non-intrusive load monitoring, SGN, loss function, appliance classification,
+power regression
+\end{IEEEkeywords}
+
+\section{Original SGN Paper Loss}
+
+In the original SGN paper, the model is formulated for one target appliance
+$i$ at a time. For an output sequence of length $T$, the ground-truth power
+sequence is
+\begin{equation}
+\mathbf{y}^{i} = \{y^{i}_{1}, y^{i}_{2}, \ldots, y^{i}_{T}\}.
+\end{equation}
+
+The on/off label is generated using a 15 W threshold:
+\begin{equation}
+o^{i}_{t} =
+\begin{cases}
+1, & y^{i}_{t} > 15\text{ W},\\
+0, & y^{i}_{t} \leq 15\text{ W}.
+\end{cases}
+\end{equation}
+
+SGN has two subnetworks. The regression subnetwork predicts appliance power:
+\begin{equation}
+\hat{\mathbf{p}}^{i}
+=
+f^{i}_{power}(\tilde{\mathbf{x}}),
+\end{equation}
+and the classification subnetwork predicts the appliance on probability:
+\begin{equation}
+\hat{\mathbf{o}}^{i}
+=
+f^{i}_{on}(\tilde{\mathbf{x}}).
+\end{equation}
+
+The final SGN output is the element-wise product of the two subnetworks:
+\begin{equation}
+\hat{\mathbf{y}}^{i}
+=
+\hat{\mathbf{p}}^{i} \odot \hat{\mathbf{o}}^{i},
+\end{equation}
+where $\odot$ denotes element-wise multiplication.
+
+The gated output regression loss is
+\begin{equation}
+\mathcal{L}^{i}_{output}
+=
+\frac{1}{T}
+\sum_{t=1}^{T}
+\left(
+y^{i}_{t}
+-
+\hat{p}^{i}_{t}\hat{o}^{i}_{t}
+\right)^2.
+\end{equation}
+
+The on/off classification loss is binary cross entropy:
+\begin{equation}
+\mathcal{L}^{i}_{on}
+=
+-
+\frac{1}{T}
+\sum_{t=1}^{T}
+\left[
+o^{i}_{t}\log(\hat{o}^{i}_{t})
++
+(1-o^{i}_{t})\log(1-\hat{o}^{i}_{t})
+\right].
+\end{equation}
+
+The total SGN loss for appliance $i$ is
+\begin{equation}
+\mathcal{L}^{i}
+=
+\mathcal{L}^{i}_{output}
++
+\mathcal{L}^{i}_{on}.
+\end{equation}
+
+Therefore, the original SGN loss is appliance-indexed. The notation
+$\mathcal{L}^{i}$ means the loss is calculated for one appliance, such as
+fridge or microwave. The original formulation does not describe one shared
+multi-output loss averaged across all appliances.
+
+\section{Current Multi-Appliance Implementation Loss}
+
+The current implementation can train one model with multiple appliance outputs.
+The model tensors have shape
+\begin{equation}
+[B, A, T],
+\end{equation}
+where $B$ is batch size, $A$ is the number of target appliances, and $T$ is
+the output sequence length.
+
+For batch item $b$, appliance $a$, and timestep $t$, the model predicts
+\begin{equation}
+\hat{P}_{b,a,t}
+\quad\text{and}\quad
+\hat{O}_{b,a,t},
+\end{equation}
+where $\hat{P}_{b,a,t}$ is the regression power prediction and
+$\hat{O}_{b,a,t}$ is the on/off probability.
+
+The gated prediction is
+\begin{equation}
+\hat{Y}_{b,a,t}
+=
+\hat{P}_{b,a,t}\hat{O}_{b,a,t}.
+\end{equation}
+
+The implementation computes the output error as
+\begin{equation}
+E^{output}_{b,a,t}
+=
+\left(
+Y_{b,a,t}
+-
+\hat{Y}_{b,a,t}
+\right)^2,
+\end{equation}
+and the on/off classification error as
+\begin{equation}
+E^{on}_{b,a,t}
+=
+-
+\left[
+O_{b,a,t}\log(\hat{O}_{b,a,t})
++
+(1-O_{b,a,t})\log(1-\hat{O}_{b,a,t})
+\right].
+\end{equation}
+
+The overall output loss is averaged across batch, appliances, and time:
+\begin{equation}
+\mathcal{L}_{output}
+=
+\frac{1}{BAT}
+\sum_{b=1}^{B}
+\sum_{a=1}^{A}
+\sum_{t=1}^{T}
+E^{output}_{b,a,t}.
+\end{equation}
+
+The overall classification loss is also averaged across batch, appliances,
+and time:
+\begin{equation}
+\mathcal{L}_{on}
+=
+\frac{1}{BAT}
+\sum_{b=1}^{B}
+\sum_{a=1}^{A}
+\sum_{t=1}^{T}
+E^{on}_{b,a,t}.
+\end{equation}
+
+The final implementation loss is
+\begin{equation}
+\mathcal{L}
+=
+\mathcal{L}_{output}
++
+\mathcal{L}_{on}.
+\end{equation}
+
+This keeps the SGN idea of combining gated power regression with on/off
+classification. However, when $A>1$, the implementation averages the loss
+over all selected appliances. This differs from the original paper's
+appliance-indexed formulation.
+
+\section{Code Mapping}
+
+In the implementation, the loss is calculated in
+\texttt{baseline/SGN/sgn/losses.py}. The main operations are:
+\begin{equation}
+\texttt{output\_error}
+=
+\left(
+\texttt{gated\_power}
+-
+\texttt{target\_power}
+\right)^2,
+\end{equation}
+\begin{equation}
+\texttt{on\_error}
+=
+\texttt{BCE}(
+\texttt{on\_prob},
+\texttt{target\_on}
+),
+\end{equation}
+\begin{equation}
+\texttt{loss}
+=
+\texttt{mean(output\_error)}
++
+\texttt{mean(on\_error)}.
+\end{equation}
+
+For one appliance, this is equivalent to the original SGN loss. For multiple
+appliances, this becomes a shared average loss across all selected appliances.
+
+\section{Numerical Example}
+
+Assume one appliance and an output length of three timesteps:
+\begin{equation}
+\mathbf{y} = [0, 100, 120],
+\qquad
+\mathbf{o} = [0, 1, 1].
+\end{equation}
+Suppose the regression branch predicts
+\begin{equation}
+\hat{\mathbf{p}} = [20, 90, 130],
+\end{equation}
+and the classification branch predicts
+\begin{equation}
+\hat{\mathbf{o}} = [0.1, 0.8, 0.6].
+\end{equation}
+
+The gated output is
+\begin{equation}
+\hat{\mathbf{y}}
+=
+\hat{\mathbf{p}}\odot\hat{\mathbf{o}}
+=
+[2, 72, 78].
+\end{equation}
+
+The output loss is
+\begin{equation}
+\mathcal{L}_{output}
+=
+\frac{(0-2)^2 + (100-72)^2 + (120-78)^2}{3}
+=
+850.67.
+\end{equation}
+
+The on/off loss is
+\begin{equation}
+\mathcal{L}_{on}
+=
+-
+\frac{
+\log(0.9)
++
+\log(0.8)
++
+\log(0.6)
+}{3}
+=
+0.280.
+\end{equation}
+
+The total loss is
+\begin{equation}
+\mathcal{L}
+=
+850.67 + 0.280.
+\end{equation}
+
+In the actual implementation, appliance power is normalized before training,
+so the numerical regression loss is much smaller than this raw-watt example.
+
+\section{Practical Reproduction Note}
+
+To reproduce the original SGN formulation more closely, train one appliance at
+a time. The multi-appliance version is useful for a shared NILM pipeline, but
+it is not the exact appliance-indexed setup described in the original SGN
+paper.
+
+\end{document}
