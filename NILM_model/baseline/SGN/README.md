@@ -267,6 +267,21 @@ The CSV file has a 6-second sampling interval, so the pipeline uses the same rea
 python train.py --data_source csv --csv_config configs/training_data_house2.json --appliance fridge --epochs 200
 ```
 
+For each CSV appliance-specific run, the data mapping is:
+
+```text
+X input columns: feature_columns from configs/training_data_house2.json
+Default X: aggregate
+X scaling: X / train_aggregate_std
+
+Y power column: <appliance>_power
+Y scaling: Y_watts / train_aggregate_std
+
+Y on/off column: <appliance>_on
+Y on/off scaling: unchanged 0/1 label from CSV
+Prediction inverse scaling: predicted_normalized_power * train_aggregate_std
+```
+
 ## Inference
 
 ```powershell

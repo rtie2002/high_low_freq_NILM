@@ -126,7 +126,8 @@ class CSVSGNWindowDataset(Dataset):
         feature_columns = list(csv_config["feature_columns"])
         aggregate_column = csv_config.get("aggregate_column", "aggregate")
         time_column = csv_config.get("time_column")
-        target_columns = power_columns
+        on_columns = [appliances[name].get("on") for name in target_appliances]
+        target_columns = power_columns + [col for col in on_columns if col]
         usecols = list(
             dict.fromkeys(
                 feature_columns
@@ -156,7 +157,10 @@ class CSVSGNWindowDataset(Dataset):
         self.aggregate = df[aggregate_column].to_numpy(dtype=np.float32)
         self.power = df[power_columns].to_numpy(dtype=np.float32)
         self.time = df[time_column].astype(str).to_numpy() if time_column and time_column in df else None
-        self.on = (self.power > config.on_threshold_watts).astype(np.float32)
+        if not all(col and col in df for col in on_columns):
+            missing = [col for col in on_columns if not col or col not in df]
+            raise ValueError(f"Missing provided on/off label column(s): {missing}")
+        self.on = df[on_columns].to_numpy(dtype=np.float32)
 
         self.index = list(range(0, len(df) - config.input_length + 1, stride))
         if not self.index:

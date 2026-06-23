@@ -230,6 +230,42 @@ def describe_dataset(name: str, dataset) -> None:
         print(f"{name} segment lengths: {lengths}")
 
 
+def describe_experiment_mapping(
+    *,
+    data_source: str,
+    appliance: str,
+    cfg: SGNConfig,
+    csv_cfg: dict | None,
+    data_dir: Path,
+) -> None:
+    print("\n== Experiment data mapping ==")
+    if data_source == "csv":
+        if csv_cfg is None:
+            raise ValueError("csv_cfg is required when data_source='csv'")
+        appliance_cfg = csv_cfg["appliances"][appliance]
+        print(f"CSV file: {csv_cfg['csv_file']}")
+        print(f"Time column: {csv_cfg.get('time_column', 'not used')}")
+        print(f"Sampling interval: {csv_cfg.get('sampling_seconds', 'unknown')} seconds")
+        print(f"X input columns: {cfg.feature_columns}")
+        print(f"X scaling: X / train_aggregate_std")
+        print(f"Y power column: {appliance_cfg['power']}")
+        print(f"Y scaling: Y_watts / train_aggregate_std")
+        print(f"Y on/off column: {appliance_cfg['on']}")
+        print("Y on/off scaling: unchanged 0/1 label from CSV")
+        print(f"Prediction inverse scaling: predicted_normalized_power * train_aggregate_std")
+        print(f"train_aggregate_std: {cfg.scale:.6f}")
+        return
+
+    print(f"Processed REDD data directory: {data_dir}")
+    print("X input column: main aggregate power")
+    print("X scaling: main / train_aggregate_std")
+    print(f"Y appliance target: {appliance}")
+    print("Y scaling: appliance_watts / train_aggregate_std")
+    print(f"Y on/off label: 1 if appliance_watts > {cfg.on_threshold_watts:g} W else 0")
+    print("Prediction inverse scaling: predicted_normalized_power * train_aggregate_std")
+    print(f"train_aggregate_std: {cfg.scale:.6f}")
+
+
 def train_one(
     appliance: str,
     args: argparse.Namespace,
@@ -244,6 +280,13 @@ def train_one(
     print(f"Data: {csv_cfg['csv_file'] if csv_cfg else args.data_dir}")
     print(f"Features: {cfg.feature_columns}")
     print(f"Target appliances: {cfg.target_appliances}")
+    describe_experiment_mapping(
+        data_source=args.data_source,
+        appliance=appliance,
+        cfg=cfg,
+        csv_cfg=csv_cfg,
+        data_dir=args.data_dir,
+    )
 
     train_dataset = make_dataset(args.data_dir, csv_cfg, args.data_source, "train", appliance, cfg, cfg.train_stride)
     val_dataset = make_dataset(args.data_dir, csv_cfg, args.data_source, "val", appliance, cfg, cfg.eval_stride)
