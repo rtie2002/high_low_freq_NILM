@@ -459,12 +459,6 @@ def predict(t_net, t_cfg, vali_Dataloader, mode=-1):
             Y_of = Y_of.type(torch.FloatTensor).to(device, non_blocking=True)
 
             output_r, output_c = t_net.model(X_scaled)
-            output_r = output_r[:, start:end, :]
-            output_c = output_c[:, start:end, :]
-            if mode >= 0:
-                output_r = output_r[:, :, [mode]]
-                output_c = output_c[:, :, [mode]]
-
             y_pred_r.append(output_r.cpu())
             y_true_scaled_r.append(Y_scaled.cpu())
             y_true_r.append(Y.cpu())
