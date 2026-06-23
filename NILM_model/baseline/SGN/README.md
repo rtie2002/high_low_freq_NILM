@@ -196,9 +196,10 @@ live_loss_detail_<appliance>.png
 live_waveform_<appliance>.png
 ```
 
-During training, the live PNG files are updated after every epoch. The PNG
-files are saved as square, 300 DPI figures suitable for reports or paper
-drafts.
+During training, the live PNG files are updated after every epoch. Waveform
+PNGs show five separate zoomed ON-period panels for the current appliance.
+The PNG files are saved as square, 300 DPI figures suitable for reports or
+paper drafts.
 
 Metrics and plots are produced by the shared package:
 
