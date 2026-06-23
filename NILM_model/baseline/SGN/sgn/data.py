@@ -151,11 +151,9 @@ class CSVSGNWindowDataset(Dataset):
             )
 
         features = df[feature_columns].to_numpy(dtype=np.float32)
-        mean = np.asarray(config.feature_mean, dtype=np.float32)
-        scale = np.asarray(config.feature_scale, dtype=np.float32)
-        if mean.shape[0] != len(feature_columns) or scale.shape[0] != len(feature_columns):
-            raise ValueError("Feature normalization stats do not match feature_columns")
-        self.features = (features - mean) / scale
+        if config.scale <= 0:
+            raise ValueError(f"Invalid aggregate scale: {config.scale}")
+        self.features = features / np.float32(config.scale)
         self.aggregate = df[aggregate_column].to_numpy(dtype=np.float32)
         self.power = df[power_columns].to_numpy(dtype=np.float32)
         self.time = df[time_column].astype(str).to_numpy() if time_column and time_column in df else None
