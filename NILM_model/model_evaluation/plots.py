@@ -260,18 +260,20 @@ def _plot_single_appliance_event_panels(
 
         true_values = view[true_col].to_numpy(dtype=float)
         pred_values = view[pred_col].to_numpy(dtype=float)
-        ymin = float(np.nanmin([np.nanmin(true_values), np.nanmin(pred_values), 0.0]))
-        ymax = float(np.nanmax([np.nanmax(true_values), np.nanmax(pred_values), 1.0]))
+        aggregate_values = view[aggregate_col].to_numpy(dtype=float) if has_aggregate else None
+        ymin_inputs = [np.nanmin(true_values), np.nanmin(pred_values), 0.0]
+        ymax_inputs = [np.nanmax(true_values), np.nanmax(pred_values), 1.0]
+        if aggregate_values is not None:
+            ymin_inputs.append(np.nanmin(aggregate_values))
+            ymax_inputs.append(np.nanmax(aggregate_values))
+        ymin = float(np.nanmin(ymin_inputs))
+        ymax = float(np.nanmax(ymax_inputs))
         if np.isclose(ymin, ymax):
             ymax = ymin + 1.0
 
-        if has_aggregate:
-            agg = view[aggregate_col].to_numpy(dtype=float)
-            ax_agg = ax.twinx()
-            ax_agg.plot(x, agg, color="#8a8a8a", linewidth=0.9, alpha=0.55, label="aggregate")
-            ax_agg.fill_between(x, 0, agg, color="#d9d9d9", alpha=0.18)
-            ax_agg.set_ylabel("Aggregate W", color="#6f6f6f")
-            ax_agg.tick_params(axis="y", colors="#6f6f6f", labelsize=8)
+        if aggregate_values is not None:
+            ax.fill_between(x, 0, aggregate_values, color="#d9d9d9", alpha=0.16, label="aggregate")
+            ax.plot(x, aggregate_values, color="#8a8a8a", linewidth=0.9, alpha=0.65)
 
         pred_on_col = f"pred_{appliance}_on_prob"
         if pred_on_col in view:
@@ -291,8 +293,6 @@ def _plot_single_appliance_event_panels(
         if row == 0:
             handles, labels = ax.get_legend_handles_labels()
             handles.append(Patch(facecolor="#7ad66d", alpha=0.18, label="predicted ON"))
-            if has_aggregate:
-                handles.append(Patch(facecolor="#d9d9d9", alpha=0.18, label="aggregate"))
             ax.legend(handles=handles, loc="upper right", fontsize=8)
 
     axes[-1].set_xlabel(time_col if time_col else "sample index")
@@ -398,18 +398,20 @@ def plot_prediction_waveforms(
         ax = axes[row]
         true_values = view[true_col].to_numpy(dtype=float)
         pred_values = view[pred_col].to_numpy(dtype=float)
-        ymin = float(np.nanmin([np.nanmin(true_values), np.nanmin(pred_values), 0.0]))
-        ymax = float(np.nanmax([np.nanmax(true_values), np.nanmax(pred_values), 1.0]))
+        aggregate_values = view[aggregate_col].to_numpy(dtype=float) if has_aggregate and aggregate_background else None
+        ymin_inputs = [np.nanmin(true_values), np.nanmin(pred_values), 0.0]
+        ymax_inputs = [np.nanmax(true_values), np.nanmax(pred_values), 1.0]
+        if aggregate_values is not None:
+            ymin_inputs.append(np.nanmin(aggregate_values))
+            ymax_inputs.append(np.nanmax(aggregate_values))
+        ymin = float(np.nanmin(ymin_inputs))
+        ymax = float(np.nanmax(ymax_inputs))
         if np.isclose(ymin, ymax):
             ymax = ymin + 1.0
 
-        if has_aggregate and aggregate_background:
-            agg = view[aggregate_col].to_numpy(dtype=float)
-            ax_agg = ax.twinx()
-            ax_agg.plot(x, agg, color="#8a8a8a", linewidth=0.9, alpha=0.55, label="aggregate")
-            ax_agg.fill_between(x, 0, agg, color="#d9d9d9", alpha=0.18)
-            ax_agg.set_ylabel("Aggregate W", color="#6f6f6f")
-            ax_agg.tick_params(axis="y", colors="#6f6f6f", labelsize=8)
+        if aggregate_values is not None:
+            ax.fill_between(x, 0, aggregate_values, color="#d9d9d9", alpha=0.16, label="aggregate")
+            ax.plot(x, aggregate_values, color="#8a8a8a", linewidth=0.9, alpha=0.65)
 
         pred_on_col = f"pred_{appliance}_on_prob"
         if pred_on_col in view:
@@ -426,8 +428,6 @@ def plot_prediction_waveforms(
         ax.grid(True, alpha=0.25)
         handles, labels = ax.get_legend_handles_labels()
         handles.append(Patch(facecolor="#7ad66d", alpha=0.18, label="predicted ON"))
-        if has_aggregate and aggregate_background:
-            handles.append(Patch(facecolor="#d9d9d9", alpha=0.18, label="aggregate"))
         ax.legend(handles=handles, loc="upper right")
         ax.set_ylim(ymin - 0.05 * (ymax - ymin), ymax + 0.10 * (ymax - ymin))
         row += 1
