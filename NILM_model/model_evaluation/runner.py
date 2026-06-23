@@ -93,6 +93,77 @@ def _per_appliance_metrics(y_true, y_pred, true_on, pred_on, names: list[str], s
     return metrics
 
 
+def _loss_detail_from_parts(loss_parts: dict[str, torch.Tensor], target_names: list[str]) -> dict[str, Any]:
+    detail: dict[str, Any] = {
+        "loss": float(loss_parts["loss"].detach().cpu().item()),
+        "output_loss": float(loss_parts["output_loss"].detach().cpu().item()),
+        "on_loss": float(loss_parts["on_loss"].detach().cpu().item()),
+    }
+    if "output_loss_per_appliance" in loss_parts:
+        output = loss_parts["output_loss_per_appliance"].detach().cpu().numpy().reshape(-1)
+        on = loss_parts["on_loss_per_appliance"].detach().cpu().numpy().reshape(-1)
+        total = loss_parts["loss_per_appliance"].detach().cpu().numpy().reshape(-1)
+        names = target_names if len(target_names) == len(output) else [f"appliance_{idx}" for idx in range(len(output))]
+        detail["per_appliance"] = {
+            name: {
+                "loss": float(total[idx]),
+                "output_loss": float(output[idx]),
+                "on_loss": float(on[idx]),
+            }
+            for idx, name in enumerate(names)
+        }
+    else:
+        detail["per_appliance"] = {}
+    return detail
+
+
+def _mean_loss_details(details: list[dict[str, Any]], target_names: list[str]) -> dict[str, Any]:
+    if not details:
+        return {"loss": float("nan"), "output_loss": float("nan"), "on_loss": float("nan"), "per_appliance": {}}
+    mean_detail = {
+        "loss": float(np.mean([item["loss"] for item in details])),
+        "output_loss": float(np.mean([item["output_loss"] for item in details])),
+        "on_loss": float(np.mean([item["on_loss"] for item in details])),
+        "per_appliance": {},
+    }
+    for name in target_names:
+        if name not in details[0].get("per_appliance", {}):
+            continue
+        mean_detail["per_appliance"][name] = {
+            "loss": float(np.mean([item["per_appliance"][name]["loss"] for item in details])),
+            "output_loss": float(np.mean([item["per_appliance"][name]["output_loss"] for item in details])),
+            "on_loss": float(np.mean([item["per_appliance"][name]["on_loss"] for item in details])),
+        }
+    return mean_detail
+
+
+def _loss_detail_row(epoch: int, prefix: str, detail: dict[str, Any]) -> dict[str, float | int]:
+    row: dict[str, float | int] = {
+        "epoch": epoch,
+        f"{prefix}_loss": detail["loss"],
+        f"{prefix}_output_loss": detail["output_loss"],
+        f"{prefix}_on_loss": detail["on_loss"],
+    }
+    for name, values in detail.get("per_appliance", {}).items():
+        row[f"{prefix}_{name}_loss"] = values["loss"]
+        row[f"{prefix}_{name}_output_loss"] = values["output_loss"]
+        row[f"{prefix}_{name}_on_loss"] = values["on_loss"]
+    return row
+
+
+def _format_loss_detail(prefix: str, detail: dict[str, Any]) -> str:
+    parts = [
+        f"{prefix}_loss={detail['loss']:.5f}",
+        f"{prefix}_reg={detail['output_loss']:.5f}",
+        f"{prefix}_cls={detail['on_loss']:.5f}",
+    ]
+    for name, values in detail.get("per_appliance", {}).items():
+        parts.append(
+            f"{name}[reg={values['output_loss']:.5f},cls={values['on_loss']:.5f}]"
+        )
+    return " ".join(parts)
+
+
 @torch.no_grad()
 def evaluate_nilm_model(
     model: torch.nn.Module,
@@ -106,6 +177,7 @@ def evaluate_nilm_model(
 ) -> tuple[float, dict[str, float]]:
     model.eval()
     losses: list[float] = []
+    loss_details: list[dict[str, Any]] = []
     pred_watts, true_watts, pred_on, true_on = [], [], [], []
 
     for batch in loader:
@@ -115,6 +187,7 @@ def evaluate_nilm_model(
         outputs = model(x)
         loss_parts = criterion(outputs, y, on)
         losses.append(float(loss_parts["loss"].item()))
+        loss_details.append(_loss_detail_from_parts(loss_parts, target_names or []))
 
         watts, on_prob = _model_prediction(outputs, scale)
         pred_watts.append(watts)
@@ -142,6 +215,7 @@ def evaluate_nilm_model(
             target_names,
             sae_period,
         )
+        metrics["loss_detail"] = _mean_loss_details(loss_details, target_names)
     return float(np.mean(losses)), metrics
 
 
@@ -169,12 +243,15 @@ def train_nilm_model(
     run_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = run_dir / f"best_{appliance}.pt"
     history_path = run_dir / f"history_{appliance}.csv"
+    loss_detail_path = run_dir / f"loss_detail_{appliance}.csv"
 
     best_val = float("inf")
     best_epoch = -1
     stale_epochs = 0
 
     with history_path.open("w", newline="", encoding="utf-8") as handle:
+        detail_handle = loss_detail_path.open("w", newline="", encoding="utf-8")
+        detail_writer = None
         writer = csv.DictWriter(
             handle,
             fieldnames=["epoch", "train_loss", "val_loss", "val_mae", "val_sae", "val_f1"],
@@ -184,6 +261,7 @@ def train_nilm_model(
         for epoch in range(epochs):
             model.train()
             train_losses: list[float] = []
+            train_loss_details: list[dict[str, Any]] = []
             progress = tqdm(train_loader, desc=f"{appliance} epoch {epoch + 1}/{epochs}")
             for batch in progress:
                 x = batch["x"].to(device, non_blocking=True)
@@ -198,6 +276,7 @@ def train_nilm_model(
 
                 loss_value = float(loss_parts["loss"].item())
                 train_losses.append(loss_value)
+                train_loss_details.append(_loss_detail_from_parts(loss_parts, target_names))
                 progress.set_postfix(loss=f"{loss_value:.4f}")
 
             val_loss, val_metrics = evaluate_nilm_model(
@@ -210,6 +289,8 @@ def train_nilm_model(
                 target_names=target_names,
             )
             train_loss = float(np.mean(train_losses))
+            train_loss_detail = _mean_loss_details(train_loss_details, target_names)
+            val_loss_detail = val_metrics.get("loss_detail", {})
             writer.writerow(
                 {
                     "epoch": epoch,
@@ -220,12 +301,23 @@ def train_nilm_model(
                     "val_f1": val_metrics["f1"],
                 }
             )
+            detail_row = {
+                **_loss_detail_row(epoch, "train", train_loss_detail),
+                **{key: value for key, value in _loss_detail_row(epoch, "val", val_loss_detail).items() if key != "epoch"},
+            }
+            if detail_writer is None:
+                detail_writer = csv.DictWriter(detail_handle, fieldnames=list(detail_row))
+                detail_writer.writeheader()
+            detail_writer.writerow(detail_row)
             handle.flush()
+            detail_handle.flush()
             print(
                 f"epoch={epoch} train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
                 f"val_mae={val_metrics['mae']:.3f} val_sae={val_metrics['sae']:.3f} "
                 f"val_f1={val_metrics['f1']:.3f}"
             )
+            print(_format_loss_detail("train", train_loss_detail))
+            print(_format_loss_detail("val", val_loss_detail))
 
             if val_loss < best_val:
                 best_val = val_loss
@@ -248,6 +340,7 @@ def train_nilm_model(
                 if stale_epochs >= patience:
                     print(f"Early stopping at epoch {epoch}; best epoch was {best_epoch}.")
                     break
+        detail_handle.close()
 
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -286,6 +379,7 @@ def train_nilm_model(
     print(f"Saved checkpoint: {checkpoint_path}")
     print(f"Saved metrics: {metrics_path}")
     print(f"Saved training plot: {history_plot_path}")
+    print(f"Saved detailed losses: {loss_detail_path}")
     print(json.dumps(metrics, indent=2))
     return metrics
 
