@@ -10,6 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.patches import Patch
 
 
 def _ensure_parent(path: str | Path) -> Path:
@@ -266,22 +267,20 @@ def _plot_single_appliance_event_panels(
 
         if has_aggregate:
             agg = view[aggregate_col].to_numpy(dtype=float)
-            agg_min = float(np.nanmin(agg))
-            agg_max = float(np.nanmax(agg))
-            if not np.isclose(agg_min, agg_max):
-                agg_scaled = (agg - agg_min) / (agg_max - agg_min)
-                agg_scaled = ymin + agg_scaled * (ymax - ymin)
-                ax.fill_between(x, ymin, agg_scaled, color="#d9d9d9", alpha=0.35, label="aggregate background")
-                ax.plot(x, agg_scaled, color="#8a8a8a", linewidth=0.8, alpha=0.7)
+            ax_agg = ax.twinx()
+            ax_agg.plot(x, agg, color="#8a8a8a", linewidth=0.9, alpha=0.55, label="aggregate")
+            ax_agg.fill_between(x, 0, agg, color="#d9d9d9", alpha=0.18)
+            ax_agg.set_ylabel("Aggregate W", color="#6f6f6f")
+            ax_agg.tick_params(axis="y", colors="#6f6f6f", labelsize=8)
 
-        on_col = f"{appliance}_on"
-        if on_col in view:
-            on_values = view[on_col].to_numpy(dtype=float) > 0.5
-            active = np.flatnonzero(on_values)
+        pred_on_col = f"pred_{appliance}_on_prob"
+        if pred_on_col in view:
+            pred_on_values = view[pred_on_col].to_numpy(dtype=float) >= 0.5
+            active = np.flatnonzero(pred_on_values)
             if len(active):
                 local_groups = np.split(active, np.where(np.diff(active) != 1)[0] + 1)
                 for local_group in local_groups:
-                    ax.axvspan(x[local_group[0]], x[local_group[-1]], color="#ffe08a", alpha=0.22, linewidth=0)
+                    ax.axvspan(x[local_group[0]], x[local_group[-1]], color="#7ad66d", alpha=0.18, linewidth=0)
 
         ax.plot(x, true_values, color="#1f77b4", linewidth=1.5, label=f"{appliance} true")
         ax.plot(x, pred_values, color="#d62728", linewidth=1.25, alpha=0.9, label=f"{appliance} pred")
@@ -290,7 +289,11 @@ def _plot_single_appliance_event_panels(
         ax.grid(True, alpha=0.25)
         ax.set_ylim(ymin - 0.05 * (ymax - ymin), ymax + 0.12 * (ymax - ymin))
         if row == 0:
-            ax.legend(loc="upper right", fontsize=8)
+            handles, labels = ax.get_legend_handles_labels()
+            handles.append(Patch(facecolor="#7ad66d", alpha=0.18, label="predicted ON"))
+            if has_aggregate:
+                handles.append(Patch(facecolor="#d9d9d9", alpha=0.18, label="aggregate"))
+            ax.legend(handles=handles, loc="upper right", fontsize=8)
 
     axes[-1].set_xlabel(time_col if time_col else "sample index")
     fig.suptitle(title, y=0.995)
@@ -402,28 +405,30 @@ def plot_prediction_waveforms(
 
         if has_aggregate and aggregate_background:
             agg = view[aggregate_col].to_numpy(dtype=float)
-            agg_min = float(np.nanmin(agg))
-            agg_max = float(np.nanmax(agg))
-            if not np.isclose(agg_min, agg_max):
-                agg_scaled = (agg - agg_min) / (agg_max - agg_min)
-                agg_scaled = ymin + agg_scaled * (ymax - ymin)
-                ax.fill_between(x, ymin, agg_scaled, color="#d9d9d9", alpha=0.35, label="aggregate background")
-                ax.plot(x, agg_scaled, color="#8a8a8a", linewidth=0.8, alpha=0.7)
+            ax_agg = ax.twinx()
+            ax_agg.plot(x, agg, color="#8a8a8a", linewidth=0.9, alpha=0.55, label="aggregate")
+            ax_agg.fill_between(x, 0, agg, color="#d9d9d9", alpha=0.18)
+            ax_agg.set_ylabel("Aggregate W", color="#6f6f6f")
+            ax_agg.tick_params(axis="y", colors="#6f6f6f", labelsize=8)
 
-        on_col = f"{appliance}_on"
-        if on_col in view:
-            on_values = view[on_col].to_numpy(dtype=float) > 0.5
-            active = np.flatnonzero(on_values)
+        pred_on_col = f"pred_{appliance}_on_prob"
+        if pred_on_col in view:
+            pred_on_values = view[pred_on_col].to_numpy(dtype=float) >= 0.5
+            active = np.flatnonzero(pred_on_values)
             if len(active):
                 groups = np.split(active, np.where(np.diff(active) != 1)[0] + 1)
                 for group in groups:
-                    ax.axvspan(x[group[0]], x[group[-1]], color="#ffe08a", alpha=0.18, linewidth=0)
+                    ax.axvspan(x[group[0]], x[group[-1]], color="#7ad66d", alpha=0.18, linewidth=0)
 
         ax.plot(x, true_values, color="#1f77b4", linewidth=1.5, label=f"{appliance} true")
         ax.plot(x, pred_values, color="#d62728", linewidth=1.25, alpha=0.9, label=f"{appliance} pred")
         ax.set_ylabel("Power W")
         ax.grid(True, alpha=0.25)
-        ax.legend(loc="upper right")
+        handles, labels = ax.get_legend_handles_labels()
+        handles.append(Patch(facecolor="#7ad66d", alpha=0.18, label="predicted ON"))
+        if has_aggregate and aggregate_background:
+            handles.append(Patch(facecolor="#d9d9d9", alpha=0.18, label="aggregate"))
+        ax.legend(handles=handles, loc="upper right")
         ax.set_ylim(ymin - 0.05 * (ymax - ymin), ymax + 0.10 * (ymax - ymin))
         row += 1
 
