@@ -191,7 +191,15 @@ history_<appliance>.csv
 history_<appliance>.png
 loss_detail_<appliance>.csv
 loss_detail_<appliance>.png
+live_dashboard_<appliance>.html
+live_history_<appliance>.png
+live_loss_detail_<appliance>.png
+live_waveform_<appliance>.png
 ```
+
+During training, the live files are updated after every epoch. Open
+`live_dashboard_<appliance>.html` in a browser to watch the training loss,
+detailed loss, and validation waveform refresh while the model trains.
 
 Metrics and plots are produced by the shared package:
 

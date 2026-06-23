@@ -172,6 +172,102 @@ def _format_loss_table(train_detail: dict[str, Any], val_detail: dict[str, Any])
     return "\n".join(lines)
 
 
+def _write_live_dashboard(path: Path, title: str, image_paths: list[Path]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    images = "\n".join(
+        f'<section><h2>{image.stem}</h2><img src="{image.name}" alt="{image.stem}"></section>'
+        for image in image_paths
+    )
+    path.write_text(
+        f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="5">
+  <title>{title}</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 24px; background: #f7f7f7; color: #1f1f1f; }}
+    h1 {{ margin: 0 0 12px; font-size: 22px; }}
+    p {{ margin: 0 0 20px; color: #555; }}
+    section {{ margin: 0 0 24px; padding: 16px; background: #fff; border: 1px solid #ddd; }}
+    h2 {{ margin: 0 0 12px; font-size: 16px; }}
+    img {{ width: 100%; max-width: 1200px; display: block; border: 1px solid #ddd; }}
+  </style>
+</head>
+<body>
+  <h1>{title}</h1>
+  <p>This page refreshes every 5 seconds while training is running.</p>
+  {images}
+</body>
+</html>
+""",
+        encoding="utf-8",
+    )
+
+
+@torch.no_grad()
+def _save_live_waveform(
+    *,
+    model_name: str,
+    appliance: str,
+    model: torch.nn.Module,
+    loader: DataLoader,
+    config: Any,
+    output_path: Path,
+    device: torch.device,
+    split: str = "validation",
+    plot_samples: int = 2000,
+) -> None:
+    cfg = _config_to_dict(config)
+    scale = float(cfg["scale"])
+    target_names = _target_names(config, appliance)
+
+    model.eval()
+    aggregate_watts, pred_watts, true_watts, pred_on, true_on = [], [], [], [], []
+    for batch in loader:
+        x = batch["x"].to(device, non_blocking=True)
+        outputs = model(x)
+        watts, on_prob = _model_prediction(outputs, scale)
+        aggregate_watts.append(batch["aggregate_watts"].numpy())
+        pred_watts.append(watts)
+        true_watts.append(batch["y_watts"].numpy())
+        pred_on.append(on_prob)
+        true_on.append(batch["on"].numpy())
+
+    aggregate_flat = np.concatenate(aggregate_watts).reshape(-1)
+    true_watts_arr = np.concatenate(true_watts, axis=0)
+    pred_watts_arr = np.concatenate(pred_watts, axis=0)
+    true_on_arr = np.concatenate(true_on, axis=0)
+    pred_on_arr = np.concatenate(pred_on, axis=0)
+
+    if true_watts_arr.ndim == 2:
+        true_watts_arr = true_watts_arr[:, None, :]
+        pred_watts_arr = pred_watts_arr[:, None, :]
+        true_on_arr = true_on_arr[:, None, :]
+        pred_on_arr = pred_on_arr[:, None, :]
+
+    prediction_data: dict[str, Any] = {
+        "sample_index": np.arange(len(aggregate_flat)),
+        "aggregate": aggregate_flat,
+    }
+    true_pred_pairs = {}
+    for idx, name in enumerate(target_names):
+        prediction_data[f"{name}_power"] = true_watts_arr[:, idx, :].reshape(-1)
+        prediction_data[f"pred_{name}_power"] = pred_watts_arr[:, idx, :].reshape(-1)
+        prediction_data[f"{name}_on"] = true_on_arr[:, idx, :].reshape(-1)
+        prediction_data[f"pred_{name}_on_prob"] = pred_on_arr[:, idx, :].reshape(-1)
+        true_pred_pairs[name] = (f"{name}_power", f"pred_{name}_power")
+
+    plot_prediction_waveforms(
+        pd.DataFrame(prediction_data),
+        output_path,
+        aggregate_col="aggregate",
+        true_pred_pairs=true_pred_pairs,
+        samples=plot_samples,
+        title=f"{model_name} {appliance} {split} Live Waveform",
+    )
+
+
 @torch.no_grad()
 def evaluate_nilm_model(
     model: torch.nn.Module,
@@ -252,6 +348,10 @@ def train_nilm_model(
     checkpoint_path = run_dir / f"best_{appliance}.pt"
     history_path = run_dir / f"history_{appliance}.csv"
     loss_detail_path = run_dir / f"loss_detail_{appliance}.csv"
+    live_history_path = run_dir / f"live_history_{appliance}.png"
+    live_loss_detail_path = run_dir / f"live_loss_detail_{appliance}.png"
+    live_waveform_path = run_dir / f"live_waveform_{appliance}.png"
+    live_dashboard_path = run_dir / f"live_dashboard_{appliance}.html"
 
     best_val = float("inf")
     best_epoch = -1
@@ -325,6 +425,32 @@ def train_nilm_model(
                 f"val_f1={val_metrics['f1']:.3f}"
             )
             print(_format_loss_table(train_loss_detail, val_loss_detail))
+            plot_training_history(
+                history_path,
+                live_history_path,
+                title=f"{model_name} {appliance} Live Training",
+            )
+            plot_loss_details(
+                loss_detail_path,
+                live_loss_detail_path,
+                title=f"{model_name} {appliance} Live Detailed Loss",
+            )
+            _save_live_waveform(
+                model_name=model_name,
+                appliance=appliance,
+                model=model,
+                loader=val_loader,
+                config=config,
+                output_path=live_waveform_path,
+                device=device,
+                split="validation",
+            )
+            _write_live_dashboard(
+                live_dashboard_path,
+                f"{model_name} {appliance} Live Training Dashboard",
+                [live_history_path, live_loss_detail_path, live_waveform_path],
+            )
+            print(f"Live dashboard: {live_dashboard_path}")
 
             if val_loss < best_val:
                 best_val = val_loss
