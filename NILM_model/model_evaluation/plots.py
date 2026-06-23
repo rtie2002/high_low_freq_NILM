@@ -61,7 +61,7 @@ def plot_training_history(
         xmin = int(np.nanmin(x))
         xmax = int(np.nanmax(x))
         pad = max(1, int(0.02 * max(1, xmax - xmin)))
-        axes[-1].set_xlim(xmin - pad, xmax + pad)
+        axes[-1].set_xlim(max(1, xmin - pad), xmax + pad)
     fig.tight_layout()
     output_path = _ensure_parent(output_path)
     fig.savefig(output_path, dpi=dpi)
@@ -75,7 +75,7 @@ def _set_epoch_axis(ax, x: pd.Series | np.ndarray) -> None:
     xmin = int(np.nanmin(x))
     xmax = int(np.nanmax(x))
     pad = max(1, int(0.02 * max(1, xmax - xmin)))
-    ax.set_xlim(xmin - pad, xmax + pad)
+    ax.set_xlim(max(1, xmin - pad), xmax + pad)
 
 
 def _set_dynamic_y_axis(ax, values: list[np.ndarray]) -> None:

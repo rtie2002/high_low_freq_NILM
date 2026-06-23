@@ -49,6 +49,7 @@ def _config_to_dict(config: Any) -> dict[str, Any]:
 
 def _model_prediction(outputs: dict[str, torch.Tensor], scale: float) -> tuple[np.ndarray, np.ndarray]:
     pred_watts = outputs["gated_power"].detach().cpu().numpy() * scale
+    pred_watts = np.maximum(pred_watts, 0.0)
     pred_on = outputs["on_prob"].detach().cpu().numpy()
     return pred_watts, pred_on
 
@@ -367,7 +368,7 @@ def train_nilm_model(
             val_loss_detail = val_metrics.get("loss_detail", {})
             writer.writerow(
                 {
-                    "epoch": epoch,
+                    "epoch": epoch + 1,
                     "train_loss": train_loss,
                     "val_loss": val_loss,
                     "val_mae": val_metrics["mae"],
@@ -376,8 +377,8 @@ def train_nilm_model(
                 }
             )
             detail_row = {
-                **_loss_detail_row(epoch, "train", train_loss_detail),
-                **{key: value for key, value in _loss_detail_row(epoch, "val", val_loss_detail).items() if key != "epoch"},
+                **_loss_detail_row(epoch + 1, "train", train_loss_detail),
+                **{key: value for key, value in _loss_detail_row(epoch + 1, "val", val_loss_detail).items() if key != "epoch"},
             }
             if detail_writer is None:
                 detail_writer = csv.DictWriter(detail_handle, fieldnames=list(detail_row))
@@ -386,7 +387,7 @@ def train_nilm_model(
             handle.flush()
             detail_handle.flush()
             print(
-                f"epoch={epoch} train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
+                f"epoch={epoch + 1} train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
                 f"val_mae={val_metrics['mae']:.3f} val_sae={val_metrics['sae']:.3f} "
                 f"val_f1={val_metrics['f1']:.3f}"
             )
@@ -415,7 +416,7 @@ def train_nilm_model(
 
             if val_loss < best_val:
                 best_val = val_loss
-                best_epoch = epoch
+                best_epoch = epoch + 1
                 stale_epochs = 0
                 torch.save(
                     {
@@ -432,7 +433,7 @@ def train_nilm_model(
             else:
                 stale_epochs += 1
                 if stale_epochs >= patience:
-                    print(f"Early stopping at epoch {epoch}; best epoch was {best_epoch}.")
+                    print(f"Early stopping at epoch {epoch + 1}; best epoch was {best_epoch}.")
                     break
         detail_handle.close()
 
