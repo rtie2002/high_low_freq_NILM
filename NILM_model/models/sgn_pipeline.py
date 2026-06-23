@@ -204,6 +204,21 @@ def build_model(cfg: SGNConfig, device: torch.device) -> SGN:
     ).to(device)
 
 
+def describe_dataset(name: str, dataset) -> None:
+    sample = dataset[0]
+    print(f"{name} windows: {len(dataset)}")
+    print(f"{name} x shape: {tuple(sample['x'].shape)}")
+    print(f"{name} y power shape: {tuple(sample['y_watts'].shape)}")
+    print(f"{name} y on/off shape: {tuple(sample['on'].shape)}")
+    print(f"{name} aggregate shape: {tuple(sample['aggregate_watts'].shape)}")
+    if hasattr(dataset, "features"):
+        print(f"{name} source rows: {len(dataset.features)}")
+    elif hasattr(dataset, "sequences"):
+        lengths = [len(seq) for seq in dataset.sequences]
+        print(f"{name} segments: {len(lengths)}")
+        print(f"{name} segment lengths: {lengths}")
+
+
 def train_one(
     appliance: str,
     args: argparse.Namespace,
@@ -219,26 +234,44 @@ def train_one(
     print(f"Features: {cfg.feature_columns}")
     print(f"Target appliances: {cfg.target_appliances}")
 
+    train_dataset = make_dataset(args.data_dir, csv_cfg, args.data_source, "train", appliance, cfg, cfg.train_stride)
+    val_dataset = make_dataset(args.data_dir, csv_cfg, args.data_source, "val", appliance, cfg, cfg.eval_stride)
+    test_dataset = make_dataset(args.data_dir, csv_cfg, args.data_source, "test", appliance, cfg, cfg.eval_stride)
+
+    print("\n== Data summary ==")
+    print(f"input_length: {cfg.input_length}")
+    print(f"output_length: {cfg.output_length}")
+    print(f"input_channels: {cfg.input_channels}")
+    print(f"num_appliances: {cfg.num_appliances}")
+    print(f"batch_size: {cfg.batch_size}")
+    print(f"train_stride: {cfg.train_stride}")
+    print(f"eval_stride: {cfg.eval_stride}")
+    describe_dataset("train", train_dataset)
+    describe_dataset("validation", val_dataset)
+    describe_dataset("test", test_dataset)
+
     train_loader = make_dataloader(
-        make_dataset(args.data_dir, csv_cfg, args.data_source, "train", appliance, cfg, cfg.train_stride),
+        train_dataset,
         batch_size=cfg.batch_size,
         shuffle=True,
         num_workers=cfg.num_workers,
     )
     val_loader = make_dataloader(
-        make_dataset(args.data_dir, csv_cfg, args.data_source, "val", appliance, cfg, cfg.eval_stride),
+        val_dataset,
         batch_size=cfg.batch_size,
         shuffle=False,
         num_workers=cfg.num_workers,
     )
     test_loader = make_dataloader(
-        make_dataset(args.data_dir, csv_cfg, args.data_source, "test", appliance, cfg, cfg.eval_stride),
+        test_dataset,
         batch_size=cfg.batch_size,
         shuffle=False,
         num_workers=cfg.num_workers,
     )
 
     model = build_model(cfg, device)
+    print("\n== Model architecture ==")
+    print(model)
     criterion = SGNLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
 

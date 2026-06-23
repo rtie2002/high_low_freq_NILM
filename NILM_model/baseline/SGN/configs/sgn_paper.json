@@ -3,7 +3,7 @@
   "default_appliance": "all",
   "input_length": 864,
   "output_length": 64,
-  "batch_size": 16,
+  "batch_size": 128,
   "learning_rate": 0.0001,
   "epochs": 200,
   "patience": 30,
