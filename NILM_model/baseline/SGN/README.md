@@ -10,8 +10,8 @@ The implementation is adapted to the processed REDD pickle files already shipped
 
 ```text
 baseline/SGN/
-  train.py              # train one appliance or all appliances
-  inference.py          # load a checkpoint and write predictions/metrics
+  train.py              # compatibility wrapper for models/sgn_pipeline.py
+  inference.py          # compatibility wrapper for models/sgn_pipeline.py
   requirements.txt
   ../model_evaluation/  # shared MAE/SAE/F1 metrics and plotting utilities
     runner.py           # universal NILM train/evaluate/inference loop
@@ -27,18 +27,20 @@ baseline/SGN/
 
 ## Model
 
-SGN is a single-appliance model. Train one model for each target appliance:
+This implementation uses SGN as a multi-appliance, multi-label NILM model. One forward pass predicts power and ON/OFF labels for all selected appliances:
 
 ```text
-dishwasher, fridge, microwave, washer_dryer
+input  -> aggregate/features window
+output -> appliance power sequences [appliance, time]
+output -> appliance ON/OFF sequences [appliance, time]
 ```
 
-The model has two CNN Seq2Seq subnetworks:
+The model keeps the SGN paper idea: two CNN Seq2Seq subnetworks:
 
 ```text
-Regression subnetwork      -> appliance power estimate
-Classification subnetwork  -> appliance on/off probability
-Final output               -> regression * on_probability
+Regression subnetwork      -> appliance power estimates
+Classification subnetwork  -> appliance ON/OFF probabilities
+Final output               -> regression * ON/OFF probability
 ```
 
 ## Loss Function
@@ -73,14 +75,14 @@ pip install -r requirements.txt
 Recommended universal entry point:
 
 ```powershell
-cd "D:\Raymond\high_low_freq_NILM\baseline"
+cd "D:\Raymond\high_low_freq_NILM\NILM_model"
 python main.py --model sgn --mode train --debug --appliance dishwasher
 ```
 
 You can also run directly from this folder:
 
 ```powershell
-cd "D:\Raymond\high_low_freq_NILM\baseline\SGN"
+cd "D:\Raymond\high_low_freq_NILM\NILM_model\baseline\SGN"
 python train.py --debug --appliance dishwasher --epochs 2
 ```
 
@@ -100,14 +102,14 @@ SAE period    = 1200 REDD samples
 ```
 
 ```powershell
-cd "D:\Raymond\high_low_freq_NILM\baseline"
-python main.py --model sgn --mode train --appliance all
+cd "D:\Raymond\high_low_freq_NILM\NILM_model"
+python main.py --model sgn --mode train --model_config baseline/SGN/configs/sgn_paper.json
 ```
 
-This is equivalent to:
+By default, `configs/sgn_paper.json` sets `"default_appliance": "all"`, so this trains one multi-output checkpoint:
 
-```powershell
-python main.py --model sgn --mode train --model_config SGN/configs/sgn_paper.json --appliance all
+```text
+runs/sgn_redd/best_all.pt
 ```
 
 The train/evaluate/inference loop is shared in:
@@ -125,7 +127,7 @@ configs/sgn_paper.json
 Command-line values still override the JSON when provided:
 
 ```powershell
-python main.py --model sgn --mode train --model_config SGN/configs/sgn_paper.json --appliance fridge --epochs 50 --batch_size 32
+python main.py --model sgn --mode train --model_config baseline/SGN/configs/sgn_paper.json --epochs 50 --batch_size 32
 ```
 
 ## SGN Variants From the Paper
@@ -168,13 +170,13 @@ Outputs are written to:
 runs/<run_name>/
 ```
 
-Each appliance gets:
+The multi-output run writes:
 
 ```text
-best_<appliance>.pt
-metrics_<appliance>.json
-history_<appliance>.csv
-history_<appliance>.png
+best_all.pt
+metrics_all.json
+history_all.csv
+history_all.png
 ```
 
 Metrics and plots are produced by the shared package:
@@ -228,7 +230,7 @@ kettle, fridge, microwave, dishwasher, washingmachine
 Quick debug run:
 
 ```powershell
-cd "D:\Raymond\high_low_freq_NILM\baseline\SGN"
+cd "D:\Raymond\high_low_freq_NILM\NILM_model\baseline\SGN"
 python train.py --data_source csv --csv_config configs/training_data_house2.json --debug --appliance fridge
 ```
 
@@ -238,10 +240,11 @@ Full CSV run for one appliance:
 python train.py --data_source csv --csv_config configs/training_data_house2.json --appliance fridge --epochs 200
 ```
 
-Full CSV run for all CSV appliances:
+Full CSV run for all CSV appliances in one multi-output model:
 
 ```powershell
-python train.py --data_source csv --csv_config configs/training_data_house2.json --appliance all --epochs 200
+cd "D:\Raymond\high_low_freq_NILM\NILM_model"
+python main.py --model sgn --mode train --data_source csv --csv_config baseline/SGN/configs/training_data_house2.json --model_config baseline/SGN/configs/sgn_paper.json
 ```
 
 The CSV file has a 6-second sampling interval. If you want the same real-time window length as REDD's `864/64` at 3 seconds, use:
@@ -253,20 +256,20 @@ python train.py --data_source csv --csv_config configs/training_data_house2.json
 ## Inference
 
 ```powershell
-cd "D:\Raymond\high_low_freq_NILM\baseline"
-python main.py --model sgn --mode inference --checkpoint SGN/runs/sgn_redd/best_dishwasher.pt --appliance dishwasher
+cd "D:\Raymond\high_low_freq_NILM\NILM_model"
+python main.py --model sgn --mode inference --checkpoint runs/sgn_redd/best_all.pt
 ```
 
 For CSV-trained checkpoints:
 
 ```powershell
-python main.py --model sgn --mode inference --data_source csv --csv_config SGN/configs/training_data_house2.json --checkpoint SGN/runs/sgn_redd/best_fridge.pt --appliance fridge
+python main.py --model sgn --mode inference --data_source csv --csv_config baseline/SGN/configs/training_data_house2.json --checkpoint runs/sgn_redd/best_all.pt
 ```
 
 Train and then immediately run inference:
 
 ```powershell
-python main.py --model sgn --mode train_inference --data_source csv --csv_config SGN/configs/training_data_house2.json --model_config SGN/configs/sgn_paper.json --appliance fridge
+python main.py --model sgn --mode train_inference --data_source csv --csv_config baseline/SGN/configs/training_data_house2.json --model_config baseline/SGN/configs/sgn_paper.json
 ```
 
 Inference writes these files to the selected output directory:

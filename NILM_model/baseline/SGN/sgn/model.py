@@ -12,6 +12,7 @@ class ConvSeq2SeqSubNet(nn.Module):
         output_length: int,
         hidden_fc: int = 1024,
         dropout: float = 0.0,
+        num_outputs: int = 1,
     ) -> None:
         super().__init__()
         self.features = nn.Sequential(
@@ -33,8 +34,10 @@ class ConvSeq2SeqSubNet(nn.Module):
             nn.Linear(50 * input_length, hidden_fc),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout),
-            nn.Linear(hidden_fc, output_length),
+            nn.Linear(hidden_fc, output_length * num_outputs),
         )
+        self.output_length = output_length
+        self.num_outputs = num_outputs
         self.apply(self._init_weights)
 
     @staticmethod
@@ -45,11 +48,12 @@ class ConvSeq2SeqSubNet(nn.Module):
                 nn.init.zeros_(module.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.head(self.features(x))
+        out = self.head(self.features(x))
+        return out.view(out.shape[0], self.num_outputs, self.output_length)
 
 
 class SGN(nn.Module):
-    """Subtask Gated Network for one appliance."""
+    """Subtask Gated Network with multi-appliance power and on/off outputs."""
 
     def __init__(
         self,
@@ -58,6 +62,7 @@ class SGN(nn.Module):
         input_channels: int = 1,
         hidden_fc: int = 1024,
         dropout: float = 0.0,
+        num_appliances: int = 1,
         gate_mode: str = "soft",
         standby_power: bool = False,
     ) -> None:
@@ -66,9 +71,14 @@ class SGN(nn.Module):
             raise ValueError("gate_mode must be 'soft' or 'hard'")
         self.gate_mode = gate_mode
         self.standby_power = standby_power
-        self.regression = ConvSeq2SeqSubNet(input_channels, input_length, output_length, hidden_fc, dropout)
-        self.classification = ConvSeq2SeqSubNet(input_channels, input_length, output_length, hidden_fc, dropout)
-        self.standby = nn.Parameter(torch.zeros(1)) if standby_power else None
+        self.num_appliances = num_appliances
+        self.regression = ConvSeq2SeqSubNet(
+            input_channels, input_length, output_length, hidden_fc, dropout, num_appliances
+        )
+        self.classification = ConvSeq2SeqSubNet(
+            input_channels, input_length, output_length, hidden_fc, dropout, num_appliances
+        )
+        self.standby = nn.Parameter(torch.zeros(num_appliances, 1)) if standby_power else None
 
     def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         power = self.regression(x)

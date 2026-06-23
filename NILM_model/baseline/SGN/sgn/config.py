@@ -38,6 +38,8 @@ class SGNConfig:
     input_length: int = 864
     output_length: int = 64
     input_channels: int = 1
+    target_appliances: list[str] = field(default_factory=list)
+    num_appliances: int = 1
     scale: float = 1.0
     scale_mode: str = "aggregate_std"
     feature_columns: list[str] = field(default_factory=lambda: ["aggregate"])

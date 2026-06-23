@@ -6,9 +6,27 @@ Use `main.py` as the shared entry point:
 
 ```powershell
 cd "D:\Raymond\high_low_freq_NILM\NILM_model"
+python main.py --model sgn --mode train
+python main.py --model sgn --mode inference --checkpoint runs/sgn_redd/best_all.pt
+python main.py --model sgn --mode train_inference
+```
+
+For SGN, the default target is multi-appliance output:
+
+```text
+baseline/SGN/configs/sgn_paper.json -> "default_appliance": "all"
+```
+
+So this trains one multi-output SGN checkpoint:
+
+```powershell
+python main.py --model sgn --mode train_inference --data_source csv --csv_config baseline/SGN/configs/training_data_house2.json --model_config baseline/SGN/configs/sgn_paper.json
+```
+
+Single-appliance runs are only for debugging or ablation:
+
+```powershell
 python main.py --model sgn --mode train --appliance fridge
-python main.py --model sgn --mode inference --checkpoint runs/sgn_redd/best_fridge.pt --appliance fridge
-python main.py --model sgn --mode train_inference --appliance fridge
 ```
 
 The universal training and inference engine lives in:

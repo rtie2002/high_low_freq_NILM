@@ -45,7 +45,12 @@ def parse_train_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="sgn_paper follows SGN paper hyperparameters; matnilm matches released MATNILM defaults.",
     )
-    parser.add_argument("--appliance", choices=["all", *ALL_APPLIANCES], default="all")
+    parser.add_argument(
+        "--appliance",
+        choices=["all", *ALL_APPLIANCES],
+        default=None,
+        help="Target appliance set. Defaults to default_appliance in the model config, which is 'all'.",
+    )
     parser.add_argument("--input_length", type=int, default=None)
     parser.add_argument("--output_length", type=int, default=None)
     parser.add_argument("--batch_size", type=int, default=None)
@@ -125,6 +130,13 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
     feature_mean: list[float] = []
     feature_scale: list[float] = []
     input_channels = 1
+    target_choice = args.appliance or model_cfg.get("default_appliance", "all")
+    args.appliance = target_choice
+    if args.data_source == "csv":
+        available_appliances = sorted((csv_cfg or {}).get("appliances", CSV_APPLIANCES))
+    else:
+        available_appliances = sorted(APPLIANCES)
+    target_appliances = available_appliances if target_choice == "all" else [target_choice]
     if args.data_source == "csv":
         if csv_cfg is None:
             raise ValueError("csv_cfg is required when data_source='csv'")
@@ -141,6 +153,8 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
         input_length=input_length,
         output_length=output_length,
         input_channels=input_channels,
+        target_appliances=target_appliances,
+        num_appliances=len(target_appliances),
         scale=scale,
         scale_mode=scale_mode,
         feature_columns=feature_columns,
@@ -184,6 +198,7 @@ def build_model(cfg: SGNConfig, device: torch.device) -> SGN:
         cfg.input_channels,
         cfg.hidden_fc,
         cfg.dropout,
+        num_appliances=cfg.num_appliances,
         gate_mode=cfg.gate_mode,
         standby_power=cfg.standby_power,
     ).to(device)
@@ -202,6 +217,7 @@ def train_one(
     print(f"Data source: {args.data_source}")
     print(f"Data: {csv_cfg['csv_file'] if csv_cfg else args.data_dir}")
     print(f"Features: {cfg.feature_columns}")
+    print(f"Target appliances: {cfg.target_appliances}")
 
     train_loader = make_dataloader(
         make_dataset(args.data_dir, csv_cfg, args.data_source, "train", appliance, cfg, cfg.train_stride),
@@ -254,13 +270,9 @@ def train_main(argv: list[str] | None = None) -> list[Path]:
         available = sorted((csv_cfg or {}).get("appliances", CSV_APPLIANCES))
     else:
         available = sorted(APPLIANCES)
-    if args.appliance == "all":
-        appliances = available
-    else:
-        if args.appliance not in available:
-            raise ValueError(f"Appliance '{args.appliance}' is not available for {args.data_source}. Choices: {available}")
-        appliances = [args.appliance]
-    return [train_one(appliance, args, cfg, device, csv_cfg) for appliance in appliances]
+    if args.appliance != "all" and args.appliance not in available:
+        raise ValueError(f"Appliance '{args.appliance}' is not available for {args.data_source}. Choices: {available}")
+    return [train_one(args.appliance, args, cfg, device, csv_cfg)]
 
 
 @torch.no_grad()
@@ -270,6 +282,10 @@ def inference_main(argv: list[str] | None = None, *, allow_unknown: bool = False
     checkpoint = torch.load(args.checkpoint, map_location=device)
     cfg = SGNConfig(**checkpoint["config"])
     appliance = args.appliance or checkpoint["appliance"]
+    if appliance == "all" and cfg.target_appliances:
+        dataset_appliance: str | list[str] = cfg.target_appliances
+    else:
+        dataset_appliance = appliance
     if args.batch_size is not None:
         cfg.batch_size = args.batch_size
     if args.eval_stride is not None:
@@ -281,11 +297,13 @@ def inference_main(argv: list[str] | None = None, *, allow_unknown: bool = False
     model.eval()
 
     if args.data_source == "csv":
-        if appliance not in (csv_cfg or {}).get("appliances", CSV_APPLIANCES):
+        available = (csv_cfg or {}).get("appliances", CSV_APPLIANCES)
+        unknown = sorted(set(dataset_appliance if isinstance(dataset_appliance, list) else [dataset_appliance]) - set(available))
+        if unknown:
             raise ValueError(f"Appliance '{appliance}' is not available in CSV config {args.csv_config}")
-        dataset = CSVSGNWindowDataset(csv_cfg, args.split, appliance, cfg, stride=cfg.eval_stride)
+        dataset = CSVSGNWindowDataset(csv_cfg, args.split, dataset_appliance, cfg, stride=cfg.eval_stride)
     else:
-        dataset = REDDSGNWindowDataset(args.data_dir, args.split, appliance, cfg, stride=cfg.eval_stride)
+        dataset = REDDSGNWindowDataset(args.data_dir, args.split, dataset_appliance, cfg, stride=cfg.eval_stride)
     loader = make_dataloader(dataset, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers)
 
     run_nilm_inference(

@@ -50,7 +50,47 @@ def _config_to_dict(config: Any) -> dict[str, Any]:
 def _model_prediction(outputs: dict[str, torch.Tensor], scale: float) -> tuple[np.ndarray, np.ndarray]:
     pred_watts = outputs["gated_power"].detach().cpu().numpy() * scale
     pred_on = outputs["on_prob"].detach().cpu().numpy()
-    return pred_watts.reshape(-1), pred_on.reshape(-1)
+    return pred_watts, pred_on
+
+
+def _target_names(config: Any, appliance: str) -> list[str]:
+    cfg = _config_to_dict(config)
+    names = cfg.get("target_appliances") or []
+    if names:
+        return list(names)
+    return [appliance]
+
+
+def _average_metrics(y_true, y_pred, true_on, pred_on, sae_period: int) -> dict[str, float]:
+    return compute_nilm_metrics(
+        np.asarray(y_true).reshape(-1),
+        np.asarray(y_pred).reshape(-1),
+        np.asarray(true_on).reshape(-1),
+        np.asarray(pred_on).reshape(-1),
+        sae_period=sae_period,
+    )
+
+
+def _per_appliance_metrics(y_true, y_pred, true_on, pred_on, names: list[str], sae_period: int) -> dict[str, dict[str, float]]:
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    true_on = np.asarray(true_on)
+    pred_on = np.asarray(pred_on)
+    if y_true.ndim == 2:
+        y_true = y_true[:, None, :]
+        y_pred = y_pred[:, None, :]
+        true_on = true_on[:, None, :]
+        pred_on = pred_on[:, None, :]
+    metrics = {}
+    for idx, name in enumerate(names):
+        metrics[name] = compute_nilm_metrics(
+            y_true[:, idx, :].reshape(-1),
+            y_pred[:, idx, :].reshape(-1),
+            true_on[:, idx, :].reshape(-1),
+            pred_on[:, idx, :].reshape(-1),
+            sae_period=sae_period,
+        )
+    return metrics
 
 
 @torch.no_grad()
@@ -62,6 +102,7 @@ def evaluate_nilm_model(
     device: torch.device,
     scale: float,
     sae_period: int,
+    target_names: list[str] | None = None,
 ) -> tuple[float, dict[str, float]]:
     model.eval()
     losses: list[float] = []
@@ -77,17 +118,30 @@ def evaluate_nilm_model(
 
         watts, on_prob = _model_prediction(outputs, scale)
         pred_watts.append(watts)
-        true_watts.append(batch["y_watts"].numpy().reshape(-1))
+        true_watts.append(batch["y_watts"].numpy())
         pred_on.append(on_prob)
-        true_on.append(batch["on"].numpy().reshape(-1))
+        true_on.append(batch["on"].numpy())
 
-    metrics = compute_nilm_metrics(
-        np.concatenate(true_watts),
-        np.concatenate(pred_watts),
-        np.concatenate(true_on),
-        np.concatenate(pred_on),
-        sae_period=sae_period,
+    true_watts_arr = np.concatenate(true_watts, axis=0)
+    pred_watts_arr = np.concatenate(pred_watts, axis=0)
+    true_on_arr = np.concatenate(true_on, axis=0)
+    pred_on_arr = np.concatenate(pred_on, axis=0)
+    metrics = _average_metrics(
+        true_watts_arr,
+        pred_watts_arr,
+        true_on_arr,
+        pred_on_arr,
+        sae_period,
     )
+    if target_names:
+        metrics["per_appliance"] = _per_appliance_metrics(
+            true_watts_arr,
+            pred_watts_arr,
+            true_on_arr,
+            pred_on_arr,
+            target_names,
+            sae_period,
+        )
     return float(np.mean(losses)), metrics
 
 
@@ -110,6 +164,7 @@ def train_nilm_model(
     epochs = int(cfg["epochs"])
     patience = int(cfg["patience"])
     sae_period = int(cfg["sae_period"])
+    target_names = _target_names(config, appliance)
 
     run_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = run_dir / f"best_{appliance}.pt"
@@ -152,6 +207,7 @@ def train_nilm_model(
                 device=device,
                 scale=scale,
                 sae_period=sae_period,
+                target_names=target_names,
             )
             train_loss = float(np.mean(train_losses))
             writer.writerow(
@@ -181,6 +237,7 @@ def train_nilm_model(
                         "model_state_dict": model.state_dict(),
                         "config": cfg,
                         "appliance": appliance,
+                        "target_appliances": target_names,
                         "best_epoch": best_epoch,
                         "best_val_loss": best_val,
                     },
@@ -201,6 +258,7 @@ def train_nilm_model(
         device=device,
         scale=scale,
         sae_period=sae_period,
+        target_names=target_names,
     )
     _, test_metrics = evaluate_nilm_model(
         model,
@@ -209,10 +267,12 @@ def train_nilm_model(
         device=device,
         scale=scale,
         sae_period=sae_period,
+        target_names=target_names,
     )
     metrics = {
         "model": model_name,
         "appliance": appliance,
+        "target_appliances": target_names,
         "best_epoch": best_epoch,
         "best_val_loss": best_val,
         "validation": val_metrics,
@@ -246,6 +306,7 @@ def run_nilm_inference(
     cfg = _config_to_dict(config)
     scale = float(cfg["scale"])
     sae_period = int(cfg["sae_period"])
+    target_names = _target_names(config, appliance)
 
     model.eval()
     aggregate_watts, pred_watts, true_watts, pred_on, true_on = [], [], [], [], []
@@ -253,41 +314,61 @@ def run_nilm_inference(
         x = batch["x"].to(device, non_blocking=True)
         outputs = model(x)
         watts, on_prob = _model_prediction(outputs, scale)
-        aggregate_watts.append(batch["aggregate_watts"].numpy().reshape(-1))
+        aggregate_watts.append(batch["aggregate_watts"].numpy())
         pred_watts.append(watts)
-        true_watts.append(batch["y_watts"].numpy().reshape(-1))
+        true_watts.append(batch["y_watts"].numpy())
         pred_on.append(on_prob)
-        true_on.append(batch["on"].numpy().reshape(-1))
+        true_on.append(batch["on"].numpy())
 
     arrays = {
         "aggregate_watts": np.concatenate(aggregate_watts),
-        "y_true_watts": np.concatenate(true_watts),
-        "y_pred_watts": np.concatenate(pred_watts),
-        "y_true_on": np.concatenate(true_on),
-        "y_pred_on_prob": np.concatenate(pred_on),
+        "y_true_watts": np.concatenate(true_watts, axis=0),
+        "y_pred_watts": np.concatenate(pred_watts, axis=0),
+        "y_true_on": np.concatenate(true_on, axis=0),
+        "y_pred_on_prob": np.concatenate(pred_on, axis=0),
     }
-    metrics = compute_nilm_metrics(
+    metrics = _average_metrics(
         arrays["y_true_watts"],
         arrays["y_pred_watts"],
         arrays["y_true_on"],
         arrays["y_pred_on_prob"],
-        sae_period=sae_period,
+        sae_period,
+    )
+    per_appliance = _per_appliance_metrics(
+        arrays["y_true_watts"],
+        arrays["y_pred_watts"],
+        arrays["y_true_on"],
+        arrays["y_pred_on_prob"],
+        target_names,
+        sae_period,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{split}_{appliance}"
     np.savez_compressed(output_dir / f"{stem}_predictions.npz", **arrays)
 
-    prediction_frame = pd.DataFrame(
-        {
-            "sample_index": np.arange(len(arrays["y_true_watts"])),
-            "aggregate": arrays["aggregate_watts"],
-            f"{appliance}_power": arrays["y_true_watts"],
-            f"pred_{appliance}_power": arrays["y_pred_watts"],
-            f"{appliance}_on": arrays["y_true_on"],
-            f"pred_{appliance}_on_prob": arrays["y_pred_on_prob"],
-        }
-    )
+    aggregate_flat = arrays["aggregate_watts"].reshape(-1)
+    prediction_data = {
+        "sample_index": np.arange(len(aggregate_flat)),
+        "aggregate": aggregate_flat,
+    }
+    true_watts = arrays["y_true_watts"]
+    pred_watts_arr = arrays["y_pred_watts"]
+    true_on_arr = arrays["y_true_on"]
+    pred_on_arr = arrays["y_pred_on_prob"]
+    if true_watts.ndim == 2:
+        true_watts = true_watts[:, None, :]
+        pred_watts_arr = pred_watts_arr[:, None, :]
+        true_on_arr = true_on_arr[:, None, :]
+        pred_on_arr = pred_on_arr[:, None, :]
+    true_pred_pairs = {}
+    for idx, name in enumerate(target_names):
+        prediction_data[f"{name}_power"] = true_watts[:, idx, :].reshape(-1)
+        prediction_data[f"pred_{name}_power"] = pred_watts_arr[:, idx, :].reshape(-1)
+        prediction_data[f"{name}_on"] = true_on_arr[:, idx, :].reshape(-1)
+        prediction_data[f"pred_{name}_on_prob"] = pred_on_arr[:, idx, :].reshape(-1)
+        true_pred_pairs[name] = (f"{name}_power", f"pred_{name}_power")
+    prediction_frame = pd.DataFrame(prediction_data)
     prediction_csv = output_dir / f"{stem}_predictions.csv"
     prediction_frame.to_csv(prediction_csv, index=False)
 
@@ -296,15 +377,16 @@ def run_nilm_inference(
         prediction_frame,
         waveform_path,
         aggregate_col="aggregate",
-        true_pred_pairs={appliance: (f"{appliance}_power", f"pred_{appliance}_power")},
+        true_pred_pairs=true_pred_pairs,
         samples=plot_samples,
         title=f"{model_name} {appliance} {split} Predictions",
     )
     metrics_path = output_dir / f"{stem}_metrics.json"
-    metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    metrics_payload = {"average": metrics, "per_appliance": per_appliance}
+    metrics_path.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
 
     print(f"Saved predictions: {prediction_csv}")
     print(f"Saved waveform plot: {waveform_path}")
     print(f"Saved metrics: {metrics_path}")
-    print(json.dumps(metrics, indent=2))
-    return metrics
+    print(json.dumps(metrics_payload, indent=2))
+    return metrics_payload

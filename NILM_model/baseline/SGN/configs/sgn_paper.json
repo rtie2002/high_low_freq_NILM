@@ -1,5 +1,6 @@
 {
   "preset": "sgn_paper",
+  "default_appliance": "all",
   "input_length": 864,
   "output_length": 64,
   "batch_size": 16,

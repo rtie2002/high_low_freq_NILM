@@ -9,26 +9,36 @@ from torch.utils.data import Dataset
 from .config import APPLIANCES, CSV_APPLIANCES, SGNConfig, csv_split_bounds
 
 
+def _as_appliance_list(appliance: str | list[str], choices) -> list[str]:
+    if appliance == "all":
+        return list(choices)
+    if isinstance(appliance, str):
+        return [appliance]
+    return list(appliance)
+
+
 class REDDSGNWindowDataset(Dataset):
-    """Windowed single-appliance dataset built from MATNILM REDD pickle files."""
+    """Windowed multi-appliance dataset built from MATNILM REDD pickle files."""
 
     def __init__(
         self,
         data_dir: str | Path,
         split: str,
-        appliance: str,
+        appliance: str | list[str],
         config: SGNConfig,
         stride: int,
     ) -> None:
-        if appliance not in APPLIANCES:
-            raise ValueError(f"Unknown appliance '{appliance}'. Choices: {sorted(APPLIANCES)}")
+        appliances = _as_appliance_list(appliance, APPLIANCES)
+        unknown = sorted(set(appliances) - set(APPLIANCES))
+        if unknown:
+            raise ValueError(f"Unknown appliance(s) {unknown}. Choices: {sorted(APPLIANCES)}")
         if split not in {"train", "val", "test"}:
             raise ValueError("split must be one of: train, val, test")
 
         self.data_dir = Path(data_dir)
         self.split = split
-        self.appliance = appliance
-        self.appliance_index = APPLIANCES[appliance]
+        self.appliances = appliances
+        self.appliance_indices = [APPLIANCES[name] for name in appliances]
         self.config = config
         self.stride = stride
 
@@ -73,7 +83,7 @@ class REDDSGNWindowDataset(Dataset):
 
         main = values[in_start:in_end, 0]
         aggregate_watts = values[out_start:out_end, 0]
-        appliance_watts = values[out_start:out_end, self.appliance_index + 1]
+        appliance_watts = values[out_start:out_end, [idx + 1 for idx in self.appliance_indices]].T
         appliance_scaled = appliance_watts / cfg.scale
         on_label = (appliance_watts > cfg.on_threshold_watts).astype(np.float32)
 
@@ -87,13 +97,13 @@ class REDDSGNWindowDataset(Dataset):
 
 
 class CSVSGNWindowDataset(Dataset):
-    """Windowed SGN dataset built from a merged feature CSV."""
+    """Windowed multi-appliance SGN dataset built from a merged feature CSV."""
 
     def __init__(
         self,
         csv_config: dict,
         split: str,
-        appliance: str,
+        appliance: str | list[str],
         config: SGNConfig,
         stride: int,
     ) -> None:
@@ -101,26 +111,28 @@ class CSVSGNWindowDataset(Dataset):
             raise ValueError("split must be one of: train, val, test")
 
         appliances = csv_config.get("appliances", CSV_APPLIANCES)
-        if appliance not in appliances:
-            raise ValueError(f"Unknown CSV appliance '{appliance}'. Choices: {sorted(appliances)}")
+        target_appliances = _as_appliance_list(appliance, appliances)
+        unknown = sorted(set(target_appliances) - set(appliances))
+        if unknown:
+            raise ValueError(f"Unknown CSV appliance(s) {unknown}. Choices: {sorted(appliances)}")
 
         self.csv_config = csv_config
         self.split = split
-        self.appliance = appliance
+        self.appliances = target_appliances
         self.config = config
         self.stride = stride
 
-        app_cfg = appliances[appliance]
-        power_column = app_cfg["power"]
-        on_column = app_cfg.get("on")
+        power_columns = [appliances[name]["power"] for name in target_appliances]
+        on_columns = [appliances[name].get("on") for name in target_appliances]
         feature_columns = list(csv_config["feature_columns"])
         aggregate_column = csv_config.get("aggregate_column", "aggregate")
         time_column = csv_config.get("time_column")
+        target_columns = power_columns + [col for col in on_columns if col]
         usecols = list(
             dict.fromkeys(
                 feature_columns
-                + [aggregate_column, power_column]
-                + ([on_column] if on_column else [])
+                + [aggregate_column]
+                + target_columns
                 + ([time_column] if time_column else [])
             )
         )
@@ -145,10 +157,10 @@ class CSVSGNWindowDataset(Dataset):
             raise ValueError("Feature normalization stats do not match feature_columns")
         self.features = (features - mean) / scale
         self.aggregate = df[aggregate_column].to_numpy(dtype=np.float32)
-        self.power = df[power_column].to_numpy(dtype=np.float32)
+        self.power = df[power_columns].to_numpy(dtype=np.float32)
         self.time = df[time_column].astype(str).to_numpy() if time_column and time_column in df else None
-        if on_column and on_column in df:
-            self.on = df[on_column].to_numpy(dtype=np.float32)
+        if all(col and col in df for col in on_columns):
+            self.on = df[on_columns].to_numpy(dtype=np.float32)
         else:
             self.on = (self.power > config.on_threshold_watts).astype(np.float32)
 
@@ -169,9 +181,9 @@ class CSVSGNWindowDataset(Dataset):
 
         x = self.features[in_start:in_end].T
         aggregate_watts = self.aggregate[out_start:out_end]
-        appliance_watts = self.power[out_start:out_end]
+        appliance_watts = self.power[out_start:out_end].T
         appliance_scaled = appliance_watts / cfg.scale
-        on_label = self.on[out_start:out_end]
+        on_label = self.on[out_start:out_end].T
 
         return {
             "x": torch.from_numpy(x.astype(np.float32)),
