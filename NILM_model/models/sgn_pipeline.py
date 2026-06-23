@@ -109,6 +109,16 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
     if args.preset is None or model_cfg.get("preset", preset) == preset:
         defaults.update(model_cfg)
 
+    if args.data_source == "csv" and csv_cfg is not None:
+        sampling_seconds = int(csv_cfg.get("sampling_seconds", 0) or 0)
+        if sampling_seconds == 6:
+            if args.input_length is None:
+                defaults["input_length"] = 432
+            if args.output_length is None:
+                defaults["output_length"] = 32
+            if args.eval_stride is None:
+                defaults["eval_stride"] = 32
+
     def choose(name: str, arg_name: str | None = None):
         value = getattr(args, arg_name or name)
         return value if value is not None else defaults[name]

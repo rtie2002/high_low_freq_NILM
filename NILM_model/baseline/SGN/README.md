@@ -88,7 +88,7 @@ python train.py --debug --appliance dishwasher --epochs 2
 
 ## Original SGN-Paper-Like Baseline
 
-This is the default. It follows the SGN paper settings as closely as possible using the processed REDD pickle files available in this repository:
+This follows the SGN paper settings as closely as possible. For processed REDD pickle files, use the REDD paper window:
 
 ```text
 input length  = 864
@@ -99,6 +99,14 @@ normalization = divide by std of aggregate training power
 on threshold  = 15 W
 optimizer     = Adam
 SAE period    = 1200 REDD samples
+```
+
+For the merged CSV data in this project, `sampling_seconds` is 6, so the pipeline defaults to the UK-DALE paper window:
+
+```text
+input length  = 432
+output length = 32
+eval stride   = 32
 ```
 
 ```powershell
@@ -247,10 +255,10 @@ cd "D:\Raymond\high_low_freq_NILM\NILM_model"
 python main.py --model sgn --mode train --data_source csv --csv_config baseline/SGN/configs/training_data_house2.json --model_config baseline/SGN/configs/sgn_paper.json
 ```
 
-The CSV file has a 6-second sampling interval. If you want the same real-time window length as REDD's `864/64` at 3 seconds, use:
+The CSV file has a 6-second sampling interval, so the pipeline uses the same real-time window length as REDD's `864/64` at 3 seconds by default:
 
 ```powershell
-python train.py --data_source csv --csv_config configs/training_data_house2.json --appliance fridge --input_length 432 --output_length 32 --epochs 200
+python train.py --data_source csv --csv_config configs/training_data_house2.json --appliance fridge --epochs 200
 ```
 
 ## Inference
