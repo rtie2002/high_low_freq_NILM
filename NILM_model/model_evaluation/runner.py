@@ -172,39 +172,6 @@ def _format_loss_table(train_detail: dict[str, Any], val_detail: dict[str, Any])
     return "\n".join(lines)
 
 
-def _write_live_dashboard(path: Path, title: str, image_paths: list[Path]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    images = "\n".join(
-        f'<section><h2>{image.stem}</h2><img src="{image.name}" alt="{image.stem}"></section>'
-        for image in image_paths
-    )
-    path.write_text(
-        f"""<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta http-equiv="refresh" content="5">
-  <title>{title}</title>
-  <style>
-    body {{ font-family: Arial, sans-serif; margin: 24px; background: #f7f7f7; color: #1f1f1f; }}
-    h1 {{ margin: 0 0 12px; font-size: 22px; }}
-    p {{ margin: 0 0 20px; color: #555; }}
-    section {{ margin: 0 0 24px; padding: 16px; background: #fff; border: 1px solid #ddd; }}
-    h2 {{ margin: 0 0 12px; font-size: 16px; }}
-    img {{ width: 100%; max-width: 1200px; display: block; border: 1px solid #ddd; }}
-  </style>
-</head>
-<body>
-  <h1>{title}</h1>
-  <p>This page refreshes every 5 seconds while training is running.</p>
-  {images}
-</body>
-</html>
-""",
-        encoding="utf-8",
-    )
-
-
 @torch.no_grad()
 def _save_live_waveform(
     *,
@@ -351,7 +318,6 @@ def train_nilm_model(
     live_history_path = run_dir / f"live_history_{appliance}.png"
     live_loss_detail_path = run_dir / f"live_loss_detail_{appliance}.png"
     live_waveform_path = run_dir / f"live_waveform_{appliance}.png"
-    live_dashboard_path = run_dir / f"live_dashboard_{appliance}.html"
 
     best_val = float("inf")
     best_epoch = -1
@@ -445,12 +411,7 @@ def train_nilm_model(
                 device=device,
                 split="validation",
             )
-            _write_live_dashboard(
-                live_dashboard_path,
-                f"{model_name} {appliance} Live Training Dashboard",
-                [live_history_path, live_loss_detail_path, live_waveform_path],
-            )
-            print(f"Live dashboard: {live_dashboard_path}")
+            print(f"Live PNGs: {live_history_path}, {live_loss_detail_path}, {live_waveform_path}")
 
             if val_loss < best_val:
                 best_val = val_loss

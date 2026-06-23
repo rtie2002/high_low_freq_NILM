@@ -26,7 +26,7 @@ def plot_training_history(
     loss_cols: Iterable[str] = ("train_loss", "val_loss"),
     metric_cols: Iterable[str] = ("val_mae", "val_sae", "val_f1"),
     title: str = "Training History",
-    dpi: int = 180,
+    dpi: int = 300,
 ) -> Path:
     """Plot train/validation loss and validation metrics from a history CSV/DataFrame."""
     if not isinstance(history, pd.DataFrame):
@@ -104,7 +104,7 @@ def plot_loss_details(
     *,
     epoch_col: str = "epoch",
     title: str = "Detailed Loss Curves",
-    dpi: int = 180,
+    dpi: int = 300,
 ) -> Path:
     """Plot overall and per-appliance train/validation loss components."""
     if not isinstance(loss_detail, pd.DataFrame):
@@ -227,9 +227,10 @@ def plot_prediction_waveforms(
     start: int = 0,
     samples: int = 2000,
     focus_on_activity: bool = True,
+    focus_on_periods: int = 5,
     aggregate_background: bool = True,
     title: str = "NILM Prediction Waveforms",
-    dpi: int = 180,
+    dpi: int = 300,
 ) -> Path:
     """Plot aggregate power plus true/predicted appliance waveforms."""
     if focus_on_activity:
@@ -242,7 +243,25 @@ def plot_prediction_waveforms(
             activity = frame[on_cols].fillna(0).to_numpy(dtype=float).sum(axis=1)
             active_indices = np.flatnonzero(activity > 0.5)
             if len(active_indices):
-                center = int(active_indices[len(active_indices) // 2])
+                groups = np.split(active_indices, np.where(np.diff(active_indices) != 1)[0] + 1)
+                groups = [group for group in groups if len(group)]
+                if groups and focus_on_periods > 1:
+                    group_count = min(focus_on_periods, len(groups))
+                    best_start = 0
+                    best_span = None
+                    for idx in range(0, len(groups) - group_count + 1):
+                        span = int(groups[idx + group_count - 1][-1] - groups[idx][0])
+                        if best_span is None or span < best_span:
+                            best_span = span
+                            best_start = idx
+                    selected = groups[best_start : best_start + group_count]
+                    focus_start = int(selected[0][0])
+                    focus_end = int(selected[-1][-1])
+                    focus_span = max(1, focus_end - focus_start + 1)
+                    samples = max(samples, int(focus_span * 1.25))
+                    center = (focus_start + focus_end) // 2
+                else:
+                    center = int(active_indices[len(active_indices) // 2])
                 start = max(0, center - samples // 2)
 
     end = min(start + samples, len(frame))
@@ -260,7 +279,8 @@ def plot_prediction_waveforms(
     has_aggregate = bool(aggregate_col and aggregate_col in frame)
     show_aggregate_row = has_aggregate and not aggregate_background
     n_rows = int(show_aggregate_row) + len(true_pred_pairs)
-    fig, axes = plt.subplots(n_rows, 1, figsize=(15, max(7, 3.1 * n_rows)), sharex=True)
+    figure_size = 8 if n_rows <= 2 else 10
+    fig, axes = plt.subplots(n_rows, 1, figsize=(figure_size, figure_size), sharex=True)
     if n_rows == 1:
         axes = [axes]
 
