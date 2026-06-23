@@ -67,6 +67,16 @@ def default_csv_config_path() -> Path:
     return Path(__file__).resolve().parents[1] / "configs" / "training_data_house2.json"
 
 
+def default_model_config_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "configs" / "sgn_paper.json"
+
+
+def load_model_config(path: str | Path) -> dict:
+    path = Path(path)
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
 def aggregate_std_scale(data_dir: str | Path) -> float:
     """SGN paper normalization: divide by std of aggregate training power."""
     path = Path(data_dir) / "train_small.pkl"

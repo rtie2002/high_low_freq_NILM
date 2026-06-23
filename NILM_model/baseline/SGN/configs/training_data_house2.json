@@ -1,5 +1,5 @@
 {
-  "csv_file": "../../../training_data/multi_appliance_house2_wk24_to_wk31_merged.csv",
+  "csv_file": "../../../data/multi_appliance_house2_wk24_to_wk31_merged.csv",
   "time_column": "readable_time",
   "aggregate_column": "aggregate",
   "feature_columns": [

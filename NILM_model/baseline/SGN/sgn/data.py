@@ -40,6 +40,7 @@ class REDDSGNWindowDataset(Dataset):
             frames = pickle.load(handle)
 
         self.sequences: list[np.ndarray] = []
+        self.times: list[np.ndarray] = []
         self.index: list[tuple[int, int]] = []
         for seq_id, frame in enumerate(frames):
             values = np.asarray(frame.values, dtype=np.float32)
@@ -50,6 +51,7 @@ class REDDSGNWindowDataset(Dataset):
             if len(values) < config.input_length:
                 continue
             self.sequences.append(values)
+            self.times.append(np.asarray(frame.index.astype(str)))
             for start in range(0, len(values) - config.input_length + 1, stride):
                 self.index.append((seq_id, start))
 
@@ -70,6 +72,7 @@ class REDDSGNWindowDataset(Dataset):
         out_end = out_start + cfg.output_length
 
         main = values[in_start:in_end, 0]
+        aggregate_watts = values[out_start:out_end, 0]
         appliance_watts = values[out_start:out_end, self.appliance_index + 1]
         appliance_scaled = appliance_watts / cfg.scale
         on_label = (appliance_watts > cfg.on_threshold_watts).astype(np.float32)
@@ -79,6 +82,7 @@ class REDDSGNWindowDataset(Dataset):
             "y": torch.from_numpy(appliance_scaled.astype(np.float32)),
             "y_watts": torch.from_numpy(appliance_watts.astype(np.float32)),
             "on": torch.from_numpy(on_label),
+            "aggregate_watts": torch.from_numpy(aggregate_watts.astype(np.float32)),
         }
 
 
@@ -110,7 +114,16 @@ class CSVSGNWindowDataset(Dataset):
         power_column = app_cfg["power"]
         on_column = app_cfg.get("on")
         feature_columns = list(csv_config["feature_columns"])
-        usecols = list(dict.fromkeys(feature_columns + [power_column] + ([on_column] if on_column else [])))
+        aggregate_column = csv_config.get("aggregate_column", "aggregate")
+        time_column = csv_config.get("time_column")
+        usecols = list(
+            dict.fromkeys(
+                feature_columns
+                + [aggregate_column, power_column]
+                + ([on_column] if on_column else [])
+                + ([time_column] if time_column else [])
+            )
+        )
 
         csv_path = Path(csv_config["csv_file"])
         if not csv_path.exists():
@@ -131,7 +144,9 @@ class CSVSGNWindowDataset(Dataset):
         if mean.shape[0] != len(feature_columns) or scale.shape[0] != len(feature_columns):
             raise ValueError("Feature normalization stats do not match feature_columns")
         self.features = (features - mean) / scale
+        self.aggregate = df[aggregate_column].to_numpy(dtype=np.float32)
         self.power = df[power_column].to_numpy(dtype=np.float32)
+        self.time = df[time_column].astype(str).to_numpy() if time_column and time_column in df else None
         if on_column and on_column in df:
             self.on = df[on_column].to_numpy(dtype=np.float32)
         else:
@@ -153,6 +168,7 @@ class CSVSGNWindowDataset(Dataset):
         out_end = out_start + cfg.output_length
 
         x = self.features[in_start:in_end].T
+        aggregate_watts = self.aggregate[out_start:out_end]
         appliance_watts = self.power[out_start:out_end]
         appliance_scaled = appliance_watts / cfg.scale
         on_label = self.on[out_start:out_end]
@@ -162,4 +178,5 @@ class CSVSGNWindowDataset(Dataset):
             "y": torch.from_numpy(appliance_scaled.astype(np.float32)),
             "y_watts": torch.from_numpy(appliance_watts.astype(np.float32)),
             "on": torch.from_numpy(on_label.astype(np.float32)),
+            "aggregate_watts": torch.from_numpy(aggregate_watts.astype(np.float32)),
         }

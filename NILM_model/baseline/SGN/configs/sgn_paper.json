@@ -1,0 +1,18 @@
+{
+  "preset": "sgn_paper",
+  "input_length": 864,
+  "output_length": 64,
+  "batch_size": 16,
+  "learning_rate": 0.0001,
+  "epochs": 200,
+  "patience": 30,
+  "num_workers": 0,
+  "hidden_fc": 1024,
+  "dropout": 0.0,
+  "train_stride": 1,
+  "eval_stride": 64,
+  "scale_mode": "aggregate_std",
+  "gate_mode": "soft",
+  "standby_power": false,
+  "seed": 1234
+}

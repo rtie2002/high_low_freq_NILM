@@ -13,12 +13,16 @@ baseline/SGN/
   train.py              # train one appliance or all appliances
   inference.py          # load a checkpoint and write predictions/metrics
   requirements.txt
+  ../model_evaluation/  # shared MAE/SAE/F1 metrics and plotting utilities
+    runner.py           # universal NILM train/evaluate/inference loop
+  configs/
+    sgn_paper.json      # SGN hyperparameters
+    training_data_house2.json
   sgn/
     config.py           # hyperparameters and appliance definitions
     data.py             # REDD pickle dataset/windowing
     model.py            # SGN model architecture
     losses.py           # SGN loss function: MSE(gated output) + BCE(on/off)
-    metrics.py          # MAE, SAE, F1
 ```
 
 ## Model
@@ -66,7 +70,14 @@ pip install -r requirements.txt
 
 ## Smoke Test
 
-Run from this folder:
+Recommended universal entry point:
+
+```powershell
+cd "D:\Raymond\high_low_freq_NILM\baseline"
+python main.py --model sgn --mode train --debug --appliance dishwasher
+```
+
+You can also run directly from this folder:
 
 ```powershell
 cd "D:\Raymond\high_low_freq_NILM\baseline\SGN"
@@ -89,13 +100,32 @@ SAE period    = 1200 REDD samples
 ```
 
 ```powershell
-python train.py --appliance all --epochs 200
+cd "D:\Raymond\high_low_freq_NILM\baseline"
+python main.py --model sgn --mode train --appliance all
 ```
 
 This is equivalent to:
 
 ```powershell
-python train.py --preset sgn_paper --appliance all --epochs 200
+python main.py --model sgn --mode train --model_config SGN/configs/sgn_paper.json --appliance all
+```
+
+The train/evaluate/inference loop is shared in:
+
+```text
+../model_evaluation/runner.py
+```
+
+SGN-specific code only builds the SGN config, dataset, model, loss, and optimizer. To change SGN hyperparameters, edit:
+
+```text
+configs/sgn_paper.json
+```
+
+Command-line values still override the JSON when provided:
+
+```powershell
+python main.py --model sgn --mode train --model_config SGN/configs/sgn_paper.json --appliance fridge --epochs 50 --batch_size 32
 ```
 
 ## SGN Variants From the Paper
@@ -144,7 +174,16 @@ Each appliance gets:
 best_<appliance>.pt
 metrics_<appliance>.json
 history_<appliance>.csv
+history_<appliance>.png
 ```
+
+Metrics and plots are produced by the shared package:
+
+```text
+../model_evaluation/
+```
+
+This keeps SGN, MATNILM, and future NILM models on the same MAE, SAE, F1, training-loss, and waveform plotting code.
 
 ## Train On Project `training_data` CSV
 
@@ -214,7 +253,27 @@ python train.py --data_source csv --csv_config configs/training_data_house2.json
 ## Inference
 
 ```powershell
-python inference.py --checkpoint runs/sgn_redd/best_dishwasher.pt --appliance dishwasher
+cd "D:\Raymond\high_low_freq_NILM\baseline"
+python main.py --model sgn --mode inference --checkpoint SGN/runs/sgn_redd/best_dishwasher.pt --appliance dishwasher
 ```
 
-This writes predictions and metrics to the selected output directory.
+For CSV-trained checkpoints:
+
+```powershell
+python main.py --model sgn --mode inference --data_source csv --csv_config SGN/configs/training_data_house2.json --checkpoint SGN/runs/sgn_redd/best_fridge.pt --appliance fridge
+```
+
+Train and then immediately run inference:
+
+```powershell
+python main.py --model sgn --mode train_inference --data_source csv --csv_config SGN/configs/training_data_house2.json --model_config SGN/configs/sgn_paper.json --appliance fridge
+```
+
+Inference writes these files to the selected output directory:
+
+```text
+<split>_<appliance>_predictions.npz
+<split>_<appliance>_predictions.csv
+<split>_<appliance>_metrics.json
+<split>_<appliance>_waveforms.png
+```
