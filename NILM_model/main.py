@@ -29,11 +29,6 @@ def _replace_or_add(args: list[str], name: str, value: str) -> list[str]:
     return args + [name, value]
 
 
-def _checkpoint_appliance(checkpoint: Path) -> str:
-    name = checkpoint.stem
-    return name.removeprefix("best_")
-
-
 def run_sgn(mode: str, model_args: list[str]) -> None:
     from models import sgn_pipeline
 
@@ -48,7 +43,6 @@ def run_sgn(mode: str, model_args: list[str]) -> None:
     checkpoints = sgn_pipeline.train_main(model_args)
     for checkpoint in checkpoints:
         inference_args = _replace_or_add(model_args, "--checkpoint", str(checkpoint))
-        inference_args = _replace_or_add(inference_args, "--appliance", _checkpoint_appliance(checkpoint))
         sgn_pipeline.inference_main(inference_args, allow_unknown=True)
 
 

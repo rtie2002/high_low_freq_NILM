@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .metrics import compute_nilm_metrics
-from .plots import plot_prediction_waveforms, plot_training_history
+from .plots import plot_loss_details, plot_prediction_waveforms, plot_training_history
 
 
 def seed_everything(seed: int) -> None:
@@ -151,17 +151,25 @@ def _loss_detail_row(epoch: int, prefix: str, detail: dict[str, Any]) -> dict[st
     return row
 
 
-def _format_loss_detail(prefix: str, detail: dict[str, Any]) -> str:
-    parts = [
-        f"{prefix}_loss={detail['loss']:.5f}",
-        f"{prefix}_reg={detail['output_loss']:.5f}",
-        f"{prefix}_cls={detail['on_loss']:.5f}",
+def _format_loss_table(train_detail: dict[str, Any], val_detail: dict[str, Any]) -> str:
+    lines = [
+        "loss breakdown:",
+        "  item             train_reg  train_cls  train_total    val_reg    val_cls  val_total",
+        "  overall          "
+        f"{train_detail['output_loss']:9.5f}  {train_detail['on_loss']:9.5f}  {train_detail['loss']:11.5f}  "
+        f"{val_detail['output_loss']:9.5f}  {val_detail['on_loss']:9.5f}  {val_detail['loss']:9.5f}",
     ]
-    for name, values in detail.get("per_appliance", {}).items():
-        parts.append(
-            f"{name}[reg={values['output_loss']:.5f},cls={values['on_loss']:.5f}]"
+    train_apps = train_detail.get("per_appliance", {})
+    val_apps = val_detail.get("per_appliance", {})
+    for name in train_apps:
+        train_values = train_apps[name]
+        val_values = val_apps.get(name, {"output_loss": float("nan"), "on_loss": float("nan"), "loss": float("nan")})
+        lines.append(
+            f"  {name:<15} "
+            f"{train_values['output_loss']:9.5f}  {train_values['on_loss']:9.5f}  {train_values['loss']:11.5f}  "
+            f"{val_values['output_loss']:9.5f}  {val_values['on_loss']:9.5f}  {val_values['loss']:9.5f}"
         )
-    return " ".join(parts)
+    return "\n".join(lines)
 
 
 @torch.no_grad()
@@ -316,8 +324,7 @@ def train_nilm_model(
                 f"val_mae={val_metrics['mae']:.3f} val_sae={val_metrics['sae']:.3f} "
                 f"val_f1={val_metrics['f1']:.3f}"
             )
-            print(_format_loss_detail("train", train_loss_detail))
-            print(_format_loss_detail("val", val_loss_detail))
+            print(_format_loss_table(train_loss_detail, val_loss_detail))
 
             if val_loss < best_val:
                 best_val = val_loss
@@ -374,12 +381,19 @@ def train_nilm_model(
     metrics_path = run_dir / f"metrics_{appliance}.json"
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     history_plot_path = run_dir / f"history_{appliance}.png"
+    loss_detail_plot_path = run_dir / f"loss_detail_{appliance}.png"
     plot_training_history(history_path, history_plot_path, title=f"{model_name} {appliance} Training")
+    plot_loss_details(
+        loss_detail_path,
+        loss_detail_plot_path,
+        title=f"{model_name} {appliance} Detailed Loss",
+    )
 
     print(f"Saved checkpoint: {checkpoint_path}")
     print(f"Saved metrics: {metrics_path}")
     print(f"Saved training plot: {history_plot_path}")
     print(f"Saved detailed losses: {loss_detail_path}")
+    print(f"Saved detailed loss plot: {loss_detail_plot_path}")
     print(json.dumps(metrics, indent=2))
     return metrics
 
