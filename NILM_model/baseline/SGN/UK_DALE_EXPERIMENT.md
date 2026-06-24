@@ -118,9 +118,11 @@ $$
 e^* = \arg\min_e \; \mathcal{L}_{\mathrm{total}}^{\mathrm{val}}(e)
 $$
 
-Config: `"early_stop_metric": "total_loss"`.
+Config: `"early_stop_metric": "total_loss"` (default in `sgn_paper.json`).
 
-### Current UK-DALE setting (power only)
+### Optional regularized setting (power only)
+
+Used only in `sgn_ukdale_reg.json`:
 
 $$
 e^* = \arg\min_e \; \mathcal{L}_{\mathrm{out}}^{\mathrm{val}}(e)
@@ -202,17 +204,30 @@ CSV training uses these precomputed labels. REDD pickle path in this codebase ca
 
 ## 8. Paper vs this UK-DALE run
 
-| Component | SGN paper | This UK-DALE config |
-|-----------|-----------|---------------------|
-| $\mathcal{L}_{\mathrm{out}}$ | MSE on gated power | Same |
-| $\mathcal{L}_{\mathrm{on}}$ | BCE, hard labels | BCE + $\varepsilon=0.05$ smoothing |
-| Optimizer | Adam, $\eta=10^{-4}$ | Adam + $\lambda=10^{-4}$ weight decay |
-| Batch size | 16 | 16 |
-| $L_{\mathrm{in}} / L_{\mathrm{out}}$ | 432 / 32 @ 6 s | Same |
-| $S_{\mathrm{train}}$ | 1 (typical) | 32 |
-| Best checkpoint | total val loss (typical) | $\mathcal{L}_{\mathrm{out}}^{\mathrm{val}}$ only |
-| Train houses | 1, 3, 4, 5 (1 week) | 1, 5 (2 weeks) |
-| Test house | 2 | 2 |
+| Component | SGN paper | `sgn_paper.json` (default) | `sgn_ukdale_reg.json` (optional) |
+|-----------|-----------|----------------------------|----------------------------------|
+| $\mathcal{L}_{\mathrm{out}}$ | MSE on gated power | Same | Same |
+| $\mathcal{L}_{\mathrm{on}}$ | BCE, hard labels | Same | BCE + $\varepsilon=0.05$ smoothing |
+| Optimizer | Adam, $\eta=10^{-4}$ | Same | Adam + $\lambda=10^{-4}$ weight decay |
+| Batch size | 16 | 16 | 16 |
+| $L_{\mathrm{in}} / L_{\mathrm{out}}$ | 432 / 32 @ 6 s | Same | Same |
+| $S_{\mathrm{train}}$ | 1 | 1 | 32 |
+| Best checkpoint | total val loss | total val loss | $\mathcal{L}_{\mathrm{out}}^{\mathrm{val}}$ only |
+| Train houses | 1, 3, 4, 5 (1 week) | 1, 5 (2 weeks) | 1, 5 (2 weeks) |
+| Test house | 2 | 2 | 2 |
+
+**Use `sgn_paper.json` for the first UK-DALE run** (closest to the paper).  
+**Use `sgn_ukdale_reg.json` only if** train ON/OFF loss collapses to ~0 while val ON/OFF explodes.
+
+### Why the regularized run can look worse
+
+The experimental config (`sgn_ukdale_reg.json`) was added to fight classification overfitting, but it can hurt overall results:
+
+1. **`train_stride: 32`** — ~32× fewer training windows; rare ON events (microwave, kettle) are seen less often.
+2. **`early_stop_metric: output_loss`** — can pick a very early checkpoint (e.g. epoch 14) when power loss plateaus, even though F1 keeps improving later (epoch 40+).
+3. **Label smoothing + weight decay** — softer ON/OFF targets and smaller weights can reduce confident ON predictions → lower F1 on sparse appliances.
+
+Regression is not always broken: e.g. washingmachine test MAE ~11 W can be reasonable while F1 stays low because the ON/OFF branch under-trained or never fires on house 2.
 
 ---
 
@@ -220,7 +235,8 @@ CSV training uses these precomputed labels. REDD pickle path in this codebase ca
 
 | File | Role |
 |------|------|
-| `configs/sgn_paper.json` | $\eta$, $\lambda$, $\varepsilon$, strides, early-stop metric |
+| `configs/sgn_paper.json` | Paper-faithful hyperparameters (default for UK-DALE) |
+| `configs/sgn_ukdale_reg.json` | Optional regularized variant (stride 32, WD, label smoothing) |
 | `configs/training_data_ukdale_paper.json` | Train/test CSV paths, val split |
 | `sgn/losses.py` | $\mathcal{L}_{\mathrm{out}} + \mathcal{L}_{\mathrm{on}}$ |
 | `model_evaluation/runner.py` | Early stopping, waveform saves |

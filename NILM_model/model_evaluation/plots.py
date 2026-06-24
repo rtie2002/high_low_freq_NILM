@@ -46,6 +46,36 @@ def _plot_aggregate_background(ax, ax_aggregate, x, aggregate_values: np.ndarray
     ax_aggregate.tick_params(axis="y", labelcolor="#666666")
 
 
+# Metrics on a 0–1 scale (F1, precision, recall) get their own panel; power metrics stay together.
+_CLASSIFICATION_METRIC_SUFFIXES = ("_f1", "_precision", "_recall")
+
+
+def _split_metric_cols(metric_cols: Iterable[str]) -> tuple[list[str], list[str]]:
+    power_cols: list[str] = []
+    cls_cols: list[str] = []
+    for col in metric_cols:
+        if any(col.endswith(suffix) for suffix in _CLASSIFICATION_METRIC_SUFFIXES):
+            cls_cols.append(col)
+        else:
+            power_cols.append(col)
+    return power_cols, cls_cols
+
+
+def _plot_metric_panel(ax, x, history: pd.DataFrame, cols: list[str], *, ylabel: str, ylim_01: bool) -> None:
+    plotted: list[np.ndarray] = []
+    for col in cols:
+        y = history[col].to_numpy(dtype=float)
+        plotted.append(y)
+        ax.plot(x, y, marker="o", markersize=2.8, linewidth=1.6, label=col)
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.25)
+    ax.legend()
+    if ylim_01:
+        ax.set_ylim(0.0, 1.0)
+    else:
+        _set_dynamic_y_axis(ax, plotted)
+
+
 def plot_training_history(
     history: pd.DataFrame | str | Path,
     output_path: str | Path,
@@ -63,9 +93,11 @@ def plot_training_history(
     x = history[epoch_col] if epoch_col in history else np.arange(len(history))
     loss_cols = [col for col in loss_cols if col in history]
     metric_cols = [col for col in metric_cols if col in history]
-    n_rows = 1 + int(bool(metric_cols))
+    power_metric_cols, cls_metric_cols = _split_metric_cols(metric_cols)
+    n_rows = 1 + int(bool(power_metric_cols)) + int(bool(cls_metric_cols))
 
-    fig, axes = plt.subplots(n_rows, 1, figsize=(8, 8), sharex=True)
+    fig_height = 3.2 * n_rows
+    fig, axes = plt.subplots(n_rows, 1, figsize=(8, fig_height), sharex=True)
     if n_rows == 1:
         axes = [axes]
 
@@ -76,12 +108,12 @@ def plot_training_history(
     axes[0].grid(True, alpha=0.25)
     axes[0].legend()
 
-    if metric_cols:
-        for col in metric_cols:
-            axes[1].plot(x, history[col], marker="o", markersize=2.8, linewidth=1.6, label=col)
-        axes[1].set_ylabel("Metric")
-        axes[1].grid(True, alpha=0.25)
-        axes[1].legend()
+    row = 1
+    if power_metric_cols:
+        _plot_metric_panel(axes[row], x, history, power_metric_cols, ylabel="Power (W)", ylim_01=False)
+        row += 1
+    if cls_metric_cols:
+        _plot_metric_panel(axes[row], x, history, cls_metric_cols, ylabel="Score", ylim_01=True)
 
     axes[-1].set_xlabel("Epoch")
     if len(x):

@@ -506,6 +506,27 @@ def train_nilm_model(
     }
     metrics_path = run_dir / f"metrics_{appliance}.json"
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+
+    def _print_split_metrics(label: str, split_metrics: dict[str, Any]) -> None:
+        per_app = split_metrics.get("per_appliance", {})
+        if per_app:
+            for name, values in per_app.items():
+                print(
+                    f"  {label} {name}: mae={values['mae']:.3f} "
+                    f"sae={values['sae']:.3f} f1={values['f1']:.3f}"
+                )
+            return
+        print(
+            f"  {label}: mae={split_metrics['mae']:.3f} "
+            f"sae={split_metrics['sae']:.3f} f1={split_metrics['f1']:.3f}"
+        )
+
+    print(
+        f"\n== {appliance} best checkpoint "
+        f"(epoch {best_epoch}, early_stop={early_stop_metric}, score={best_val:.5f}) =="
+    )
+    _print_split_metrics("val", val_metrics)
+    _print_split_metrics("test", test_metrics)
     history_plot_path = run_dir / f"history_{appliance}.png"
     loss_detail_plot_path = run_dir / f"loss_detail_{appliance}.png"
     plot_training_history(history_path, history_plot_path, title=f"{model_name} {appliance} Training")
