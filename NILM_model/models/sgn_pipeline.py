@@ -25,6 +25,7 @@ from sgn.config import (
     default_csv_config_path,
     default_data_dir,
     default_model_config_path,
+    describe_csv_sources,
     load_csv_config,
     load_model_config,
 )
@@ -297,7 +298,7 @@ def train_one(
     run_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n== Training SGN for {appliance} on {device} ==")
     print(f"Data source: {args.data_source}")
-    print(f"Data: {csv_cfg['csv_file'] if csv_cfg else args.data_dir}")
+    print(f"Data: {describe_csv_sources(csv_cfg) if csv_cfg else args.data_dir}")
     print(f"Features: {cfg.feature_columns}")
     print(f"Target appliances: {cfg.target_appliances}")
     describe_experiment_mapping(

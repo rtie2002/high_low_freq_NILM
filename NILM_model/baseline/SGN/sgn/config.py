@@ -134,6 +134,15 @@ def csv_path_for_split(csv_cfg: dict, split: str) -> Path:
     return Path(csv_cfg["csv_file"])
 
 
+def describe_csv_sources(csv_cfg: dict) -> str:
+    if csv_cfg.get("split_mode") == "holdout":
+        return (
+            f"train={csv_cfg['train_csv_file']}, "
+            f"test={csv_cfg['test_csv_file']}"
+        )
+    return str(csv_cfg["csv_file"])
+
+
 def csv_split_bounds(
     n_rows: int,
     split_ratios: dict[str, float],
