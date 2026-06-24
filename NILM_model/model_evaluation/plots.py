@@ -315,6 +315,111 @@ def _fallback_event_centers(power: np.ndarray, *, n_periods: int, min_sep: int =
     return sorted(centers)
 
 
+def _find_on_event_centers(
+    frame: pd.DataFrame,
+    *,
+    on_col: str,
+    true_col: str,
+    n_periods: int,
+    min_on_duration: int = 20,
+    min_off_gap: int = 80,
+) -> list[int]:
+    """Return up to n_periods event centers spread across the series."""
+    on = frame[on_col].to_numpy(dtype=float).reshape(-1) >= 0.5
+    if not on.any():
+        return _fallback_event_centers(frame[true_col].to_numpy(dtype=float), n_periods=n_periods)
+
+    padded = np.concatenate([[0], on.astype(int), [0]])
+    starts = np.where(np.diff(padded) == 1)[0]
+    ends = np.where(np.diff(padded) == -1)[0]
+    centers: list[int] = []
+    for start, end in zip(starts, ends):
+        if end - start < min_on_duration:
+            continue
+        center = int((start + end - 1) // 2)
+        if centers and center - centers[-1] < min_off_gap:
+            continue
+        centers.append(center)
+
+    if not centers:
+        return _fallback_event_centers(frame[true_col].to_numpy(dtype=float), n_periods=n_periods)
+    if len(centers) <= n_periods:
+        return centers
+    pick = np.linspace(0, len(centers) - 1, n_periods, dtype=int)
+    return [centers[int(idx)] for idx in pick]
+
+
+def _plot_waveform_panel(
+    ax,
+    view: pd.DataFrame,
+    *,
+    appliance: str,
+    true_col: str,
+    pred_col: str,
+    aggregate_col: str | None,
+    time_col: str | None,
+    start: int,
+    end: int,
+    show_legend: bool,
+) -> None:
+    if time_col and time_col in view:
+        x = pd.to_datetime(view[time_col], errors="coerce")
+        if x.isna().all():
+            x = np.arange(start, end)
+    else:
+        x = np.arange(start, end)
+
+    true_values = view[true_col].to_numpy(dtype=float)
+    pred_values = view[pred_col].to_numpy(dtype=float)
+    has_aggregate = bool(aggregate_col and aggregate_col in view)
+    aggregate_values = view[aggregate_col].to_numpy(dtype=float) if has_aggregate else None
+    use_focus_scale = appliance in APPLIANCE_FOCUSED_YSCALE and aggregate_values is not None
+
+    if use_focus_scale:
+        ax_aggregate = ax.twinx()
+        _plot_aggregate_background(ax, ax_aggregate, x, aggregate_values)
+        ymin, ymax = _appliance_power_limits(true_values, pred_values)
+    else:
+        ymin_inputs = [np.nanmin(true_values), np.nanmin(pred_values), 0.0]
+        ymax_inputs = [np.nanmax(true_values), np.nanmax(pred_values), 1.0]
+        if aggregate_values is not None:
+            ymin_inputs.append(np.nanmin(aggregate_values))
+            ymax_inputs.append(np.nanmax(aggregate_values))
+        ymin = float(np.nanmin(ymin_inputs))
+        ymax = float(np.nanmax(ymax_inputs))
+        if np.isclose(ymin, ymax):
+            ymax = ymin + 1.0
+        if aggregate_values is not None:
+            ax.fill_between(x, 0, aggregate_values, color="#d9d9d9", alpha=0.16, label="aggregate")
+            ax.plot(x, aggregate_values, color="#8a8a8a", linewidth=0.9, alpha=0.65)
+
+    pred_on_col = f"pred_{appliance}_on_prob"
+    if pred_on_col in view:
+        pred_on_values = view[pred_on_col].to_numpy(dtype=float) >= 0.5
+        active = np.flatnonzero(pred_on_values)
+        if len(active):
+            local_groups = np.split(active, np.where(np.diff(active) != 1)[0] + 1)
+            for local_group in local_groups:
+                x0 = x.iloc[local_group[0]] if isinstance(x, pd.Series) else x[local_group[0]]
+                x1 = x.iloc[local_group[-1]] if isinstance(x, pd.Series) else x[local_group[-1]]
+                ax.axvspan(x0, x1, color="#7ad66d", alpha=0.18, linewidth=0)
+
+    ax.plot(x, true_values, color="#1f77b4", linewidth=1.5, label=f"{appliance} true")
+    ax.plot(x, pred_values, color="#d62728", linewidth=1.25, alpha=0.9, label=f"{appliance} pred")
+    ax.set_ylabel("Power W")
+    ax.grid(True, alpha=0.25)
+    if use_focus_scale:
+        ax.set_ylim(ymin, ymax)
+    else:
+        ax.set_ylim(ymin - 0.05 * (ymax - ymin), ymax + 0.12 * (ymax - ymin))
+    if show_legend:
+        handles, labels = ax.get_legend_handles_labels()
+        handles.append(Patch(facecolor="#7ad66d", alpha=0.18, label="predicted ON"))
+        if use_focus_scale:
+            handles.extend(ax_aggregate.get_legend_handles_labels()[0][:1])
+        ax.legend(handles=handles, loc="upper right", fontsize=8)
+
+
 def _plot_single_appliance_event_panels(
     frame: pd.DataFrame,
     output_path: str | Path,
@@ -330,87 +435,48 @@ def _plot_single_appliance_event_panels(
     title: str,
     dpi: int,
 ) -> Path:
-    groups = _pick_spread_event_groups(groups, n_periods)
-    if not groups:
-        centers = _fallback_event_centers(frame[true_col].to_numpy(dtype=float), n_periods=n_periods)
-        groups = [np.array([center], dtype=int) for center in centers]
-    if not groups:
+    on_col = f"{appliance}_on"
+    centers = _find_on_event_centers(
+        frame,
+        on_col=on_col,
+        true_col=true_col,
+        n_periods=n_periods,
+    )
+    if not centers:
         raise ValueError(f"No ON events found to plot for {appliance}")
 
-    n_rows = len(groups)
-    fig, axes = plt.subplots(n_rows, 1, figsize=(10, 2.2 * n_rows), sharex=False)
-    if n_rows == 1:
-        axes = [axes]
+    n_cols = min(3, n_periods)
+    n_rows = int(np.ceil(len(centers) / n_cols))
+    panel_size = 8
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(panel_size * n_cols, panel_size * n_rows), sharex=False)
+    axes_list = np.array(axes).reshape(-1).tolist() if n_rows * n_cols > 1 else [axes]
 
-    has_aggregate = bool(aggregate_col and aggregate_col in frame)
     half = panel_samples // 2
-    for row, group in enumerate(groups):
-        ax = axes[row]
-        center = int((group[0] + group[-1]) // 2)
+    for row, center in enumerate(centers):
+        ax = axes_list[row]
         start = max(0, center - half)
         end = min(len(frame), start + panel_samples)
         start = max(0, end - panel_samples)
         view = frame.iloc[start:end]
+        _plot_waveform_panel(
+            ax,
+            view,
+            appliance=appliance,
+            true_col=true_col,
+            pred_col=pred_col,
+            aggregate_col=aggregate_col,
+            time_col=time_col,
+            start=start,
+            end=end,
+            show_legend=(row == 0),
+        )
+        ax.set_title(f"Example {row + 1}", fontsize=10)
+        ax.set_xlabel(time_col if time_col else "sample index")
 
-        if time_col and time_col in view:
-            x = pd.to_datetime(view[time_col], errors="coerce")
-            if x.isna().all():
-                x = np.arange(start, end)
-        else:
-            x = np.arange(start, end)
+    for ax in axes_list[len(centers):]:
+        ax.set_visible(False)
 
-        true_values = view[true_col].to_numpy(dtype=float)
-        pred_values = view[pred_col].to_numpy(dtype=float)
-        aggregate_values = view[aggregate_col].to_numpy(dtype=float) if has_aggregate else None
-        use_focus_scale = appliance in APPLIANCE_FOCUSED_YSCALE and aggregate_values is not None
-
-        if use_focus_scale:
-            ax_aggregate = ax.twinx()
-            _plot_aggregate_background(ax, ax_aggregate, x, aggregate_values)
-            ymin, ymax = _appliance_power_limits(true_values, pred_values)
-        else:
-            ymin_inputs = [np.nanmin(true_values), np.nanmin(pred_values), 0.0]
-            ymax_inputs = [np.nanmax(true_values), np.nanmax(pred_values), 1.0]
-            if aggregate_values is not None:
-                ymin_inputs.append(np.nanmin(aggregate_values))
-                ymax_inputs.append(np.nanmax(aggregate_values))
-            ymin = float(np.nanmin(ymin_inputs))
-            ymax = float(np.nanmax(ymax_inputs))
-            if np.isclose(ymin, ymax):
-                ymax = ymin + 1.0
-            if aggregate_values is not None:
-                ax.fill_between(x, 0, aggregate_values, color="#d9d9d9", alpha=0.16, label="aggregate")
-                ax.plot(x, aggregate_values, color="#8a8a8a", linewidth=0.9, alpha=0.65)
-
-        pred_on_col = f"pred_{appliance}_on_prob"
-        if pred_on_col in view:
-            pred_on_values = view[pred_on_col].to_numpy(dtype=float) >= 0.5
-            active = np.flatnonzero(pred_on_values)
-            if len(active):
-                local_groups = np.split(active, np.where(np.diff(active) != 1)[0] + 1)
-                for local_group in local_groups:
-                    x0 = x.iloc[local_group[0]] if isinstance(x, pd.Series) else x[local_group[0]]
-                    x1 = x.iloc[local_group[-1]] if isinstance(x, pd.Series) else x[local_group[-1]]
-                    ax.axvspan(x0, x1, color="#7ad66d", alpha=0.18, linewidth=0)
-
-        ax.plot(x, true_values, color="#1f77b4", linewidth=1.5, label=f"{appliance} true")
-        ax.plot(x, pred_values, color="#d62728", linewidth=1.25, alpha=0.9, label=f"{appliance} pred")
-        ax.set_ylabel("Power W")
-        ax.set_title(f"ON period {row + 1} of {n_rows}", fontsize=9)
-        ax.grid(True, alpha=0.25)
-        if use_focus_scale:
-            ax.set_ylim(ymin, ymax)
-        else:
-            ax.set_ylim(ymin - 0.05 * (ymax - ymin), ymax + 0.12 * (ymax - ymin))
-        if row == 0:
-            handles, labels = ax.get_legend_handles_labels()
-            handles.append(Patch(facecolor="#7ad66d", alpha=0.18, label="predicted ON"))
-            if use_focus_scale:
-                handles.extend(ax_aggregate.get_legend_handles_labels()[0][:1])
-            ax.legend(handles=handles, loc="upper right", fontsize=8)
-
-    axes[-1].set_xlabel(time_col if time_col else "sample index")
-    fig.suptitle(title, y=0.995)
+    fig.suptitle(title, y=0.98)
     fig.tight_layout()
     output_path = _ensure_parent(output_path)
     fig.savefig(output_path, dpi=dpi)
@@ -429,7 +495,7 @@ def plot_prediction_waveforms(
     samples: int = 2000,
     focus_on_activity: bool = True,
     focus_on_periods: int = 5,
-    focus_panel_samples: int = 480,
+    focus_panel_samples: int = 2000,
     aggregate_background: bool = True,
     title: str = "NILM Prediction Waveforms",
     dpi: int = 300,
@@ -451,7 +517,7 @@ def plot_prediction_waveforms(
                     time_col=time_col,
                     groups=groups,
                     n_periods=focus_on_periods,
-                    panel_samples=focus_panel_samples,
+                    panel_samples=max(focus_panel_samples, samples),
                     title=title,
                     dpi=dpi,
                 )

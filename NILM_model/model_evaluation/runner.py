@@ -200,7 +200,7 @@ def _save_live_waveform(
     split_label: str | None = None,
     plot_samples: int = 2000,
     focus_on_periods: int = 5,
-    focus_panel_samples: int = 480,
+    focus_panel_samples: int = 2000,
     epoch: int | None = None,
 ) -> None:
     cfg = _config_to_dict(config)
