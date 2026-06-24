@@ -158,10 +158,17 @@ class CSVSGNWindowDataset(Dataset):
         self.aggregate = df[aggregate_column].to_numpy(dtype=np.float32)
         self.power = df[power_columns].to_numpy(dtype=np.float32)
         self.time = df[time_column].astype(str).to_numpy() if time_column and time_column in df else None
-        if not all(col and col in df for col in on_columns):
-            missing = [col for col in on_columns if not col or col not in df]
-            raise ValueError(f"Missing provided on/off label column(s): {missing}")
-        self.on = df[on_columns].to_numpy(dtype=np.float32)
+        on_label_mode = str(csv_config.get("on_label_mode", "csv_column"))
+        on_threshold_watts = float(
+            csv_config.get("on_threshold_watts", config.on_threshold_watts)
+        )
+        if on_label_mode == "power_threshold":
+            self.on = (self.power >= on_threshold_watts).astype(np.float32)
+        else:
+            if not all(col and col in df for col in on_columns):
+                missing = [col for col in on_columns if not col or col not in df]
+                raise ValueError(f"Missing provided on/off label column(s): {missing}")
+            self.on = df[on_columns].to_numpy(dtype=np.float32)
 
         self.index = list(range(0, len(df) - config.input_length + 1, stride))
         if not self.index:

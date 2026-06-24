@@ -290,8 +290,13 @@ def describe_experiment_mapping(
         print(f"X scaling: X / train_aggregate_std")
         print(f"Y power column: {appliance_cfg['power']}")
         print(f"Y scaling: Y_watts / train_aggregate_std")
-        print(f"Y on/off column: {appliance_cfg['on']}")
-        print("Y on/off scaling: unchanged 0/1 label from CSV")
+        on_mode = csv_cfg.get("on_label_mode", "csv_column")
+        if on_mode == "power_threshold":
+            on_thr = csv_cfg.get("on_threshold_watts", cfg.on_threshold_watts)
+            print(f"Y on/off label: power >= {on_thr} W (SGN paper Eq. 4)")
+        else:
+            print(f"Y on/off column: {appliance_cfg['on']}")
+            print("Y on/off scaling: unchanged 0/1 label from CSV")
         print(f"Prediction inverse scaling: predicted_normalized_power * train_aggregate_std")
         print(f"train_aggregate_std: {cfg.scale:.6f}")
         return

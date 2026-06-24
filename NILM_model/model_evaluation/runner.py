@@ -504,10 +504,26 @@ def train_nilm_model(
                     split_label=f"{test_split_label} best",
                     epoch=best_epoch,
                 )
+                _, test_metrics_at_save = evaluate_nilm_model(
+                    model,
+                    test_loader,
+                    criterion,
+                    device=device,
+                    scale=scale,
+                    sae_period=sae_period,
+                    target_names=target_names,
+                )
                 print(
                     f"Updated best checkpoint epoch {best_epoch} "
                     f"({early_stop_metric}={best_val:.5f}): "
                     f"{best_waveform_path}, {best_test_waveform_path}"
+                )
+                print(
+                    f"  val  mae={val_metrics['mae']:.3f} sae={val_metrics['sae']:.3f} f1={val_metrics['f1']:.3f}"
+                )
+                print(
+                    f"  test mae={test_metrics_at_save['mae']:.3f} "
+                    f"sae={test_metrics_at_save['sae']:.3f} f1={test_metrics_at_save['f1']:.3f}"
                 )
             elif not can_save:
                 print(f"Skipping checkpoint until epoch {min_epochs} (current score {val_score:.5f}).")
