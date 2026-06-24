@@ -1,26 +1,18 @@
 \documentclass[conference]{IEEEtran}
 \IEEEoverridecommandlockouts
-% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
-%Template version as of 6/27/2024
 
 \usepackage{cite}
 \usepackage{amsmath,amssymb,amsfonts}
-\usepackage{algorithmic}
 \usepackage{graphicx}
-\usepackage{textcomp}
+\usepackage{booktabs}
 \usepackage{xcolor}
-\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
-    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
 \begin{document}
 
-\title{Hello\\
-{\footnotesize \textsuperscript{*}Note: Sub-titles are not captured for https://ieeexplore.ieee.org  and
-should not be used}
-\thanks{Identify applicable funding agency here. If none, delete this.}
-}
+\title{UK-DALE Evaluation of Subtask Gated Networks for Non-Intrusive Load Monitoring}
 
 \author{\IEEEauthorblockN{Raymond Tie Siou Hin}
-\IEEEauthorblockA{\textait{Department of Electrical and Robotics} \\
+\IEEEauthorblockA{\textit{Department of Electrical and Robotics} \\
 \textit{Centre for Net-Zero Technology} \\
 \textit{Monash University Malaysia} \\
 Bandar Sunway, Malaysia}
@@ -53,235 +45,267 @@ Kirkuk, Iraq}
 \maketitle
 
 \begin{abstract}
-This document is a model and instructions for \LaTeX.
-This and the IEEEtran.cls file define the components of your paper [title, text, heads, etc.]. *CRITICAL: Do Not Use Symbols, Special Characters, Footnotes, 
-or Math in Paper Title or Abstract.
+We reproduce the Subtask Gated Network (SGN) baseline~\cite{shin2019sgn} on the UK-DALE dataset using low-frequency (6\,s) aggregate and appliance power traces.
+Two evaluation scenarios are defined: a full-record cross-house generalization study and a paper-scale few-week baseline.
+Training uses houses~1 and~5; testing uses house~2 only.
+One SGN model is trained per appliance (kettle, fridge, microwave, dishwasher, washing machine).
+This document specifies data splits, preprocessing, model hyperparameters, loss functions, and checkpoint selection used in our implementation.
 \end{abstract}
 
 \begin{IEEEkeywords}
-component, formatting, style, styling, insert.
+non-intrusive load monitoring, UK-DALE, deep learning, subtask gating, energy disaggregation
 \end{IEEEkeywords}
 
 \section{Introduction}
-This document is a model and instructions for \LaTeX.
-Please observe the conference page limits. For more information about how to become an IEEE Conference author or how to write your paper, please visit   IEEE Conference Author Center website: https://conferences.ieeeauthorcenter.ieee.org/.
+Non-intrusive load monitoring (NILM) estimates individual appliance power from a single aggregate meter.
+Subtask Gated Networks (SGN)~\cite{shin2019sgn} address this with two coupled branches: a regression head for normalized appliance power and a classification head for ON/OFF state, combined via soft gating.
+We evaluate SGN on UK-DALE~\cite{kelly2015ukdale} as a reproducible baseline for multi-domain NILM research in this repository.
 
-\subsection{Maintaining the Integrity of the Specifications}
-
-The IEEEtran class file is used to format your paper and style the text. All margins, 
-column widths, line spaces, and text fonts are prescribed; please do not 
-alter them. You may note peculiarities. For example, the head margin
-measures proportionately more than is customary. This measurement 
-and others are deliberate, using specifications that anticipate your paper 
-as one part of the entire proceedings, and not as an independent document. 
-Please do not revise any of the current designations.
-
-\section{Prepare Your Paper Before Styling}
-Before you begin to format your paper, first write and save the content as a 
-separate text file. Complete all content and organizational editing before 
-formatting. Please note sections \ref{AA} to \ref{FAT} below for more information on 
-proofreading, spelling and grammar.
-
-Keep your text and graphic files separate until after the text has been 
-formatted and styled. Do not number text heads---{\LaTeX} will do that 
-for you.
-
-\subsection{Abbreviations and Acronyms}\label{AA}
-Define abbreviations and acronyms the first time they are used in the text, 
-even after they have been defined in the abstract. Abbreviations such as 
-IEEE, SI, MKS, CGS, ac, dc, and rms do not have to be defined. Do not use 
-abbreviations in the title or heads unless they are unavoidable.
-
-\subsection{Units}
-\begin{itemize}
-\item Use either SI (MKS) or CGS as primary units. (SI units are encouraged.) English units may be used as secondary units (in parentheses). An exception would be the use of English units as identifiers in trade, such as ``3.5-inch disk drive''.
-\item Avoid combining SI and CGS units, such as current in amperes and magnetic field in oersteds. This often leads to confusion because equations do not balance dimensionally. If you must use mixed units, clearly state the units for each quantity that you use in an equation.
-\item Do not mix complete spellings and abbreviations of units: ``Wb/m\textsuperscript{2}'' or ``webers per square meter'', not ``webers/m\textsuperscript{2}''. Spell out units when they appear in text: ``. . . a few henries'', not ``. . . a few H''.
-\item Use a zero before decimal points: ``0.25'', not ``.25''. Use ``cm\textsuperscript{3}'', not ``cc''.)
-\end{itemize}
-
-\subsection{Equations}
-Number equations consecutively. To make your 
-equations more compact, you may use the solidus (~/~), the exp function, or 
-appropriate exponents. Italicize Roman symbols for quantities and variables, 
-but not Greek symbols. Use a long dash rather than a hyphen for a minus 
-sign. Punctuate equations with commas or periods when they are part of a 
-sentence, as in:
-\begin{equation}
-a+b=\gamma\label{eq}
-\end{equation}
-
-Be sure that the 
-symbols in your equation have been defined before or immediately following 
-the equation. Use ``\eqref{eq}'', not ``Eq.~\eqref{eq}'' or ``equation \eqref{eq}'', except at 
-the beginning of a sentence: ``Equation \eqref{eq} is . . .''
-
-\subsection{\LaTeX-Specific Advice}
-
-Please use ``soft'' (e.g., \verb|\eqref{Eq}|) cross references instead
-of ``hard'' references (e.g., \verb|(1)|). That will make it possible
-to combine sections, add equations, or change the order of figures or
-citations without having to go through the file line by line.
-
-Please don't use the \verb|{eqnarray}| equation environment. Use
-\verb|{align}| or \verb|{IEEEeqnarray}| instead. The \verb|{eqnarray}|
-environment leaves unsightly spaces around relation symbols.
-
-Please note that the \verb|{subequations}| environment in {\LaTeX}
-will increment the main equation counter even when there are no
-equation numbers displayed. If you forget that, you might write an
-article in which the equation numbers skip from (17) to (20), causing
-the copy editors to wonder if you've discovered a new method of
-counting.
-
-{\BibTeX} does not work by magic. It doesn't get the bibliographic
-data from thin air but from .bib files. If you use {\BibTeX} to produce a
-bibliography you must send the .bib files. 
-
-{\LaTeX} can't read your mind. If you assign the same label to a
-subsubsection and a table, you might find that Table I has been cross
-referenced as Table IV-B3. 
-
-{\LaTeX} does not have precognitive abilities. If you put a
-\verb|\label| command before the command that updates the counter it's
-supposed to be using, the label will pick up the last counter to be
-cross referenced instead. In particular, a \verb|\label| command
-should not go before the caption of a figure or a table.
-
-Do not use \verb|\nonumber| inside the \verb|{array}| environment. It
-will not stop equation numbers inside \verb|{array}| (there won't be
-any anyway) and it might stop a wanted equation number in the
-surrounding equation.
-
-\subsection{Some Common Mistakes}\label{SCM}
-\begin{itemize}
-\item The word ``data'' is plural, not singular.
-\item The subscript for the permeability of vacuum $\mu_{0}$, and other common scientific constants, is zero with subscript formatting, not a lowercase letter ``o''.
-\item In American English, commas, semicolons, periods, question and exclamation marks are located within quotation marks only when a complete thought or name is cited, such as a title or full quotation. When quotation marks are used, instead of a bold or italic typeface, to highlight a word or phrase, punctuation should appear outside of the quotation marks. A parenthetical phrase or statement at the end of a sentence is punctuated outside of the closing parenthesis (like this). (A parenthetical sentence is punctuated within the parentheses.)
-\item A graph within a graph is an ``inset'', not an ``insert''. The word alternatively is preferred to the word ``alternately'' (unless you really mean something that alternates).
-\item Do not use the word ``essentially'' to mean ``approximately'' or ``effectively''.
-\item In your paper title, if the words ``that uses'' can accurately replace the word ``using'', capitalize the ``u''; if not, keep using lower-cased.
-\item Be aware of the different meanings of the homophones ``affect'' and ``effect'', ``complement'' and ``compliment'', ``discreet'' and ``discrete'', ``principal'' and ``principle''.
-\item Do not confuse ``imply'' and ``infer''.
-\item The prefix ``non'' is not a word; it should be joined to the word it modifies, usually without a hyphen.
-\item There is no period after the ``et'' in the Latin abbreviation ``et al.''.
-\item The abbreviation ``i.e.'' means ``that is'', and the abbreviation ``e.g.'' means ``for example''.
-\end{itemize}
-An excellent style manual for science writers is \cite{b7}.
-
-\subsection{Authors and Affiliations}\label{AAA}
-\textbf{The class file is designed for, but not limited to, six authors.} A 
-minimum of one author is required for all conference articles. Author names 
-should be listed starting from left to right and then moving down to the 
-next line. This is the author sequence that will be used in future citations 
-and by indexing services. Names should not be listed in columns nor group by 
-affiliation. Please keep your affiliations as succinct as possible (for 
-example, do not differentiate among departments of the same organization).
-
-\subsection{Identify the Headings}\label{ITH}
-Headings, or heads, are organizational devices that guide the reader through 
-your paper. There are two types: component heads and text heads.
-
-Component heads identify the different components of your paper and are not 
-topically subordinate to each other. Examples include Acknowledgments and 
-References and, for these, the correct style to use is ``Heading 5''. Use 
-``figure caption'' for your Figure captions, and ``table head'' for your 
-table title. Run-in heads, such as ``Abstract'', will require you to apply a 
-style (in this case, italic) in addition to the style provided by the drop 
-down menu to differentiate the head from the text.
-
-Text heads organize the topics on a relational, hierarchical basis. For 
-example, the paper title is the primary text head because all subsequent 
-material relates and elaborates on this one topic. If there are two or more 
-sub-topics, the next level head (uppercase Roman numerals) should be used 
-and, conversely, if there are not at least two sub-topics, then no subheads 
-should be introduced.
-
-\subsection{Figures and Tables}\label{FAT}
-\paragraph{Positioning Figures and Tables} Place figures and tables at the top and 
-bottom of columns. Avoid placing them in the middle of columns. Large 
-figures and tables may span across both columns. Figure captions should be 
-below the figures; table heads should appear above the tables. Insert 
-figures and tables after they are cited in the text. Use the abbreviation 
-``Fig.~\ref{fig}'', even at the beginning of a sentence.
+\section{Dataset and House Selection}
+UK-DALE provides whole-house and sub-metered power at 6\,s resolution.
+SGN targets five appliances: kettle, fridge, microwave, dishwasher, and washing machine.
 
 \begin{table}[htbp]
-\caption{Table Type Styles}
-\begin{center}
-\begin{tabular}{|c|c|c|c|}
-\hline
-\textbf{Table}&\multicolumn{3}{|c|}{\textbf{Table Column Head}} \\
-\cline{2-4} 
-\textbf{Head} & \textbf{\textit{Table column subhead}}& \textbf{\textit{Subhead}}& \textbf{\textit{Subhead}} \\
-\hline
-copy& More table copy$^{\mathrm{a}}$& &  \\
-\hline
-\multicolumn{4}{l}{$^{\mathrm{a}}$Sample of a Table footnote.}
+\caption{UK-DALE house availability for the five SGN appliances.}
+\label{tab:houses}
+\centering
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{House} & \textbf{All five appliances?} & \textbf{Role in our study} \\
+\midrule
+1 & Yes & Train \\
+2 & Yes & Test (holdout) \\
+3 & No (kettle only, $\sim$40 days) & Excluded \\
+4 & No (incomplete/shared meters) & Excluded \\
+5 & Yes & Train \\
+\bottomrule
 \end{tabular}
-\label{tab1}
-\end{center}
 \end{table}
 
-\begin{figure}[htbp]
-\centerline{\includegraphics{fig1.png}}
-\caption{Example of a figure caption.}
-\label{fig}
-\end{figure}
+Shin \textit{et al.}~\cite{shin2019sgn} train on houses $\{1,3,4,5\}$ and test on house~2 using the last week of each house.
+We use houses $\{1,5\}$ for training because houses~3 and~4 do not provide all five appliances with sufficient coverage.
+House~2 remains the unseen test house to preserve cross-house generalization.
 
-Figure Labels: Use 8 point Times New Roman for Figure labels. Use words 
-rather than symbols or abbreviations when writing Figure axis labels to 
-avoid confusing the reader. As an example, write the quantity 
-``Magnetization'', or ``Magnetization, M'', not just ``M''. If including 
-units in the label, present them within parentheses. Do not label axes only 
-with units. In the example, write ``Magnetization (A/m)'' or ``Magnetization 
-\{A[m(1)]\}'', not just ``A/m''. Do not label axes with a ratio of 
-quantities and units. For example, write ``Temperature (K)'', not 
-``Temperature/K''.
+\section{Experimental Scenarios}
+Two scenarios bracket data volume and compute cost.
+Both share the same train/test house assignment and one-model-per-appliance protocol.
+
+\begin{table}[htbp]
+\caption{UK-DALE SGN evaluation scenarios.}
+\label{tab:scenarios}
+\centering
+\small
+\begin{tabular}{@{}lp{1.8cm}p{1.8cm}p{1.6cm}@{}}
+\toprule
+\textbf{Scenario} & \textbf{Train data} & \textbf{Test data} & \textbf{Purpose} \\
+\midrule
+A --- Full & H1 + H5, full range & H2, full range & Maximum data; strongest generalization test \\
+B --- Few weeks & H1 + H5, last 14 days each & H2, last 7 days & Paper-scale duration; fast baseline \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Scenario A: Full-Range Cross-House Evaluation}
+Train on the complete available low-frequency records from houses~1 and~5.
+Test on the complete house~2 record.
+This scenario maximizes training data but increases preprocessing time and memory (house~1 alone is $\sim$21.6\,M samples at 6\,s).
+
+\subsection{Scenario B: Few-Week Paper-Scale Baseline}
+Train on the last 14 calendar days from each of houses~1 and~5.
+Test on the last 7 calendar days from house~2.
+This aligns more closely with the one-week evaluation window in~\cite{shin2019sgn} while keeping a slightly longer training window for houses~1 and~5.
+
+\subsection{Optional Sanity Check}
+A same-house temporal split on house~5 (e.g., first 85\% train, last 15\% validation) can be used to verify that the pipeline learns before interpreting cross-house test results on house~2.
+
+\section{Data Preprocessing}
+Low-frequency CSV files are produced by \texttt{ukdale\_processing\_multi\_appliance.py} from raw UK-DALE HDF5.
+Each row contains aggregate power, per-appliance power, per-appliance ON labels, house ID, and a readable timestamp.
+Sampling interval is 6\,s.
+
+\subsection{Export Commands}
+\textbf{Scenario A} (one CSV per house):
+\begin{verbatim}
+python ukdale_processing_multi_appliance.py \
+  --split_houses 1,2,5 --full_range \
+  --output_dir "../NILM_model/data"
+\end{verbatim}
+
+\textbf{Scenario B} (per-house truncated exports, then merge train houses):
+\begin{verbatim}
+# House 1 and 5: last 14 days; House 2: last 7 days
+python ukdale_processing_multi_appliance.py \
+  --house 1 --last_days 14 ...
+\end{verbatim}
+
+Training CSVs concatenate houses~1 and~5; test CSVs contain house~2 only.
+
+\subsection{ON/OFF Labels}
+Labels are precomputed offline using appliance-specific power thresholds (Algorithm~1 style) from \texttt{config/preprocess/ukdale.yaml}:
+\begin{equation}
+o_t =
+\begin{cases}
+1, & P_t \geq \tau_{\mathrm{appliance}} \\
+0, & \text{otherwise}
+\end{cases}
+\label{eq:onoff}
+\end{equation}
+Table~\ref{tab:thresholds} lists default thresholds.
+The original SGN paper uses a fixed 15\,W rule on Kelly's NeuralNILM export~\cite{kelly2015neuralnilm}; our CSV pipeline uses the YAML thresholds instead.
+
+\begin{table}[htbp]
+\caption{Default ON/OFF power thresholds (watts).}
+\label{tab:thresholds}
+\centering
+\begin{tabular}{@{}lc@{}}
+\toprule
+\textbf{Appliance} & $\tau$ (W) \\
+\midrule
+Fridge & 50 \\
+Washing machine & 20 (25 for house~5) \\
+Kettle & 200 \\
+Microwave & 200 \\
+Dishwasher & 50 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Train, Validation, and Test Splits}
+Holdout evaluation keeps all of house~2 for test.
+Training windows are drawn from the concatenation of houses~1 and~5.
+
+\subsection{Recommended Validation: Temporal Split}
+Validation uses the last 15\% of the \emph{combined} train timeline (\texttt{val\_mode: temporal}, 85/15 split).
+This avoids selecting checkpoints on house~5 tail data that may not reflect house~2 test behavior.
+
+\begin{equation}
+\mathcal{D}_{\mathrm{train}} \cup \mathcal{D}_{\mathrm{val}} = \mathcal{D}_{\mathrm{house\,1}} \cup \mathcal{D}_{\mathrm{house\,5}}, \quad
+|\mathcal{D}_{\mathrm{val}}| = 0.15\,|\mathcal{D}_{\mathrm{train}} \cup \mathcal{D}_{\mathrm{val}}|
+\end{equation}
+\begin{equation}
+\mathcal{D}_{\mathrm{test}} = \mathcal{D}_{\mathrm{house\,2}}
+\end{equation}
+
+\subsection{Alternative Validation: House-Tail Split}
+An alternative (\texttt{val\_mode: by\_house\_tail}) holds out the last 7 days of house~5 only:
+\begin{equation}
+\mathcal{D}_{\mathrm{val}} = \{ x \in \mathcal{D}_{\mathrm{house\,5}} : t(x) \geq t_{\max}^{(5)} - 7\,\mathrm{days} \}
+\end{equation}
+This matches an earlier configuration but can mismatch the house~2 test distribution.
+
+\section{SGN Model and Training Objective}
+We follow the SGN architecture in~\cite{shin2019sgn}: six convolutional layers, a 1024-unit fully connected layer, dual regression/classification branches, and soft gating.
+Input window length $L_{\mathrm{in}} = 432$ samples ($\sim$43\,min); output length $L_{\mathrm{out}} = 32$ samples ($\sim$3\,min).
+
+Aggregate power $x$ and appliance power $p$ are normalized by the training-set standard deviation $s$ of aggregate power: $x' = x/s$, $p' = p/s$.
+The regression branch outputs $\hat{p}$; the classification branch outputs ON probabilities $\hat{z} = \sigma(f_{\mathrm{cls}}(x'))$.
+Soft-gated prediction is $\hat{y}_{\mathrm{gated}} = \hat{p} \odot \hat{z}$.
+
+Per-window loss:
+\begin{equation}
+\mathcal{L} = \underbrace{\mathrm{MSE}(\hat{y}_{\mathrm{gated}},\, p')}_{\mathcal{L}_{\mathrm{out}}}
++ \underbrace{\mathrm{BCE}(\hat{z},\, o)}_{\mathcal{L}_{\mathrm{on}}}
+\label{eq:loss}
+\end{equation}
+
+Optimization uses Adam with learning rate $\eta = 10^{-4}$, batch size 16, and no weight decay (paper-faithful setting).
+Early stopping uses patience 30 epochs with a minimum of 5 epochs before checkpoint saving.
+The best checkpoint is selected by minimum validation $\mathcal{L}_{\mathrm{out}}$ (\texttt{early\_stop\_metric: output\_loss}), because combined validation loss can favor early epochs when $\mathcal{L}_{\mathrm{on}}$ overfits.
+
+\section{Sliding Windows and Hyperparameters}
+Table~\ref{tab:hparams} summarizes key hyperparameters (\texttt{sgn\_paper.json}).
+Training and evaluation both use stride $S = 32$ on UK-DALE to limit window overlap; the original REDD experiments in~\cite{shin2019sgn} often use $S_{\mathrm{train}} = 1$.
+
+\begin{table}[htbp]
+\caption{SGN hyperparameters for UK-DALE (Scenario A and B).}
+\label{tab:hparams}
+\centering
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+$L_{\mathrm{in}} / L_{\mathrm{out}}$ & 432 / 32 @ 6\,s \\
+$S_{\mathrm{train}}$, $S_{\mathrm{eval}}$ & 32 / 32 \\
+Batch size & 16 \\
+Learning rate & $10^{-4}$ \\
+Optimizer & Adam \\
+Weight decay & 0 \\
+Gate mode & Soft \\
+Max epochs / patience & 200 / 30 \\
+Early-stop metric & Validation $\mathcal{L}_{\mathrm{out}}$ \\
+Models trained & One per appliance \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Training Procedure}
+For each appliance $a \in \{\text{kettle, fridge, microwave, dishwasher, washing machine}\}$:
+\begin{enumerate}
+\item Load train/val CSV (houses~1+5) and test CSV (house~2) for Scenario~A or~B.
+\item Train SGN with \texttt{--appliance} $a$ and \texttt{sgn\_paper.json}.
+\item Save \texttt{best\_}$a$\texttt{.pt} by validation $\mathcal{L}_{\mathrm{out}}$.
+\item Report test metrics on house~2: MAE (power), F1 (ON/OFF), and waveform plots.
+\end{enumerate}
+
+Example command (Scenario~B, temporal validation):
+\begin{verbatim}
+python main.py --model sgn --mode train_inference \
+  --data_source csv \
+  --csv_config baseline/SGN/configs/\
+    training_data_ukdale_temporal.json \
+  --model_config baseline/SGN/configs/sgn_paper.json \
+  --appliance dishwasher \
+  --run_dir runs/sgn_ukdale_dishwasher
+\end{verbatim}
+
+\section{Comparison with Shin \textit{et al.}}
+Table~\ref{tab:paperdiff} lists deliberate differences from~\cite{shin2019sgn}.
+Architecture and loss (Eq.~\eqref{eq:loss}) match the paper; data protocol differs due to UK-DALE house availability and our preprocessing pipeline.
+
+\begin{table}[htbp]
+\caption{Differences between Shin \textit{et al.}~\cite{shin2019sgn} and this UK-DALE study.}
+\label{tab:paperdiff}
+\centering
+\small
+\begin{tabular}{@{}p{2.2cm}p{2.3cm}p{2.3cm}@{}}
+\toprule
+\textbf{Component} & \textbf{SGN paper} & \textbf{This study} \\
+\midrule
+Train houses & 1, 3, 4, 5 & 1, 5 \\
+Test house & 2 & 2 \\
+Duration & Last 1 week & Scenario A: full; B: 14d train / 7d test \\
+ON/OFF labels & 15\,W rule & YAML thresholds (Table~\ref{tab:thresholds}) \\
+Train stride & 1 (REDD) & 32 \\
+Val split & Not specified & Temporal 85/15 (recommended) \\
+Checkpoint & Total val loss & Val $\mathcal{L}_{\mathrm{out}}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Expected Outcomes and Interpretation}
+Scenario~B provides a fast, paper-comparable baseline; Scenario~A tests whether additional training history improves house~2 generalization.
+Cross-house performance on microwave and kettle (sparse ON events) is typically harder than on fridge or dishwasher.
+If train classification loss collapses while validation or test F1 remains low, consider diagnosing label thresholds, stride-induced undersampling of ON windows, or domain shift between houses~1/5 and~2 rather than assuming corrupted CSV exports.
 
 \section*{Acknowledgment}
-
-The preferred spelling of the word ``acknowledgment'' in America is without 
-an ``e'' after the ``g''. Avoid the stilted expression ``one of us (R. B. 
-G.) thanks $\ldots$''. Instead, try ``R. B. G. thanks$\ldots$''. Put sponsor 
-acknowledgments in the unnumbered footnote on the first page.
-
-\section*{References}
-
-Please number citations consecutively within brackets \cite{b1}. The 
-sentence punctuation follows the bracket \cite{b2}. Refer simply to the reference 
-number, as in \cite{b3}---do not use ``Ref. \cite{b3}'' or ``reference \cite{b3}'' except at 
-the beginning of a sentence: ``Reference \cite{b3} was the first $\ldots$''
-
-Number footnotes separately in superscripts. Place the actual footnote at 
-the bottom of the column in which it was cited. Do not put footnotes in the 
-abstract or reference list. Use letters for table footnotes.
-
-Unless there are six authors or more give all authors' names; do not use 
-``et al.''. Papers that have not been published, even if they have been 
-submitted for publication, should be cited as ``unpublished'' \cite{b4}. Papers 
-that have been accepted for publication should be cited as ``in press'' \cite{b5}. 
-Capitalize only the first word in a paper title, except for proper nouns and 
-element symbols.
-
-For papers published in translation journals, please give the English 
-citation first, followed by the original foreign-language citation \cite{b6}.
+% Funding acknowledgments to be added.
 
 \begin{thebibliography}{00}
-\bibitem{b1} G. Eason, B. Noble, and I. N. Sneddon, ``On certain integrals of Lipschitz-Hankel type involving products of Bessel functions,'' Phil. Trans. Roy. Soc. London, vol. A247, pp. 529--551, April 1955.
-\bibitem{b2} J. Clerk Maxwell, A Treatise on Electricity and Magnetism, 3rd ed., vol. 2. Oxford: Clarendon, 1892, pp.68--73.
-\bibitem{b3} I. S. Jacobs and C. P. Bean, ``Fine particles, thin films and exchange anisotropy,'' in Magnetism, vol. III, G. T. Rado and H. Suhl, Eds. New York: Academic, 1963, pp. 271--350.
-\bibitem{b4} K. Elissa, ``Title of paper if known,'' unpublished.
-\bibitem{b5} R. Nicole, ``Title of paper with only first word capitalized,'' J. Name Stand. Abbrev., in press.
-\bibitem{b6} Y. Yorozu, M. Hirano, K. Oka, and Y. Tagawa, ``Electron spectroscopy studies on magneto-optical media and plastic substrate interface,'' IEEE Transl. J. Magn. Japan, vol. 2, pp. 740--741, August 1987 [Digests 9th Annual Conf. Magnetics Japan, p. 301, 1982].
-\bibitem{b7} M. Young, The Technical Writer's Handbook. Mill Valley, CA: University Science, 1989.
-\bibitem{b8} D. P. Kingma and M. Welling, ``Auto-encoding variational Bayes,'' 2013, arXiv:1312.6114. [Online]. Available: https://arxiv.org/abs/1312.6114
-\bibitem{b9} S. Liu, ``Wi-Fi Energy Detection Testbed (12MTC),'' 2023, gitHub repository. [Online]. Available: https://github.com/liustone99/Wi-Fi-Energy-Detection-Testbed-12MTC
-\bibitem{b10} ``Treatment episode data set: discharges (TEDS-D): concatenated, 2006 to 2009.'' U.S. Department of Health and Human Services, Substance Abuse and Mental Health Services Administration, Office of Applied Studies, August, 2013, DOI:10.3886/ICPSR30122.v2
-\bibitem{b11} K. Eves and J. Valasek, ``Adaptive control for singularly perturbed systems examples,'' Code Ocean, Aug. 2023. [Online]. Available: https://codeocean.com/capsule/4989235/tree
-\end{thebibliography}
+\bibitem{shin2019sgn}
+Y. Shin, M. R. Ryu, H. Kim, and J. Jang,
+``Subtask gated networks for non-intrusive load monitoring,''
+in \textit{Proc. AAAI Conf. Artif. Intell.}, 2019, pp. 1150--1157.
 
-\vspace{12pt}
-\color{red}
-IEEE conference templates contain guidance text for composing and formatting conference papers. Please ensure that all template text is removed from your conference paper prior to submission to the conference. Failure to remove the template text from your paper may result in your paper not being published.
+\bibitem{kelly2015ukdale}
+J. Kelly and W. Knottenbelt,
+``The UK-DALE dataset, domestic appliance-level electricity demand and whole-house demand from five UK homes,''
+\textit{Sci. Data}, vol.~2, Art.~150007, 2015.
+
+\bibitem{kelly2015neuralnilm}
+J. Kelly and W. Knottenbelt,
+``Neural NILM: Deep neural networks applied to energy disaggregation,''
+in \textit{Proc. 2nd ACM Int. Conf. Embedded Syst. Energy-Efficient Built Environments (BuildSys)}, 2015, pp. 55--64.
+\end{thebibliography}
 
 \end{document}

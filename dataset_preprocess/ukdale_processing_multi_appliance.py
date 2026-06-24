@@ -81,6 +81,21 @@ def get_arguments() -> argparse.Namespace:
         action="store_true",
         help="Fill missing appliance channels with zeros instead of failing.",
     )
+    parser.add_argument(
+        "--split_houses",
+        type=str,
+        default=None,
+        help=(
+            "Write one CSV per house instead of merging, e.g. 1,2,5. "
+            "Use with --full_range or --last_days for each house separately."
+        ),
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Output directory for --split_houses. Default: paths.save_path from config.",
+    )
     return parser.parse_args()
 
 
@@ -435,11 +450,44 @@ def default_output_path(config: dict, args: argparse.Namespace, houses: list[int
     return os.path.join(paths["save_path"], f"multi_appliance_house{house_label}_lf.csv")
 
 
+def print_on_summary(df: pd.DataFrame, appliances: list[str]) -> None:
+    print("\nON/OFF summary")
+    print("appliance        ON rows      ON percent")
+    for app in appliances:
+        on_rows = int(df[f"{app}_on"].sum())
+        on_pct = (on_rows / len(df) * 100.0) if len(df) else 0.0
+        print(f"{app:<15} {on_rows:>8,} {on_pct:>13.3f}%")
+
+
+def per_house_output_path(output_dir: str, house: int) -> str:
+    return os.path.join(output_dir, f"multi_appliance_house{house}_lf.csv")
+
+
 def main() -> None:
     start_time = time.time()
     args = get_arguments()
     with open(args.config, "r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle)
+
+    paths, _ = resolve_paths(config, args.config)
+    if args.split_houses:
+        houses = [int(item.strip()) for item in args.split_houses.split(",") if item.strip()]
+        output_dir = os.path.abspath(args.output_dir or paths["save_path"])
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"Writing one CSV per house to: {output_dir}")
+        for house in houses:
+            house_start = time.time()
+            df, appliances = build_one_house_lf(config, args, house)
+            output_path = per_house_output_path(output_dir, house)
+            df.to_csv(output_path, index=False)
+            print("[3/3] Saved low-frequency multi-appliance CSV")
+            print(f"output : {output_path}")
+            print(f"rows   : {len(df):,}")
+            print(f"columns: {list(df.columns)}")
+            print_on_summary(df, appliances)
+            print(f"house {house} done in {(time.time() - house_start) / 60.0:.2f} min.\n")
+        print(f"All houses done in {(time.time() - start_time) / 60.0:.2f} min.")
+        return
 
     df, appliances, houses = build_multi_appliance_lf(config, args)
     output_path = default_output_path(config, args, houses)
@@ -450,12 +498,7 @@ def main() -> None:
     print(f"output : {output_path}")
     print(f"rows   : {len(df):,}")
     print(f"columns: {list(df.columns)}")
-    print("\nON/OFF summary")
-    print("appliance        ON rows      ON percent")
-    for app in appliances:
-        on_rows = int(df[f"{app}_on"].sum())
-        on_pct = (on_rows / len(df) * 100.0) if len(df) else 0.0
-        print(f"{app:<15} {on_rows:>8,} {on_pct:>13.3f}%")
+    print_on_summary(df, appliances)
     print(f"\nDone in {(time.time() - start_time) / 60.0:.2f} min.")
 
 
