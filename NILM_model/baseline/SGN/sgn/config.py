@@ -54,13 +54,13 @@ class SGNConfig:
     hidden_fc: int = 1024
     dropout: float = 0.0
     train_stride: int = 1
-    eval_stride: int = 64
-    sae_period: int = 1200
+    eval_stride: int = 32
+    sae_period: int = 600
     seed: int = 1234
     gate_mode: str = "soft"
     standby_power: bool = False
     weight_decay: float = 0.0
-    early_stop_metric: str = "output_loss"
+    early_stop_metric: str = "total_loss"
     label_smoothing: float = 0.0
     min_epochs: int = 5
     val_split_label: str = "validation"
@@ -72,7 +72,7 @@ def default_data_dir() -> Path:
 
 
 def default_csv_config_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "configs" / "training_data_ukdale_paper.json"
+    return Path(__file__).resolve().parents[1] / "configs" / "training_data_ukdale_sgn_splits.json"
 
 
 def default_model_config_path() -> Path:
@@ -82,11 +82,13 @@ def default_model_config_path() -> Path:
 def describe_csv_split_label(csv_cfg: dict, split: str) -> str:
     """Human-readable split description for logs and waveform titles."""
     split_mode = csv_cfg.get("split_mode", "temporal")
+    val_mode = csv_cfg.get("val_mode")
     if split_mode == "holdout":
         if split == "test":
-            return "house 2 (test CSV)"
+            return "house 2 (testing CSV)"
         if split == "val":
-            val_mode = csv_cfg.get("val_mode")
+            if val_mode == "separate_files":
+                return "validating CSV (houses 1+5 temporal tail)"
             if val_mode == "by_house_tail":
                 houses = csv_cfg.get("val_house_ids", [5])
                 days = csv_cfg.get("val_last_days", 7)
@@ -96,7 +98,8 @@ def describe_csv_split_label(csv_cfg: dict, split: str) -> str:
                 houses = csv_cfg.get("val_house_ids", [5])
                 return f"house {','.join(str(h) for h in houses)} (val)"
         if split == "train":
-            val_mode = csv_cfg.get("val_mode")
+            if val_mode == "separate_files":
+                return "training CSV (houses 1+5 early timeline)"
             if val_mode == "by_house_tail":
                 return "houses 1+5 train portion (excl. val tail)"
             return "train CSV (holdout)"
@@ -149,6 +152,16 @@ def load_csv_config(path: str | Path) -> dict:
             )
         cfg["train_csv_file"] = _resolve_csv_path(cfg["train_csv_file"], path.parent)
         cfg["test_csv_file"] = _resolve_csv_path(cfg["test_csv_file"], path.parent)
+        if cfg.get("val_csv_file"):
+            cfg["val_csv_file"] = _resolve_csv_path(cfg["val_csv_file"], path.parent)
+        if cfg.get("val_mode") == "separate_files" and not cfg.get("val_csv_file"):
+            raise ValueError(
+                f"CSV config {path} with val_mode='separate_files' must define val_csv_file"
+            )
+        for key in ("train_csv_file", "val_csv_file", "test_csv_file"):
+            file_path = cfg.get(key)
+            if file_path and not Path(file_path).exists():
+                raise FileNotFoundError(f"CSV config {path} references missing file: {file_path}")
     else:
         if "csv_file" not in cfg:
             raise ValueError(f"CSV config {path} must define csv_file")
@@ -160,16 +173,21 @@ def csv_path_for_split(csv_cfg: dict, split: str) -> Path:
     if csv_cfg.get("split_mode") == "holdout":
         if split == "test":
             return Path(csv_cfg["test_csv_file"])
+        if split == "val" and csv_cfg.get("val_mode") == "separate_files":
+            return Path(csv_cfg["val_csv_file"])
         return Path(csv_cfg["train_csv_file"])
     return Path(csv_cfg["csv_file"])
 
 
 def describe_csv_sources(csv_cfg: dict) -> str:
     if csv_cfg.get("split_mode") == "holdout":
-        return (
-            f"train={csv_cfg['train_csv_file']}, "
-            f"test={csv_cfg['test_csv_file']}"
-        )
+        parts = [
+            f"train={csv_cfg['train_csv_file']}",
+            f"test={csv_cfg['test_csv_file']}",
+        ]
+        if csv_cfg.get("val_csv_file"):
+            parts.insert(1, f"val={csv_cfg['val_csv_file']}")
+        return ", ".join(parts)
     return str(csv_cfg["csv_file"])
 
 
@@ -202,6 +220,10 @@ def select_csv_split_df(df: pd.DataFrame, csv_cfg: dict, split: str) -> pd.DataF
         return df.copy()
 
     val_mode = csv_cfg.get("val_mode")
+    if split_mode == "holdout" and val_mode == "separate_files":
+        if split in {"train", "val", "test"}:
+            return df.copy()
+        raise ValueError(f"Unsupported split for separate_files mode: {split}")
     house_col = csv_cfg.get("house_column", "house")
     time_col = csv_cfg.get("time_column", "readable_time")
 
