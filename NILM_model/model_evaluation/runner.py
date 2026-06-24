@@ -199,6 +199,8 @@ def _save_live_waveform(
     split: str = "validation",
     split_label: str | None = None,
     plot_samples: int = 2000,
+    focus_on_periods: int = 5,
+    focus_panel_samples: int = 480,
     epoch: int | None = None,
 ) -> None:
     cfg = _config_to_dict(config)
@@ -249,6 +251,8 @@ def _save_live_waveform(
         aggregate_col="aggregate",
         true_pred_pairs=true_pred_pairs,
         samples=plot_samples,
+        focus_on_periods=focus_on_periods,
+        focus_panel_samples=focus_panel_samples,
         title=f"{model_name} {appliance} {display_split}{title_suffix} Waveform",
     )
 

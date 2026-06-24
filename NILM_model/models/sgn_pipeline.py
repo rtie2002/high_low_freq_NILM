@@ -278,6 +278,9 @@ def describe_experiment_mapping(
                     f"Val mode: by_house_tail (val houses {csv_cfg.get('val_house_ids', [5])}, "
                     f"last {csv_cfg.get('val_last_days', 7)} days)"
                 )
+            elif val_mode == "separate_files":
+                print(f"Val CSV: {csv_cfg['val_csv_file']}")
+                print("Val mode: separate_files (pre-built validating CSV)")
             else:
                 print(f"Val mode: temporal split on train CSV ({csv_cfg.get('split_ratios')})")
             print(f"Split mode: holdout (paper-style house split)")

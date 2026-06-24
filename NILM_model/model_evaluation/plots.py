@@ -277,6 +277,44 @@ def plot_loss_details(
     return output_path
 
 
+def _collect_on_event_groups(on: np.ndarray, *, min_duration: int = 20) -> list[np.ndarray]:
+    """Return contiguous index groups where the true ON label is active."""
+    mask = np.asarray(on).reshape(-1) >= 0.5
+    if not mask.any():
+        return []
+    padded = np.concatenate([[False], mask, [False]])
+    starts = np.flatnonzero(np.diff(padded.astype(int)) == 1)
+    ends = np.flatnonzero(np.diff(padded.astype(int)) == -1)
+    groups = [np.arange(start, end) for start, end in zip(starts, ends) if end - start >= min_duration]
+    return groups
+
+
+def _pick_spread_event_groups(groups: list[np.ndarray], n_periods: int) -> list[np.ndarray]:
+    if not groups or n_periods <= 0:
+        return []
+    if len(groups) <= n_periods:
+        return sorted(groups, key=lambda group: int(group[0]))
+    pick = np.linspace(0, len(groups) - 1, n_periods, dtype=int)
+    return [groups[int(idx)] for idx in pick]
+
+
+def _fallback_event_centers(power: np.ndarray, *, n_periods: int, min_sep: int = 120) -> list[int]:
+    """Pick high-power centers when ON labels are missing or too sparse."""
+    values = np.asarray(power, dtype=float).reshape(-1)
+    if not len(values):
+        return []
+    order = np.argsort(values)[::-1]
+    centers: list[int] = []
+    for idx in order:
+        if values[idx] <= 0:
+            break
+        if all(abs(int(idx) - center) >= min_sep for center in centers):
+            centers.append(int(idx))
+        if len(centers) >= n_periods:
+            break
+    return sorted(centers)
+
+
 def _plot_single_appliance_event_panels(
     frame: pd.DataFrame,
     output_path: str | Path,
@@ -288,24 +326,28 @@ def _plot_single_appliance_event_panels(
     time_col: str | None,
     groups: list[np.ndarray],
     n_periods: int,
+    panel_samples: int,
     title: str,
     dpi: int,
 ) -> Path:
-    groups = sorted(groups, key=len, reverse=True)[:n_periods]
-    groups = sorted(groups, key=lambda group: int(group[0]))
+    groups = _pick_spread_event_groups(groups, n_periods)
+    if not groups:
+        centers = _fallback_event_centers(frame[true_col].to_numpy(dtype=float), n_periods=n_periods)
+        groups = [np.array([center], dtype=int) for center in centers]
+    if not groups:
+        raise ValueError(f"No ON events found to plot for {appliance}")
+
     n_rows = len(groups)
-    fig, axes = plt.subplots(n_rows, 1, figsize=(10, 10), sharex=False)
+    fig, axes = plt.subplots(n_rows, 1, figsize=(10, 2.2 * n_rows), sharex=False)
     if n_rows == 1:
         axes = [axes]
 
     has_aggregate = bool(aggregate_col and aggregate_col in frame)
+    half = panel_samples // 2
     for row, group in enumerate(groups):
         ax = axes[row]
-        span = int(group[-1] - group[0] + 1)
-        margin = max(40, min(240, span))
-        panel_samples = max(160, span + 2 * margin)
         center = int((group[0] + group[-1]) // 2)
-        start = max(0, center - panel_samples // 2)
+        start = max(0, center - half)
         end = min(len(frame), start + panel_samples)
         start = max(0, end - panel_samples)
         view = frame.iloc[start:end]
@@ -347,12 +389,14 @@ def _plot_single_appliance_event_panels(
             if len(active):
                 local_groups = np.split(active, np.where(np.diff(active) != 1)[0] + 1)
                 for local_group in local_groups:
-                    ax.axvspan(x[local_group[0]], x[local_group[-1]], color="#7ad66d", alpha=0.18, linewidth=0)
+                    x0 = x.iloc[local_group[0]] if isinstance(x, pd.Series) else x[local_group[0]]
+                    x1 = x.iloc[local_group[-1]] if isinstance(x, pd.Series) else x[local_group[-1]]
+                    ax.axvspan(x0, x1, color="#7ad66d", alpha=0.18, linewidth=0)
 
         ax.plot(x, true_values, color="#1f77b4", linewidth=1.5, label=f"{appliance} true")
         ax.plot(x, pred_values, color="#d62728", linewidth=1.25, alpha=0.9, label=f"{appliance} pred")
         ax.set_ylabel("Power W")
-        ax.set_title(f"ON period {row + 1}", fontsize=9)
+        ax.set_title(f"ON period {row + 1} of {n_rows}", fontsize=9)
         ax.grid(True, alpha=0.25)
         if use_focus_scale:
             ax.set_ylim(ymin, ymax)
@@ -385,11 +429,33 @@ def plot_prediction_waveforms(
     samples: int = 2000,
     focus_on_activity: bool = True,
     focus_on_periods: int = 5,
+    focus_panel_samples: int = 480,
     aggregate_background: bool = True,
     title: str = "NILM Prediction Waveforms",
     dpi: int = 300,
 ) -> Path:
     """Plot aggregate power plus true/predicted appliance waveforms."""
+    if focus_on_activity and len(true_pred_pairs) == 1:
+        appliance, (true_col, pred_col) = next(iter(true_pred_pairs.items()))
+        on_col = f"{appliance}_on"
+        if on_col in frame:
+            groups = _collect_on_event_groups(frame[on_col].to_numpy(dtype=float), min_duration=20)
+            if groups or focus_on_periods > 0:
+                return _plot_single_appliance_event_panels(
+                    frame,
+                    output_path,
+                    appliance=appliance,
+                    true_col=true_col,
+                    pred_col=pred_col,
+                    aggregate_col=aggregate_col,
+                    time_col=time_col,
+                    groups=groups,
+                    n_periods=focus_on_periods,
+                    panel_samples=focus_panel_samples,
+                    title=title,
+                    dpi=dpi,
+                )
+
     if focus_on_activity:
         on_cols = [
             f"{appliance}_on"
@@ -402,21 +468,6 @@ def plot_prediction_waveforms(
             if len(active_indices):
                 groups = np.split(active_indices, np.where(np.diff(active_indices) != 1)[0] + 1)
                 groups = [group for group in groups if len(group)]
-                if len(true_pred_pairs) == 1 and groups and focus_on_periods > 1:
-                    appliance, (true_col, pred_col) = next(iter(true_pred_pairs.items()))
-                    return _plot_single_appliance_event_panels(
-                        frame,
-                        output_path,
-                        appliance=appliance,
-                        true_col=true_col,
-                        pred_col=pred_col,
-                        aggregate_col=aggregate_col,
-                        time_col=time_col,
-                        groups=groups,
-                        n_periods=min(focus_on_periods, len(groups)),
-                        title=title,
-                        dpi=dpi,
-                    )
                 if groups and focus_on_periods > 1:
                     group_count = min(focus_on_periods, len(groups))
                     best_start = 0
