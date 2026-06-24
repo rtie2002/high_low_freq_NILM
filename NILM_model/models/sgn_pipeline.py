@@ -26,6 +26,7 @@ from sgn.config import (
     default_data_dir,
     default_model_config_path,
     describe_csv_sources,
+    describe_csv_split_label,
     load_csv_config,
     load_model_config,
 )
@@ -120,6 +121,10 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
                 defaults["output_length"] = 32
             if args.eval_stride is None:
                 defaults["eval_stride"] = 32
+            if "sae_period" not in defaults:
+                defaults["sae_period"] = 3600 // sampling_seconds
+            defaults["val_split_label"] = describe_csv_split_label(csv_cfg, "val")
+            defaults["test_split_label"] = describe_csv_split_label(csv_cfg, "test")
 
     def choose(name: str, arg_name: str | None = None):
         value = getattr(args, arg_name or name)
@@ -139,8 +144,12 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
     gate_mode = str(choose("gate_mode"))
     standby_power = bool(defaults.get("standby_power", False) or args.standby_power)
     weight_decay = float(defaults.get("weight_decay", 0.0))
-    early_stop_metric = str(defaults.get("early_stop_metric", "total_loss"))
+    early_stop_metric = str(defaults.get("early_stop_metric", "output_loss"))
     label_smoothing = float(defaults.get("label_smoothing", 0.0))
+    min_epochs = int(defaults.get("min_epochs", 5))
+    sae_period = int(defaults.get("sae_period", 1200))
+    val_split_label = str(defaults.get("val_split_label", "validation"))
+    test_split_label = str(defaults.get("test_split_label", "test"))
     feature_columns = ["aggregate"]
     feature_mean: list[float] = []
     feature_scale: list[float] = []
@@ -190,6 +199,10 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
         weight_decay=weight_decay,
         early_stop_metric=early_stop_metric,
         label_smoothing=label_smoothing,
+        min_epochs=min_epochs,
+        sae_period=sae_period,
+        val_split_label=val_split_label,
+        test_split_label=test_split_label,
     )
 
 

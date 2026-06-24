@@ -60,8 +60,11 @@ class SGNConfig:
     gate_mode: str = "soft"
     standby_power: bool = False
     weight_decay: float = 0.0
-    early_stop_metric: str = "total_loss"
+    early_stop_metric: str = "output_loss"
     label_smoothing: float = 0.0
+    min_epochs: int = 5
+    val_split_label: str = "validation"
+    test_split_label: str = "test"
 
 
 def default_data_dir() -> Path:
@@ -74,6 +77,30 @@ def default_csv_config_path() -> Path:
 
 def default_model_config_path() -> Path:
     return Path(__file__).resolve().parents[1] / "configs" / "sgn_paper.json"
+
+
+def describe_csv_split_label(csv_cfg: dict, split: str) -> str:
+    """Human-readable split description for logs and waveform titles."""
+    split_mode = csv_cfg.get("split_mode", "temporal")
+    if split_mode == "holdout":
+        if split == "test":
+            return "house 2 (test CSV)"
+        if split == "val":
+            val_mode = csv_cfg.get("val_mode")
+            if val_mode == "by_house_tail":
+                houses = csv_cfg.get("val_house_ids", [5])
+                days = csv_cfg.get("val_last_days", 7)
+                house_text = ",".join(str(h) for h in houses)
+                return f"house {house_text} last {days:g} days (val)"
+            if val_mode == "by_house":
+                houses = csv_cfg.get("val_house_ids", [5])
+                return f"house {','.join(str(h) for h in houses)} (val)"
+        if split == "train":
+            val_mode = csv_cfg.get("val_mode")
+            if val_mode == "by_house_tail":
+                return "houses 1+5 train portion (excl. val tail)"
+            return "train CSV (holdout)"
+    return split
 
 
 def load_model_config(path: str | Path) -> dict:

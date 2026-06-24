@@ -118,7 +118,11 @@ $$
 e^* = \arg\min_e \; \mathcal{L}_{\mathrm{total}}^{\mathrm{val}}(e)
 $$
 
-Config: `"early_stop_metric": "total_loss"` (default in `sgn_paper.json`).
+Config: `"early_stop_metric": "total_loss"` (paper-style combined loss).
+
+**Default in this repo:** `"early_stop_metric": "output_loss"` with `"min_epochs": 5`.
+
+Classification val loss often rises while power loss improves; using `total_loss` can lock the checkpoint at epoch 1. `output_loss` picks the best **power** checkpoint. Checkpoints are not saved before `min_epochs`.
 
 ### Optional regularized setting (power only)
 
@@ -254,7 +258,8 @@ python main.py --model sgn --mode train --data_source csv `
 
 **Outputs per appliance** (under `run_dir`):
 
-- `best_{appliance}.pt` — best checkpoint
-- `live_waveform_{appliance}.png` — latest epoch (validation)
-- `best_waveform_{appliance}.png` — best val epoch
-- `best_waveform_{appliance}_test.png` — best model on house 2 test
+- `best_{appliance}.pt` — best checkpoint (by `early_stop_metric`, after `min_epochs`)
+- `live_waveform_{appliance}.png` — latest epoch, **validation** (house 5 last week)
+- `live_waveform_{appliance}_test.png` — latest epoch, **test** (house 2)
+- `best_waveform_{appliance}.png` — best checkpoint on validation
+- `best_waveform_{appliance}_test.png` — best checkpoint on test
