@@ -90,7 +90,7 @@ from hf_feature import compute_hf_features
 
 # Add dataset_preprocess to path so we can import ukdale helpers directly
 sys.path.insert(0, os.path.normpath(os.path.join(SCRIPT_DIR, "..")))
-from ukdale_processing import apply_algorithm1_labeling
+from ukdale_processing import apply_algorithm1_labeling, resolve_appliance_setting
 
 # --- Official UK-DALE Calibration Logic ---
 ADC_SCALE = 2**31
@@ -388,19 +388,25 @@ def load_lf_data(
         # Physical constraint
         df_align[app] = np.minimum(df_align[app], df_align["aggregate"])
 
-        # ON/OFF labelling
+        # ON/OFF labelling (house-specific overrides from ukdale.yaml)
         app_params = params_app[app]
         on_off = apply_algorithm1_labeling(
             df_align[app].values,
-            x_threshold=app_params.get("on_power_threshold", 50),
+            x_threshold=resolve_appliance_setting(
+                app_params, "on_power_threshold", house_id, 50
+            ),
             l_window=algo1_cfg.get("window_length", 0),
             x_noise=algo1_cfg.get("x_noise", 0),
             remove_spikes=algo1_cfg.get("remove_spikes", True),
             spike_window=algo1_cfg.get("spike_window", 5),
             spike_threshold=algo1_cfg.get("spike_threshold", 3.0),
             background_threshold=algo1_cfg.get("background_threshold", 50),
-            min_off_duration=app_params.get("min_off_duration", 1),
-            min_on_duration=app_params.get("min_on_duration", 1),
+            min_off_duration=resolve_appliance_setting(
+                app_params, "min_off_duration", house_id, 1
+            ),
+            min_on_duration=resolve_appliance_setting(
+                app_params, "min_on_duration", house_id, 1
+            ),
         )
         df_align["on_off"] = on_off
         df_align.rename(columns={app: f"{app}_power"}, inplace=True)

@@ -6,7 +6,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from .config import APPLIANCES, CSV_APPLIANCES, SGNConfig, csv_split_bounds
+from .config import APPLIANCES, CSV_APPLIANCES, SGNConfig, csv_path_for_split, select_csv_split_df
 
 
 def _as_appliance_list(appliance: str | list[str], choices) -> list[str]:
@@ -126,6 +126,7 @@ class CSVSGNWindowDataset(Dataset):
         feature_columns = list(csv_config["feature_columns"])
         aggregate_column = csv_config.get("aggregate_column", "aggregate")
         time_column = csv_config.get("time_column")
+        house_column = csv_config.get("house_column", "house")
         on_columns = [appliances[name].get("on") for name in target_appliances]
         target_columns = power_columns + [col for col in on_columns if col]
         usecols = list(
@@ -134,16 +135,16 @@ class CSVSGNWindowDataset(Dataset):
                 + [aggregate_column]
                 + target_columns
                 + ([time_column] if time_column else [])
+                + ([house_column] if csv_config.get("val_mode") else [])
             )
         )
 
-        csv_path = Path(csv_config["csv_file"])
+        csv_path = csv_path_for_split(csv_config, split)
         if not csv_path.exists():
-            raise FileNotFoundError(f"Missing CSV training file: {csv_path}")
+            raise FileNotFoundError(f"Missing CSV file for split={split}: {csv_path}")
 
         df = pd.read_csv(csv_path, usecols=usecols)
-        start, end = csv_split_bounds(len(df), csv_config["split_ratios"], split)
-        df = df.iloc[start:end].copy()
+        df = select_csv_split_df(df, csv_config, split)
         df = df.dropna(subset=usecols)
         if len(df) < config.input_length:
             raise ValueError(

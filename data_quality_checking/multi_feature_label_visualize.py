@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.patches import Rectangle
 from matplotlib.transforms import blended_transform_factory
-from matplotlib.widgets import Button, CheckButtons, Slider, TextBox
+from matplotlib.widgets import Button, CheckButtons, RadioButtons, Slider, TextBox
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -173,6 +173,298 @@ def default_feature_list(
     return features
 
 
+def interactive_multi_appliance_viewer(
+    file_path: str,
+    df: pd.DataFrame,
+    appliances: list[str],
+    features: list[str] | None = None,
+    scale: str = "none",
+    view_span: int = 1024,
+) -> None:
+    """Professional stacked view for aligned multi-appliance CSV files."""
+    total_points = len(df)
+    aggregate_col = "aggregate" if "aggregate" in df.columns else None
+    default_cols = ([aggregate_col] if aggregate_col else []) + [
+        f"{app}_power" for app in appliances if f"{app}_power" in df.columns
+    ]
+    selected = features or default_cols
+    selected = [col for col in selected if col in df.columns]
+    if aggregate_col and aggregate_col not in selected:
+        selected.insert(0, aggregate_col)
+
+    raw_data = {
+        col: clean_series(df[col])
+        for col in numeric_columns(df)
+        if col in df.columns
+    }
+    on_masks = {
+        app: pd.to_numeric(df[f"{app}_on"], errors="coerce").fillna(0).to_numpy()
+        for app in appliances
+        if f"{app}_on" in df.columns
+    }
+    segments_by_app = {app: on_segments(mask) for app, mask in on_masks.items()}
+
+    app_colors = dict(
+        zip(
+            appliances,
+            plt.rcParams["axes.prop_cycle"].by_key()["color"][: len(appliances)],
+        )
+    )
+    if len(app_colors) < len(appliances):
+        colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        app_colors = {app: colors[idx % len(colors)] for idx, app in enumerate(appliances)}
+
+    plot_apps = [app for app in appliances if f"{app}_power" in raw_data]
+    n_rows = 1 + len(plot_apps)
+    fig_height = min(12.0, max(8.5, 1.65 * n_rows))
+    fig, axes = plt.subplots(
+        n_rows,
+        1,
+        figsize=(15.5, fig_height),
+        sharex=True,
+        gridspec_kw={"height_ratios": [1.15] + [1.0] * len(plot_apps), "hspace": 0.10},
+    )
+    if not isinstance(axes, np.ndarray):
+        axes = np.asarray([axes])
+    plt.subplots_adjust(left=0.075, right=0.82, bottom=0.22, top=0.925)
+
+    title = fig.suptitle("", fontsize=12.5, fontweight="bold")
+    status = fig.text(0.5, 0.012, "", ha="center", va="bottom", fontsize=9.5, color="#146c2e")
+    axis_by_name = {"aggregate": axes[0]}
+    for idx, app in enumerate(plot_apps, start=1):
+        axis_by_name[app] = axes[idx]
+
+    state = {
+        "start": 0,
+        "span": min(max(100, view_span), total_points),
+        "scale": scale,
+        "show_on": True,
+        "visible": {"aggregate": aggregate_col is not None, **{app: True for app in plot_apps}},
+        "lines": [],
+        "patches": [],
+    }
+
+    def visible_slice() -> tuple[int, int, np.ndarray]:
+        start = int(state["start"])
+        end = min(start + int(state["span"]), total_points)
+        return start, end, np.arange(start, end)
+
+    def scaled(col: str, start: int, end: int) -> np.ndarray:
+        return scale_series(raw_data[col], state["scale"])[start:end]
+
+    def clear_artists() -> None:
+        for artist in state["lines"] + state["patches"]:
+            artist.remove()
+        state["lines"] = []
+        state["patches"] = []
+
+    def add_on_regions(ax, app: str, start: int, end: int) -> int:
+        if not state["show_on"] or not state["visible"].get(app, True):
+            return 0
+        visible = [(s, e, n) for s, e, n in segments_by_app.get(app, []) if e > start and s < end]
+        for seg_start, seg_end, _ in visible:
+            patch = ax.axvspan(
+                max(seg_start, start),
+                min(seg_end, end),
+                color=app_colors[app],
+                alpha=0.12,
+                linewidth=0,
+                zorder=0,
+            )
+            state["patches"].append(patch)
+        return len(visible)
+
+    def set_axis_style(ax, ylabel: str) -> None:
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.grid(True, axis="x", alpha=0.22)
+        ax.grid(True, axis="y", alpha=0.12)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    def fit_axes() -> None:
+        start, end, _ = visible_slice()
+        for key, ax in axis_by_name.items():
+            vals = []
+            if key == "aggregate" and aggregate_col and state["visible"].get("aggregate", True):
+                vals.append(scaled(aggregate_col, start, end))
+            elif key != "aggregate" and state["visible"].get(key, True):
+                vals.append(scaled(f"{key}_power", start, end))
+            if not vals:
+                ax.set_ylim(-1, 1)
+                continue
+            arr = np.concatenate(vals)
+            ymin, ymax = float(np.nanmin(arr)), float(np.nanmax(arr))
+            span = ymax - ymin if ymax > ymin else 1.0
+            ax.set_ylim(ymin - span * 0.12, ymax + span * 0.18)
+
+    def redraw(_=None) -> None:
+        clear_artists()
+        start, end, x = visible_slice()
+        state["start"] = start
+        title.set_text(
+            f"{os.path.basename(file_path)} | multi-appliance | scale={state['scale']} | "
+            f"{start:,}->{end:,}"
+        )
+
+        for ax in axes:
+            ax.set_xlim(start, end)
+
+        ax0 = axes[0]
+        if aggregate_col and state["visible"].get("aggregate", True):
+            (line,) = ax0.plot(
+                x,
+                scaled(aggregate_col, start, end),
+                color="#333333",
+                linewidth=1.8,
+                label=aggregate_col,
+                zorder=3,
+            )
+            state["lines"].append(line)
+            ax0.legend(loc="upper right", fontsize=8, frameon=False)
+        else:
+            legend = ax0.get_legend()
+            if legend:
+                legend.remove()
+        set_axis_style(ax0, "Aggregate W" if state["scale"] == "none" else "Aggregate")
+
+        visible_summary = []
+        for idx, app in enumerate(plot_apps, start=1):
+            ax = axes[idx]
+            shown = state["visible"].get(app, True)
+            visible_events = add_on_regions(ax, app, start, end)
+            visible_summary.append(f"{app}:{visible_events}/{len(segments_by_app.get(app, []))}")
+            if shown:
+                (line,) = ax.plot(
+                    x,
+                    scaled(f"{app}_power", start, end),
+                    color=app_colors[app],
+                    linewidth=1.65,
+                    label=f"{app}_power",
+                    zorder=3,
+                )
+                state["lines"].append(line)
+                ax.legend(loc="upper right", fontsize=8, frameon=False)
+            else:
+                legend = ax.get_legend()
+                if legend:
+                    legend.remove()
+            set_axis_style(ax, f"{app}\nW" if state["scale"] == "none" else app)
+
+        axes[-1].set_xlabel("sample index")
+        fit_axes()
+        status.set_text("visible ON events: " + " | ".join(visible_summary))
+        fig.canvas.draw_idle()
+
+    def sync_from_sliders(_=None) -> None:
+        state["start"] = int(pos_slider.val)
+        state["span"] = int(span_slider.val)
+        redraw()
+
+    def move(delta: int) -> None:
+        pos_slider.set_val(min(max(0, state["start"] + delta), max_start))
+
+    def on_check(label: str) -> None:
+        key = "aggregate" if label == "aggregate" else label
+        state["visible"][key] = not state["visible"].get(key, True)
+        redraw()
+
+    def on_scale(label: str) -> None:
+        state["scale"] = "none" if label == "raw" else label
+        redraw()
+
+    def toggle_on(_=None) -> None:
+        state["show_on"] = not state["show_on"]
+        on_button.label.set_text(f"ON shade: {'on' if state['show_on'] else 'off'}")
+        redraw()
+
+    def print_stats(_=None) -> None:
+        start, end, _ = visible_slice()
+        print("\n" + "=" * 88)
+        print(f"MULTI-APPLIANCE WINDOW STATISTICS: rows {start:,} to {end:,}")
+        for app in plot_apps:
+            col = f"{app}_power"
+            vals = raw_data[col][start:end]
+            mask = on_masks.get(app, np.zeros(end - start))[start:end]
+            print(
+                f"{app:16s} mean={np.mean(vals):10.3f} min={np.min(vals):10.3f} "
+                f"max={np.max(vals):10.3f} on_ratio={np.mean(mask > 0):8.4f}"
+            )
+        if aggregate_col:
+            vals = raw_data[aggregate_col][start:end]
+            print(f"{aggregate_col:16s} mean={np.mean(vals):10.3f} min={np.min(vals):10.3f} max={np.max(vals):10.3f}")
+        print("=" * 88)
+
+    control_y = 0.075
+    ax_pos = plt.axes([0.09, control_y + 0.075, 0.46, 0.026])
+    max_start = max(0, total_points - 1)
+    pos_slider = Slider(ax_pos, "Start", 0, max_start, valinit=0, valstep=1, valfmt="%d")
+    ax_span = plt.axes([0.09, control_y + 0.025, 0.46, 0.026])
+    span_slider = Slider(
+        ax_span,
+        "Span",
+        50,
+        max(50, min(total_points, 50000)),
+        valinit=state["span"],
+        valstep=50,
+        valfmt="%d",
+    )
+    pos_slider.valtext.set_visible(False)
+    span_slider.valtext.set_visible(False)
+    pos_slider.on_changed(sync_from_sliders)
+    span_slider.on_changed(sync_from_sliders)
+
+    ax_back = plt.axes([0.59, control_y + 0.075, 0.07, 0.035])
+    ax_next = plt.axes([0.67, control_y + 0.075, 0.07, 0.035])
+    ax_fit = plt.axes([0.59, control_y + 0.025, 0.07, 0.035])
+    ax_stats = plt.axes([0.67, control_y + 0.025, 0.07, 0.035])
+    ax_on = plt.axes([0.75, control_y + 0.025, 0.10, 0.035])
+    back_button = Button(ax_back, "Back")
+    next_button = Button(ax_next, "Next")
+    fit_button = Button(ax_fit, "Fit")
+    stats_button = Button(ax_stats, "Stats")
+    on_button = Button(ax_on, "ON shade: on")
+    back_button.on_clicked(lambda _: move(-state["span"] // 2))
+    next_button.on_clicked(lambda _: move(state["span"] // 2))
+    fit_button.on_clicked(lambda _: (fit_axes(), fig.canvas.draw_idle()))
+    stats_button.on_clicked(print_stats)
+    on_button.on_clicked(toggle_on)
+
+    check_labels = (["aggregate"] if aggregate_col else []) + plot_apps
+    check_status = [state["visible"].get(label, True) for label in check_labels]
+    ax_checks = plt.axes([0.84, 0.47, 0.14, 0.34])
+    checks = CheckButtons(ax_checks, check_labels, check_status)
+    ax_checks.set_title("Show / hide", fontsize=9)
+    checks.on_clicked(on_check)
+
+    ax_scale = plt.axes([0.84, 0.27, 0.14, 0.13])
+    scale_radio = RadioButtons(ax_scale, ["raw", "zscore", "minmax"], active=["none", "zscore", "minmax"].index(scale))
+    ax_scale.set_title("Scale", fontsize=9)
+    scale_radio.on_clicked(on_scale)
+
+    # Keep widgets alive.
+    state["widget_refs"] = [
+        pos_slider,
+        span_slider,
+        back_button,
+        next_button,
+        fit_button,
+        stats_button,
+        on_button,
+        checks,
+        scale_radio,
+    ]
+
+    print(f"Rows        : {total_points:,}")
+    print("Mode        : multi-appliance stacked")
+    print(f"Appliances  : {', '.join(plot_apps)}")
+    for app in plot_apps:
+        on_rows = int(np.asarray(on_masks.get(app, [])).sum())
+        print(f"ON segments : {app:<15} {len(segments_by_app.get(app, [])):>5} events | {on_rows:>8,} ON rows")
+
+    redraw()
+    plt.show()
+
+
 def interactive_viewer(
     file_path: str,
     label_col: str | None = None,
@@ -188,6 +480,17 @@ def interactive_viewer(
 
     multi_apps = detect_multi_appliance_columns(df)
     is_multi_appliance = len(multi_apps) >= 2
+    if is_multi_appliance:
+        interactive_multi_appliance_viewer(
+            file_path=file_path,
+            df=df,
+            appliances=multi_apps,
+            features=features or [],
+            scale=scale,
+            view_span=view_span,
+        )
+        return
+
     if is_multi_appliance and label_col is None and "aggregate" in df.columns:
         label_col = "aggregate"
     else:

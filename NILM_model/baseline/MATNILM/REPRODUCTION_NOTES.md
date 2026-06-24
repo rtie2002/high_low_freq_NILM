@@ -230,6 +230,69 @@ A fair statement is:
 
 > The released MATNILM code provides the model architecture, processed REDD data, and S3 augmentation files. However, it does not directly reproduce the paper setting without modification, because the default window configuration differs from the paper and the original code fails under the paper's `outputLength=64` setting. In addition, the training pipeline can suffer from classification gate collapse, which causes unstable F1 and regression metrics.
 
+## Final Observed MATNILM Result
+
+A later MATNILM run stopped at epoch 38 after the early-stopping counter reached `30/30`. During the late training epochs, validation F1 collapsed to `0.0` for all four appliances:
+
+| Late epoch behavior | Observation |
+|---|---|
+| Epoch 35-38 validation F1 | `0.0` for dishwasher, fridge, microwave, and washer dryer |
+| Late train loss | about `0.406-0.417` |
+| Late validation loss | about `326k-329k` |
+| Early stopping | triggered after 30 non-improving epochs |
+
+After early stopping, the code loaded the best saved model and reported the following final metrics.
+
+### Final Validation Metrics
+
+| Appliance | MAE | SAE | F1 |
+|---|---:|---:|---:|
+| dish washer | `27.182` | `27.762` | `0.055` |
+| fridge | `38.778` | `19.760` | `0.702` |
+| microwave | `17.702` | `16.715` | `0.228` |
+| washer dryer | `13.263` | `6.878` | `0.938` |
+
+### Final Test Metrics
+
+| Appliance | MAE | SAE | F1 |
+|---|---:|---:|---:|
+| dish washer | `22.040` | `21.817` | `0.293` |
+| fridge | `38.094` | `28.373` | `0.785` |
+| microwave | `21.300` | `17.657` | `0.268` |
+| washer dryer | `45.663` | `40.434` | `0.544` |
+
+### Interpretation Of This Result
+
+This is not a successful reproduction of the MATNILM paper result.
+
+The model did not completely fail for every appliance. It learned some useful signal for fridge and washer dryer, especially on validation. However, dishwasher and microwave remained poor, and the final test result was inconsistent across appliances. The late-epoch validation F1 collapse to `0.0` also shows that the training process is unstable.
+
+The result should be described as:
+
+```text
+partial learning, but failed reproduction
+```
+
+The most important evidence is:
+
+| Evidence | Meaning |
+|---|---|
+| Dishwasher test F1 `0.293` | poor event detection |
+| Microwave test F1 `0.268` | poor event detection |
+| Fridge test F1 `0.785` | model learns some repeated pattern |
+| Washer dryer validation F1 `0.938`, test F1 `0.544` | validation/test behavior is inconsistent |
+| Late training F1 `0.0` for all appliances | classifier/gating collapse during training |
+
+### Data Reproduction Limitation
+
+This run also cannot be claimed as the exact paper data setting.
+
+The repository provides processed REDD pickle files, but the full raw-data preprocessing pipeline is not transparent enough to verify every paper detail, such as exact raw timestamps, raw house selection, preprocessing decisions, window construction, and S2/S3 sampling behavior. Therefore, even though the code can run on the provided processed files, the experiment should not be presented as an exact reproduction of the paper dataset.
+
+Recommended wording:
+
+> The MATNILM run on the released processed REDD data shows partial learning but does not reproduce the reported paper performance. The classifier becomes unstable during training, and final test F1 remains poor for dishwasher and microwave. Because the repository does not fully expose a raw-data preprocessing pipeline that verifies the exact paper splits and processed samples, this result should be treated as a failed or partial reproduction rather than an exact reproduction.
+
 ## Suggested Reproduction Checks
 
 Run S2 first, without augmentation:

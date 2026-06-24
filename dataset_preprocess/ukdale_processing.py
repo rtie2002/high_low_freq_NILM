@@ -67,6 +67,26 @@ def remove_isolated_spikes(power_sequence, window_size=5, spike_threshold=3.0,
                 num_spikes += 1
     return power_sequence, num_spikes
 
+
+def resolve_appliance_setting(appliance_cfg, key, house, default=None):
+    """
+    Resolve an appliance YAML setting with optional per-house overrides.
+
+    Lookup order:
+      1. ``{key}_by_house[house]``  (e.g. on_power_threshold_by_house: {5: 25})
+      2. ``{key}``                  (global default for all houses)
+      3. ``default`` argument
+    """
+    by_house = appliance_cfg.get(f"{key}_by_house", {})
+    if house in by_house:
+        return by_house[house]
+    if str(house) in by_house:
+        return by_house[str(house)]
+    if key in appliance_cfg:
+        return appliance_cfg[key]
+    return default
+
+
 def apply_algorithm1_labeling(power_sequence, x_threshold, l_window=100, x_noise=0,
                              remove_spikes=True, spike_window=5, spike_threshold=3.0,
                              background_threshold=50, min_off_duration=1, min_on_duration=1):
@@ -312,13 +332,13 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance, c
         app_params = params_appliance[appliance_name]
         algo1_cfg = config.get('algorithm1', {})
         
-        # Extract params for the labeler
-        threshold = app_params.get('on_power_threshold', 50)
-        min_on = app_params.get('min_on_duration', 1)
-        min_off = app_params.get('min_off_duration', 1)
+        # Extract params for the labeler (house-specific overrides supported)
+        threshold = resolve_appliance_setting(app_params, 'on_power_threshold', h, 50)
+        min_on = resolve_appliance_setting(app_params, 'min_on_duration', h, 1)
+        min_off = resolve_appliance_setting(app_params, 'min_off_duration', h, 1)
         window = algo1_cfg.get('window_length', 0)
         
-        print(f"  -> [Algorithm 1] Labeling ON/OFF status (Thresh={threshold}W, Window={window})...")
+        print(f"  -> [Algorithm 1] Labeling ON/OFF status (House {h}, Thresh={threshold}W, Window={window})...")
         
         on_off_label = apply_algorithm1_labeling(
             df_align_real[appliance_name].values,

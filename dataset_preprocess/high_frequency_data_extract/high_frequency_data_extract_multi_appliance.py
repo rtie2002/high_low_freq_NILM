@@ -65,6 +65,24 @@ def get_arguments() -> argparse.Namespace:
         help="Single .flac or folder. If omitted, uses batch section in hf_config.yaml.",
     )
     parser.add_argument("--lf_config", type=str, default=None)
+    parser.add_argument(
+        "--house",
+        type=int,
+        default=None,
+        help="Single house id (sets batch.house and hyperparameters.house_id).",
+    )
+    parser.add_argument(
+        "--houses",
+        type=str,
+        default=None,
+        help="Comma list of houses to process sequentially, e.g. 1,2.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Override paths.save_path from hf_config.yaml.",
+    )
     parser.add_argument("--weeks", type=str, default=None, help="Example: wk30,wk31")
     parser.add_argument(
         "--appliances",
@@ -449,7 +467,33 @@ def run_multi_flac_pipeline(
     return output_csv
 
 
-def run_batch(args: argparse.Namespace, config: dict, appliances: list[str], lf_path: str) -> list[str]:
+def apply_runtime_overrides(args: argparse.Namespace, config: dict, house_id: int | None = None) -> None:
+    if house_id is not None:
+        config.setdefault("batch", {})["house"] = house_id
+        config.setdefault("hyperparameters", {})["house_id"] = house_id
+    if args.output_dir:
+        config.setdefault("paths", {})["save_path"] = os.path.abspath(args.output_dir)
+
+
+def selected_houses(args: argparse.Namespace, config: dict) -> list[int]:
+    if args.houses:
+        return [int(item.strip()) for item in args.houses.split(",") if item.strip()]
+    if args.house is not None:
+        return [int(args.house)]
+    batch_house = config.get("batch", {}).get("house")
+    if batch_house is not None:
+        return [int(batch_house)]
+    return [int(config["hyperparameters"].get("house_id", 2))]
+
+
+def run_batch(
+    args: argparse.Namespace,
+    config: dict,
+    appliances: list[str],
+    lf_path: str,
+    house_id: int,
+) -> list[str]:
+    apply_runtime_overrides(args, config, house_id)
     batch = config.get("batch", {})
     weeks = [
         w.strip()
@@ -462,6 +506,11 @@ def run_batch(args: argparse.Namespace, config: dict, appliances: list[str], lf_
     output_dir = config["paths"]["save_path"]
     outputs = []
     all_week_frames = []
+
+    print("\n" + "=" * 72)
+    print(f"HOUSE {house_id} | weeks: {weeks}")
+    print(f"output dir: {output_dir}")
+    print("=" * 72)
 
     for week in weeks:
         week_dir = hfe.week_directory(config, week)
@@ -499,28 +548,23 @@ def run_batch(args: argparse.Namespace, config: dict, appliances: list[str], lf_
     return outputs
 
 
-def main() -> None:
-    args = get_arguments()
-    config, _ = hfe.load_hf_config(args.config)
-    if args.verbose_windows:
-        config.setdefault("logging", {})["verbose_windows"] = True
-
-    appliances = hfe.get_appliances_filter(config, args.appliances)
-    if not appliances:
-        appliances = ["kettle", "fridge", "microwave", "dishwasher", "washingmachine"]
-
-    lf_path = args.lf_config or config["paths"].get("lf_config")
+def run_one_house(args: argparse.Namespace, config: dict, appliances: list[str], lf_path: str, house_id: int) -> list[str]:
+    house_config = {
+        key: (dict(value) if isinstance(value, dict) else value)
+        for key, value in config.items()
+    }
+    apply_runtime_overrides(args, house_config, house_id)
 
     if args.input_path:
         flacs = flac_files_from_input(args.input_path)
         start_ts, end_ts = hfe.flac_time_range(flacs)
-        output_dir = config["paths"]["save_path"]
-        out_name = args.output_name or output_name_for_week(config, None)
+        output_dir = house_config["paths"]["save_path"]
+        out_name = args.output_name or output_name_for_week(house_config, None)
         out_csv = os.path.join(output_dir, out_name)
-        outputs = [
+        return [
             run_multi_flac_pipeline(
                 flacs,
-                config,
+                house_config,
                 lf_path,
                 appliances,
                 out_csv,
@@ -529,19 +573,38 @@ def main() -> None:
                 lf_end_ts=end_ts,
             )
         ]
-    else:
-        outputs = run_batch(args, config, appliances, lf_path)
+    return run_batch(args, house_config, appliances, lf_path, house_id)
 
-    if outputs and (not args.no_plot or not args.no_save_plot):
+
+def main() -> None:
+    args = get_arguments()
+    config, _ = hfe.load_hf_config(args.config)
+    if args.verbose_windows:
+        config.setdefault("logging", {})["verbose_windows"] = True
+    if args.output_dir:
+        apply_runtime_overrides(args, config)
+
+    appliances = hfe.get_appliances_filter(config, args.appliances)
+    if not appliances:
+        appliances = ["kettle", "fridge", "microwave", "dishwasher", "washingmachine"]
+
+    lf_path = args.lf_config or config["paths"].get("lf_config")
+    houses = selected_houses(args, config)
+    all_outputs: list[str] = []
+
+    for house_id in houses:
+        all_outputs.extend(run_one_house(args, config, appliances, lf_path, house_id))
+
+    if all_outputs and (not args.no_plot or not args.no_save_plot):
         if args.no_save_plot:
             png_path = None
         else:
             png_path = args.plot_png
             if not png_path:
-                base, _ = os.path.splitext(outputs[-1])
+                base, _ = os.path.splitext(all_outputs[-1])
                 png_path = f"{base}_on_gantt.png"
         show_gantt(
-            outputs[-1],
+            all_outputs[-1],
             appliances,
             args.plot_max_points,
             png_path=png_path,
@@ -549,6 +612,10 @@ def main() -> None:
         )
 
     print("\n[DONE] Multi-appliance HF extraction finished.")
+    if all_outputs:
+        print("Outputs:")
+        for path in all_outputs:
+            print(f"  - {path}")
 
 
 if __name__ == "__main__":

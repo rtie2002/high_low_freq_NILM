@@ -243,7 +243,27 @@ def describe_experiment_mapping(
         if csv_cfg is None:
             raise ValueError("csv_cfg is required when data_source='csv'")
         appliance_cfg = csv_cfg["appliances"][appliance]
-        print(f"CSV file: {csv_cfg['csv_file']}")
+        split_mode = csv_cfg.get("split_mode", "temporal")
+        if split_mode == "holdout":
+            print(f"Train CSV: {csv_cfg['train_csv_file']}")
+            print(f"Test CSV: {csv_cfg['test_csv_file']}")
+            val_mode = csv_cfg.get("val_mode", "temporal")
+            if val_mode == "by_house":
+                print(
+                    f"Val mode: by_house (train houses {csv_cfg.get('train_house_ids', [1])}, "
+                    f"val houses {csv_cfg.get('val_house_ids', [5])})"
+                )
+            elif val_mode == "by_house_tail":
+                print(
+                    f"Val mode: by_house_tail (val houses {csv_cfg.get('val_house_ids', [5])}, "
+                    f"last {csv_cfg.get('val_last_days', 7)} days)"
+                )
+            else:
+                print(f"Val mode: temporal split on train CSV ({csv_cfg.get('split_ratios')})")
+            print(f"Split mode: holdout (paper-style house split)")
+        else:
+            print(f"CSV file: {csv_cfg['csv_file']}")
+            print(f"Split mode: temporal")
         print(f"Time column: {csv_cfg.get('time_column', 'not used')}")
         print(f"Sampling interval: {csv_cfg.get('sampling_seconds', 'unknown')} seconds")
         print(f"X input columns: {cfg.feature_columns}")
@@ -372,7 +392,7 @@ def train_main(argv: list[str] | None = None) -> list[Path]:
 
 
 @torch.no_grad()
-def inference_main(argv: list[str] | None = None, *, allow_unknown: bool = False) -> None:
+def inference_main(argv: list[str] | None = None, *, allow_unknown: bool = False) -> dict:
     args = parse_inference_args(argv, allow_unknown=allow_unknown)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(args.checkpoint, map_location=device)
@@ -402,7 +422,7 @@ def inference_main(argv: list[str] | None = None, *, allow_unknown: bool = False
         dataset = REDDSGNWindowDataset(args.data_dir, args.split, dataset_appliance, cfg, stride=cfg.eval_stride)
     loader = make_dataloader(dataset, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers)
 
-    run_nilm_inference(
+    return run_nilm_inference(
         model_name="SGN",
         appliance=appliance,
         model=model,

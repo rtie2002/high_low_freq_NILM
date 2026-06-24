@@ -482,7 +482,6 @@ def train_nilm_model(
     print(f"Saved training plot: {history_plot_path}")
     print(f"Saved detailed losses: {loss_detail_path}")
     print(f"Saved detailed loss plot: {loss_detail_plot_path}")
-    print(json.dumps(metrics, indent=2))
     return metrics
 
 
@@ -584,5 +583,4 @@ def run_nilm_inference(
     print(f"Saved predictions: {prediction_csv}")
     print(f"Saved waveform plot: {waveform_path}")
     print(f"Saved metrics: {metrics_path}")
-    print(json.dumps(metrics_payload, indent=2))
     return metrics_payload
