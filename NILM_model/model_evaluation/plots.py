@@ -19,6 +19,33 @@ def _ensure_parent(path: str | Path) -> Path:
     return path
 
 
+# Low-power appliances where aggregate spikes hide the target waveform on one axis.
+APPLIANCE_FOCUSED_YSCALE = {"fridge"}
+
+
+def _appliance_power_limits(true_values: np.ndarray, pred_values: np.ndarray) -> tuple[float, float]:
+    ymin = float(min(0.0, np.nanmin(true_values), np.nanmin(pred_values)))
+    ymax = float(max(1.0, np.nanmax(true_values), np.nanmax(pred_values)))
+    if np.isclose(ymin, ymax):
+        ymax = ymin + 1.0
+    pad = ymax - ymin
+    return ymin - 0.05 * pad, ymax + 0.12 * pad
+
+
+def _plot_aggregate_background(ax, ax_aggregate, x, aggregate_values: np.ndarray) -> None:
+    ax_aggregate.fill_between(x, 0, aggregate_values, color="#d9d9d9", alpha=0.10)
+    ax_aggregate.plot(
+        x,
+        aggregate_values,
+        color="#8a8a8a",
+        linewidth=0.8,
+        alpha=0.45,
+        label="aggregate",
+    )
+    ax_aggregate.set_ylabel("Aggregate W", color="#666666", fontsize=8)
+    ax_aggregate.tick_params(axis="y", labelcolor="#666666")
+
+
 def plot_training_history(
     history: pd.DataFrame | str | Path,
     output_path: str | Path,
@@ -261,19 +288,25 @@ def _plot_single_appliance_event_panels(
         true_values = view[true_col].to_numpy(dtype=float)
         pred_values = view[pred_col].to_numpy(dtype=float)
         aggregate_values = view[aggregate_col].to_numpy(dtype=float) if has_aggregate else None
-        ymin_inputs = [np.nanmin(true_values), np.nanmin(pred_values), 0.0]
-        ymax_inputs = [np.nanmax(true_values), np.nanmax(pred_values), 1.0]
-        if aggregate_values is not None:
-            ymin_inputs.append(np.nanmin(aggregate_values))
-            ymax_inputs.append(np.nanmax(aggregate_values))
-        ymin = float(np.nanmin(ymin_inputs))
-        ymax = float(np.nanmax(ymax_inputs))
-        if np.isclose(ymin, ymax):
-            ymax = ymin + 1.0
+        use_focus_scale = appliance in APPLIANCE_FOCUSED_YSCALE and aggregate_values is not None
 
-        if aggregate_values is not None:
-            ax.fill_between(x, 0, aggregate_values, color="#d9d9d9", alpha=0.16, label="aggregate")
-            ax.plot(x, aggregate_values, color="#8a8a8a", linewidth=0.9, alpha=0.65)
+        if use_focus_scale:
+            ax_aggregate = ax.twinx()
+            _plot_aggregate_background(ax, ax_aggregate, x, aggregate_values)
+            ymin, ymax = _appliance_power_limits(true_values, pred_values)
+        else:
+            ymin_inputs = [np.nanmin(true_values), np.nanmin(pred_values), 0.0]
+            ymax_inputs = [np.nanmax(true_values), np.nanmax(pred_values), 1.0]
+            if aggregate_values is not None:
+                ymin_inputs.append(np.nanmin(aggregate_values))
+                ymax_inputs.append(np.nanmax(aggregate_values))
+            ymin = float(np.nanmin(ymin_inputs))
+            ymax = float(np.nanmax(ymax_inputs))
+            if np.isclose(ymin, ymax):
+                ymax = ymin + 1.0
+            if aggregate_values is not None:
+                ax.fill_between(x, 0, aggregate_values, color="#d9d9d9", alpha=0.16, label="aggregate")
+                ax.plot(x, aggregate_values, color="#8a8a8a", linewidth=0.9, alpha=0.65)
 
         pred_on_col = f"pred_{appliance}_on_prob"
         if pred_on_col in view:
@@ -289,10 +322,15 @@ def _plot_single_appliance_event_panels(
         ax.set_ylabel("Power W")
         ax.set_title(f"ON period {row + 1}", fontsize=9)
         ax.grid(True, alpha=0.25)
-        ax.set_ylim(ymin - 0.05 * (ymax - ymin), ymax + 0.12 * (ymax - ymin))
+        if use_focus_scale:
+            ax.set_ylim(ymin, ymax)
+        else:
+            ax.set_ylim(ymin - 0.05 * (ymax - ymin), ymax + 0.12 * (ymax - ymin))
         if row == 0:
             handles, labels = ax.get_legend_handles_labels()
             handles.append(Patch(facecolor="#7ad66d", alpha=0.18, label="predicted ON"))
+            if use_focus_scale:
+                handles.extend(ax_aggregate.get_legend_handles_labels()[0][:1])
             ax.legend(handles=handles, loc="upper right", fontsize=8)
 
     axes[-1].set_xlabel(time_col if time_col else "sample index")
@@ -399,19 +437,25 @@ def plot_prediction_waveforms(
         true_values = view[true_col].to_numpy(dtype=float)
         pred_values = view[pred_col].to_numpy(dtype=float)
         aggregate_values = view[aggregate_col].to_numpy(dtype=float) if has_aggregate and aggregate_background else None
-        ymin_inputs = [np.nanmin(true_values), np.nanmin(pred_values), 0.0]
-        ymax_inputs = [np.nanmax(true_values), np.nanmax(pred_values), 1.0]
-        if aggregate_values is not None:
-            ymin_inputs.append(np.nanmin(aggregate_values))
-            ymax_inputs.append(np.nanmax(aggregate_values))
-        ymin = float(np.nanmin(ymin_inputs))
-        ymax = float(np.nanmax(ymax_inputs))
-        if np.isclose(ymin, ymax):
-            ymax = ymin + 1.0
+        use_focus_scale = appliance in APPLIANCE_FOCUSED_YSCALE and aggregate_values is not None
 
-        if aggregate_values is not None:
-            ax.fill_between(x, 0, aggregate_values, color="#d9d9d9", alpha=0.16, label="aggregate")
-            ax.plot(x, aggregate_values, color="#8a8a8a", linewidth=0.9, alpha=0.65)
+        if use_focus_scale:
+            ax_aggregate = ax.twinx()
+            _plot_aggregate_background(ax, ax_aggregate, x, aggregate_values)
+            ymin, ymax = _appliance_power_limits(true_values, pred_values)
+        else:
+            ymin_inputs = [np.nanmin(true_values), np.nanmin(pred_values), 0.0]
+            ymax_inputs = [np.nanmax(true_values), np.nanmax(pred_values), 1.0]
+            if aggregate_values is not None:
+                ymin_inputs.append(np.nanmin(aggregate_values))
+                ymax_inputs.append(np.nanmax(aggregate_values))
+            ymin = float(np.nanmin(ymin_inputs))
+            ymax = float(np.nanmax(ymax_inputs))
+            if np.isclose(ymin, ymax):
+                ymax = ymin + 1.0
+            if aggregate_values is not None:
+                ax.fill_between(x, 0, aggregate_values, color="#d9d9d9", alpha=0.16, label="aggregate")
+                ax.plot(x, aggregate_values, color="#8a8a8a", linewidth=0.9, alpha=0.65)
 
         pred_on_col = f"pred_{appliance}_on_prob"
         if pred_on_col in view:
@@ -428,8 +472,13 @@ def plot_prediction_waveforms(
         ax.grid(True, alpha=0.25)
         handles, labels = ax.get_legend_handles_labels()
         handles.append(Patch(facecolor="#7ad66d", alpha=0.18, label="predicted ON"))
+        if use_focus_scale:
+            handles.extend(ax_aggregate.get_legend_handles_labels()[0][:1])
         ax.legend(handles=handles, loc="upper right")
-        ax.set_ylim(ymin - 0.05 * (ymax - ymin), ymax + 0.10 * (ymax - ymin))
+        if use_focus_scale:
+            ax.set_ylim(ymin, ymax)
+        else:
+            ax.set_ylim(ymin - 0.05 * (ymax - ymin), ymax + 0.10 * (ymax - ymin))
         row += 1
 
     fig.suptitle(title)

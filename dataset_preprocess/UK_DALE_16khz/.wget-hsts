@@ -1,5 +1,5 @@
 # HSTS 1.0 Known Hosts database for GNU Wget.
 # Edit at your own risk.
 # <hostname>	<port>	<incl. subdomains>	<created>	<max-age>
-dap.ceda.ac.uk	0	0	1782289875	15768000
-data.ceda.ac.uk	0	0	1782290000	15768000
+dap.ceda.ac.uk	0	0	1782290241	15768000
+data.ceda.ac.uk	0	0	1782290188	15768000
