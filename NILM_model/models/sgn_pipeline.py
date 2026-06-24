@@ -138,6 +138,9 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
     seed = int(choose("seed"))
     gate_mode = str(choose("gate_mode"))
     standby_power = bool(defaults.get("standby_power", False) or args.standby_power)
+    weight_decay = float(defaults.get("weight_decay", 0.0))
+    early_stop_metric = str(defaults.get("early_stop_metric", "total_loss"))
+    label_smoothing = float(defaults.get("label_smoothing", 0.0))
     feature_columns = ["aggregate"]
     feature_mean: list[float] = []
     feature_scale: list[float] = []
@@ -184,6 +187,9 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
         seed=seed,
         gate_mode=gate_mode,
         standby_power=standby_power,
+        weight_decay=weight_decay,
+        early_stop_metric=early_stop_metric,
+        label_smoothing=label_smoothing,
     )
 
 
@@ -347,8 +353,12 @@ def train_one(
     model = build_model(cfg, device)
     print("\n== Model architecture ==")
     print(model)
-    criterion = SGNLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
+    criterion = SGNLoss(label_smoothing=cfg.label_smoothing)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=cfg.learning_rate,
+        weight_decay=cfg.weight_decay,
+    )
 
     train_nilm_model(
         model_name="SGN",

@@ -6,10 +6,16 @@ import torch.nn.functional as F
 class SGNLoss(nn.Module):
     """SGN objective: output regression loss plus on/off classification loss."""
 
-    def __init__(self, output_weight: float = 1.0, on_weight: float = 1.0) -> None:
+    def __init__(
+        self,
+        output_weight: float = 1.0,
+        on_weight: float = 1.0,
+        label_smoothing: float = 0.0,
+    ) -> None:
         super().__init__()
         self.output_weight = output_weight
         self.on_weight = on_weight
+        self.label_smoothing = label_smoothing
 
     def forward(
         self,
@@ -18,7 +24,11 @@ class SGNLoss(nn.Module):
         target_on: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         output_error = (predictions["gated_power"] - target_power).pow(2)
-        on_error = F.binary_cross_entropy(predictions["on_prob"], target_on, reduction="none")
+        if self.label_smoothing > 0:
+            smooth_on = target_on * (1.0 - self.label_smoothing) + 0.5 * self.label_smoothing
+        else:
+            smooth_on = target_on
+        on_error = F.binary_cross_entropy(predictions["on_prob"], smooth_on, reduction="none")
         output_loss = output_error.mean()
         on_loss = on_error.mean()
         if output_error.ndim == 2:

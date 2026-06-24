@@ -152,6 +152,19 @@ def _loss_detail_row(epoch: int, prefix: str, detail: dict[str, Any]) -> dict[st
     return row
 
 
+def _early_stop_score(val_loss: float, val_metrics: dict[str, Any], metric_name: str) -> float:
+    detail = val_metrics.get("loss_detail", {})
+    if metric_name == "output_loss":
+        return float(detail.get("output_loss", val_loss))
+    if metric_name == "on_loss":
+        return float(detail.get("on_loss", val_loss))
+    if metric_name == "mae":
+        return float(val_metrics.get("mae", val_loss))
+    if metric_name == "f1":
+        return -float(val_metrics.get("f1", 0.0))
+    return float(val_loss)
+
+
 def _format_loss_table(train_detail: dict[str, Any], val_detail: dict[str, Any]) -> str:
     lines = [
         "loss breakdown:",
@@ -185,6 +198,7 @@ def _save_live_waveform(
     device: torch.device,
     split: str = "validation",
     plot_samples: int = 2000,
+    epoch: int | None = None,
 ) -> None:
     cfg = _config_to_dict(config)
     scale = float(cfg["scale"])
@@ -226,13 +240,14 @@ def _save_live_waveform(
         prediction_data[f"pred_{name}_on_prob"] = pred_on_arr[:, idx, :].reshape(-1)
         true_pred_pairs[name] = (f"{name}_power", f"pred_{name}_power")
 
+    title_suffix = f" epoch {epoch}" if epoch is not None else ""
     plot_prediction_waveforms(
         pd.DataFrame(prediction_data),
         output_path,
         aggregate_col="aggregate",
         true_pred_pairs=true_pred_pairs,
         samples=plot_samples,
-        title=f"{model_name} {appliance} {split} Live Waveform",
+        title=f"{model_name} {appliance} {split}{title_suffix} Waveform",
     )
 
 
@@ -311,6 +326,7 @@ def train_nilm_model(
     patience = int(cfg["patience"])
     sae_period = int(cfg["sae_period"])
     target_names = _target_names(config, appliance)
+    early_stop_metric = str(cfg.get("early_stop_metric", "total_loss"))
 
     run_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = run_dir / f"best_{appliance}.pt"
@@ -319,10 +335,13 @@ def train_nilm_model(
     live_history_path = run_dir / f"live_history_{appliance}.png"
     live_loss_detail_path = run_dir / f"live_loss_detail_{appliance}.png"
     live_waveform_path = run_dir / f"live_waveform_{appliance}.png"
+    best_waveform_path = run_dir / f"best_waveform_{appliance}.png"
+    best_test_waveform_path = run_dir / f"best_waveform_{appliance}_test.png"
 
     best_val = float("inf")
     best_epoch = -1
     stale_epochs = 0
+    print(f"Early stopping metric: {early_stop_metric}")
 
     with history_path.open("w", newline="", encoding="utf-8") as handle:
         detail_handle = loss_detail_path.open("w", newline="", encoding="utf-8")
@@ -386,8 +405,10 @@ def train_nilm_model(
             detail_writer.writerow(detail_row)
             handle.flush()
             detail_handle.flush()
+            val_score = _early_stop_score(val_loss, val_metrics, early_stop_metric)
             print(
                 f"epoch={epoch + 1} train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
+                f"val_score({early_stop_metric})={val_score:.5f} "
                 f"val_mae={val_metrics['mae']:.3f} val_sae={val_metrics['sae']:.3f} "
                 f"val_f1={val_metrics['f1']:.3f}"
             )
@@ -410,12 +431,14 @@ def train_nilm_model(
                 config=config,
                 output_path=live_waveform_path,
                 device=device,
-                split="validation",
+                split="validation live",
             )
-            print(f"Live PNGs: {live_history_path}, {live_loss_detail_path}, {live_waveform_path}")
+            print(
+                f"Live PNGs: {live_history_path}, {live_loss_detail_path}, {live_waveform_path}"
+            )
 
-            if val_loss < best_val:
-                best_val = val_loss
+            if val_score < best_val:
+                best_val = val_score
                 best_epoch = epoch + 1
                 stale_epochs = 0
                 torch.save(
@@ -426,10 +449,24 @@ def train_nilm_model(
                         "appliance": appliance,
                         "target_appliances": target_names,
                         "best_epoch": best_epoch,
-                        "best_val_loss": best_val,
+                        "best_val_loss": val_loss,
+                        "best_val_score": best_val,
+                        "early_stop_metric": early_stop_metric,
                     },
                     checkpoint_path,
                 )
+                _save_live_waveform(
+                    model_name=model_name,
+                    appliance=appliance,
+                    model=model,
+                    loader=val_loader,
+                    config=config,
+                    output_path=best_waveform_path,
+                    device=device,
+                    split="validation best",
+                    epoch=best_epoch,
+                )
+                print(f"Updated best validation waveform: {best_waveform_path}")
             else:
                 stale_epochs += 1
                 if stale_epochs >= patience:
@@ -462,7 +499,8 @@ def train_nilm_model(
         "appliance": appliance,
         "target_appliances": target_names,
         "best_epoch": best_epoch,
-        "best_val_loss": best_val,
+        "best_val_score": best_val,
+        "early_stop_metric": early_stop_metric,
         "validation": val_metrics,
         "test": test_metrics,
     }
@@ -476,12 +514,36 @@ def train_nilm_model(
         loss_detail_plot_path,
         title=f"{model_name} {appliance} Detailed Loss",
     )
+    _save_live_waveform(
+        model_name=model_name,
+        appliance=appliance,
+        model=model,
+        loader=val_loader,
+        config=config,
+        output_path=best_waveform_path,
+        device=device,
+        split="validation best",
+        epoch=best_epoch,
+    )
+    _save_live_waveform(
+        model_name=model_name,
+        appliance=appliance,
+        model=model,
+        loader=test_loader,
+        config=config,
+        output_path=best_test_waveform_path,
+        device=device,
+        split="test best",
+        epoch=best_epoch,
+    )
 
     print(f"Saved checkpoint: {checkpoint_path}")
     print(f"Saved metrics: {metrics_path}")
     print(f"Saved training plot: {history_plot_path}")
     print(f"Saved detailed losses: {loss_detail_path}")
     print(f"Saved detailed loss plot: {loss_detail_plot_path}")
+    print(f"Saved best validation waveform: {best_waveform_path}")
+    print(f"Saved best test waveform: {best_test_waveform_path}")
     return metrics
 
 

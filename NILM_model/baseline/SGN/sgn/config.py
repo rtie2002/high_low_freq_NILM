@@ -59,6 +59,9 @@ class SGNConfig:
     seed: int = 1234
     gate_mode: str = "soft"
     standby_power: bool = False
+    weight_decay: float = 0.0
+    early_stop_metric: str = "total_loss"
+    label_smoothing: float = 0.0
 
 
 def default_data_dir() -> Path:
