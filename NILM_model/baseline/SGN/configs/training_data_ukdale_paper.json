@@ -33,7 +33,5 @@
       "on": "washingmachine_on"
     }
   },
-  "sampling_seconds": 6,
-  "on_label_mode": "power_threshold",
-  "on_threshold_watts": 15
+  "sampling_seconds": 6
 }
