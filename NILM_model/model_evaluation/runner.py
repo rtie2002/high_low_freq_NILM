@@ -267,7 +267,14 @@ def evaluate_nilm_model(
     scale: float,
     sae_period: int,
     target_names: list[str] | None = None,
+    loss_only: bool = False,
 ) -> tuple[float, dict[str, float]]:
+    """Evaluate the model on a data loader.
+
+    When ``loss_only=True`` only the loss is computed (no MAE/SAE/F1 inverse
+    scaling) which is much faster and sufficient for per-epoch early stopping.
+    Full metrics are only needed at the end of training.
+    """
     model.eval()
     losses: list[float] = []
     loss_details: list[dict[str, Any]] = []
@@ -282,11 +289,20 @@ def evaluate_nilm_model(
         losses.append(float(loss_parts["loss"].item()))
         loss_details.append(_loss_detail_from_parts(loss_parts, target_names or []))
 
-        watts, on_prob = _model_prediction(outputs, scale)
-        pred_watts.append(watts)
-        true_watts.append(batch["y_watts"].numpy())
-        pred_on.append(on_prob)
-        true_on.append(batch["on"].numpy())
+        if not loss_only:
+            watts, on_prob = _model_prediction(outputs, scale)
+            pred_watts.append(watts)
+            true_watts.append(batch["y_watts"].numpy())
+            pred_on.append(on_prob)
+            true_on.append(batch["on"].numpy())
+
+    mean_loss = float(np.mean(losses))
+
+    if loss_only:
+        metrics: dict[str, Any] = {"mae": float("nan"), "sae": float("nan"), "f1": float("nan")}
+        if target_names:
+            metrics["loss_detail"] = _mean_loss_details(loss_details, target_names)
+        return mean_loss, metrics
 
     true_watts_arr = np.concatenate(true_watts, axis=0)
     pred_watts_arr = np.concatenate(pred_watts, axis=0)
@@ -309,7 +325,7 @@ def evaluate_nilm_model(
             sae_period,
         )
         metrics["loss_detail"] = _mean_loss_details(loss_details, target_names)
-    return float(np.mean(losses)), metrics
+    return mean_loss, metrics
 
 
 def train_nilm_model(
@@ -385,6 +401,7 @@ def train_nilm_model(
                 train_loss_details.append(_loss_detail_from_parts(loss_parts, target_names))
                 progress.set_postfix(loss=f"{loss_value:.4f}")
 
+            # loss_only=True skips MAE/SAE/F1 inverse-scaling — much faster per epoch
             val_loss, val_metrics = evaluate_nilm_model(
                 model,
                 val_loader,
@@ -393,6 +410,7 @@ def train_nilm_model(
                 scale=scale,
                 sae_period=sae_period,
                 target_names=target_names,
+                loss_only=True,
             )
             train_loss = float(np.mean(train_losses))
             train_loss_detail = _mean_loss_details(train_loss_details, target_names)
@@ -420,9 +438,7 @@ def train_nilm_model(
             val_score = _early_stop_score(val_loss, val_metrics, early_stop_metric)
             print(
                 f"epoch={epoch + 1} train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
-                f"val_score({early_stop_metric})={val_score:.5f} "
-                f"val_mae={val_metrics['mae']:.3f} val_sae={val_metrics['sae']:.3f} "
-                f"val_f1={val_metrics['f1']:.3f}"
+                f"val_score({early_stop_metric})={val_score:.5f}"
             )
             print(_format_loss_table(train_loss_detail, val_loss_detail))
             plot_training_history(
