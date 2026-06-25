@@ -11,7 +11,7 @@
   "num_workers": 4,
   "hidden_fc": 1024,
   "dropout": 0.0,
-  "train_stride": 1,
+  "train_stride": 32,
   "eval_stride": 32,
   "scale_mode": "aggregate_std",
   "gate_mode": "soft",
