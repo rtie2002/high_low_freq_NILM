@@ -152,6 +152,21 @@ def _resolve_csv_path(path_str: str, config_dir: Path) -> str:
     return str(path)
 
 
+def _resolve_csv_data_file(path_str: str, config_dir: Path) -> str:
+    """Resolve a CSV path; accept ``*_cross_house.csv`` / plain name interchangeably."""
+    resolved = Path(_resolve_csv_path(path_str, config_dir))
+    if resolved.exists():
+        return str(resolved)
+    if "_cross_house" in resolved.name:
+        alt = resolved.with_name(resolved.name.replace("_cross_house", ""))
+    else:
+        alt = resolved.with_name(f"{resolved.stem}_cross_house{resolved.suffix}")
+    if alt.exists():
+        print(f"CSV path fallback: {resolved.name} -> {alt.name}")
+        return str(alt)
+    return str(resolved)
+
+
 def load_csv_config(path: str | Path) -> dict:
     path = Path(path)
     with path.open("r", encoding="utf-8") as handle:
@@ -171,10 +186,10 @@ def load_csv_config(path: str | Path) -> dict:
                 f"CSV config {path} with split_mode='holdout' must define "
                 "train_csv_file and test_csv_file"
             )
-        cfg["train_csv_file"] = _resolve_csv_path(cfg["train_csv_file"], path.parent)
-        cfg["test_csv_file"] = _resolve_csv_path(cfg["test_csv_file"], path.parent)
+        cfg["train_csv_file"] = _resolve_csv_data_file(cfg["train_csv_file"], path.parent)
+        cfg["test_csv_file"] = _resolve_csv_data_file(cfg["test_csv_file"], path.parent)
         if cfg.get("val_csv_file"):
-            cfg["val_csv_file"] = _resolve_csv_path(cfg["val_csv_file"], path.parent)
+            cfg["val_csv_file"] = _resolve_csv_data_file(cfg["val_csv_file"], path.parent)
         if cfg.get("val_mode") == "separate_files" and not cfg.get("val_csv_file"):
             raise ValueError(
                 f"CSV config {path} with val_mode='separate_files' must define val_csv_file"
