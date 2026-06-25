@@ -281,6 +281,18 @@ def load_appliance(
     return app_df.resample(sample_period).mean()
 
 
+def fill_short_appliance_gaps(series: pd.Series, limit: int = 3) -> pd.Series:
+    """Bridge brief NaN bins after 6 s resampling (UK-DALE packet gaps).
+
+    Raw meters often skip one packet (~6–13 s). Without this, empty resample bins
+    become 0 W and split otherwise-continuous ON labels (common on house-5 fridge).
+    """
+    if series.empty:
+        return series
+    filled = series.interpolate(method="linear", limit=limit, limit_area="inside")
+    return filled.ffill(limit=1).bfill(limit=1)
+
+
 def make_labels(
     power: np.ndarray,
     appliance_cfg: dict,
@@ -378,14 +390,18 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
             tz,
             sample_period,
         )
-        aligned = (
-            combined[["aggregate"]]
-            .join(app_resampled, how="outer")
-            .resample(sample_period)
-            .mean()
-            .bfill(limit=1)
-            .dropna(subset=["aggregate", app])
+        aligned = combined[["aggregate"]].join(app_resampled, how="left")
+        gap_limit = int(
+            resolve_appliance_setting(
+                app_cfg,
+                "resample_gap_fill",
+                house,
+                algorithm_cfg.get("resample_gap_fill", 3),
+            )
         )
+        aligned[app] = fill_short_appliance_gaps(aligned[app], limit=gap_limit)
+        aligned = aligned.dropna(subset=["aggregate"]).copy()
+        aligned[app] = aligned[app].fillna(0.0)
 
         power = np.minimum(aligned[app].to_numpy(dtype=np.float32), aligned["aggregate"].to_numpy(dtype=np.float32))
         threshold = resolve_appliance_setting(app_cfg, "on_power_threshold", house, 50)

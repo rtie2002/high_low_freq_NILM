@@ -75,7 +75,9 @@ appliances:
     max_power: 350           # User defined
     on_power_threshold: 50    # User defined
     min_off_duration: 2      # Kelly Table 4 (12s @ 6s rate)
+    min_off_duration_by_house: {5: 5}  # H5 fridge: bridge up to 30s packet gaps
     min_on_duration: 10      # Kelly Table 4 (60s @ 6s rate)
+    resample_gap_fill: 3     # interpolate up to 18s missing 6s bins before labeling
     houses: [2]
     channel_map: {1: 12, 2: 14, 5: 19}
 
@@ -122,6 +124,7 @@ algorithm1:
   # Kelly / NILMTK Logic Defaults (If not specified in appliance section)
   min_off_duration_default: 10 # 1 minute bridge (at 6s sampling)
   min_on_duration_default: 1   # 1 sample minimum
+  resample_gap_fill: 3         # max 6s bins to linear-interpolate after resample
   
   # Normalization & Limits
   clip_max: null             # (Optional) Hard cap on power values before normalization

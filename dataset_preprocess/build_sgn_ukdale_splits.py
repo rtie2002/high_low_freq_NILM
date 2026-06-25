@@ -3,12 +3,16 @@
 Paper protocol (Shin et al. AAAI 2019):
   - Train houses: 1, 3, 4, 5 (we use 1 + 5; houses 3/4 unavailable for all appliances)
   - Test house: 2
-  - Duration: last N days per house (default 7, matching Kelly NeuralNILM export)
+  - Duration: last 1 week per house in the paper; default here is 28 days (4 weeks)
+
+Split within each train house window:
+  - training:   all but the last ``val_days`` calendar days
+  - validating: last ``val_days`` calendar days (per house, then concatenated)
 
 Outputs in NILM_model/data/:
-  - multi_appliance_training.csv    houses 1+5, first 85% of combined timeline
-  - multi_appliance_validating.csv    houses 1+5, last 15% of combined timeline
-  - multi_appliance_testing.csv       house 2, last N days
+  - multi_appliance_training.csv
+  - multi_appliance_validating.csv
+  - multi_appliance_testing.csv
 """
 
 from __future__ import annotations
@@ -66,11 +70,11 @@ def load_full(csv_path: Path) -> pd.DataFrame:
     return df.sort_values(TIME_COL).reset_index(drop=True)
 
 
-def temporal_train_val_split(
+def temporal_train_val_split_by_ratio(
     frames: list[pd.DataFrame],
     train_ratio: float,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Split each house timeline separately, then concatenate (houses differ in calendar time)."""
+    """Split each house timeline by row ratio (used for --full_range only)."""
     train_parts: list[pd.DataFrame] = []
     val_parts: list[pd.DataFrame] = []
     for frame in frames:
@@ -82,6 +86,36 @@ def temporal_train_val_split(
             )
         train_parts.append(ordered.iloc[:split_idx].copy())
         val_parts.append(ordered.iloc[split_idx:].copy())
+
+    training = pd.concat(train_parts, ignore_index=True).sort_values([HOUSE_COL, TIME_COL]).reset_index(drop=True)
+    validating = pd.concat(val_parts, ignore_index=True).sort_values([HOUSE_COL, TIME_COL]).reset_index(drop=True)
+    return training, validating
+
+
+def temporal_train_val_split(
+    frames: list[pd.DataFrame],
+    val_days: float,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Hold out the last ``val_days`` from each house; remainder is training."""
+    train_parts: list[pd.DataFrame] = []
+    val_parts: list[pd.DataFrame] = []
+    min_rows = 432 + 1
+    for frame in frames:
+        ordered = frame.sort_values(TIME_COL).reset_index(drop=True)
+        if len(ordered) < 2 * min_rows:
+            raise ValueError(f"House pool too short for split: {len(ordered)} rows")
+        end_time = ordered[TIME_COL].max()
+        val_start = end_time - pd.Timedelta(days=val_days)
+        val_mask = ordered[TIME_COL] >= val_start
+        val_part = ordered[val_mask].copy()
+        train_part = ordered[~val_mask].copy()
+        if len(train_part) < min_rows or len(val_part) < min_rows:
+            raise ValueError(
+                f"Temporal split left train={len(train_part)} val={len(val_part)} rows; "
+                f"need at least {min_rows} each. Try smaller --val_days or larger --last_days."
+            )
+        train_parts.append(train_part)
+        val_parts.append(val_part)
 
     training = pd.concat(train_parts, ignore_index=True).sort_values([HOUSE_COL, TIME_COL]).reset_index(drop=True)
     validating = pd.concat(val_parts, ignore_index=True).sort_values([HOUSE_COL, TIME_COL]).reset_index(drop=True)
@@ -109,8 +143,8 @@ def main() -> None:
     parser.add_argument(
         "--last_days",
         type=float,
-        default=7.0,
-        help="Use last N days per house (SGN paper uses 1 week). Ignored with --full_range.",
+        default=28.0,
+        help="Use last N days per house (paper=7; default 28=4 weeks for stable training).",
     )
     parser.add_argument(
         "--full_range",
@@ -118,10 +152,16 @@ def main() -> None:
         help="Use full house CSVs instead of last N days (Scenario A; slow to train).",
     )
     parser.add_argument(
+        "--val_days",
+        type=float,
+        default=4.0,
+        help="Last N calendar days per train house reserved for validating (default 4).",
+    )
+    parser.add_argument(
         "--train_ratio",
         type=float,
-        default=0.85,
-        help="Fraction of combined train-house timeline for training (rest = validating).",
+        default=None,
+        help="Deprecated: use --val_days instead. If set, overrides --val_days as fraction of last_days.",
     )
     parser.add_argument(
         "--train_houses",
@@ -141,6 +181,10 @@ def main() -> None:
     train_houses = [int(item.strip()) for item in args.train_houses.split(",") if item.strip()]
     house_paths = project_paths(data_dir)
 
+    val_days = float(args.val_days)
+    if args.train_ratio is not None and not args.full_range:
+        val_days = max(1.0, float(args.last_days) * (1.0 - float(args.train_ratio)))
+
     print("=" * 72)
     print("SGN UK-DALE SPLIT BUILDER")
     print("=" * 72)
@@ -148,7 +192,10 @@ def main() -> None:
     print(f"train houses: {train_houses}")
     print(f"test house  : {args.test_house}")
     print(f"mode        : {'full_range' if args.full_range else f'last {args.last_days:g} days'}")
-    print(f"train/val   : {args.train_ratio:.0%} / {1 - args.train_ratio:.0%} temporal on train houses")
+    if args.full_range:
+        print("train/val   : 85% / 15% temporal per train house (full-range mode)")
+    else:
+        print(f"train/val   : first {args.last_days - val_days:g} days train + last {val_days:g} days val (per house)")
 
     loader = load_full if args.full_range else lambda path: load_last_days(path, args.last_days)
 
@@ -166,7 +213,12 @@ def main() -> None:
     print(f"\n[test] house {args.test_house}")
     test_df = loader(test_path)
 
-    training_df, validating_df = temporal_train_val_split(train_frames, args.train_ratio)
+    if args.full_range:
+        training_df, validating_df = temporal_train_val_split_by_ratio(train_frames, 0.85)
+    else:
+        if val_days >= args.last_days:
+            raise ValueError(f"--val_days ({val_days}) must be smaller than --last_days ({args.last_days})")
+        training_df, validating_df = temporal_train_val_split(train_frames, val_days)
 
     out_train = data_dir / "multi_appliance_training.csv"
     out_val = data_dir / "multi_appliance_validating.csv"
