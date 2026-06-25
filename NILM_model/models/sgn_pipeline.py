@@ -71,6 +71,17 @@ def parse_train_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--standby_power", action="store_true")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument(
+        "--plot_mode",
+        choices=["live", "end", "interval"],
+        default=None,
+        help="live=every epoch PNGs; end=plot only after training; interval=every plot_interval epochs.",
+    )
+    parser.add_argument(
+        "--run_all_epochs",
+        action="store_true",
+        help="Disable early stopping; run the full epoch count before plotting.",
+    )
     return parser.parse_args(argv)
 
 
@@ -161,6 +172,11 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
     sae_period = int(defaults.get("sae_period", 1200))
     val_split_label = str(defaults.get("val_split_label", "validation"))
     test_split_label = str(defaults.get("test_split_label", "test"))
+    plot_mode = str(defaults.get("plot_mode", "live"))
+    if args.plot_mode is not None:
+        plot_mode = str(args.plot_mode)
+    plot_interval = int(defaults.get("plot_interval", 1))
+    run_all_epochs = bool(defaults.get("run_all_epochs", False) or args.run_all_epochs)
     feature_columns = ["aggregate"]
     feature_mean: list[float] = []
     feature_scale: list[float] = []
@@ -225,6 +241,9 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
         sae_period=sae_period,
         val_split_label=val_split_label,
         test_split_label=test_split_label,
+        plot_mode=plot_mode,
+        plot_interval=plot_interval,
+        run_all_epochs=run_all_epochs,
     )
 
 
@@ -425,6 +444,9 @@ def train_one(
         print(f"ON temporal smoothness: on_smooth_weight={cfg.on_smooth_weight}")
     if cfg.bce_pos_weight > 1.0:
         print(f"BCE pos_weight: {cfg.bce_pos_weight} (ON samples weighted {cfg.bce_pos_weight}x)")
+    print(f"Plot mode: {cfg.plot_mode}" + (f" (interval={cfg.plot_interval})" if cfg.plot_mode == "interval" else ""))
+    if cfg.run_all_epochs:
+        print(f"run_all_epochs=True: training all {cfg.epochs} epochs (no early stop).")
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=cfg.learning_rate,

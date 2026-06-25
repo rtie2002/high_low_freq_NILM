@@ -20,6 +20,7 @@
   "early_stop_metric": "output_loss",
   "label_smoothing": 0.0,
   "bce_pos_weight": 10.0,
+  "plot_mode": "end",
   "plot_interval": 5,
   "seed": 1234
 }

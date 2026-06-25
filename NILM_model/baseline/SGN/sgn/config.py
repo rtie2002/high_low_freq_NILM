@@ -76,6 +76,9 @@ class SGNConfig:
     min_epochs: int = 5
     val_split_label: str = "validation"
     test_split_label: str = "test"
+    plot_mode: str = "live"
+    plot_interval: int = 1
+    run_all_epochs: bool = False
 
 
 def default_data_dir() -> Path:

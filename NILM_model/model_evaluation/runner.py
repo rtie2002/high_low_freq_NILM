@@ -281,6 +281,97 @@ def _format_loss_table(train_detail: dict[str, Any], val_detail: dict[str, Any])
     return "\n".join(lines)
 
 
+def _should_plot_during_training(plot_mode: str, epoch_no: int, plot_interval: int) -> bool:
+    if plot_mode == "end":
+        return False
+    if plot_mode == "interval":
+        return epoch_no % max(plot_interval, 1) == 0
+    return True
+
+
+def _save_training_plots(
+    *,
+    model_name: str,
+    appliance: str,
+    model: torch.nn.Module,
+    val_loader: DataLoader,
+    test_loader: DataLoader,
+    config: Any,
+    device: torch.device,
+    history_path: Path,
+    loss_detail_path: Path,
+    live_history_path: Path,
+    live_loss_detail_path: Path,
+    live_waveform_path: Path,
+    live_test_waveform_path: Path,
+    best_waveform_path: Path,
+    best_test_waveform_path: Path,
+    val_split_label: str,
+    test_split_label: str,
+    epoch: int,
+    include_best: bool = False,
+) -> None:
+    plot_training_history(
+        history_path,
+        live_history_path,
+        title=f"{model_name} {appliance} Live Training",
+    )
+    plot_loss_details(
+        loss_detail_path,
+        live_loss_detail_path,
+        title=f"{model_name} {appliance} Live Detailed Loss",
+    )
+    _save_live_waveform(
+        model_name=model_name,
+        appliance=appliance,
+        model=model,
+        loader=val_loader,
+        config=config,
+        output_path=live_waveform_path,
+        device=device,
+        split="validation live",
+        split_label=f"{val_split_label} live",
+        epoch=epoch,
+    )
+    _save_live_waveform(
+        model_name=model_name,
+        appliance=appliance,
+        model=model,
+        loader=test_loader,
+        config=config,
+        output_path=live_test_waveform_path,
+        device=device,
+        split="test live",
+        split_label=f"{test_split_label} live",
+        epoch=epoch,
+    )
+    if include_best:
+        _save_live_waveform(
+            model_name=model_name,
+            appliance=appliance,
+            model=model,
+            loader=val_loader,
+            config=config,
+            output_path=best_waveform_path,
+            device=device,
+            split="validation best",
+            split_label=f"{val_split_label} best",
+            epoch=epoch,
+        )
+        _save_live_waveform(
+            model_name=model_name,
+            appliance=appliance,
+            model=model,
+            loader=test_loader,
+            config=config,
+            output_path=best_test_waveform_path,
+            device=device,
+            split="test best",
+            split_label=f"{test_split_label} best",
+            epoch=epoch,
+        )
+
+
 @torch.no_grad()
 def _save_live_waveform(
     *,
@@ -453,6 +544,9 @@ def train_nilm_model(
     lr_scheduler_patience = int(cfg.get("lr_scheduler_patience", 0))
     val_split_label = str(cfg.get("val_split_label", "validation"))
     test_split_label = str(cfg.get("test_split_label", "test"))
+    plot_mode = str(cfg.get("plot_mode", "live"))
+    plot_interval = int(cfg.get("plot_interval", 1))
+    run_all_epochs = bool(cfg.get("run_all_epochs", False))
 
     run_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = run_dir / f"best_{appliance}.pt"
@@ -469,6 +563,9 @@ def train_nilm_model(
     best_epoch = -1
     stale_epochs = 0
     print(f"Early stopping metric: {early_stop_metric} (min_epochs={min_epochs})")
+    if run_all_epochs:
+        print(f"run_all_epochs=True: early stopping disabled; training all {epochs} epochs.")
+    print(f"Plot mode: {plot_mode}" + (f" (interval={plot_interval})" if plot_mode == "interval" else ""))
     if grad_clip_norm > 0.0:
         print(f"Gradient clipping: max_norm={grad_clip_norm}")
     scheduler = None
@@ -576,46 +673,41 @@ def train_nilm_model(
                     "(compare train vs val: train≈1 val≪1 means cross-house, not a plot bug)"
                 )
             print(_format_loss_table(train_loss_detail, val_loss_detail))
-            plot_training_history(
-                history_path,
-                live_history_path,
-                title=f"{model_name} {appliance} Live Training",
-            )
-            plot_loss_details(
-                loss_detail_path,
-                live_loss_detail_path,
-                title=f"{model_name} {appliance} Live Detailed Loss",
-            )
-            _save_live_waveform(
-                model_name=model_name,
-                appliance=appliance,
-                model=model,
-                loader=val_loader,
-                config=config,
-                output_path=live_waveform_path,
-                device=device,
-                split="validation live",
-                split_label=f"{val_split_label} live",
-                epoch=epoch + 1,
-            )
-            _save_live_waveform(
-                model_name=model_name,
-                appliance=appliance,
-                model=model,
-                loader=test_loader,
-                config=config,
-                output_path=live_test_waveform_path,
-                device=device,
-                split="test live",
-                split_label=f"{test_split_label} live",
-                epoch=epoch + 1,
-            )
-            print(
-                f"Live PNGs: {live_history_path}, {live_loss_detail_path}, "
-                f"{live_waveform_path}, {live_test_waveform_path}"
-            )
-
             epoch_no = epoch + 1
+            if _should_plot_during_training(plot_mode, epoch_no, plot_interval):
+                _save_training_plots(
+                    model_name=model_name,
+                    appliance=appliance,
+                    model=model,
+                    val_loader=val_loader,
+                    test_loader=test_loader,
+                    config=config,
+                    device=device,
+                    history_path=history_path,
+                    loss_detail_path=loss_detail_path,
+                    live_history_path=live_history_path,
+                    live_loss_detail_path=live_loss_detail_path,
+                    live_waveform_path=live_waveform_path,
+                    live_test_waveform_path=live_test_waveform_path,
+                    best_waveform_path=best_waveform_path,
+                    best_test_waveform_path=best_test_waveform_path,
+                    val_split_label=val_split_label,
+                    test_split_label=test_split_label,
+                    epoch=epoch_no,
+                    include_best=False,
+                )
+                print(
+                    f"Live PNGs: {live_history_path}, {live_loss_detail_path}, "
+                    f"{live_waveform_path}, {live_test_waveform_path}"
+                )
+            elif plot_mode == "end":
+                print(f"Epoch {epoch_no}: plots deferred (plot_mode=end).")
+            else:
+                print(
+                    f"Epoch {epoch_no}: plots skipped "
+                    f"(plot_mode=interval, plot_interval={plot_interval})."
+                )
+
             can_save = epoch_no >= min_epochs
             if can_save and val_score < best_val:
                 best_val = val_score
@@ -635,41 +727,44 @@ def train_nilm_model(
                     },
                     checkpoint_path,
                 )
-                _save_live_waveform(
-                    model_name=model_name,
-                    appliance=appliance,
-                    model=model,
-                    loader=val_loader,
-                    config=config,
-                    output_path=best_waveform_path,
-                    device=device,
-                    split="validation best",
-                    split_label=f"{val_split_label} best",
-                    epoch=best_epoch,
-                )
-                _save_live_waveform(
-                    model_name=model_name,
-                    appliance=appliance,
-                    model=model,
-                    loader=test_loader,
-                    config=config,
-                    output_path=best_test_waveform_path,
-                    device=device,
-                    split="test best",
-                    split_label=f"{test_split_label} best",
-                    epoch=best_epoch,
-                )
-                print(
-                    f"Updated best checkpoint epoch {best_epoch} "
-                    f"({early_stop_metric}={best_val:.5f}): "
-                    f"{best_waveform_path}, {best_test_waveform_path}"
-                )
+                if _should_plot_during_training(plot_mode, epoch_no, plot_interval):
+                    _save_training_plots(
+                        model_name=model_name,
+                        appliance=appliance,
+                        model=model,
+                        val_loader=val_loader,
+                        test_loader=test_loader,
+                        config=config,
+                        device=device,
+                        history_path=history_path,
+                        loss_detail_path=loss_detail_path,
+                        live_history_path=live_history_path,
+                        live_loss_detail_path=live_loss_detail_path,
+                        live_waveform_path=live_waveform_path,
+                        live_test_waveform_path=live_test_waveform_path,
+                        best_waveform_path=best_waveform_path,
+                        best_test_waveform_path=best_test_waveform_path,
+                        val_split_label=val_split_label,
+                        test_split_label=test_split_label,
+                        epoch=best_epoch,
+                        include_best=True,
+                    )
+                    print(
+                        f"Updated best checkpoint epoch {best_epoch} "
+                        f"({early_stop_metric}={best_val:.5f}): "
+                        f"{best_waveform_path}, {best_test_waveform_path}"
+                    )
+                else:
+                    print(
+                        f"Updated best checkpoint epoch {best_epoch} "
+                        f"({early_stop_metric}={best_val:.5f}): {checkpoint_path}"
+                    )
             elif not can_save:
                 print(f"Skipping checkpoint until epoch {min_epochs} (current score {val_score:.5f}).")
                 stale_epochs = 0
             else:
                 stale_epochs += 1
-                if stale_epochs >= patience:
+                if not run_all_epochs and stale_epochs >= patience:
                     print(f"Early stopping at epoch {epoch + 1}; best epoch was {best_epoch}.")
                     break
         detail_handle.close()
@@ -750,46 +845,47 @@ def train_nilm_model(
     _print_split_metrics("test", test_metrics)
     history_plot_path = run_dir / f"history_{appliance}.png"
     loss_detail_plot_path = run_dir / f"loss_detail_{appliance}.png"
+    print("\n== Generating final plots ==")
+    _save_training_plots(
+        model_name=model_name,
+        appliance=appliance,
+        model=model,
+        val_loader=val_loader,
+        test_loader=test_loader,
+        config=config,
+        device=device,
+        history_path=history_path,
+        loss_detail_path=loss_detail_path,
+        live_history_path=live_history_path,
+        live_loss_detail_path=live_loss_detail_path,
+        live_waveform_path=live_waveform_path,
+        live_test_waveform_path=live_test_waveform_path,
+        best_waveform_path=best_waveform_path,
+        best_test_waveform_path=best_test_waveform_path,
+        val_split_label=val_split_label,
+        test_split_label=test_split_label,
+        epoch=best_epoch,
+        include_best=True,
+    )
     plot_training_history(history_path, history_plot_path, title=f"{model_name} {appliance} Training")
     plot_loss_details(
         loss_detail_path,
         loss_detail_plot_path,
         title=f"{model_name} {appliance} Detailed Loss",
     )
-    _save_live_waveform(
-        model_name=model_name,
-        appliance=appliance,
-        model=model,
-        loader=val_loader,
-        config=config,
-        output_path=best_waveform_path,
-        device=device,
-        split="validation best",
-        split_label=f"{val_split_label} best",
-        epoch=best_epoch,
-    )
-    _save_live_waveform(
-        model_name=model_name,
-        appliance=appliance,
-        model=model,
-        loader=test_loader,
-        config=config,
-        output_path=best_test_waveform_path,
-        device=device,
-        split="test best",
-        split_label=f"{test_split_label} best",
-        epoch=best_epoch,
-    )
 
     print(f"Saved checkpoint: {checkpoint_path}")
     print(f"Saved metrics: {metrics_path}")
+    print(f"Saved history CSV: {history_path}")
+    print(f"Saved loss detail CSV: {loss_detail_path}")
     print(f"Saved training plot: {history_plot_path}")
-    print(f"Saved detailed losses: {loss_detail_path}")
     print(f"Saved detailed loss plot: {loss_detail_plot_path}")
+    print(f"Saved live history plot: {live_history_path}")
+    print(f"Saved live loss detail plot: {live_loss_detail_path}")
     print(f"Saved best validation waveform: {best_waveform_path}")
     print(f"Saved best test waveform: {best_test_waveform_path}")
-    print(f"Latest validation waveform: {live_waveform_path}")
-    print(f"Latest test waveform: {live_test_waveform_path}")
+    print(f"Saved latest validation waveform: {live_waveform_path}")
+    print(f"Saved latest test waveform: {live_test_waveform_path}")
     return metrics
 
 
