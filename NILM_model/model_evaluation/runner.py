@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import random
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -73,14 +74,19 @@ def make_dataloader(
             )
         shuffle = False  # sampler and shuffle are mutually exclusive
 
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        sampler=sampler,
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
-    )
+    loader_kwargs: dict[str, Any] = {
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "sampler": sampler,
+        "num_workers": num_workers,
+        "pin_memory": torch.cuda.is_available(),
+    }
+    if num_workers > 0:
+        # Windows often deadlocks at val 0% when switching train/val loaders without this.
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
+
+    return DataLoader(dataset, **loader_kwargs)
 
 
 def _config_to_dict(config: Any) -> dict[str, Any]:

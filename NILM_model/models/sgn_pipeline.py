@@ -148,6 +148,11 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
     scale_mode = str(choose("scale_mode"))
     patience = int(choose("patience"))
     num_workers = int(choose("num_workers"))
+    if sys.platform == "win32" and num_workers > 0:
+        print(
+            f"Windows: num_workers={num_workers} may hang at 'val 0%' between epochs. "
+            "Recommend num_workers=0 in config. persistent_workers is enabled if you keep workers > 0."
+        )
     hidden_fc = int(choose("hidden_fc"))
     dropout = float(choose("dropout"))
     eval_stride = int(choose("eval_stride"))
