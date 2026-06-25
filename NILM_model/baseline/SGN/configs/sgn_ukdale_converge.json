@@ -2,7 +2,7 @@
   "preset": "sgn_paper",
   "default_appliance": "all",
   "input_length": 432,
-  "output_length": 32,
+  "output_length": 64,
   "batch_size": 64,
   "learning_rate": 0.0001,
   "lr_schedule": "plateau",
