@@ -83,7 +83,12 @@ class SGN(nn.Module):
     def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         power = self.regression(x)
         on_prob = torch.sigmoid(self.classification(x))
-        gate = (on_prob >= 0.5).to(on_prob.dtype) if self.gate_mode == "hard" else on_prob
+        if self.gate_mode == "hard":
+            # Straight-through estimator: binary gate in forward, soft gradient in backward.
+            hard = (on_prob >= 0.5).to(on_prob.dtype)
+            gate = on_prob + (hard - on_prob).detach()
+        else:
+            gate = on_prob
         gated_power = power * gate
         if self.standby is not None:
             gated_power = gated_power + (1.0 - gate) * self.standby

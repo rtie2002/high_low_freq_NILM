@@ -298,3 +298,18 @@ So “always half” is the **soft gate**, not a plotting error.
 - Orange **high**, red **low** → gate (`on_prob`) is the problem  
 - Orange **also low** → regression head hasn't learned magnitude yet  
 - Orange **flat ~2000 W**, red jagged → only `on_prob` is noisy; `on_confidence_weight` / `on_smooth_weight` help
+
+### Hard gate (`gate_mode: "hard"`)
+
+Paper variant: output is **0 or full regression**, not `regression × 0.75`.
+
+```
+soft:  red = regression × on_prob     → 2000 × 0.75 = 1500 W
+hard:  red = regression × 1.0 (if ON) → 2000 W when classifier fires
+```
+
+Uses **straight-through estimator (STE)** in `sgn/model.py` so the classifier still gets gradients during training (plain hard gate without STE cannot learn ON).
+
+Keep `reg_on_weight > 0` — on OFF timesteps hard gate blocks regression gradient from `L_output`; ON-only regression loss still trains the power head.
+
+Cross-house config uses `"gate_mode": "hard"` with STE.
