@@ -1,7 +1,7 @@
 {
   "split_mode": "holdout",
   "val_mode": "separate_files",
-  "split_description": "cross-house: train H1+H5 last 56d, val H2 last 7d, test H2 earlier 49d",
+  "split_description": "cross-house: train H1+H5 first 49d, val H1+H5 last 7d, test H2 full 56d",
   "val_house_ids": [2],
   "train_house_ids": [1, 5],
   "train_csv_file": "../../../data/multi_appliance_training.csv",
