@@ -1,0 +1,37 @@
+{
+  "split_mode": "holdout",
+  "val_mode": "separate_files",
+  "split_description": "Cross-house transfer: train H1+H5, val H2 tail, test H2 earlier window (disjoint).",
+  "train_csv_file": "../../../data/multi_appliance_training_cross_house.csv",
+  "val_csv_file": "../../../data/multi_appliance_validating_cross_house.csv",
+  "test_csv_file": "../../../data/multi_appliance_testing_cross_house.csv",
+  "house_column": "house",
+  "time_column": "readable_time",
+  "aggregate_column": "aggregate",
+  "feature_columns": [
+    "aggregate"
+  ],
+  "appliances": {
+    "kettle": {
+      "power": "kettle_power",
+      "on": "kettle_on"
+    },
+    "fridge": {
+      "power": "fridge_power",
+      "on": "fridge_on"
+    },
+    "microwave": {
+      "power": "microwave_power",
+      "on": "microwave_on"
+    },
+    "dishwasher": {
+      "power": "dishwasher_power",
+      "on": "dishwasher_on"
+    },
+    "washingmachine": {
+      "power": "washingmachine_power",
+      "on": "washingmachine_on"
+    }
+  },
+  "sampling_seconds": 6
+}

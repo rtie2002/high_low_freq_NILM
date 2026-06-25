@@ -5,14 +5,24 @@ Paper protocol (Shin et al. AAAI 2019):
   - Test house: 2
   - Duration: last 1 week per house in the paper; default here is 28 days (4 weeks)
 
-Split within each train house window:
-  - training:   all but the last ``val_days`` calendar days
-  - validating: last ``val_days`` calendar days (per house, then concatenated)
+Split modes (``--val_source``):
+  train_houses (default):
+    - training:   all but the last ``val_days`` calendar days (per train house)
+    - validating: last ``val_days`` calendar days (per train house, concatenated)
+  test_house (cross-house transfer — recommended for H2 generalization):
+    - training:   full ``last_days`` window from train houses (1 + 5)
+    - validating: last ``val_days`` from the test house window (proxy target house)
+    - testing:    earlier ``last_days - val_days`` from the test house (disjoint from val)
 
-Outputs in NILM_model/data/:
+Outputs in NILM_model/data/ (``train_houses`` mode):
   - multi_appliance_training.csv
   - multi_appliance_validating.csv
   - multi_appliance_testing.csv
+
+Outputs (``test_house`` mode):
+  - multi_appliance_training_cross_house.csv
+  - multi_appliance_validating_cross_house.csv
+  - multi_appliance_testing_cross_house.csv
 """
 
 from __future__ import annotations
@@ -122,6 +132,37 @@ def temporal_train_val_split(
     return training, validating
 
 
+def concat_train_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    """Use the full loaded window from each train house (no internal val holdout)."""
+    return (
+        pd.concat(frames, ignore_index=True)
+        .sort_values([HOUSE_COL, TIME_COL])
+        .reset_index(drop=True)
+    )
+
+
+def split_test_house_val_test(
+    test_pool: pd.DataFrame,
+    val_days: float,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Hold out last val_days of the test-house window for validation; remainder is test."""
+    ordered = test_pool.sort_values(TIME_COL).reset_index(drop=True)
+    min_rows = 432 + 1
+    if len(ordered) < 2 * min_rows:
+        raise ValueError(f"Test house pool too short for split: {len(ordered)} rows")
+    end_time = ordered[TIME_COL].max()
+    val_start = end_time - pd.Timedelta(days=val_days)
+    val_mask = ordered[TIME_COL] >= val_start
+    validating = ordered[val_mask].copy()
+    testing = ordered[~val_mask].copy()
+    if len(testing) < min_rows or len(validating) < min_rows:
+        raise ValueError(
+            f"Test-house split left test={len(testing)} val={len(validating)} rows; "
+            f"need at least {min_rows} each. Try smaller --val_days or larger --last_days."
+        )
+    return testing, validating
+
+
 def summarize(name: str, df: pd.DataFrame) -> None:
     houses = sorted(df[HOUSE_COL].unique())
     start = df[TIME_COL].min()
@@ -175,6 +216,15 @@ def main() -> None:
         default=2,
         help="Holdout test house id.",
     )
+    parser.add_argument(
+        "--val_source",
+        choices=["train_houses", "test_house"],
+        default="test_house",
+        help=(
+            "test_house (default): cross-house transfer val from test house; "
+            "train_houses: val = last val_days from each train house."
+        ),
+    )
     args = parser.parse_args()
 
     data_dir = args.data_dir.resolve()
@@ -194,6 +244,12 @@ def main() -> None:
     print(f"mode        : {'full_range' if args.full_range else f'last {args.last_days:g} days'}")
     if args.full_range:
         print("train/val   : 85% / 15% temporal per train house (full-range mode)")
+    elif args.val_source == "test_house":
+        print(
+            f"train/val   : train H{','.join(str(h) for h in train_houses)} "
+            f"({args.last_days:g}d each) + val H{args.test_house} (last {val_days:g}d); "
+            f"test H{args.test_house} (first {args.last_days - val_days:g}d)"
+        )
     else:
         print(f"train/val   : first {args.last_days - val_days:g} days train + last {val_days:g} days val (per house)")
 
@@ -210,19 +266,34 @@ def main() -> None:
     test_path = house_paths.get(args.test_house)
     if test_path is None or not test_path.exists():
         raise FileNotFoundError(f"Expected CSV for test house {args.test_house}: {test_path}")
-    print(f"\n[test] house {args.test_house}")
-    test_df = loader(test_path)
+    print(f"\n[test pool] house {args.test_house}")
+    test_pool_df = loader(test_path)
 
     if args.full_range:
         training_df, validating_df = temporal_train_val_split_by_ratio(train_frames, 0.85)
+        test_df = test_pool_df
+    elif args.val_source == "test_house":
+        if val_days >= args.last_days:
+            raise ValueError(
+                f"--val_days ({val_days}) must be smaller than --last_days ({args.last_days}) "
+                "when --val_source test_house"
+            )
+        training_df = concat_train_frames(train_frames)
+        test_df, validating_df = split_test_house_val_test(test_pool_df, val_days)
     else:
         if val_days >= args.last_days:
             raise ValueError(f"--val_days ({val_days}) must be smaller than --last_days ({args.last_days})")
         training_df, validating_df = temporal_train_val_split(train_frames, val_days)
+        test_df = test_pool_df
 
-    out_train = data_dir / "multi_appliance_training.csv"
-    out_val = data_dir / "multi_appliance_validating.csv"
-    out_test = data_dir / "multi_appliance_testing.csv"
+    if args.val_source == "test_house":
+        out_train = data_dir / "multi_appliance_training_cross_house.csv"
+        out_val = data_dir / "multi_appliance_validating_cross_house.csv"
+        out_test = data_dir / "multi_appliance_testing_cross_house.csv"
+    else:
+        out_train = data_dir / "multi_appliance_training.csv"
+        out_val = data_dir / "multi_appliance_validating.csv"
+        out_test = data_dir / "multi_appliance_testing.csv"
 
     training_df.to_csv(out_train, index=False)
     validating_df.to_csv(out_val, index=False)
@@ -231,10 +302,14 @@ def main() -> None:
     print("\n" + "=" * 72)
     print("SAVED SPLITS")
     print("=" * 72)
-    summarize("multi_appliance_training.csv", training_df)
-    summarize("multi_appliance_validating.csv", validating_df)
-    summarize("multi_appliance_testing.csv", test_df)
-    print(f"\nDone. Use csv_config: baseline/SGN/configs/training_data_ukdale_sgn_splits.json")
+    summarize(out_train.name, training_df)
+    summarize(out_val.name, validating_df)
+    summarize(out_test.name, test_df)
+    if args.val_source == "test_house":
+        print("\nDone. Use csv_config: baseline/SGN/configs/training_data_ukdale_cross_house.json")
+        print("      model_config: baseline/SGN/configs/sgn_ukdale_cross_house.json")
+    else:
+        print("\nDone. Use csv_config: baseline/SGN/configs/training_data_ukdale_sgn_splits.json")
 
 
 if __name__ == "__main__":

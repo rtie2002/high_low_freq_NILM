@@ -167,6 +167,21 @@ $$
 
 Approx. row counts @ 6 s: train ~302k, val ~101k, test ~101k.
 
+### Cross-house transfer split (recommended for H2 generalization)
+
+Built with `build_sgn_ukdale_splits.py --val_source test_house` (default):
+
+| Split | Houses | Window |
+|-------|--------|--------|
+| Train | 1, 5 | last 28 days each (full train-house pool) |
+| Val | 2 only | last 4 days of the 28-day H2 pool |
+| Test | 2 only | first 24 days of the 28-day H2 pool (disjoint from val) |
+
+CSV files: `multi_appliance_*_cross_house.csv`  
+Config: `training_data_ukdale_cross_house.json` + `sgn_ukdale_cross_house.json` (`early_stop_metric: f1`).
+
+Val matches the **target house** (H2) so checkpoint selection tracks cross-house transfer, not H1/H5 memorization.
+
 ---
 
 ## 6. Sliding windows
