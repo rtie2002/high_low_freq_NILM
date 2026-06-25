@@ -458,6 +458,8 @@ def evaluate_nilm_model(
     sae_period: int,
     target_names: list[str] | None = None,
     loss_only: bool = False,
+    show_progress: bool = False,
+    progress_desc: str | None = None,
 ) -> tuple[float, dict[str, float]]:
     """Evaluate the model on a data loader.
 
@@ -470,7 +472,15 @@ def evaluate_nilm_model(
     loss_details: list[dict[str, Any]] = []
     pred_watts, true_watts, pred_on, true_on = [], [], [], []
 
-    for batch in loader:
+    batch_iter = loader
+    if show_progress:
+        batch_iter = tqdm(
+            loader,
+            desc=progress_desc or "evaluating",
+            leave=False,
+        )
+
+    for batch in batch_iter:
         x = batch["x"].to(device, non_blocking=True)
         y = batch["y"].to(device, non_blocking=True)
         on = batch["on"].to(device, non_blocking=True)
@@ -627,6 +637,8 @@ def train_nilm_model(
                 sae_period=sae_period,
                 target_names=target_names,
                 loss_only=True,
+                show_progress=True,
+                progress_desc=f"{appliance} val epoch {epoch + 1}/{epochs}",
             )
             train_loss = float(np.mean(train_losses))
             train_loss_detail = _mean_loss_details(train_loss_details, target_names)
@@ -657,8 +669,13 @@ def train_nilm_model(
                 f"epoch={epoch + 1} train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
                 f"val_score({early_stop_metric})={val_score:.5f} lr={current_lr:.2e}"
             )
-            gate_stats = summarize_val_gating(model, val_loader, device, scale)
-            train_gate_stats = summarize_val_gating(model, train_loader, device, scale, max_batches=15)
+            gate_stats: dict[str, float] = {}
+            train_gate_stats: dict[str, float] = {}
+            if plot_mode != "end":
+                gate_stats = summarize_val_gating(model, val_loader, device, scale)
+                train_gate_stats = summarize_val_gating(
+                    model, train_loader, device, scale, max_batches=15
+                )
             if train_gate_stats:
                 print(
                     "train ON diagnostics: "
@@ -700,8 +717,8 @@ def train_nilm_model(
                     f"Live PNGs: {live_history_path}, {live_loss_detail_path}, "
                     f"{live_waveform_path}, {live_test_waveform_path}"
                 )
-            elif plot_mode == "end":
-                print(f"Epoch {epoch_no}: plots deferred (plot_mode=end).")
+            if plot_mode == "end":
+                print(f"Epoch {epoch_no}: plots and gate diagnostics deferred (plot_mode=end).")
             else:
                 print(
                     f"Epoch {epoch_no}: plots skipped "
@@ -841,6 +858,21 @@ def train_nilm_model(
         f"\n== {appliance} best checkpoint "
         f"(epoch {best_epoch}, early_stop={early_stop_metric}, score={best_val:.5f}) =="
     )
+    if plot_mode == "end":
+        gate_stats = summarize_val_gating(model, val_loader, device, scale)
+        train_gate_stats = summarize_val_gating(model, train_loader, device, scale, max_batches=15)
+        if train_gate_stats:
+            print(
+                "train ON diagnostics: "
+                f"raw/true={train_gate_stats['mean_raw_over_true_when_on']:.3f}, "
+                f"gated/true={train_gate_stats['mean_gated_over_true_when_on']:.3f}"
+            )
+        if gate_stats:
+            print(
+                "val ON diagnostics: "
+                f"raw/true={gate_stats['mean_raw_over_true_when_on']:.3f}, "
+                f"gated/true={gate_stats['mean_gated_over_true_when_on']:.3f}"
+            )
     _print_split_metrics("val", val_metrics)
     _print_split_metrics("test", test_metrics)
     history_plot_path = run_dir / f"history_{appliance}.png"
