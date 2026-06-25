@@ -53,7 +53,16 @@ class ConvSeq2SeqSubNet(nn.Module):
 
 
 class SGN(nn.Module):
-    """Subtask Gated Network with multi-appliance power and on/off outputs."""
+    """Subtask Gated Network (Shin et al., AAAI 2019).
+
+    Paper notation (one appliance i, one window):
+      x~     input aggregate window          -> batch["x"]
+      p_hat  regression output (power head)  -> power
+      o_hat  classification ON probability   -> on_prob  (sigmoid)
+      y_hat  final gated prediction          -> gated_power = p_hat * o_hat   (Eq. 6)
+
+    Two identical Zhang Seq2Seq CNN branches; only the final gating connects them.
+    """
 
     def __init__(
         self,
@@ -81,20 +90,34 @@ class SGN(nn.Module):
         self.standby = nn.Parameter(torch.zeros(num_appliances, 1)) if standby_power else None
 
     def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        # f_power(x~): regression subnetwork — raw power estimate p_hat (no sigmoid).
         power = self.regression(x)
+
+        # f_on(x~): classification subnetwork — logits passed through sigmoid -> o_hat in [0, 1].
+        # Paper Appendix A: sigmoid only on the classification branch.
         on_prob = torch.sigmoid(self.classification(x))
+
         if self.gate_mode == "hard":
-            # Straight-through estimator: binary gate in forward, soft gradient in backward.
+            # Hard SGN variant (Eq. 10): gate = 1 if o_hat >= 0.5 else 0.
+            # Straight-through estimator keeps soft o_hat for backward through the gate.
             hard = (on_prob >= 0.5).to(on_prob.dtype)
             gate = on_prob + (hard - on_prob).detach()
         else:
+            # Soft SGN (Eq. 6): use o_hat directly as the gate.
             gate = on_prob
+
+        # Eq. (6): y_hat = p_hat * o_hat  (element-wise over output timesteps).
+        # Autograd note: d(L_output)/d(p_hat) is scaled by o_hat, so regression learns
+        # mainly when the classifier predicts ON; if o_hat -> 0, regression gradient -> 0.
         gated_power = power * gate
+
+        # SGN-sp variant (Eq. 9): add learnable standby b when gate is closed.
         if self.standby is not None:
             gated_power = gated_power + (1.0 - gate) * self.standby
+
         return {
-            "power": power,
-            "on_prob": on_prob,
-            "gate": gate,
-            "gated_power": gated_power,
+            "power": power,              # p_hat — used by optional reg_on_loss, plots (orange)
+            "on_prob": on_prob,          # o_hat — trained by L_on (BCE)
+            "gate": gate,                # soft o_hat or hard STE gate
+            "gated_power": gated_power,  # y_hat — trained by L_output (MSE)
         }

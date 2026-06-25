@@ -92,7 +92,11 @@ def plot_training_history(
 
     x = history[epoch_col] if epoch_col in history else np.arange(len(history))
     loss_cols = [col for col in loss_cols if col in history]
-    metric_cols = [col for col in metric_cols if col in history]
+    metric_cols = [
+        col
+        for col in metric_cols
+        if col in history and not history[col].isna().all()
+    ]
     power_metric_cols, cls_metric_cols = _split_metric_cols(metric_cols)
     n_rows = 1 + int(bool(power_metric_cols)) + int(bool(cls_metric_cols))
 

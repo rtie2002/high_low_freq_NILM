@@ -4,15 +4,23 @@ import torch.nn.functional as F
 
 
 class SGNLoss(nn.Module):
-    """SGN objective: output regression loss plus on/off classification loss.
+    """SGN training objective (Shin et al., AAAI 2019).
 
-    Loss terms:
-      L_output       — MSE on gated_power vs true_power  (paper Eq. 7a)
-      L_on           — BCE on on_prob vs true on/off label  (paper Eq. 7c)
-      L_reg_on       — MSE on raw regression vs true_power, ON timesteps only
-      L_gated_on     — MSE on gated_power vs true_power, ON timesteps only
-      L_on_conf      — MSE(on_prob, 1) on ON timesteps (push gate fully open)
-      L_on_smooth    — temporal smoothness of gated_power during ON (flat plateaus)
+    Paper Eq. (8) — default when all extra weights are 0 (sgn_ukdale_paper.json):
+        L = L_output + L_on
+
+    Paper Eq. (7a) — L_output (whole-network / gated regression loss):
+        L_output = (1/T) * sum_t (y_t - p_hat_t * o_hat_t)^2
+                 = MSE(y_hat, y)   where y_hat = gated_power, y = target_power
+
+    Paper Eq. (7c) — L_on (classification subnetwork loss):
+        L_on = -sum_t [ o_t*log(o_hat_t) + (1-o_t)*log(1-o_hat_t) ]
+             = BCE(o_hat, o)       where o = target_on
+
+    Paper Eq. (7b) L_power on raw p_hat alone is NOT used in Eq. (8).
+
+    Optional extensions (sgn_ukdale_cross_house.json, weights > 0):
+      L_reg_on, L_gated_on, weighted BCE — not in the original paper.
     """
 
     def __init__(
@@ -47,10 +55,13 @@ class SGNLoss(nn.Module):
         else:
             smooth_on = target_on
 
-        gated = predictions["gated_power"]
-        on_prob = predictions["on_prob"]
-        output_error = (gated - target_power).pow(2)
+        # --- L_output (Eq. 7a): MSE between gated prediction and true power ---
+        gated = predictions["gated_power"]   # y_hat = p_hat * o_hat
+        on_prob = predictions["on_prob"]     # o_hat
+        output_error = (gated - target_power).pow(2)  # per-timestep (y - y_hat)^2
 
+        # --- L_on (Eq. 7c): sigmoid cross-entropy on ON/OFF labels ---
+        # Trains the classification branch directly (even when gate blocks regression).
         if self.bce_pos_weight > 1.0:
             pos_w = smooth_on.new_tensor(self.bce_pos_weight)
             on_error = F.binary_cross_entropy(
@@ -61,9 +72,10 @@ class SGNLoss(nn.Module):
         else:
             on_error = F.binary_cross_entropy(on_prob, smooth_on, reduction="none")
 
-        output_loss = output_error.mean()
-        on_loss = on_error.mean()
+        output_loss = output_error.mean()   # L_output
+        on_loss = on_error.mean()           # L_on
 
+        # --- Optional extra terms (off when reg_on_weight / gated_on_weight == 0) ---
         on_mask = target_on >= 0.5
         zero = output_loss.detach() * 0.0
 
@@ -102,6 +114,9 @@ class SGNLoss(nn.Module):
         output_loss_per_appliance = output_error.mean(dim=reduce_dims)
         on_loss_per_appliance = on_error.mean(dim=reduce_dims)
 
+        # Eq. (8) when output_weight=on_weight=1 and all other weights=0:
+        #   total = L_output + L_on
+        # runner.py calls loss_parts["loss"].backward() on this scalar.
         total = (
             self.output_weight * output_loss
             + self.on_weight * on_loss
@@ -110,12 +125,13 @@ class SGNLoss(nn.Module):
             + self.on_confidence_weight * on_conf_loss
             + self.on_smooth_weight * on_smooth_loss
         )
+        # Paper-only breakdown per appliance (excludes optional reg_on / gated_on terms).
         loss_per_appliance = (
             self.output_weight * output_loss_per_appliance
             + self.on_weight * on_loss_per_appliance
         )
         return {
-            "loss": total,
+            "loss": total,  # scalar optimized by Adam; also used for val early stopping when metric=total_loss
             "output_loss": output_loss.detach(),
             "on_loss": on_loss.detach(),
             "reg_on_loss": reg_on_loss.detach(),

@@ -240,6 +240,14 @@ def _loss_detail_row(epoch: int, prefix: str, detail: dict[str, Any]) -> dict[st
 
 
 def _early_stop_score(val_loss: float, val_metrics: dict[str, Any], metric_name: str) -> float:
+    """Pick the scalar used to save best_*.pt (lower is better except f1).
+
+    Config key: early_stop_metric in sgn_*.json
+      total_loss   -> val SGNLoss total (L_output + L_on + optional extras); default
+      output_loss  -> val L_output only (paper-recommended: gated MSE, Eq. 7a)
+      on_loss      -> val L_on only (Eq. 7c)
+      mae / f1     -> evaluation metrics (computed fully only after training ends)
+    """
     detail = val_metrics.get("loss_detail", {})
     if metric_name == "output_loss":
         return float(detail.get("output_loss", val_loss))
@@ -390,7 +398,7 @@ def evaluate_nilm_model(
     mean_loss = float(np.mean(losses))
 
     if loss_only:
-        metrics: dict[str, Any] = {"mae": float("nan"), "sae": float("nan"), "f1": float("nan")}
+        metrics: dict[str, Any] = {}
         if target_names:
             metrics["loss_detail"] = _mean_loss_details(loss_details, target_names)
         return mean_loss, metrics
@@ -481,7 +489,7 @@ def train_nilm_model(
         detail_writer = None
         writer = csv.DictWriter(
             handle,
-            fieldnames=["epoch", "train_loss", "val_loss", "val_mae", "val_sae", "val_f1"],
+            fieldnames=["epoch", "train_loss", "val_loss"],
         )
         writer.writeheader()
 
@@ -491,13 +499,17 @@ def train_nilm_model(
             train_loss_details: list[dict[str, Any]] = []
             progress = tqdm(train_loader, desc=f"{appliance} epoch {epoch + 1}/{epochs}")
             for batch in progress:
+                # Paper notation: x~ = aggregate window, y = true power, o = ON/OFF label.
                 x = batch["x"].to(device, non_blocking=True)
                 y = batch["y"].to(device, non_blocking=True)
                 on = batch["on"].to(device, non_blocking=True)
 
                 optimizer.zero_grad(set_to_none=True)
+                # SGN forward (model.py): power=p_hat, on_prob=o_hat, gated_power=y_hat=p_hat*o_hat.
                 outputs = model(x)
+                # SGNLoss (losses.py): total = L_output + L_on (+ optional extras from config).
                 loss_parts = criterion(outputs, y, on)
+                # Backprop Eq. (8). Gradients flow to both CNN branches through y_hat and BCE.
                 loss_parts["loss"].backward()
                 if grad_clip_norm > 0.0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
@@ -508,7 +520,7 @@ def train_nilm_model(
                 train_loss_details.append(_loss_detail_from_parts(loss_parts, target_names))
                 progress.set_postfix(loss=f"{loss_value:.4f}")
 
-            # loss_only=True skips MAE/SAE/F1 inverse-scaling — much faster per epoch
+            # loss_only=True: val loss only (MAE/SAE/F1 computed once after training)
             val_loss, val_metrics = evaluate_nilm_model(
                 model,
                 val_loader,
@@ -527,9 +539,6 @@ def train_nilm_model(
                     "epoch": epoch + 1,
                     "train_loss": train_loss,
                     "val_loss": val_loss,
-                    "val_mae": val_metrics["mae"],
-                    "val_sae": val_metrics["sae"],
-                    "val_f1": val_metrics["f1"],
                 }
             )
             detail_row = {
@@ -542,6 +551,7 @@ def train_nilm_model(
             detail_writer.writerow(detail_row)
             handle.flush()
             detail_handle.flush()
+            # Best checkpoint: lowest val_score on validation split (see _early_stop_score).
             val_score = _early_stop_score(val_loss, val_metrics, early_stop_metric)
             if scheduler is not None:
                 scheduler.step(val_loss)
