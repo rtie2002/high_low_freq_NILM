@@ -109,8 +109,7 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
             "learning_rate": 1.0e-3,
             "scale_mode": "fixed_612",
         }
-    if args.preset is None or model_cfg.get("preset", preset) == preset:
-        defaults.update(model_cfg)
+    defaults.update(model_cfg)
 
     if args.data_source == "csv" and csv_cfg is not None:
         sampling_seconds = int(csv_cfg.get("sampling_seconds", 0) or 0)
