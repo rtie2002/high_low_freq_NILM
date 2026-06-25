@@ -70,6 +70,8 @@ class SGNConfig:
     oversample_on: bool = False
     oversample_max_weight: float = 15.0
     grad_clip_norm: float = 1.0
+    lr_schedule: str = "none"
+    lr_warmup_epochs: int = 0
     lr_scheduler_patience: int = 8
     lr_scheduler_factor: float = 0.5
     lr_min: float = 1e-6

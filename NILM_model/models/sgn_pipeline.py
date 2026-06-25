@@ -170,7 +170,9 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
     oversample_on = bool(defaults.get("oversample_on", False))
     oversample_max_weight = float(defaults.get("oversample_max_weight", 15.0))
     grad_clip_norm = float(defaults.get("grad_clip_norm", 1.0))
-    lr_scheduler_patience = int(defaults.get("lr_scheduler_patience", 8))
+    lr_schedule = str(defaults.get("lr_schedule", "none"))
+    lr_warmup_epochs = int(defaults.get("lr_warmup_epochs", 0))
+    lr_scheduler_patience = int(defaults.get("lr_scheduler_patience", 0))
     lr_scheduler_factor = float(defaults.get("lr_scheduler_factor", 0.5))
     lr_min = float(defaults.get("lr_min", 1e-6))
     min_epochs = int(defaults.get("min_epochs", 5))
@@ -239,6 +241,8 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
         oversample_on=oversample_on,
         oversample_max_weight=oversample_max_weight,
         grad_clip_norm=grad_clip_norm,
+        lr_schedule=lr_schedule,
+        lr_warmup_epochs=lr_warmup_epochs,
         lr_scheduler_patience=lr_scheduler_patience,
         lr_scheduler_factor=lr_scheduler_factor,
         lr_min=lr_min,
@@ -452,6 +456,11 @@ def train_one(
     print(f"Plot mode: {cfg.plot_mode}" + (f" (interval={cfg.plot_interval})" if cfg.plot_mode == "interval" else ""))
     if cfg.run_all_epochs:
         print(f"run_all_epochs=True: training all {cfg.epochs} epochs (no early stop).")
+    if cfg.lr_schedule != "none":
+        print(
+            f"LR schedule: {cfg.lr_schedule} "
+            f"(peak={cfg.learning_rate}, min={cfg.lr_min}, warmup={cfg.lr_warmup_epochs})"
+        )
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=cfg.learning_rate,

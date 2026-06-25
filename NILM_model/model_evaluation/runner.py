@@ -287,6 +287,75 @@ def _format_loss_table(train_detail: dict[str, Any], val_detail: dict[str, Any])
     return "\n".join(lines)
 
 
+def _set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
+    for group in optimizer.param_groups:
+        group["lr"] = lr
+
+
+def _build_lr_scheduler(
+    optimizer: torch.optim.Optimizer,
+    cfg: dict[str, Any],
+    epochs: int,
+) -> tuple[Any | None, str]:
+    """Return (scheduler, schedule_name). Cosine = high LR early, slow decay; plateau = react to val loss."""
+    schedule = str(cfg.get("lr_schedule", "none")).lower()
+    patience = int(cfg.get("lr_scheduler_patience", 0))
+    if schedule == "none" and patience > 0:
+        schedule = "plateau"
+
+    if schedule == "cosine":
+        warmup = int(cfg.get("lr_warmup_epochs", 0))
+        cosine_epochs = max(1, epochs - warmup)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=cosine_epochs,
+            eta_min=float(cfg.get("lr_min", 1e-6)),
+        )
+        return scheduler, f"cosine (warmup={warmup}, T_max={cosine_epochs})"
+
+    if schedule == "plateau" and patience > 0:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=float(cfg.get("lr_scheduler_factor", 0.5)),
+            patience=patience,
+            min_lr=float(cfg.get("lr_min", 1e-6)),
+        )
+        return scheduler, f"plateau (patience={patience})"
+
+    return None, "none"
+
+
+def _step_lr_scheduler(
+    scheduler: Any | None,
+    schedule_name: str,
+    *,
+    optimizer: torch.optim.Optimizer,
+    cfg: dict[str, Any],
+    epoch: int,
+    val_loss: float,
+) -> None:
+    if scheduler is None:
+        return
+
+    if schedule_name.startswith("plateau"):
+        scheduler.step(val_loss)
+        return
+
+    if schedule_name.startswith("cosine"):
+        warmup = int(cfg.get("lr_warmup_epochs", 0))
+        peak_lr = float(cfg.get("learning_rate", optimizer.param_groups[0]["lr"]))
+        floor_lr = float(cfg.get("lr_min", 1e-6))
+        if warmup > 0 and epoch < warmup:
+            warmup_lr = floor_lr + (peak_lr - floor_lr) * (epoch + 1) / warmup
+            _set_optimizer_lr(optimizer, warmup_lr)
+            return
+        if warmup > 0 and epoch == warmup:
+            _set_optimizer_lr(optimizer, peak_lr)
+            scheduler.last_epoch = -1
+        scheduler.step()
+
+
 def _should_plot_during_training(plot_mode: str, epoch_no: int, plot_interval: int) -> bool:
     if plot_mode == "end":
         return False
@@ -558,6 +627,7 @@ def train_nilm_model(
     min_epochs = int(cfg.get("min_epochs", 5))
     grad_clip_norm = float(cfg.get("grad_clip_norm", 0.0))
     lr_scheduler_patience = int(cfg.get("lr_scheduler_patience", 0))
+    lr_warmup_epochs = int(cfg.get("lr_warmup_epochs", 0))
     val_split_label = str(cfg.get("val_split_label", "validation"))
     test_split_label = str(cfg.get("test_split_label", "test"))
     plot_mode = str(cfg.get("plot_mode", "live"))
@@ -584,16 +654,11 @@ def train_nilm_model(
     print(f"Plot mode: {plot_mode}" + (f" (interval={plot_interval})" if plot_mode == "interval" else ""))
     if grad_clip_norm > 0.0:
         print(f"Gradient clipping: max_norm={grad_clip_norm}")
-    scheduler = None
-    if lr_scheduler_patience > 0:
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode="min",
-            factor=float(cfg.get("lr_scheduler_factor", 0.5)),
-            patience=lr_scheduler_patience,
-            min_lr=float(cfg.get("lr_min", 1e-6)),
-        )
-        print(f"LR scheduler: ReduceLROnPlateau patience={lr_scheduler_patience}")
+    scheduler, schedule_name = _build_lr_scheduler(optimizer, cfg, epochs)
+    if scheduler is not None:
+        print(f"LR scheduler: {schedule_name}")
+    elif lr_warmup_epochs > 0:
+        print(f"LR warmup: {lr_warmup_epochs} epochs (no decay scheduler)")
     print(f"Validation waveforms: {val_split_label}")
     print(f"Test waveforms: {test_split_label}")
 
@@ -668,8 +733,14 @@ def train_nilm_model(
             detail_handle.flush()
             # Best checkpoint: lowest val_score on validation split (see _early_stop_score).
             val_score = _early_stop_score(val_loss, val_metrics, early_stop_metric)
-            if scheduler is not None:
-                scheduler.step(val_loss)
+            _step_lr_scheduler(
+                scheduler,
+                schedule_name,
+                optimizer=optimizer,
+                cfg=cfg,
+                epoch=epoch,
+                val_loss=val_loss,
+            )
             current_lr = optimizer.param_groups[0]["lr"]
             print(
                 f"epoch={epoch + 1} train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
