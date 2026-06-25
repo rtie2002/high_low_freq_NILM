@@ -147,6 +147,8 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
     label_smoothing = float(defaults.get("label_smoothing", 0.0))
     reg_on_weight = float(defaults.get("reg_on_weight", 0.0))
     gated_on_weight = float(defaults.get("gated_on_weight", 0.0))
+    on_confidence_weight = float(defaults.get("on_confidence_weight", 0.0))
+    on_smooth_weight = float(defaults.get("on_smooth_weight", 0.0))
     bce_pos_weight = float(defaults.get("bce_pos_weight", 1.0))
     oversample_on = bool(defaults.get("oversample_on", False))
     min_epochs = int(defaults.get("min_epochs", 5))
@@ -204,6 +206,8 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
         label_smoothing=label_smoothing,
         reg_on_weight=reg_on_weight,
         gated_on_weight=gated_on_weight,
+        on_confidence_weight=on_confidence_weight,
+        on_smooth_weight=on_smooth_weight,
         bce_pos_weight=bce_pos_weight,
         oversample_on=oversample_on,
         min_epochs=min_epochs,
@@ -381,12 +385,18 @@ def train_one(
         label_smoothing=cfg.label_smoothing,
         reg_on_weight=cfg.reg_on_weight,
         gated_on_weight=cfg.gated_on_weight,
+        on_confidence_weight=cfg.on_confidence_weight,
+        on_smooth_weight=cfg.on_smooth_weight,
         bce_pos_weight=cfg.bce_pos_weight,
     )
     if cfg.reg_on_weight > 0.0:
         print(f"ON-only regression loss: reg_on_weight={cfg.reg_on_weight}")
     if cfg.gated_on_weight > 0.0:
         print(f"ON-only gated output loss: gated_on_weight={cfg.gated_on_weight}")
+    if cfg.on_confidence_weight > 0.0:
+        print(f"ON confidence loss: on_confidence_weight={cfg.on_confidence_weight}")
+    if cfg.on_smooth_weight > 0.0:
+        print(f"ON temporal smoothness: on_smooth_weight={cfg.on_smooth_weight}")
     if cfg.bce_pos_weight > 1.0:
         print(f"BCE pos_weight: {cfg.bce_pos_weight} (ON samples weighted {cfg.bce_pos_weight}x)")
     optimizer = torch.optim.Adam(
