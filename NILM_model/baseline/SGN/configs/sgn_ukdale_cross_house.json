@@ -18,8 +18,9 @@
   "standby_power": false,
   "weight_decay": 0.0001,
   "early_stop_metric": "output_loss",
-  "label_smoothing": 0.05,
-  "reg_on_weight": 1.0,
+  "label_smoothing": 0.0,
+  "reg_on_weight": 2.0,
+  "gated_on_weight": 3.0,
   "bce_pos_weight": 30.0,
   "oversample_on": true,
   "seed": 1234

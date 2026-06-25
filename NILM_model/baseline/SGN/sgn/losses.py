@@ -10,12 +10,9 @@ class SGNLoss(nn.Module):
       L_output  — MSE on gated_power vs true_power  (paper Eq. 7a)
       L_on      — BCE on on_prob vs true on/off label  (paper Eq. 7c)
       L_reg_on  — MSE on raw regression vs true_power, restricted to true-ON
-                  timesteps only.  NOT in the paper, but needed when training
-                  cross-house: soft-gate attenuates regression gradient by
-                  on_prob (≤0.5 early in training) while 99% OFF windows
-                  pull regression → 0.  L_reg_on gives the regression head a
-                  direct full-strength gradient on ON samples, bypassing the
-                  gate.  Set reg_on_weight=0 to reproduce the paper exactly.
+                  timesteps only (trains regression head directly).
+      L_gated_on — MSE on gated_power vs true_power, ON timesteps only (trains
+                   the plotted output: power × on_prob must reach full true W).
     """
 
     def __init__(
@@ -24,6 +21,7 @@ class SGNLoss(nn.Module):
         on_weight: float = 1.0,
         label_smoothing: float = 0.0,
         reg_on_weight: float = 0.0,
+        gated_on_weight: float = 0.0,
         bce_pos_weight: float = 1.0,
     ) -> None:
         super().__init__()
@@ -31,6 +29,7 @@ class SGNLoss(nn.Module):
         self.on_weight = on_weight
         self.label_smoothing = label_smoothing
         self.reg_on_weight = float(reg_on_weight)
+        self.gated_on_weight = float(gated_on_weight)
         self.bce_pos_weight = float(bce_pos_weight)
 
     def forward(
@@ -58,13 +57,22 @@ class SGNLoss(nn.Module):
         output_loss = output_error.mean()
         on_loss = on_error.mean()
 
-        # ON-restricted direct regression loss
+        # ON-restricted losses (what you see in waveform plots is gated_power)
         on_mask = target_on >= 0.5
-        if self.reg_on_weight > 0.0 and on_mask.any():
-            reg_error = (predictions["power"] - target_power).pow(2)
-            reg_on_loss = reg_error[on_mask].mean()
+        zero = output_loss.detach() * 0.0
+        if on_mask.any():
+            if self.reg_on_weight > 0.0:
+                reg_error = (predictions["power"] - target_power).pow(2)
+                reg_on_loss = reg_error[on_mask].mean()
+            else:
+                reg_on_loss = zero
+            if self.gated_on_weight > 0.0:
+                gated_on_loss = output_error[on_mask].mean()
+            else:
+                gated_on_loss = zero
         else:
-            reg_on_loss = output_loss.detach() * 0.0
+            reg_on_loss = zero
+            gated_on_loss = zero
 
         reduce_dims = (0,) if output_error.ndim == 2 else (0, 2)
         output_loss_per_appliance = output_error.mean(dim=reduce_dims)
@@ -74,6 +82,7 @@ class SGNLoss(nn.Module):
             self.output_weight * output_loss
             + self.on_weight * on_loss
             + self.reg_on_weight * reg_on_loss
+            + self.gated_on_weight * gated_on_loss
         )
         loss_per_appliance = (
             self.output_weight * output_loss_per_appliance
@@ -84,6 +93,7 @@ class SGNLoss(nn.Module):
             "output_loss": output_loss.detach(),
             "on_loss": on_loss.detach(),
             "reg_on_loss": reg_on_loss.detach(),
+            "gated_on_loss": gated_on_loss.detach(),
             "output_loss_per_appliance": output_loss_per_appliance.detach(),
             "on_loss_per_appliance": on_loss_per_appliance.detach(),
             "loss_per_appliance": loss_per_appliance.detach(),
