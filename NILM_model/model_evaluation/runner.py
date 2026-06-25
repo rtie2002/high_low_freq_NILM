@@ -859,7 +859,12 @@ def train_nilm_model(
             else:
                 stale_epochs += 1
                 if not run_all_epochs and stale_epochs >= patience:
-                    print(f"Early stopping at epoch {epoch + 1}; best epoch was {best_epoch}.")
+                    print(
+                        f"Early stopping at epoch {epoch + 1}; best epoch was {best_epoch} "
+                        f"({early_stop_metric}={best_val:.5f}). "
+                        f"Weights from epoch {best_epoch} are in {checkpoint_path.name} — "
+                        f"not the last epoch."
+                    )
                     break
         detail_handle.close()
 
@@ -976,7 +981,12 @@ def train_nilm_model(
         epoch=best_epoch,
         include_best=True,
     )
-    plot_training_history(history_path, history_plot_path, title=f"{model_name} {appliance} Training")
+    plot_training_history(
+        history_path,
+        history_plot_path,
+        title=f"{model_name} {appliance} Training",
+        best_epoch=best_epoch,
+    )
     plot_loss_details(
         loss_detail_path,
         loss_detail_plot_path,
@@ -984,6 +994,10 @@ def train_nilm_model(
     )
 
     print(f"Saved checkpoint: {checkpoint_path}")
+    print(
+        f"All final metrics / waveforms / H2 test use epoch {best_epoch} weights "
+        f"(best val {early_stop_metric}={best_val:.5f}), NOT the last training epoch."
+    )
     print(f"Saved metrics: {metrics_path}")
     print(f"Saved history CSV: {history_path}")
     print(f"Saved loss detail CSV: {loss_detail_path}")

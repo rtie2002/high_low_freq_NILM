@@ -84,6 +84,7 @@ def plot_training_history(
     loss_cols: Iterable[str] = ("train_loss", "val_loss"),
     metric_cols: Iterable[str] = ("val_mae", "val_sae", "val_f1"),
     title: str = "Training History",
+    best_epoch: int | None = None,
     dpi: int = 300,
 ) -> Path:
     """Plot train/validation loss and validation metrics from a history CSV/DataFrame."""
@@ -107,6 +108,14 @@ def plot_training_history(
 
     for col in loss_cols:
         axes[0].plot(x, history[col], marker="o", markersize=2.8, linewidth=1.6, label=col)
+    if best_epoch is not None and best_epoch > 0:
+        axes[0].axvline(
+            best_epoch,
+            color="green",
+            linestyle="--",
+            linewidth=1.5,
+            label=f"best checkpoint (epoch {best_epoch})",
+        )
     axes[0].set_title(title)
     axes[0].set_ylabel("Loss")
     axes[0].grid(True, alpha=0.25)
