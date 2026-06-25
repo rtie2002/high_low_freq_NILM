@@ -62,6 +62,7 @@ class SGNConfig:
     weight_decay: float = 0.0
     early_stop_metric: str = "total_loss"
     label_smoothing: float = 0.0
+    reg_on_weight: float = 0.0
     min_epochs: int = 5
     val_split_label: str = "validation"
     test_split_label: str = "test"

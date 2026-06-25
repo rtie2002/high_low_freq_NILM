@@ -145,6 +145,7 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
     weight_decay = float(defaults.get("weight_decay", 0.0))
     early_stop_metric = str(defaults.get("early_stop_metric", "output_loss"))
     label_smoothing = float(defaults.get("label_smoothing", 0.0))
+    reg_on_weight = float(defaults.get("reg_on_weight", 0.0))
     min_epochs = int(defaults.get("min_epochs", 5))
     sae_period = int(defaults.get("sae_period", 1200))
     val_split_label = str(defaults.get("val_split_label", "validation"))
@@ -198,6 +199,7 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
         weight_decay=weight_decay,
         early_stop_metric=early_stop_metric,
         label_smoothing=label_smoothing,
+        reg_on_weight=reg_on_weight,
         min_epochs=min_epochs,
         sae_period=sae_period,
         val_split_label=val_split_label,
@@ -368,7 +370,12 @@ def train_one(
     model = build_model(cfg, device)
     print("\n== Model architecture ==")
     print(model)
-    criterion = SGNLoss(label_smoothing=cfg.label_smoothing)
+    criterion = SGNLoss(
+        label_smoothing=cfg.label_smoothing,
+        reg_on_weight=cfg.reg_on_weight,
+    )
+    if cfg.reg_on_weight > 0.0:
+        print(f"ON-only regression loss active: reg_on_weight={cfg.reg_on_weight}")
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=cfg.learning_rate,
