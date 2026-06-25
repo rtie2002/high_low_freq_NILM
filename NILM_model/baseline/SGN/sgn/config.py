@@ -81,6 +81,12 @@ def default_model_config_path() -> Path:
 
 def describe_csv_split_label(csv_cfg: dict, split: str) -> str:
     """Human-readable split description for logs and waveform titles."""
+    custom = csv_cfg.get("split_description")
+    if custom and split == "val":
+        return f"validating CSV ({custom})"
+    if custom and split == "train":
+        return f"training CSV ({custom})"
+
     split_mode = csv_cfg.get("split_mode", "temporal")
     val_mode = csv_cfg.get("val_mode")
     if split_mode == "holdout":
@@ -88,7 +94,11 @@ def describe_csv_split_label(csv_cfg: dict, split: str) -> str:
             return "house 2 (testing CSV)"
         if split == "val":
             if val_mode == "separate_files":
-                return "validating CSV (houses 1+5 temporal tail)"
+                val_houses = csv_cfg.get("val_house_ids")
+                if val_houses:
+                    house_text = ",".join(str(h) for h in val_houses)
+                    return f"validating CSV (house {house_text})"
+                return "validating CSV (separate file)"
             if val_mode == "by_house_tail":
                 houses = csv_cfg.get("val_house_ids", [5])
                 days = csv_cfg.get("val_last_days", 7)
