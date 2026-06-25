@@ -96,6 +96,18 @@ def get_arguments() -> argparse.Namespace:
         default=None,
         help="Output directory for --split_houses. Default: paths.save_path from config.",
     )
+    parser.add_argument(
+        "--trim_to_common_start",
+        action="store_true",
+        default=True,
+        help="Drop leading rows until every appliance has non-zero power (default: on).",
+    )
+    parser.add_argument(
+        "--no_trim_to_common_start",
+        action="store_false",
+        dest="trim_to_common_start",
+        help="Keep leading rows where some appliances are still all-zero.",
+    )
     return parser.parse_args()
 
 
@@ -281,6 +293,38 @@ def load_appliance(
     return app_df.resample(sample_period).mean()
 
 
+def trim_to_common_appliance_start(
+    combined: pd.DataFrame,
+    appliances: list[str],
+    *,
+    min_power_w: float = 0.0,
+) -> tuple[pd.DataFrame, pd.Timestamp | None]:
+    """Drop leading timeline where any appliance is still all-zero (meter not active yet).
+
+    UK-DALE mains often starts before submeters report real load. Those rows get
+    false OFF labels and confuse training (e.g. fridge OFF while channel is dead).
+    """
+    starts: list[pd.Timestamp] = []
+    for app in appliances:
+        col = f"{app}_power"
+        if col not in combined.columns:
+            continue
+        active = combined[col] > min_power_w
+        if not active.any():
+            raise ValueError(
+                f"{app}_power has no values above {min_power_w} W; "
+                "cannot determine common appliance start."
+            )
+        starts.append(combined.index[active][0])
+
+    if not starts:
+        return combined, None
+
+    common_start = max(starts)
+    trimmed = combined.loc[common_start:].copy()
+    return trimmed, common_start
+
+
 def fill_short_appliance_gaps(series: pd.Series, limit: int = 3) -> pd.Series:
     """Bridge brief NaN bins after 6 s resampling (UK-DALE packet gaps).
 
@@ -337,6 +381,9 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
     sample_seconds = int(global_params.get("sample_seconds", 6))
     sample_period = f"{sample_seconds}s"
     start_ts, end_ts = time_bounds(global_params, args.start, args.end, full_range=args.full_range)
+    if args.full_range and args.start is None and args.end is None:
+        overlap_start, overlap_end = overlap_time_range(paths["data_dir"], house, appliances, config)
+        start_ts, end_ts = overlap_start, overlap_end
     if args.last_days is not None:
         overlap_start, overlap_end = overlap_time_range(paths["data_dir"], house, appliances, config)
         requested_seconds = float(args.last_days) * 86400.0
@@ -423,6 +470,18 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
     for app in appliances:
         combined[f"{app}_power"] = pd.to_numeric(combined[f"{app}_power"], errors="coerce").fillna(0.0)
         combined[f"{app}_on"] = pd.to_numeric(combined[f"{app}_on"], errors="coerce").fillna(0).astype(int)
+
+    if args.trim_to_common_start:
+        before_rows = len(combined)
+        combined, common_start = trim_to_common_appliance_start(combined, appliances)
+        dropped = before_rows - len(combined)
+        if common_start is not None and dropped > 0:
+            print(
+                f"[trim] dropped {dropped:,} leading rows before all appliances active "
+                f"(common start {common_start.tz_convert(tz).strftime('%Y-%m-%d %H:%M:%S')})"
+            )
+        elif common_start is not None:
+            print(f"[trim] common appliance start: {common_start.tz_convert(tz).strftime('%Y-%m-%d %H:%M:%S')}")
 
     combined.reset_index(inplace=True)
     combined["readable_time"] = combined["time"].dt.tz_convert(tz).dt.strftime("%Y-%m-%d %H:%M:%S")
