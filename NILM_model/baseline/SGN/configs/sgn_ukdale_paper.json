@@ -17,7 +17,9 @@
   "gate_mode": "soft",
   "standby_power": false,
   "weight_decay": 0.0,
-  "early_stop_metric": "total_loss",
+  "early_stop_metric": "output_loss",
   "label_smoothing": 0.0,
+  "reg_on_weight": 1.0,
+  "bce_pos_weight": 5.0,
   "seed": 1234
 }
