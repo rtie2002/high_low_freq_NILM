@@ -21,6 +21,7 @@ from sgn.config import (
     CSV_APPLIANCES,
     SGNConfig,
     aggregate_std_scale,
+    csv_appliance_on_stats,
     csv_training_stats,
     default_csv_config_path,
     default_data_dir,
@@ -367,6 +368,20 @@ def train_one(
     describe_dataset("train", train_dataset)
     describe_dataset("validation", val_dataset)
     describe_dataset("test", test_dataset)
+    if csv_cfg is not None:
+        on_stats = csv_appliance_on_stats(csv_cfg, appliance)
+        if on_stats:
+            mean_w = on_stats["mean_on_watts"]
+            p95_w = on_stats["p95_on_watts"]
+            print(
+                f"Train CSV {appliance} ON power: mean={mean_w:.0f}W, p95={p95_w:.0f}W "
+                f"→ normalized target @ scale={cfg.scale:.1f}: "
+                f"mean={mean_w / cfg.scale:.2f}, p95={p95_w / cfg.scale:.2f}"
+            )
+            print(
+                "Regression must learn normalized output ≈ p95 value on ON windows "
+                "(if val raw/true ≪ 1.0 on H2 but train raw/true ≈ 1.0 → cross-house issue)."
+            )
 
     train_loader = make_dataloader(
         train_dataset,

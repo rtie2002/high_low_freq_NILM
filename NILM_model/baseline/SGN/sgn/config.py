@@ -309,3 +309,22 @@ def csv_training_stats(csv_cfg: dict, scale_mode: str) -> tuple[float, list[floa
     if not np.isfinite(scale) or scale <= 0:
         raise ValueError(f"Invalid CSV target scale computed from {csv_path}: {scale}")
     return scale, feature_mean, feature_scale
+
+
+def csv_appliance_on_stats(csv_cfg: dict, appliance: str) -> dict[str, float]:
+    """Summarize true ON power in the train CSV (helps interpret normalized targets)."""
+    power_col = csv_cfg.get("appliances", CSV_APPLIANCES).get(appliance, {}).get("power")
+    on_col = csv_cfg.get("appliances", CSV_APPLIANCES).get(appliance, {}).get("on")
+    if not power_col or not on_col:
+        return {}
+    csv_path = csv_path_for_split(csv_cfg, "train")
+    df = pd.read_csv(csv_path, usecols=[power_col, on_col])
+    train_df = select_csv_split_df(df, csv_cfg, "train")
+    on_power = train_df.loc[train_df[on_col] >= 0.5, power_col].astype(float)
+    if on_power.empty:
+        return {}
+    return {
+        "mean_on_watts": float(on_power.mean()),
+        "p95_on_watts": float(on_power.quantile(0.95)),
+        "max_on_watts": float(on_power.max()),
+    }

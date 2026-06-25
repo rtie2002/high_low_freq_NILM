@@ -551,13 +551,19 @@ def train_nilm_model(
                 f"val_score({early_stop_metric})={val_score:.5f} lr={current_lr:.2e}"
             )
             gate_stats = summarize_val_gating(model, val_loader, device, scale)
+            train_gate_stats = summarize_val_gating(model, train_loader, device, scale, max_batches=15)
+            if train_gate_stats:
+                print(
+                    "train ON diagnostics: "
+                    f"raw/true={train_gate_stats['mean_raw_over_true_when_on']:.3f}, "
+                    f"gated/true={train_gate_stats['mean_gated_over_true_when_on']:.3f}"
+                )
             if gate_stats:
                 print(
-                    "val ON diagnostics: "
-                    f"mean on_prob={gate_stats['mean_on_prob_when_true_on']:.3f}, "
-                    f"gated/true={gate_stats['mean_gated_over_true_when_on']:.3f}, "
-                    f"raw/true={gate_stats['mean_raw_over_true_when_on']:.3f} "
-                    "(if on_prob≈0.5 and gated/true≈0.5 → soft gate is halving output)"
+                    "val ON diagnostics (H2): "
+                    f"raw/true={gate_stats['mean_raw_over_true_when_on']:.3f}, "
+                    f"gated/true={gate_stats['mean_gated_over_true_when_on']:.3f} "
+                    "(compare train vs val: train≈1 val≪1 means cross-house, not a plot bug)"
                 )
             print(_format_loss_table(train_loss_detail, val_loss_detail))
             plot_training_history(
