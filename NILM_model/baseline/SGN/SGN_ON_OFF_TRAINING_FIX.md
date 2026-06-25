@@ -258,3 +258,43 @@ If val loss oscillates and never settles, common causes with our setup:
 | Early stop on `output_loss` only (ignores cls terms) | `early_stop_metric: val_loss` |
 
 Stable cross-house config: see `configs/sgn_ukdale_cross_house.json` (updated).
+
+---
+
+## 11. Is “always half power” a visualization bug?
+
+**No.** The plot math is correct:
+
+| Line | Formula | Units |
+|------|---------|-------|
+| Blue (true) | `dishwasher_power` from CSV | Watts |
+| Red (pred) | `gated_power × train_aggregate_std` | Watts |
+| Green | `pred_on_prob ≥ 0.5` | — |
+
+Training target: `y = dishwasher_power / train_aggregate_std` (normalized).  
+Denormalization: `pred_watts = gated_power × scale` — applied **once**, not twice.
+
+**Why red ≈ 50% of blue:**
+
+```
+red = regression × on_prob × scale
+
+Example during ON:
+  regression ≈ 2000 W worth  (raw head)
+  on_prob    ≈ 0.5           (classifier barely ON)
+  red        ≈ 1000 W          ← matches your plots
+```
+
+So “always half” is the **soft gate**, not a plotting error.
+
+**Why shape is jagged (spiky, not rectangular):**
+
+1. `on_prob` changes every timestep (0.55 → 0.72 → 0.58…) → gated output flickers  
+2. Regression head partly tracks aggregate noise, not a flat dishwasher plateau  
+3. Not a stitch bug: with `eval_stride=32`, window outputs are contiguous; jaggedness is inside each 32-step prediction
+
+**Diagnostic overlay (new):** live waveforms now also plot **orange dashed = raw regression (ungated)**. After `git pull`:
+
+- Orange **high**, red **low** → gate (`on_prob`) is the problem  
+- Orange **also low** → regression head hasn't learned magnitude yet  
+- Orange **flat ~2000 W**, red jagged → only `on_prob` is noisy; `on_confidence_weight` / `on_smooth_weight` help

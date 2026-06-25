@@ -406,6 +406,17 @@ def _plot_waveform_panel(
 
     ax.plot(x, true_values, color="#1f77b4", linewidth=1.5, label=f"{appliance} true")
     ax.plot(x, pred_values, color="#d62728", linewidth=1.25, alpha=0.9, label=f"{appliance} pred")
+    raw_col = f"pred_{appliance}_raw_power"
+    if raw_col in view:
+        ax.plot(
+            x,
+            view[raw_col].to_numpy(dtype=float),
+            color="#ff7f0e",
+            linewidth=1.0,
+            alpha=0.75,
+            linestyle="--",
+            label=f"{appliance} pred (raw, ungated)",
+        )
     ax.set_ylabel("Power W")
     ax.grid(True, alpha=0.25)
     if use_focus_scale:

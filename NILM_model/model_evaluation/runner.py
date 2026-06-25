@@ -91,11 +91,13 @@ def _config_to_dict(config: Any) -> dict[str, Any]:
     raise TypeError("config must be a dict or an object with __dict__")
 
 
-def _model_prediction(outputs: dict[str, torch.Tensor], scale: float) -> tuple[np.ndarray, np.ndarray]:
+def _model_prediction(outputs: dict[str, torch.Tensor], scale: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     pred_watts = outputs["gated_power"].detach().cpu().numpy() * scale
     pred_watts = np.maximum(pred_watts, 0.0)
+    raw_watts = outputs["power"].detach().cpu().numpy() * scale
+    raw_watts = np.maximum(raw_watts, 0.0)
     pred_on = outputs["on_prob"].detach().cpu().numpy()
-    return pred_watts, pred_on
+    return pred_watts, raw_watts, pred_on
 
 
 def _target_names(config: Any, appliance: str) -> list[str]:
@@ -252,13 +254,14 @@ def _save_live_waveform(
     target_names = _target_names(config, appliance)
 
     model.eval()
-    aggregate_watts, pred_watts, true_watts, pred_on, true_on = [], [], [], [], []
+    aggregate_watts, pred_watts, raw_watts, true_watts, pred_on, true_on = [], [], [], [], [], []
     for batch in loader:
         x = batch["x"].to(device, non_blocking=True)
         outputs = model(x)
-        watts, on_prob = _model_prediction(outputs, scale)
+        watts, raw, on_prob = _model_prediction(outputs, scale)
         aggregate_watts.append(batch["aggregate_watts"].numpy())
         pred_watts.append(watts)
+        raw_watts.append(raw)
         true_watts.append(batch["y_watts"].numpy())
         pred_on.append(on_prob)
         true_on.append(batch["on"].numpy())
@@ -266,12 +269,14 @@ def _save_live_waveform(
     aggregate_flat = np.concatenate(aggregate_watts).reshape(-1)
     true_watts_arr = np.concatenate(true_watts, axis=0)
     pred_watts_arr = np.concatenate(pred_watts, axis=0)
+    raw_watts_arr = np.concatenate(raw_watts, axis=0)
     true_on_arr = np.concatenate(true_on, axis=0)
     pred_on_arr = np.concatenate(pred_on, axis=0)
 
     if true_watts_arr.ndim == 2:
         true_watts_arr = true_watts_arr[:, None, :]
         pred_watts_arr = pred_watts_arr[:, None, :]
+        raw_watts_arr = raw_watts_arr[:, None, :]
         true_on_arr = true_on_arr[:, None, :]
         pred_on_arr = pred_on_arr[:, None, :]
 
@@ -283,6 +288,7 @@ def _save_live_waveform(
     for idx, name in enumerate(target_names):
         prediction_data[f"{name}_power"] = true_watts_arr[:, idx, :].reshape(-1)
         prediction_data[f"pred_{name}_power"] = pred_watts_arr[:, idx, :].reshape(-1)
+        prediction_data[f"pred_{name}_raw_power"] = raw_watts_arr[:, idx, :].reshape(-1)
         prediction_data[f"{name}_on"] = true_on_arr[:, idx, :].reshape(-1)
         prediction_data[f"pred_{name}_on_prob"] = pred_on_arr[:, idx, :].reshape(-1)
         true_pred_pairs[name] = (f"{name}_power", f"pred_{name}_power")
@@ -334,7 +340,7 @@ def evaluate_nilm_model(
         loss_details.append(_loss_detail_from_parts(loss_parts, target_names or []))
 
         if not loss_only:
-            watts, on_prob = _model_prediction(outputs, scale)
+            watts, _raw, on_prob = _model_prediction(outputs, scale)
             pred_watts.append(watts)
             true_watts.append(batch["y_watts"].numpy())
             pred_on.append(on_prob)
@@ -744,7 +750,7 @@ def run_nilm_inference(
     for batch in loader:
         x = batch["x"].to(device, non_blocking=True)
         outputs = model(x)
-        watts, on_prob = _model_prediction(outputs, scale)
+        watts, _raw, on_prob = _model_prediction(outputs, scale)
         aggregate_watts.append(batch["aggregate_watts"].numpy())
         pred_watts.append(watts)
         true_watts.append(batch["y_watts"].numpy())
