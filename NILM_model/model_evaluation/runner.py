@@ -245,20 +245,14 @@ def _loss_detail_row(epoch: int, prefix: str, detail: dict[str, Any]) -> dict[st
     return row
 
 
-def _early_stop_score(
-    val_loss: float,
-    val_metrics: dict[str, Any],
-    metric_name: str,
-    test_metrics: dict[str, Any] | None = None,
-) -> float:
+def _early_stop_score(val_loss: float, val_metrics: dict[str, Any], metric_name: str) -> float:
     """Pick the scalar used to save best_*.pt (lower is better except f1).
 
     Config key: early_stop_metric in sgn_*.json
       total_loss   -> val SGNLoss total (L_output + L_on + optional extras); default
       output_loss  -> val L_output only (paper-recommended: gated MSE, Eq. 7a)
       on_loss      -> val L_on only (Eq. 7c)
-      f1 / mae     -> val split metrics
-      test_f1 / test_mae -> test split metrics (transfer tuning; not blind-test protocol)
+      mae / f1     -> evaluation metrics (computed fully only after training ends)
     """
     detail = val_metrics.get("loss_detail", {})
     if metric_name == "output_loss":
@@ -269,12 +263,6 @@ def _early_stop_score(
         return float(val_metrics.get("mae", val_loss))
     if metric_name == "f1":
         return -float(val_metrics.get("f1", 0.0))
-    if metric_name == "test_mae":
-        metrics = test_metrics or {}
-        return float(metrics.get("mae", val_loss))
-    if metric_name == "test_f1":
-        metrics = test_metrics or {}
-        return -float(metrics.get("f1", 0.0))
     return float(val_loss)
 
 
@@ -646,7 +634,6 @@ def train_nilm_model(
     plot_interval = int(cfg.get("plot_interval", 1))
     run_all_epochs = bool(cfg.get("run_all_epochs", False))
     val_needs_metrics = early_stop_metric in {"f1", "mae"}
-    test_needs_metrics = early_stop_metric in {"test_f1", "test_mae"}
 
     run_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = run_dir / f"best_{appliance}.pt"
@@ -663,11 +650,6 @@ def train_nilm_model(
     best_epoch = -1
     stale_epochs = 0
     print(f"Early stopping metric: {early_stop_metric} (min_epochs={min_epochs})")
-    if test_needs_metrics:
-        print(
-            "WARNING: early_stop_metric uses the TEST split each epoch — "
-            "for cross-house transfer experiments only, not blind paper evaluation."
-        )
     if run_all_epochs:
         print(f"run_all_epochs=True: early stopping disabled; training all {epochs} epochs.")
     print(f"Plot mode: {plot_mode}" + (f" (interval={plot_interval})" if plot_mode == "interval" else ""))
@@ -729,20 +711,6 @@ def train_nilm_model(
                 show_progress=True,
                 progress_desc=f"{appliance} val epoch {epoch + 1}/{epochs}",
             )
-            test_metrics: dict[str, Any] = {}
-            if test_needs_metrics:
-                _test_loss, test_metrics = evaluate_nilm_model(
-                    model,
-                    test_loader,
-                    criterion,
-                    device=device,
-                    scale=scale,
-                    sae_period=sae_period,
-                    target_names=target_names,
-                    loss_only=False,
-                    show_progress=True,
-                    progress_desc=f"{appliance} test epoch {epoch + 1}/{epochs}",
-                )
             train_loss = float(np.mean(train_losses))
             train_loss_detail = _mean_loss_details(train_loss_details, target_names)
             val_loss_detail = val_metrics.get("loss_detail", {})
@@ -763,10 +731,8 @@ def train_nilm_model(
             detail_writer.writerow(detail_row)
             handle.flush()
             detail_handle.flush()
-            # Best checkpoint: see _early_stop_score (val or test metric).
-            val_score = _early_stop_score(
-                val_loss, val_metrics, early_stop_metric, test_metrics=test_metrics or None
-            )
+            # Best checkpoint: lowest val_score on validation split (see _early_stop_score).
+            val_score = _early_stop_score(val_loss, val_metrics, early_stop_metric)
             _step_lr_scheduler(
                 scheduler,
                 schedule_name,
@@ -779,12 +745,9 @@ def train_nilm_model(
             val_f1_note = ""
             if "f1" in val_metrics:
                 val_f1_note = f" val_f1={float(val_metrics['f1']):.3f}"
-            test_f1_note = ""
-            if "f1" in test_metrics:
-                test_f1_note = f" test_f1={float(test_metrics['f1']):.3f}"
             print(
                 f"epoch={epoch + 1} train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
-                f"score({early_stop_metric})={val_score:.5f}{val_f1_note}{test_f1_note} lr={current_lr:.2e}"
+                f"val_score({early_stop_metric})={val_score:.5f}{val_f1_note} lr={current_lr:.2e}"
             )
             gate_stats: dict[str, float] = {}
             train_gate_stats: dict[str, float] = {}
