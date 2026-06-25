@@ -100,6 +100,47 @@ def _model_prediction(outputs: dict[str, torch.Tensor], scale: float) -> tuple[n
     return pred_watts, raw_watts, pred_on
 
 
+@torch.no_grad()
+def summarize_val_gating(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    scale: float,
+    *,
+    max_batches: int = 30,
+) -> dict[str, float]:
+    """Report mean on_prob and power ratios on true-ON timesteps (diagnose ~50% gate)."""
+    model.eval()
+    on_probs: list[float] = []
+    gated_ratios: list[float] = []
+    raw_ratios: list[float] = []
+    for batch_idx, batch in enumerate(loader):
+        if batch_idx >= max_batches:
+            break
+        x = batch["x"].to(device, non_blocking=True)
+        on = batch["on"].cpu().numpy().reshape(-1)
+        true_w = batch["y_watts"].cpu().numpy().reshape(-1)
+        outputs = model(x)
+        gated, raw, prob = _model_prediction(outputs, scale)
+        gated = gated.reshape(-1)
+        raw = raw.reshape(-1)
+        prob = prob.reshape(-1)
+        mask = on >= 0.5
+        if not mask.any():
+            continue
+        on_probs.extend(prob[mask].tolist())
+        denom = np.maximum(true_w[mask], 1.0)
+        gated_ratios.extend((gated[mask] / denom).tolist())
+        raw_ratios.extend((raw[mask] / denom).tolist())
+    if not on_probs:
+        return {}
+    return {
+        "mean_on_prob_when_true_on": float(np.mean(on_probs)),
+        "mean_gated_over_true_when_on": float(np.mean(gated_ratios)),
+        "mean_raw_over_true_when_on": float(np.mean(raw_ratios)),
+    }
+
+
 def _target_names(config: Any, appliance: str) -> list[str]:
     cfg = _config_to_dict(config)
     names = cfg.get("target_appliances") or []
@@ -509,6 +550,15 @@ def train_nilm_model(
                 f"epoch={epoch + 1} train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
                 f"val_score({early_stop_metric})={val_score:.5f} lr={current_lr:.2e}"
             )
+            gate_stats = summarize_val_gating(model, val_loader, device, scale)
+            if gate_stats:
+                print(
+                    "val ON diagnostics: "
+                    f"mean on_prob={gate_stats['mean_on_prob_when_true_on']:.3f}, "
+                    f"gated/true={gate_stats['mean_gated_over_true_when_on']:.3f}, "
+                    f"raw/true={gate_stats['mean_raw_over_true_when_on']:.3f} "
+                    "(if on_prob≈0.5 and gated/true≈0.5 → soft gate is halving output)"
+                )
             print(_format_loss_table(train_loss_detail, val_loss_detail))
             plot_training_history(
                 history_path,
