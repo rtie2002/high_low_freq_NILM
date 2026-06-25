@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm import tqdm
 
 from .metrics import compute_nilm_metrics
@@ -29,11 +29,51 @@ def make_dataloader(
     batch_size: int,
     shuffle: bool,
     num_workers: int,
+    oversample_on: bool = False,
 ) -> DataLoader:
+    """Build a DataLoader.
+
+    When ``oversample_on=True`` a WeightedRandomSampler is used so that ON
+    windows are drawn at the same frequency as OFF windows.  This guarantees
+    every batch contains ON samples and prevents the classifier from collapsing
+    to always-OFF — which happens when the dishwasher is active only ~1-3% of
+    the time.  Only use for the training loader; val/test should stay uniform.
+    """
+    sampler = None
+    if oversample_on and hasattr(dataset, "on"):
+        # dataset.on shape: (N_rows, n_appliances)  — any timestep ON counts
+        on_flags = (dataset.on >= 0.5).any(axis=1)  # shape (N_rows,)
+        cfg = dataset.config
+        out_start_offsets = [
+            i + (cfg.input_length - cfg.output_length) // 2
+            for i in dataset.index
+        ]
+        # A window is ON if any output timestep is ON
+        window_on = np.array([
+            on_flags[s: s + cfg.output_length].any()
+            for s in out_start_offsets
+        ], dtype=np.float32)
+        n_on = window_on.sum()
+        n_off = len(window_on) - n_on
+        if n_on > 0 and n_off > 0:
+            weight_on = float(n_off / n_on)
+            weights = np.where(window_on, weight_on, 1.0).astype(np.float32)
+            sampler = WeightedRandomSampler(
+                weights=torch.from_numpy(weights),
+                num_samples=len(weights),
+                replacement=True,
+            )
+            print(
+                f"WeightedRandomSampler: {int(n_on)} ON / {int(n_off)} OFF windows, "
+                f"ON weight = {weight_on:.1f}x"
+            )
+        shuffle = False  # sampler and shuffle are mutually exclusive
+
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
+        sampler=sampler,
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
     )

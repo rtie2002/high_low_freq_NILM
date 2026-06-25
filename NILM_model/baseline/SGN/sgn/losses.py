@@ -24,12 +24,14 @@ class SGNLoss(nn.Module):
         on_weight: float = 1.0,
         label_smoothing: float = 0.0,
         reg_on_weight: float = 0.0,
+        bce_pos_weight: float = 1.0,
     ) -> None:
         super().__init__()
         self.output_weight = output_weight
         self.on_weight = on_weight
         self.label_smoothing = label_smoothing
         self.reg_on_weight = float(reg_on_weight)
+        self.bce_pos_weight = float(bce_pos_weight)
 
     def forward(
         self,
@@ -43,7 +45,15 @@ class SGNLoss(nn.Module):
             smooth_on = target_on
 
         output_error = (predictions["gated_power"] - target_power).pow(2)
-        on_error = F.binary_cross_entropy(predictions["on_prob"], smooth_on, reduction="none")
+        if self.bce_pos_weight > 1.0:
+            pos_w = smooth_on.new_tensor(self.bce_pos_weight)
+            on_error = F.binary_cross_entropy(
+                predictions["on_prob"], smooth_on,
+                weight=torch.where(smooth_on >= 0.5, pos_w, torch.ones_like(smooth_on)),
+                reduction="none",
+            )
+        else:
+            on_error = F.binary_cross_entropy(predictions["on_prob"], smooth_on, reduction="none")
 
         output_loss = output_error.mean()
         on_loss = on_error.mean()

@@ -63,6 +63,8 @@ class SGNConfig:
     early_stop_metric: str = "total_loss"
     label_smoothing: float = 0.0
     reg_on_weight: float = 0.0
+    bce_pos_weight: float = 1.0
+    oversample_on: bool = False
     min_epochs: int = 5
     val_split_label: str = "validation"
     test_split_label: str = "test"
