@@ -30,6 +30,7 @@ def make_dataloader(
     shuffle: bool,
     num_workers: int,
     oversample_on: bool = False,
+    oversample_max_weight: float = 0.0,
 ) -> DataLoader:
     """Build a DataLoader.
 
@@ -57,15 +58,18 @@ def make_dataloader(
         n_off = len(window_on) - n_on
         if n_on > 0 and n_off > 0:
             weight_on = float(n_off / n_on)
+            if oversample_max_weight > 0.0:
+                weight_on = min(weight_on, oversample_max_weight)
             weights = np.where(window_on, weight_on, 1.0).astype(np.float32)
             sampler = WeightedRandomSampler(
                 weights=torch.from_numpy(weights),
                 num_samples=len(weights),
                 replacement=True,
             )
+            cap_note = f" (capped at {oversample_max_weight:g}x)" if oversample_max_weight > 0.0 else ""
             print(
                 f"WeightedRandomSampler: {int(n_on)} ON / {int(n_off)} OFF windows, "
-                f"ON weight = {weight_on:.1f}x"
+                f"ON weight = {weight_on:.1f}x{cap_note}"
             )
         shuffle = False  # sampler and shuffle are mutually exclusive
 
@@ -390,6 +394,8 @@ def train_nilm_model(
     target_names = _target_names(config, appliance)
     early_stop_metric = str(cfg.get("early_stop_metric", "output_loss"))
     min_epochs = int(cfg.get("min_epochs", 5))
+    grad_clip_norm = float(cfg.get("grad_clip_norm", 0.0))
+    lr_scheduler_patience = int(cfg.get("lr_scheduler_patience", 0))
     val_split_label = str(cfg.get("val_split_label", "validation"))
     test_split_label = str(cfg.get("test_split_label", "test"))
 
@@ -408,6 +414,18 @@ def train_nilm_model(
     best_epoch = -1
     stale_epochs = 0
     print(f"Early stopping metric: {early_stop_metric} (min_epochs={min_epochs})")
+    if grad_clip_norm > 0.0:
+        print(f"Gradient clipping: max_norm={grad_clip_norm}")
+    scheduler = None
+    if lr_scheduler_patience > 0:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=float(cfg.get("lr_scheduler_factor", 0.5)),
+            patience=lr_scheduler_patience,
+            min_lr=float(cfg.get("lr_min", 1e-6)),
+        )
+        print(f"LR scheduler: ReduceLROnPlateau patience={lr_scheduler_patience}")
     print(f"Validation waveforms: {val_split_label}")
     print(f"Test waveforms: {test_split_label}")
 
@@ -434,6 +452,8 @@ def train_nilm_model(
                 outputs = model(x)
                 loss_parts = criterion(outputs, y, on)
                 loss_parts["loss"].backward()
+                if grad_clip_norm > 0.0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
                 optimizer.step()
 
                 loss_value = float(loss_parts["loss"].item())
@@ -476,9 +496,12 @@ def train_nilm_model(
             handle.flush()
             detail_handle.flush()
             val_score = _early_stop_score(val_loss, val_metrics, early_stop_metric)
+            if scheduler is not None:
+                scheduler.step(val_loss)
+            current_lr = optimizer.param_groups[0]["lr"]
             print(
                 f"epoch={epoch + 1} train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
-                f"val_score({early_stop_metric})={val_score:.5f}"
+                f"val_score({early_stop_metric})={val_score:.5f} lr={current_lr:.2e}"
             )
             print(_format_loss_table(train_loss_detail, val_loss_detail))
             plot_training_history(

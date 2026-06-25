@@ -68,6 +68,11 @@ class SGNConfig:
     on_smooth_weight: float = 0.0
     bce_pos_weight: float = 1.0
     oversample_on: bool = False
+    oversample_max_weight: float = 15.0
+    grad_clip_norm: float = 1.0
+    lr_scheduler_patience: int = 8
+    lr_scheduler_factor: float = 0.5
+    lr_min: float = 1e-6
     min_epochs: int = 5
     val_split_label: str = "validation"
     test_split_label: str = "test"

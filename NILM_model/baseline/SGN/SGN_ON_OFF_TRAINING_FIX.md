@@ -240,3 +240,21 @@ Paper-faithful hyperparameters (no oversample / pos_weight / reg_on): use `sgn_u
 | Red too small despite timing | Soft gate × low `on_prob` | `reg_on_weight: 1.0` on true-ON timesteps |
 
 The architecture and labels were fine; training needed **class-balanced classification loss** and **direct regression supervision on ON windows** for cross-house dishwasher.
+
+---
+
+## 10. Training stability (fluctuating val loss)
+
+If val loss oscillates and never settles, common causes with our setup:
+
+| Cause | Fix in config |
+|-------|----------------|
+| `bce_pos_weight=30` + 6 auxiliary losses fighting each other | Lower to `15`, reduce auxiliary weights |
+| Oversampler repeats same ON windows 48× per epoch | `oversample_max_weight: 15` caps resampling |
+| Large batch (256) + imbalanced sampling → noisy gradients | `batch_size: 64` |
+| LR too high for multi-term loss | `learning_rate: 5e-5` |
+| No gradient clipping | `grad_clip_norm: 1.0` |
+| LR never decays on plateau | `lr_scheduler_patience: 8` |
+| Early stop on `output_loss` only (ignores cls terms) | `early_stop_metric: val_loss` |
+
+Stable cross-house config: see `configs/sgn_ukdale_cross_house.json` (updated).

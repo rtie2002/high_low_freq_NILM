@@ -151,6 +151,11 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
     on_smooth_weight = float(defaults.get("on_smooth_weight", 0.0))
     bce_pos_weight = float(defaults.get("bce_pos_weight", 1.0))
     oversample_on = bool(defaults.get("oversample_on", False))
+    oversample_max_weight = float(defaults.get("oversample_max_weight", 15.0))
+    grad_clip_norm = float(defaults.get("grad_clip_norm", 1.0))
+    lr_scheduler_patience = int(defaults.get("lr_scheduler_patience", 8))
+    lr_scheduler_factor = float(defaults.get("lr_scheduler_factor", 0.5))
+    lr_min = float(defaults.get("lr_min", 1e-6))
     min_epochs = int(defaults.get("min_epochs", 5))
     sae_period = int(defaults.get("sae_period", 1200))
     val_split_label = str(defaults.get("val_split_label", "validation"))
@@ -210,6 +215,11 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
         on_smooth_weight=on_smooth_weight,
         bce_pos_weight=bce_pos_weight,
         oversample_on=oversample_on,
+        oversample_max_weight=oversample_max_weight,
+        grad_clip_norm=grad_clip_norm,
+        lr_scheduler_patience=lr_scheduler_patience,
+        lr_scheduler_factor=lr_scheduler_factor,
+        lr_min=lr_min,
         min_epochs=min_epochs,
         sae_period=sae_period,
         val_split_label=val_split_label,
@@ -364,6 +374,7 @@ def train_one(
         shuffle=True,
         num_workers=cfg.num_workers,
         oversample_on=cfg.oversample_on,
+        oversample_max_weight=cfg.oversample_max_weight,
     )
     val_loader = make_dataloader(
         val_dataset,
