@@ -58,6 +58,9 @@ class SGNConfig:
     sae_period: int = 600
     seed: int = 1234
     gate_mode: str = "soft"
+    gate_floor: float = 0.0
+    feature_norm: str = "none"
+    shared_trunk: bool = False
     standby_power: bool = False
     weight_decay: float = 0.0
     early_stop_metric: str = "total_loss"

@@ -158,6 +158,9 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
     eval_stride = int(choose("eval_stride"))
     seed = int(choose("seed"))
     gate_mode = str(choose("gate_mode"))
+    gate_floor = float(defaults.get("gate_floor", 0.0))
+    feature_norm = str(defaults.get("feature_norm", "none"))
+    shared_trunk = bool(defaults.get("shared_trunk", False))
     standby_power = bool(defaults.get("standby_power", False) or args.standby_power)
     weight_decay = float(defaults.get("weight_decay", 0.0))
     early_stop_metric = str(defaults.get("early_stop_metric", "output_loss"))
@@ -229,6 +232,9 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
         eval_stride=eval_stride,
         seed=seed,
         gate_mode=gate_mode,
+        gate_floor=gate_floor,
+        feature_norm=feature_norm,
+        shared_trunk=shared_trunk,
         standby_power=standby_power,
         weight_decay=weight_decay,
         early_stop_metric=early_stop_metric,
@@ -273,6 +279,8 @@ def make_dataset(
 
 
 def build_model(cfg: SGNConfig, device: torch.device) -> SGN:
+    # Map config transfer flags onto optional SGN add-ons (paper subnets unchanged).
+    transfer_input_norm = cfg.feature_norm not in {"", "none"}
     return SGN(
         cfg.input_length,
         cfg.output_length,
@@ -282,6 +290,9 @@ def build_model(cfg: SGNConfig, device: torch.device) -> SGN:
         num_appliances=cfg.num_appliances,
         gate_mode=cfg.gate_mode,
         standby_power=cfg.standby_power,
+        gate_floor=cfg.gate_floor,
+        transfer_input_norm=transfer_input_norm,
+        transfer_adapter=cfg.shared_trunk,
     ).to(device)
 
 
