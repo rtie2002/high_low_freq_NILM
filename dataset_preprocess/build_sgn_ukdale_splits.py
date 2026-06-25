@@ -309,7 +309,7 @@ def main() -> None:
         print("\nDone. Use csv_config: baseline/SGN/configs/training_data_ukdale_cross_house.json")
         print("      model_config: baseline/SGN/configs/sgn_ukdale_cross_house.json")
     else:
-        print("\nDone. Use csv_config: baseline/SGN/configs/training_data_ukdale_sgn_splits.json")
+        print("\nDone. Point csv_config at the saved CSV paths under NILM_model/data/")
 
 
 if __name__ == "__main__":

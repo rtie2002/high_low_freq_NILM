@@ -118,69 +118,27 @@ $$
 e^* = \arg\min_e \; \mathcal{L}_{\mathrm{total}}^{\mathrm{val}}(e)
 $$
 
-Config: `"early_stop_metric": "total_loss"` (paper-style combined loss).
+Config: `"early_stop_metric": "f1"` in `sgn_ukdale_cross_house.json` (cross-house val on house~2).
 
-**Default in this repo:** `"early_stop_metric": "output_loss"` with `"min_epochs": 5`.
+Paper-faithful alternative: `"early_stop_metric": "total_loss"` in `sgn_paper.json`.
 
-Classification val loss often rises while power loss improves; using `total_loss` can lock the checkpoint at epoch 1. `output_loss` picks the best **power** checkpoint. Checkpoints are not saved before `min_epochs`.
+**Early stopping:** no improvement for `patience` epochs $\Rightarrow$ stop.
 
-### Optional regularized setting (power only)
-
-Used only in `sgn_ukdale_reg.json`:
-
-$$
-e^* = \arg\min_e \; \mathcal{L}_{\mathrm{out}}^{\mathrm{val}}(e)
-$$
-
-Config: `"early_stop_metric": "output_loss"`.
-
-Used because validation ON/OFF loss was overfitting while validation power loss stayed stable.
-
-**Early stopping:** no improvement for `patience = 30` epochs $\Rightarrow$ stop.
-
-Other metrics: `mae`, `f1` (code minimizes $-\mathrm{F1}$).
+Other metrics: `mae`, `output_loss`, `total_loss` (code minimizes loss; maximizes F1).
 
 ---
 
 ## 5. UK-DALE data split
 
+Built with `dataset_preprocess/build_sgn_ukdale_splits.py` (default `--val_source test_house`):
+
 | Split | File | Content |
 |-------|------|---------|
-| Train + val source | `NILM_model/data/multi_appliance_house1_5_lf_2weeks.csv` | Houses 1 & 5, 14 days each |
-| Test | `NILM_model/data/multi_appliance_house2_lf.csv` | House 2, 7 days |
+| Train | `multi_appliance_training_cross_house.csv` | Houses 1 \& 5, last 28 days each |
+| Val | `multi_appliance_validating_cross_house.csv` | House 2, last 4 days |
+| Test | `multi_appliance_testing_cross_house.csv` | House 2, first 24 days (disjoint from val) |
 
-Validation split (`val_mode: by_house_tail`, `val_last_days: 7`):
-
-$$
-\mathcal{D}_{\mathrm{train}} = \mathcal{D}_{\mathrm{house\,1}} \cup \left\{ x \in \mathcal{D}_{\mathrm{house\,5}} : t(x) < t_{\max}^{(5)} - 7\,\mathrm{days} \right\}
-$$
-
-$$
-\mathcal{D}_{\mathrm{val}} = \left\{ x \in \mathcal{D}_{\mathrm{house\,5}} : t(x) \ge t_{\max}^{(5)} - 7\,\mathrm{days} \right\}
-$$
-
-$$
-\mathcal{D}_{\mathrm{test}} = \mathcal{D}_{\mathrm{house\,2}} \quad \text{(entire test CSV)}
-$$
-
-**Paper target:** train houses $\{1,3,4,5\}$, test house $2$, last week only. Here we use houses $\{1,5\}$ for 2 weeks (houses 3 & 4 not usable for all five appliances).
-
-Approx. row counts @ 6 s: train ~302k, val ~101k, test ~101k.
-
-### Cross-house transfer split (recommended for H2 generalization)
-
-Built with `build_sgn_ukdale_splits.py --val_source test_house` (default):
-
-| Split | Houses | Window |
-|-------|--------|--------|
-| Train | 1, 5 | last 28 days each (full train-house pool) |
-| Val | 2 only | last 4 days of the 28-day H2 pool |
-| Test | 2 only | first 24 days of the 28-day H2 pool (disjoint from val) |
-
-CSV files: `multi_appliance_*_cross_house.csv`  
-Config: `training_data_ukdale_cross_house.json` + `sgn_ukdale_cross_house.json` (`early_stop_metric: f1`).
-
-Val matches the **target house** (H2) so checkpoint selection tracks cross-house transfer, not H1/H5 memorization.
+Config: `configs/training_data_ukdale_cross_house.json`
 
 ---
 
@@ -223,30 +181,21 @@ CSV training uses these precomputed labels. REDD pickle path in this codebase ca
 
 ## 8. Paper vs this UK-DALE run
 
-| Component | SGN paper | `sgn_paper.json` (default) | `sgn_ukdale_reg.json` (optional) |
-|-----------|-----------|----------------------------|----------------------------------|
+| Component | SGN paper | `sgn_paper.json` | `sgn_ukdale_cross_house.json` |
+|-----------|-----------|------------------|-------------------------------|
 | $\mathcal{L}_{\mathrm{out}}$ | MSE on gated power | Same | Same |
-| $\mathcal{L}_{\mathrm{on}}$ | BCE, hard labels | Same | BCE + $\varepsilon=0.05$ smoothing |
-| Optimizer | Adam, $\eta=10^{-4}$ | Same | Adam + $\lambda=10^{-4}$ weight decay |
-| Batch size | 16 | 16 | 16 |
+| $\mathcal{L}_{\mathrm{on}}$ | BCE, hard labels | Same | Same |
+| Optimizer | Adam, $\eta=10^{-4}$ | Same | Adam, $\eta=2\times10^{-4}$ |
+| Batch size | 16 | 16 | 256 |
 | $L_{\mathrm{in}} / L_{\mathrm{out}}$ | 432 / 32 @ 6 s | Same | Same |
 | $S_{\mathrm{train}}$ | 1 | 1 | 32 |
-| Best checkpoint | total val loss | total val loss | $\mathcal{L}_{\mathrm{out}}^{\mathrm{val}}$ only |
-| Train houses | 1, 3, 4, 5 (1 week) | 1, 5 (2 weeks) | 1, 5 (2 weeks) |
+| Best checkpoint | total val loss | total val loss | val F1 |
+| Val split | — | — | house 2 (cross-house) |
+| Train houses | 1, 3, 4, 5 (1 week) | 1, 5 (28 d) | 1, 5 (28 d) |
 | Test house | 2 | 2 | 2 |
 
-**Use `sgn_paper.json` for the first UK-DALE run** (closest to the paper).  
-**Use `sgn_ukdale_reg.json` only if** train ON/OFF loss collapses to ~0 while val ON/OFF explodes.
-
-### Why the regularized run can look worse
-
-The experimental config (`sgn_ukdale_reg.json`) was added to fight classification overfitting, but it can hurt overall results:
-
-1. **`train_stride: 32`** — ~32× fewer training windows; rare ON events (microwave, kettle) are seen less often.
-2. **`early_stop_metric: output_loss`** — can pick a very early checkpoint (e.g. epoch 14) when power loss plateaus, even though F1 keeps improving later (epoch 40+).
-3. **Label smoothing + weight decay** — softer ON/OFF targets and smaller weights can reduce confident ON predictions → lower F1 on sparse appliances.
-
-Regression is not always broken: e.g. washingmachine test MAE ~11 W can be reasonable while F1 stays low because the ON/OFF branch under-trained or never fires on house 2.
+**Use `sgn_paper.json`** for paper-faithful reproduction.  
+**Use `sgn_ukdale_cross_house.json`** for cross-house transfer experiments (recommended).
 
 ---
 
@@ -254,9 +203,9 @@ Regression is not always broken: e.g. washingmachine test MAE ~11 W can be reaso
 
 | File | Role |
 |------|------|
-| `configs/sgn_paper.json` | Paper-faithful hyperparameters (default for UK-DALE) |
-| `configs/sgn_ukdale_reg.json` | Optional regularized variant (stride 32, WD, label smoothing) |
-| `configs/training_data_ukdale_paper.json` | Train/test CSV paths, val split |
+| `configs/training_data_ukdale_cross_house.json` | Train/val/test CSV paths (cross-house split) |
+| `configs/sgn_ukdale_cross_house.json` | Fast UK-DALE training (stride 32, F1 early stop) |
+| `configs/sgn_paper.json` | Paper-faithful hyperparameters |
 | `sgn/losses.py` | $\mathcal{L}_{\mathrm{out}} + \mathcal{L}_{\mathrm{on}}$ |
 | `model_evaluation/runner.py` | Early stopping, waveform saves |
 
@@ -265,10 +214,10 @@ Regression is not always broken: e.g. washingmachine test MAE ~11 W can be reaso
 ```powershell
 cd NILM_model
 
-python main.py --model sgn --mode train --data_source csv `
-  --csv_config baseline/SGN/configs/training_data_ukdale_paper.json `
-  --model_config baseline/SGN/configs/sgn_paper.json `
-  --run_dir runs/sgn_ukdale
+python main.py --model sgn --mode train_inference --data_source csv `
+  --csv_config baseline/SGN/configs/training_data_ukdale_cross_house.json `
+  --model_config baseline/SGN/configs/sgn_ukdale_cross_house.json `
+  --run_dir runs/sgn_ukdale_cross_house
 ```
 
 **Outputs per appliance** (under `run_dir`):

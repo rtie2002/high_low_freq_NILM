@@ -20,7 +20,7 @@ baseline/SGN/configs/sgn_paper.json -> "default_appliance": "all"
 So this trains one multi-output SGN checkpoint:
 
 ```powershell
-python main.py --model sgn --mode train_inference --data_source csv --csv_config baseline/SGN/configs/training_data_ukdale_paper.json --model_config baseline/SGN/configs/sgn_paper.json
+python main.py --model sgn --mode train_inference --data_source csv --csv_config baseline/SGN/configs/training_data_ukdale_cross_house.json --model_config baseline/SGN/configs/sgn_ukdale_cross_house.json
 ```
 
 Single-appliance runs are only for debugging or ablation:

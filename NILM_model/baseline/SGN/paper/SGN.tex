@@ -248,15 +248,15 @@ For each appliance $a \in \{\text{kettle, fridge, microwave, dishwasher, washing
 \item Report test metrics on house~2: MAE (power), F1 (ON/OFF), and waveform plots.
 \end{enumerate}
 
-Example command (Scenario~B, temporal validation):
+Example command (cross-house validation on house~2):
 \begin{verbatim}
 python main.py --model sgn --mode train_inference \
   --data_source csv \
   --csv_config baseline/SGN/configs/\
-    training_data_ukdale_temporal.json \
-  --model_config baseline/SGN/configs/sgn_paper.json \
-  --appliance dishwasher \
-  --run_dir runs/sgn_ukdale_dishwasher
+    training_data_ukdale_cross_house.json \
+  --model_config baseline/SGN/configs/\
+    sgn_ukdale_cross_house.json \
+  --run_dir runs/sgn_ukdale_cross_house
 \end{verbatim}
 
 \section{Comparison with Shin \textit{et al.}}
