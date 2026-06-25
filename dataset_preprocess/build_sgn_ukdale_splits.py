@@ -14,15 +14,10 @@ Split modes (``--val_source``):
     - validating: last ``val_days`` from the test house window (proxy target house)
     - testing:    earlier ``last_days - val_days`` from the test house (disjoint from val)
 
-Outputs in NILM_model/data/ (``train_houses`` mode):
+Outputs in NILM_model/data/:
   - multi_appliance_training.csv
   - multi_appliance_validating.csv
   - multi_appliance_testing.csv
-
-Outputs (``test_house`` mode):
-  - multi_appliance_training_cross_house.csv
-  - multi_appliance_validating_cross_house.csv
-  - multi_appliance_testing_cross_house.csv
 """
 
 from __future__ import annotations
@@ -286,14 +281,9 @@ def main() -> None:
         training_df, validating_df = temporal_train_val_split(train_frames, val_days)
         test_df = test_pool_df
 
-    if args.val_source == "test_house":
-        out_train = data_dir / "multi_appliance_training_cross_house.csv"
-        out_val = data_dir / "multi_appliance_validating_cross_house.csv"
-        out_test = data_dir / "multi_appliance_testing_cross_house.csv"
-    else:
-        out_train = data_dir / "multi_appliance_training.csv"
-        out_val = data_dir / "multi_appliance_validating.csv"
-        out_test = data_dir / "multi_appliance_testing.csv"
+    out_train = data_dir / "multi_appliance_training.csv"
+    out_val = data_dir / "multi_appliance_validating.csv"
+    out_test = data_dir / "multi_appliance_testing.csv"
 
     training_df.to_csv(out_train, index=False)
     validating_df.to_csv(out_val, index=False)
@@ -305,11 +295,7 @@ def main() -> None:
     summarize(out_train.name, training_df)
     summarize(out_val.name, validating_df)
     summarize(out_test.name, test_df)
-    if args.val_source == "test_house":
-        print("\nDone. Use csv_config: baseline/SGN/configs/training_data_ukdale_cross_house.json")
-        print("      model_config: baseline/SGN/configs/sgn_ukdale_cross_house.json")
-    else:
-        print("\nDone. Point csv_config at the saved CSV paths under NILM_model/data/")
+    print("\nDone. Use csv_config: baseline/SGN/configs/training_data_ukdale_sgn_splits.json")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,6 @@
 {
   "split_mode": "holdout",
   "val_mode": "separate_files",
-  "split_description": "Cross-house transfer: train H1+H5, val H2 tail, test H2 earlier window (disjoint).",
   "train_csv_file": "../../../data/multi_appliance_training.csv",
   "val_csv_file": "../../../data/multi_appliance_validating.csv",
   "test_csv_file": "../../../data/multi_appliance_testing.csv",

@@ -72,7 +72,7 @@ def default_data_dir() -> Path:
 
 
 def default_csv_config_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "configs" / "training_data_ukdale_cross_house.json"
+    return Path(__file__).resolve().parents[1] / "configs" / "training_data_ukdale_sgn_splits.json"
 
 
 def default_model_config_path() -> Path:
