@@ -633,6 +633,7 @@ def train_nilm_model(
     plot_mode = str(cfg.get("plot_mode", "live"))
     plot_interval = int(cfg.get("plot_interval", 1))
     run_all_epochs = bool(cfg.get("run_all_epochs", False))
+    val_needs_metrics = early_stop_metric in {"f1", "mae"}
 
     run_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = run_dir / f"best_{appliance}.pt"
@@ -698,7 +699,6 @@ def train_nilm_model(
                 train_loss_details.append(_loss_detail_from_parts(loss_parts, target_names))
                 progress.set_postfix(loss=f"{loss_value:.4f}")
 
-            # loss_only=True: val loss only (MAE/SAE/F1 computed once after training)
             val_loss, val_metrics = evaluate_nilm_model(
                 model,
                 val_loader,
@@ -707,7 +707,7 @@ def train_nilm_model(
                 scale=scale,
                 sae_period=sae_period,
                 target_names=target_names,
-                loss_only=True,
+                loss_only=not val_needs_metrics,
                 show_progress=True,
                 progress_desc=f"{appliance} val epoch {epoch + 1}/{epochs}",
             )
@@ -742,9 +742,12 @@ def train_nilm_model(
                 val_loss=val_loss,
             )
             current_lr = optimizer.param_groups[0]["lr"]
+            val_f1_note = ""
+            if "f1" in val_metrics:
+                val_f1_note = f" val_f1={float(val_metrics['f1']):.3f}"
             print(
                 f"epoch={epoch + 1} train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
-                f"val_score({early_stop_metric})={val_score:.5f} lr={current_lr:.2e}"
+                f"val_score({early_stop_metric})={val_score:.5f}{val_f1_note} lr={current_lr:.2e}"
             )
             gate_stats: dict[str, float] = {}
             train_gate_stats: dict[str, float] = {}
