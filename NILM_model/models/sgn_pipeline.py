@@ -163,7 +163,6 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
     early_stop_metric = str(defaults.get("early_stop_metric", "output_loss"))
     label_smoothing = float(defaults.get("label_smoothing", 0.0))
     reg_on_weight = float(defaults.get("reg_on_weight", 0.0))
-    reg_all_weight = float(defaults.get("reg_all_weight", 0.0))
     gated_on_weight = float(defaults.get("gated_on_weight", 0.0))
     on_confidence_weight = float(defaults.get("on_confidence_weight", 0.0))
     on_smooth_weight = float(defaults.get("on_smooth_weight", 0.0))
@@ -235,7 +234,6 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
         early_stop_metric=early_stop_metric,
         label_smoothing=label_smoothing,
         reg_on_weight=reg_on_weight,
-        reg_all_weight=reg_all_weight,
         gated_on_weight=gated_on_weight,
         on_confidence_weight=on_confidence_weight,
         on_smooth_weight=on_smooth_weight,
@@ -440,14 +438,11 @@ def train_one(
     criterion = SGNLoss(
         label_smoothing=cfg.label_smoothing,
         reg_on_weight=cfg.reg_on_weight,
-        reg_all_weight=cfg.reg_all_weight,
         gated_on_weight=cfg.gated_on_weight,
         on_confidence_weight=cfg.on_confidence_weight,
         on_smooth_weight=cfg.on_smooth_weight,
         bce_pos_weight=cfg.bce_pos_weight,
     )
-    if cfg.reg_all_weight > 0.0:
-        print(f"All-timestep direct regression loss: reg_all_weight={cfg.reg_all_weight} (prevents gate-collapse starvation)")
     if cfg.reg_on_weight > 0.0:
         print(f"ON-only regression loss: reg_on_weight={cfg.reg_on_weight}")
     if cfg.gated_on_weight > 0.0:
