@@ -19,8 +19,13 @@ class SGNLoss(nn.Module):
 
     Paper Eq. (7b) L_power on raw p_hat alone is NOT used in Eq. (8).
 
-    Optional extensions (sgn_ukdale_cross_house.json, weights > 0):
-      L_reg_on, L_gated_on, weighted BCE — not in the original paper.
+    Optional extensions (weights > 0 to enable):
+      L_reg_on    — MSE on raw power during ON windows only (reg_on_weight)
+      L_reg_all   — MSE on raw power for ALL timesteps (reg_all_weight)
+                    KEY FIX for gate-collapse: regression always gets gradient regardless
+                    of gate state, so it does not starve when the classifier predicts OFF.
+      L_gated_on  — gated MSE restricted to ON windows (gated_on_weight)
+      weighted BCE — bce_pos_weight upweights ON in the classification loss
     """
 
     def __init__(
@@ -29,6 +34,7 @@ class SGNLoss(nn.Module):
         on_weight: float = 1.0,
         label_smoothing: float = 0.0,
         reg_on_weight: float = 0.0,
+        reg_all_weight: float = 0.0,
         gated_on_weight: float = 0.0,
         on_confidence_weight: float = 0.0,
         on_smooth_weight: float = 0.0,
@@ -39,6 +45,10 @@ class SGNLoss(nn.Module):
         self.on_weight = on_weight
         self.label_smoothing = label_smoothing
         self.reg_on_weight = float(reg_on_weight)
+        # reg_all_weight: MSE on raw p_hat for every timestep.
+        # Ensures regression branch receives gradient even when gate is fully closed
+        # (on_prob ≈ 0), breaking the self-reinforcing collapse seen during training.
+        self.reg_all_weight = float(reg_all_weight)
         self.gated_on_weight = float(gated_on_weight)
         self.on_confidence_weight = float(on_confidence_weight)
         self.on_smooth_weight = float(on_smooth_weight)
@@ -75,9 +85,17 @@ class SGNLoss(nn.Module):
         output_loss = output_error.mean()   # L_output
         on_loss = on_error.mean()           # L_on
 
-        # --- Optional extra terms (off when reg_on_weight / gated_on_weight == 0) ---
+        # --- Optional extra terms (off when weights == 0) ---
         on_mask = target_on >= 0.5
         zero = output_loss.detach() * 0.0
+
+        # L_reg_all: MSE on raw p_hat for ALL timesteps (ON and OFF).
+        # Gradient flows to regression branch independently of gate, preventing
+        # the collapse where on_prob → 0 silences all regression gradient.
+        reg_all_loss = (
+            (predictions["power"] - target_power).pow(2).mean()
+            if self.reg_all_weight > 0.0 else zero
+        )
 
         if on_mask.any():
             reg_on_loss = (
@@ -120,6 +138,7 @@ class SGNLoss(nn.Module):
         total = (
             self.output_weight * output_loss
             + self.on_weight * on_loss
+            + self.reg_all_weight * reg_all_loss
             + self.reg_on_weight * reg_on_loss
             + self.gated_on_weight * gated_on_loss
             + self.on_confidence_weight * on_conf_loss
@@ -134,6 +153,7 @@ class SGNLoss(nn.Module):
             "loss": total,  # scalar optimized by Adam; also used for val early stopping when metric=total_loss
             "output_loss": output_loss.detach(),
             "on_loss": on_loss.detach(),
+            "reg_all_loss": reg_all_loss.detach(),
             "reg_on_loss": reg_on_loss.detach(),
             "gated_on_loss": gated_on_loss.detach(),
             "on_conf_loss": on_conf_loss.detach(),

@@ -63,6 +63,7 @@ class SGNConfig:
     early_stop_metric: str = "total_loss"
     label_smoothing: float = 0.0
     reg_on_weight: float = 0.0
+    reg_all_weight: float = 0.0
     gated_on_weight: float = 0.0
     on_confidence_weight: float = 0.0
     on_smooth_weight: float = 0.0
