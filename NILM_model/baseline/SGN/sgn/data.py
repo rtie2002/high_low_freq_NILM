@@ -169,7 +169,7 @@ class CSVSGNWindowDataset(Dataset):
             self.on = df[on_columns].to_numpy(dtype=np.float32)
         else:
             # Precompute ON flags for WeightedRandomSampler (oversample_on).
-            self.on = (self.power > cfg.on_threshold_watts).astype(np.float32)
+            self.on = (self.power > config.on_threshold_watts).astype(np.float32)
 
         self.index = list(range(0, len(df) - config.input_length + 1, stride))
         if not self.index:
