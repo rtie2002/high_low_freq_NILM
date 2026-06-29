@@ -46,6 +46,7 @@ class SGNConfig:
     feature_mean: list[float] = field(default_factory=list)
     feature_scale: list[float] = field(default_factory=list)
     on_threshold_watts: float = 15.0
+    on_label_source: str = "csv"
     batch_size: int = 16
     learning_rate: float = 1.0e-4
     epochs: int = 200

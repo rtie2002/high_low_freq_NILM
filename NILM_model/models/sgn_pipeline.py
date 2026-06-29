@@ -164,6 +164,8 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
     label_smoothing = float(defaults.get("label_smoothing", 0.0))
     reg_on_weight = float(defaults.get("reg_on_weight", 0.0))
     gated_on_weight = float(defaults.get("gated_on_weight", 0.0))
+    on_label_source = str(defaults.get("on_label_source", "csv"))
+    on_threshold_watts = float(defaults.get("on_threshold_watts", 15.0))
     on_confidence_weight = float(defaults.get("on_confidence_weight", 0.0))
     on_smooth_weight = float(defaults.get("on_smooth_weight", 0.0))
     bce_pos_weight = float(defaults.get("bce_pos_weight", 1.0))
@@ -235,6 +237,8 @@ def make_config(args: argparse.Namespace, model_cfg: dict, csv_cfg: dict | None 
         label_smoothing=label_smoothing,
         reg_on_weight=reg_on_weight,
         gated_on_weight=gated_on_weight,
+        on_label_source=on_label_source,
+        on_threshold_watts=on_threshold_watts,
         on_confidence_weight=on_confidence_weight,
         on_smooth_weight=on_smooth_weight,
         bce_pos_weight=bce_pos_weight,
@@ -340,13 +344,21 @@ def describe_experiment_mapping(
         print(f"Time column: {csv_cfg.get('time_column', 'not used')}")
         print(f"Sampling interval: {csv_cfg.get('sampling_seconds', 'unknown')} seconds")
         print(f"X input columns: {cfg.feature_columns}")
-        print(f"X scaling: X / train_aggregate_std")
+        if cfg.scale_mode == "aggregate_std":
+            print("X scaling: X / train_aggregate_std")
+            print(f"Y scaling: Y_watts / train_aggregate_std")
+            print(f"Prediction inverse scaling: predicted_normalized_power * train_aggregate_std")
+        else:
+            print("X scaling: X / 612 (MATNILM fixed scale)")
+            print("Y scaling: Y_watts / 612 (MATNILM fixed scale)")
+            print("Prediction inverse scaling: predicted_normalized_power * 612")
         print(f"Y power column: {appliance_cfg['power']}")
-        print(f"Y scaling: Y_watts / train_aggregate_std")
-        print(f"Y on/off column: {appliance_cfg['on']}")
-        print("Y on/off scaling: unchanged 0/1 label from CSV")
-        print(f"Prediction inverse scaling: predicted_normalized_power * train_aggregate_std")
-        print(f"train_aggregate_std: {cfg.scale:.6f}")
+        if cfg.on_label_source == "threshold_watts":
+            print(f"Y on/off label: 1 if appliance_watts > {cfg.on_threshold_watts:g} W else 0 (raw watts)")
+        else:
+            print(f"Y on/off column: {appliance_cfg['on']}")
+            print("Y on/off scaling: unchanged 0/1 label from CSV")
+        print(f"scale: {cfg.scale:.6f}")
         return
 
     print(f"Processed REDD data directory: {data_dir}")

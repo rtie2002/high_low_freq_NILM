@@ -1,0 +1,39 @@
+{
+  "split_mode": "holdout",
+  "val_mode": "separate_files",
+  "split_description": "MATNILM S2 splits + ukdale.yaml per-house ON labels (Algorithm 1)",
+  "train_house_ids": [1],
+  "val_house_ids": [1],
+  "train_csv_file": "../../../data/multi_appliance_training_matnilm_house_threshold.csv",
+  "val_csv_file": "../../../data/multi_appliance_validating_matnilm_house_threshold.csv",
+  "test_csv_file": "../../../data/multi_appliance_testing_matnilm_house_threshold.csv",
+  "house_column": "house",
+  "time_column": "readable_time",
+  "aggregate_column": "aggregate",
+  "feature_columns": [
+    "aggregate"
+  ],
+  "appliances": {
+    "kettle": {
+      "power": "kettle_power",
+      "on": "kettle_on"
+    },
+    "fridge": {
+      "power": "fridge_power",
+      "on": "fridge_on"
+    },
+    "microwave": {
+      "power": "microwave_power",
+      "on": "microwave_on"
+    },
+    "dishwasher": {
+      "power": "dishwasher_power",
+      "on": "dishwasher_on"
+    },
+    "washingmachine": {
+      "power": "washingmachine_power",
+      "on": "washingmachine_on"
+    }
+  },
+  "sampling_seconds": 6
+}

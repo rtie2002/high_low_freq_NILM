@@ -128,7 +128,10 @@ class CSVSGNWindowDataset(Dataset):
         time_column = csv_config.get("time_column")
         house_column = csv_config.get("house_column", "house")
         on_columns = [appliances[name].get("on") for name in target_appliances]
-        target_columns = power_columns + [col for col in on_columns if col]
+        on_label_source = getattr(config, "on_label_source", "csv")
+        target_columns = list(power_columns)
+        if on_label_source == "csv":
+            target_columns.extend(col for col in on_columns if col)
         usecols = list(
             dict.fromkeys(
                 feature_columns
@@ -158,10 +161,14 @@ class CSVSGNWindowDataset(Dataset):
         self.aggregate = df[aggregate_column].to_numpy(dtype=np.float32)
         self.power = df[power_columns].to_numpy(dtype=np.float32)
         self.time = df[time_column].astype(str).to_numpy() if time_column and time_column in df else None
-        if not all(col and col in df for col in on_columns):
-            missing = [col for col in on_columns if not col or col not in df]
-            raise ValueError(f"Missing provided on/off label column(s): {missing}")
-        self.on = df[on_columns].to_numpy(dtype=np.float32)
+        self.on_label_source = on_label_source
+        if on_label_source == "csv":
+            if not all(col and col in df for col in on_columns):
+                missing = [col for col in on_columns if not col or col not in df]
+                raise ValueError(f"Missing provided on/off label column(s): {missing}")
+            self.on = df[on_columns].to_numpy(dtype=np.float32)
+        else:
+            self.on = None
 
         self.index = list(range(0, len(df) - config.input_length + 1, stride))
         if not self.index:
@@ -182,7 +189,10 @@ class CSVSGNWindowDataset(Dataset):
         aggregate_watts = self.aggregate[out_start:out_end]
         appliance_watts = self.power[out_start:out_end].T
         appliance_scaled = appliance_watts / cfg.scale
-        on_label = self.on[out_start:out_end].T
+        if self.on is not None:
+            on_label = self.on[out_start:out_end].T
+        else:
+            on_label = (appliance_watts > cfg.on_threshold_watts).astype(np.float32)
 
         return {
             "x": torch.from_numpy(x.astype(np.float32)),
