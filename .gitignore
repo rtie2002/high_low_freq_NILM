@@ -36,6 +36,13 @@ dataset_preprocess/created_data/
 !**/README.md
 !**/.gitignore
 
+# UNet-NILM bundled reproduction assets (see baseline/UNETNILM/REPRODUCTION.md)
+!NILM_model/baseline/UNETNILM/data.zip
+!NILM_model/baseline/UNETNILM/results.zip
+!NILM_model/baseline/UNETNILM/*.md
+!NILM_model/baseline/UNETNILM/requirements.txt
+!NILM_model/baseline/UNETNILM/run_reproduce.py
+
 # Logs
 *.log
 *.cfg

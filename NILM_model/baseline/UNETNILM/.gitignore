@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+__MACOSX/
+
+# Extracted at runtime (keep data.zip in repo)
+data/
+results/
+
+# Training outputs
+checkpoints/
+logs/
+*.ckpt
+*.log

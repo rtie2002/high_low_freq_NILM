@@ -1,0 +1,8 @@
+torch>=1.13
+pytorch-lightning>=2.0
+torchmetrics>=0.11
+numpy
+pandas
+scikit-learn
+tqdm
+tensorboard
