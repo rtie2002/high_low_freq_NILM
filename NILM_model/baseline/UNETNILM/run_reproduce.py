@@ -21,11 +21,42 @@ DATA_DIR = ROOT / "data"  # extracted .npy files (not the src/data python packag
 
 def _setup_src_path():
     """Prevent UNETNILM/data/ (npy folder) from shadowing src/data/ (python package)."""
-    root = str(ROOT.resolve())
-    src = str(SRC.resolve())
-    sys.path[:] = [p for p in sys.path if p and Path(p).resolve() != Path(root)]
-    if src not in sys.path:
-        sys.path.insert(0, src)
+    root = ROOT.resolve()
+    src = SRC.resolve()
+    cleaned = []
+    for p in sys.path:
+        if not p:
+            continue
+        try:
+            if Path(p).resolve() == root:
+                continue
+        except OSError:
+            pass
+        cleaned.append(p)
+    sys.path[:] = cleaned
+    src_str = str(src)
+    if src_str not in sys.path:
+        sys.path.insert(0, src_str)
+
+
+def _require_src():
+    load_data = SRC / "data" / "load_data.py"
+    if load_data.exists():
+        return
+    raise SystemExit(
+        f"Missing Python package at {load_data}\n"
+        "The UNETNILM/src/ folder is not on this machine (incomplete clone/copy).\n"
+        "Fix: git pull  OR copy the whole UNETNILM/src/ folder from your laptop.\n"
+        f"Then run from: {ROOT}"
+    )
+
+
+def resolve_data_dir() -> Path:
+    """Find ukdale npy root (handles accidental data/data/ nesting after re-extract)."""
+    for candidate in (DATA_DIR, DATA_DIR / "data"):
+        if (candidate / "ukdale" / "training" / "noise_inputs.npy").exists():
+            return candidate
+    return DATA_DIR
 
 
 _setup_src_path()
@@ -37,10 +68,14 @@ def extract_data():
         raise FileNotFoundError(f"Missing {data_zip}")
     with zipfile.ZipFile(data_zip, "r") as zf:
         zf.extractall(ROOT)
-    train_npy = DATA_DIR / "ukdale" / "training" / "noise_inputs.npy"
+    data_dir = resolve_data_dir()
+    train_npy = data_dir / "ukdale" / "training" / "noise_inputs.npy"
     if not train_npy.exists():
-        raise RuntimeError("Extraction failed: training npy not found")
-    print(f"Extracted data to {DATA_DIR}")
+        raise RuntimeError(
+            f"Extraction failed: {train_npy} not found. "
+            "Check data.zip or remove nested data/data/ and re-run --extract-data."
+        )
+    print(f"Extracted data to {data_dir}")
 
 
 def verify_results():
@@ -63,12 +98,16 @@ def verify_results():
 
 
 def train(epochs: int, sample: int | None, batch_size: int, denoise: bool):
+    _setup_src_path()
+    _require_src()
     from data.load_data import ukdale_appliance_data
     from experiment import run_experiments
 
-    train_npy = DATA_DIR / "ukdale" / "training" / "noise_inputs.npy"
+    data_dir = resolve_data_dir()
+    train_npy = data_dir / "ukdale" / "training" / "noise_inputs.npy"
     if not train_npy.exists():
         extract_data()
+        data_dir = resolve_data_dir()
 
     results, save_path = run_experiments(
         model_name="UNETNiLM",
@@ -82,7 +121,7 @@ def train(epochs: int, sample: int | None, batch_size: int, denoise: bool):
         benchmark="multi-appliance",
         appliances=list(ukdale_appliance_data.keys()),
         appliance_id=None,
-        data_path=str(DATA_DIR) + "/",
+        data_path=str(data_dir) + "/",
         checkpoint_path=str(ROOT / "checkpoints") + "/",
         results_path=str(ROOT / "results") + "/",
     )
