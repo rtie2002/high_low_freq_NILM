@@ -16,7 +16,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
-sys.path.insert(0, str(SRC))
+DATA_DIR = ROOT / "data"  # extracted .npy files (not the src/data python package)
+
+
+def _setup_src_path():
+    """Prevent UNETNILM/data/ (npy folder) from shadowing src/data/ (python package)."""
+    root = str(ROOT.resolve())
+    src = str(SRC.resolve())
+    sys.path[:] = [p for p in sys.path if p and Path(p).resolve() != Path(root)]
+    if src not in sys.path:
+        sys.path.insert(0, src)
+
+
+_setup_src_path()
 
 
 def extract_data():
@@ -25,10 +37,10 @@ def extract_data():
         raise FileNotFoundError(f"Missing {data_zip}")
     with zipfile.ZipFile(data_zip, "r") as zf:
         zf.extractall(ROOT)
-    train_npy = ROOT / "data" / "ukdale" / "training" / "noise_inputs.npy"
+    train_npy = DATA_DIR / "ukdale" / "training" / "noise_inputs.npy"
     if not train_npy.exists():
         raise RuntimeError("Extraction failed: training npy not found")
-    print(f"Extracted data to {ROOT / 'data'}")
+    print(f"Extracted data to {DATA_DIR}")
 
 
 def verify_results():
@@ -54,7 +66,7 @@ def train(epochs: int, sample: int | None, batch_size: int, denoise: bool):
     from data.load_data import ukdale_appliance_data
     from experiment import run_experiments
 
-    train_npy = ROOT / "data" / "ukdale" / "training" / "noise_inputs.npy"
+    train_npy = DATA_DIR / "ukdale" / "training" / "noise_inputs.npy"
     if not train_npy.exists():
         extract_data()
 
@@ -70,7 +82,7 @@ def train(epochs: int, sample: int | None, batch_size: int, denoise: bool):
         benchmark="multi-appliance",
         appliances=list(ukdale_appliance_data.keys()),
         appliance_id=None,
-        data_path=str(ROOT / "data") + "/",
+        data_path=str(DATA_DIR) + "/",
         checkpoint_path=str(ROOT / "checkpoints") + "/",
         results_path=str(ROOT / "results") + "/",
     )
