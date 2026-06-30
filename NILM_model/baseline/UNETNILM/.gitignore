@@ -3,8 +3,8 @@ __pycache__/
 .ipynb_checkpoints/
 __MACOSX/
 
-# Extracted at runtime (keep data.zip in repo)
-data/
+# Extracted at runtime (keep data.zip in repo) — /data/ is top-level only, not src/data/
+/data/
 results/
 
 # Training outputs
