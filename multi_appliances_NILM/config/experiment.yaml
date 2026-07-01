@@ -5,18 +5,18 @@ seed: 2026
 data_root: datasets/ukdale
 
 csv:
-  train_file: training/data.csv
-  validation_file: validating/data.csv
-  test_file: testing/data.csv
+  train_file: training/multi_appliance_training.csv
+  validation_file: validating/multi_appliance_validating.csv
+  test_file: testing/multi_appliance_testing.csv
 
   mains_column: aggregate
 
   appliances:
-    kettle:         {power: kettle_power,         state: kettle_state}
-    fridge:         {power: fridge_power,         state: fridge_state}
-    dishwasher:     {power: dishwasher_power,     state: dishwasher_state}
-    washingmachine: {power: washingmachine_power, state: washingmachine_state}
-    microwave:      {power: microwave_power,      state: microwave_state}
+    kettle:         {power: kettle_power,         state: kettle_on}
+    fridge:         {power: fridge_power,         state: fridge_on}
+    dishwasher:     {power: dishwasher_power,     state: dishwasher_on}
+    washingmachine: {power: washingmachine_power, state: washingmachine_on}
+    microwave:      {power: microwave_power,      state: microwave_on}
 
 evaluation:
   metrics: [mae, sae, f1, micro_f1]
