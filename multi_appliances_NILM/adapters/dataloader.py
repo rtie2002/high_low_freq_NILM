@@ -168,14 +168,14 @@ def load_csv_arrays(
 
     power_cols, state_cols = _csv_column_map(csv_cfg, appliances)
     usecols = list(dict.fromkeys([mains_column, *power_cols, *state_cols]))
-    if sub_mains_column:
-        usecols = list(dict.fromkeys([*usecols, sub_mains_column]))
+    available = set(pd.read_csv(csv_path, nrows=0).columns)
+    sub_col = sub_mains_column if sub_mains_column and sub_mains_column in available else None
+    if sub_col:
+        usecols = list(dict.fromkeys([*usecols, sub_col]))
     df = pd.read_csv(csv_path, usecols=usecols).dropna(subset=usecols)
 
     x = df[mains_column].to_numpy(dtype=np.float32)
-    sub = None
-    if sub_mains_column and sub_mains_column in df.columns:
-        sub = df[sub_mains_column].to_numpy(dtype=np.float32)
+    sub = df[sub_col].to_numpy(dtype=np.float32) if sub_col else None
     y = df[power_cols].to_numpy(dtype=np.float32)
     z = df[state_cols].to_numpy(dtype=np.float32)
     return x, y, z.astype(np.int64), sub
