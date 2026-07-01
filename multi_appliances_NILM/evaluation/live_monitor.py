@@ -12,6 +12,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from evaluation.plots import (
+    FULL_CYCLE_APPLIANCES,
     plot_loss_components,
     plot_training_history,
     save_appliance_on_waveforms,
@@ -55,8 +56,21 @@ class LiveTrainingMonitor:
     def plot_on_periods(self) -> int:
         return int(self.plot_cfg.get("plot_on_periods", 5))
 
-    def on_period_samples(self) -> int:
-        return int(self.plot_cfg.get("on_period_samples", 1200))
+    def on_period_samples(self) -> int | None:
+        raw = self.plot_cfg.get("on_period_samples", 0)
+        if raw is None:
+            return None
+        val = int(raw)
+        return None if val <= 0 else val
+
+    def full_cycle_appliances(self) -> list[str]:
+        raw = self.plot_cfg.get("full_cycle_appliances")
+        if raw is None:
+            return list(FULL_CYCLE_APPLIANCES)
+        return list(raw)
+
+    def waveform_dynamic_figsize(self) -> bool:
+        return bool(self.plot_cfg.get("waveform_dynamic_figsize", True))
 
     def on_period_margin_min(self) -> int:
         return int(self.plot_cfg.get("on_period_margin_min", 40))
@@ -122,17 +136,20 @@ class LiveTrainingMonitor:
     def save_loss_plots(self, *, epoch: int, best_epoch: int | None = None) -> None:
         if not self.history_path.exists():
             return
+        figsize = self.waveform_figsize()
         plot_training_history(
             self.history_path,
             self.live_history_png,
             title=f"{self.model_name} training (epoch {epoch})",
             best_epoch=best_epoch,
+            figsize=figsize,
         )
         if self.loss_detail_path.exists():
             plot_loss_components(
                 self.loss_detail_path,
                 self.live_loss_png,
                 title=f"{self.model_name} loss components",
+                figsize=figsize,
             )
 
     @torch.no_grad()
@@ -229,9 +246,11 @@ class LiveTrainingMonitor:
             aggregate=aggregate,
             n_periods=self.plot_on_periods(),
             period_samples=self.on_period_samples(),
+            full_cycle_appliances=self.full_cycle_appliances(),
             margin_min=self.on_period_margin_min(),
             margin_frac=self.on_period_margin_frac(),
             figsize=self.waveform_figsize(),
+            dynamic_figsize=self.waveform_dynamic_figsize(),
             dpi=self.waveform_dpi(),
             rng=rng,
             file_prefix=tag,
@@ -262,15 +281,18 @@ class LiveTrainingMonitor:
             self._loss_file.close()
 
     def finalize(self, *, best_epoch: int) -> None:
+        figsize = self.waveform_figsize()
         plot_training_history(
             self.history_path,
             self.run_dir / "training_loss.png",
             title=f"{self.model_name} training",
             best_epoch=best_epoch,
+            figsize=figsize,
         )
         if self.loss_detail_path.exists():
             plot_loss_components(
                 self.loss_detail_path,
                 self.run_dir / "loss_components.png",
                 title=f"{self.model_name} loss components",
+                figsize=figsize,
             )

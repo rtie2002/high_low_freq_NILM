@@ -48,12 +48,14 @@ training:
     plot_mode: interval
     plot_interval: 10
     plot_on_periods: 5
-    on_period_samples: 1200
+    on_period_samples: 0
+    full_cycle_appliances: [washingmachine, dishwasher]
     on_period_margin_min: 40
     on_period_margin_frac: 0.08
     waveform_figsize: 5.5
+    waveform_dynamic_figsize: true
     waveform_dpi: 200
-    plot_max_batches: 20
+    plot_max_batches: null
 
 loss:
   power: mse

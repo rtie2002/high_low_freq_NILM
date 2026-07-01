@@ -359,6 +359,9 @@ def evaluate_model(adapter, checkpoint: Path, run_dir: Path, split: str = "test"
     if waveform_dir.exists():
         shutil.rmtree(waveform_dir)
 
+    raw_period = plot_cfg.get("on_period_samples", 0)
+    period_samples = None if raw_period is None or int(raw_period) <= 0 else int(raw_period)
+
     saved = save_appliance_on_waveforms(
         waveform_dir,
         appliances=bundle.appliances,
@@ -367,10 +370,12 @@ def evaluate_model(adapter, checkpoint: Path, run_dir: Path, split: str = "test"
         y_true_on=bundle.y_true_on,
         y_pred_on=bundle.y_pred_on,
         n_periods=int(plot_cfg.get("plot_on_periods", 5)),
-        period_samples=int(plot_cfg.get("on_period_samples", 1200)),
+        period_samples=period_samples,
+        full_cycle_appliances=plot_cfg.get("full_cycle_appliances"),
         margin_min=int(plot_cfg.get("on_period_margin_min", 40)),
         margin_frac=float(plot_cfg.get("on_period_margin_frac", 0.08)),
         figsize=float(plot_cfg.get("waveform_figsize", 5.5)),
+        dynamic_figsize=bool(plot_cfg.get("waveform_dynamic_figsize", True)),
         dpi=int(plot_cfg.get("waveform_dpi", 300)),
         rng=np.random.default_rng(int(adapter.cfg.get("seed", 0))),
         file_prefix="on",
