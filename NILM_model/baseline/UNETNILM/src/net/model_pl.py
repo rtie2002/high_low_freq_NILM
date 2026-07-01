@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from argparse import ArgumentParser
 from .modules import CNN1DModel,  UNETNiLM
-from net.metrics import  compute_metrics, compute_regress_metrics, get_results_summary
+from net.metrics import compute_metrics, compute_regress_metrics, get_results_summary
 from data.load_data import ukdale_appliance_data 
 from data.data_loader import Dataset, load_data, spilit_refit_test
 from .utils import ObjectDict, QuantileLoss
@@ -31,6 +31,7 @@ class NILMnet(pl.LightningModule):
         self.hp.update(hparams.__dict__ if hasattr(hparams, "__dict__") else hparams)
         self._data = None
         self._test_outputs = []
+        self._val_outputs = []
         self.q_criterion = QuantileLoss(self.hp.quantiles)
         if self.hp.model_name== "CNN1D":
             self.model = CNN1DModel(in_size=self.hp.in_size, 
@@ -63,10 +64,9 @@ class NILMnet(pl.LightningModule):
             z = z.unsqueeze(-1)
         B = x.size(0)
         logits, rmse_logits = self(x)
-        logits_ce = logits.permute(0, 2, 1).reshape(-1, 2)
-        z_flat = z.reshape(-1)
         prob, pred = torch.max(F.softmax(logits, dim=1), dim=1)
-        loss_nll = F.cross_entropy(logits_ce, z_flat)
+        # Match author repo: NLL over (B, 2, M) logits and (B, M) multi-label states
+        loss_nll = F.nll_loss(F.log_softmax(logits, dim=1), z.long())
         if len(self.hp.quantiles)>1:
             prob=prob.unsqueeze(1).expand_as(rmse_logits)
             loss_mse = self.q_criterion(rmse_logits, y)
@@ -91,12 +91,29 @@ class NILMnet(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         loss, logs = self._step(batch)
-        for key, value in logs.items():
-            self.log(f"val_{key}", value.item(), on_epoch=True, prog_bar=(key == "F1"))
+        x, y, z = batch
+        if self.hp.benchmark == "single-appliance":
+            z = z.unsqueeze(-1)
+        logits, _ = self(x)
+        _, pred = torch.max(F.softmax(logits, dim=1), dim=1)
+        self._val_outputs.append(
+            {"pred_state": pred.detach().cpu(), "state": z.detach().cpu().long()}
+        )
         return logs
 
     def on_validation_epoch_end(self):
-        pass
+        if not self._val_outputs:
+            return
+        pred_state = torch.cat([x["pred_state"] for x in self._val_outputs], 0).numpy()
+        state = torch.cat([x["state"] for x in self._val_outputs], 0).numpy().astype(np.int32)
+        self._val_outputs = []
+        val_metrics = compute_metrics(state, pred_state)
+        val_maf1 = float(val_metrics["maF1"])
+        val_mif1 = float(val_metrics["miF1"])
+        self.log("val_maF1", val_maf1, prog_bar=True)
+        self.log("val_miF1", val_mif1)
+        # Keep val_F1 alias for LR scheduler (same as macro F1 on full val set)
+        self.log("val_F1", val_maf1)
     
     def test_step(self, batch,batch_idx):
         x, y, z = batch
@@ -128,14 +145,14 @@ class NILMnet(pl.LightningModule):
         state = torch.cat([x['state'] for x in outputs], 0).cpu().numpy().astype(np.int32)
         
         for idx, app in enumerate(self.hp.appliances):
-            mean = appliance_data[app]["mean"]
             std = appliance_data[app]["std"]
-            power[:, idx] = (power[:, idx] * std) + mean
+            # Author repo denorm (matches saved results.zip evaluation)
+            power[:, idx] = (power[:, idx] * std) + std
             if len(self.hp.quantiles) >= 2:
-                pred_power[:, :, idx] = (pred_power[:, :, idx] * std) + mean
+                pred_power[:, :, idx] = (pred_power[:, :, idx] * std) + std
                 pred_power[:, :, idx] = np.where(pred_power[:, :, idx] < 0, 0, pred_power[:, :, idx])
             else:
-                pred_power[:, idx] = (pred_power[:, idx] * std) + mean
+                pred_power[:, idx] = (pred_power[:, idx] * std) + std
                 pred_power[:, idx] = np.where(pred_power[:, idx] < 0, 0, pred_power[:, idx])
         
         if len(self.hp.quantiles)>=2:
@@ -268,6 +285,8 @@ class NILMnet(pl.LightningModule):
         parser.add_argument('--appliances', default=list(ukdale_appliance_data.keys()), type=list)
         parser.add_argument('--data', default="ukdale", type=str)
         parser.add_argument('--quantiles', default=[0.0025,0.1, 0.5, 0.9, 0.975], type=list)
-        parser.add_argument('--num_workers', default=4, type=int)
+        import sys as _sys
+        _default_workers = 0 if _sys.platform == "win32" else 4
+        parser.add_argument('--num_workers', default=_default_workers, type=int)
         #parser.add_argument("-f", "--fff", help="a dummy argument to fool ipython", default="1")
         return parser

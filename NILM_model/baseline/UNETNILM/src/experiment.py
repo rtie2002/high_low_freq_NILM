@@ -56,7 +56,7 @@ class NILMExperiment(object):
         self.arch = file_name
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
             dirpath=self.checkpoint_path,
-            monitor="val_F1",
+            monitor="val_maF1",
             mode="max",
             save_top_k=1,
         )
@@ -83,7 +83,11 @@ class NILMExperiment(object):
             "appliances", list(ukdale_appliance_data.keys())
         )
 
-        ckpt = get_latest_checkpoint(self.checkpoint_path)
+        ckpt = None
+        if self.params.get("resume"):
+            ckpt = get_latest_checkpoint(self.checkpoint_path)
+            if ckpt:
+                print(f"Resuming from checkpoint: {ckpt}")
         model = NILMnet(self.hparams)
         print(f"fit model for {file_name}")
         trainer = pl.Trainer(**trainer_kwargs)
@@ -93,6 +97,9 @@ class NILMExperiment(object):
         clear_output()
         if results:
             print(results.get("app_results", results))
+            if "avg_results" in results:
+                print("\nAverage metrics (compare maF1 to paper ~0.941):")
+                print(results["avg_results"])
         else:
             print("No test results captured.")
         
@@ -118,7 +125,8 @@ def run_experiments(model_name="CNN1D", denoise=True,
                     out_size = 5, quantiles=[0.0025,0.1, 0.5, 0.9, 0.975],
                     data_path="../data/",
                     checkpoint_path="../checkpoints/",
-                    results_path="../results/"):        
+                    results_path="../results/",
+                    resume=False):
     exp_name = f"{data}_{model_name}_quantiles" if len(quantiles)>1 else "{data}_{model_name}"
     if benchmark=="single-appliance":
         file_name = f"{exp_name}_single-appliance_{appliances[0]}"
@@ -145,6 +153,7 @@ def run_experiments(model_name="CNN1D", denoise=True,
                 'file_name':file_name,
                 "checkpoint_path": checkpoint_path + file_name + "/",
                 "results_path": results_path,
+                "resume": resume,
                 }
     exp = NILMExperiment(params)
     results, results_path=exp.fit()

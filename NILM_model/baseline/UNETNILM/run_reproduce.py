@@ -97,7 +97,7 @@ def verify_results():
     print("  MAE avg  ~ 11 W (per appliance, median quantile)")
 
 
-def train(epochs: int, sample: int | None, batch_size: int, denoise: bool):
+def train(epochs: int, sample: int | None, batch_size: int, denoise: bool, fresh: bool):
     _setup_src_path()
     _require_src()
     from data.load_data import ukdale_appliance_data
@@ -108,6 +108,12 @@ def train(epochs: int, sample: int | None, batch_size: int, denoise: bool):
     if not train_npy.exists():
         extract_data()
         data_dir = resolve_data_dir()
+
+    ckpt_dir = ROOT / "checkpoints" / "ukdale_UNETNiLM_quantiles_multi-appliance"
+    if fresh and ckpt_dir.exists():
+        import shutil
+        shutil.rmtree(ckpt_dir)
+        print(f"Removed old checkpoints: {ckpt_dir}")
 
     results, save_path = run_experiments(
         model_name="UNETNiLM",
@@ -143,6 +149,11 @@ def main():
     parser.add_argument("--sample", type=int, default=None, help="Use first N timesteps only")
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--denoise", action="store_true", help="Use denoise_inputs instead of noise_inputs")
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Delete old checkpoints and train from scratch (recommended)",
+    )
     args = parser.parse_args()
 
     if args.extract_data:
@@ -150,7 +161,7 @@ def main():
     if args.verify_results:
         verify_results()
     if args.train:
-        train(args.epochs, args.sample, args.batch_size, args.denoise)
+        train(args.epochs, args.sample, args.batch_size, args.denoise, args.fresh)
     if not any([args.extract_data, args.verify_results, args.train]):
         parser.print_help()
 
