@@ -160,10 +160,14 @@ class MATconv(nn.Module):
         d_r, f_r, m_r, w_r = self.block2(d_r, f_r, m_r, w_r)
         d_rr, f_rr, m_rr, w_rr, d_cc, f_cc, m_cc, w_cc = self.block3(d_r, f_r, m_r, w_r)
 
-        dc = torch.sigmoid(self.fc_dc(d_cc))
-        fc = torch.sigmoid(self.fc_fc(f_cc))
-        mc = torch.sigmoid(self.fc_mc(m_cc))
-        wc = torch.sigmoid(self.fc_wc(w_cc))
+        dc_logits = self.fc_dc(d_cc)
+        fc_logits = self.fc_fc(f_cc)
+        mc_logits = self.fc_mc(m_cc)
+        wc_logits = self.fc_wc(w_cc)
+        dc = torch.sigmoid(dc_logits)
+        fc = torch.sigmoid(fc_logits)
+        mc = torch.sigmoid(mc_logits)
+        wc = torch.sigmoid(wc_logits)
 
         dr = self.fc_dr(d_rr) * dc
         fr = self.fc_fr(f_rr) * fc
@@ -171,7 +175,8 @@ class MATconv(nn.Module):
         wr = self.fc_wr(w_rr) * wc
 
         y_pred_r = torch.cat((dr, fr, mr, wr), dim=2)
-        y_pred_c = torch.cat((dc, fc, mc, wc), dim=2)
+        # Logits for BCEWithLogitsLoss (AMP-safe); apply sigmoid at inference.
+        y_pred_c = torch.cat((dc_logits, fc_logits, mc_logits, wc_logits), dim=2)
         return y_pred_r, y_pred_c
 
 

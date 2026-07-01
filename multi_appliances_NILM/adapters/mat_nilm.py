@@ -110,10 +110,10 @@ class MATNILMAdapter(AdapterDataMixin):
             if (thr := get_state_threshold(self.model_cfg)) is not None:
                 z = states_from_power(y, thr)
             x = scale_inputs(x.to(device), scale)
-            y_pred_r, y_pred_c = model(x)
+            y_pred_r, y_pred_c_logits = model(x)
 
             y_pred_r = y_pred_r[:, out_slice, :].cpu().numpy()
-            y_pred_c = y_pred_c[:, out_slice, :].cpu().numpy()
+            y_pred_c = torch.sigmoid(y_pred_c_logits[:, out_slice, :]).cpu().numpy()
             y_true = y[:, out_slice, :].numpy() if y.dim() == 3 else y.numpy()
             z_true = z[:, out_slice, :].numpy() if z.dim() == 3 else z.numpy()
 
