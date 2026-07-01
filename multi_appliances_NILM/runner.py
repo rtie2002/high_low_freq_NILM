@@ -30,12 +30,23 @@ def _aggregate_logs(log_keys: list[str], n_batches: int, totals: dict[str, float
     return {k: totals.get(k, 0.0) / max(n_batches, 1) for k in log_keys}
 
 
+def _batch_to_device(batch, device: torch.device):
+    if isinstance(batch, (tuple, list)):
+        return type(batch)(_batch_to_device(item, device) for item in batch)
+    if isinstance(batch, dict):
+        return {key: _batch_to_device(value, device) for key, value in batch.items()}
+    if isinstance(batch, torch.Tensor):
+        return batch.to(device, non_blocking=True)
+    return batch
+
+
 def _run_epoch(
     adapter,
     model: torch.nn.Module,
     loss_fn,
     loader,
     *,
+    device: torch.device,
     train: bool,
     optimizer=None,
     grad_clip: float = 0.0,
@@ -53,6 +64,7 @@ def _run_epoch(
     context = torch.enable_grad() if train else torch.no_grad()
     with context:
         for batch in loader:
+            batch = _batch_to_device(batch, device)
             if train:
                 optimizer.zero_grad(set_to_none=True)
             step: StepOutput = adapter.training_step(model, loss_fn, batch)
@@ -78,6 +90,8 @@ def train_model(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = adapter.build_model(device)
     loss_fn = adapter.build_loss()
+    if isinstance(loss_fn, torch.nn.Module):
+        loss_fn = loss_fn.to(device)
     optim, sched = adapter.configure_optimizer(model)
 
     train_loader = adapter.build_dataloader("train")
@@ -115,11 +129,12 @@ def train_model(
                 model,
                 loss_fn,
                 train_loader,
+                device=device,
                 train=True,
                 optimizer=optim,
                 grad_clip=grad_clip,
             )
-            val_logs = _run_epoch(adapter, model, loss_fn, val_loader, train=False)
+            val_logs = _run_epoch(adapter, model, loss_fn, val_loader, device=device, train=False)
             val_loss = float(val_logs["loss"])
 
             if sched is not None:
