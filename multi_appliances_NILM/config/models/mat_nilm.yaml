@@ -9,8 +9,8 @@ windowing:
   input_window_length: 864
   output_window_length: 64
   output_alignment: center
-  input_stride: 32             # stride 1 = author SubSet but ~805k windows/epoch (~11h on 4090). 32 ≈ 25k windows (~20 min/epoch)
-  eval_stride: 64
+  input_stride: 1              # author SubSet: every window (stride 1), shuffled each epoch
+  eval_stride: 64              # author testSampler step = outputLength (64 for paper setting)
   training_targets: full_input   # train on full input window (author SubSet behaviour)
 
 architecture:
@@ -28,7 +28,7 @@ data:
 
 training:
   epochs: 200
-  batch_size: 256               # RTX 4090 24GB — raise if no OOM; lower if OOM
+  batch_size: 32                # author default (--batch 32). Larger batch does not fix slowness vs UNet.
   learning_rate: 0.001
   optimizer: Adam
   weight_decay: 0.0
