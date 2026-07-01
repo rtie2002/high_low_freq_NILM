@@ -61,6 +61,12 @@ def _run_epoch(
     else:
         model.eval()
 
+    try:
+        n_total = len(loader)
+    except TypeError:
+        n_total = None
+    log_every = max(1, (n_total or 500) // 20)  # ~5% progress updates
+
     context = torch.enable_grad() if train else torch.no_grad()
     with context:
         for batch in loader:
@@ -76,6 +82,13 @@ def _run_epoch(
             for k in log_keys:
                 totals[k] += step.logs.get(k, 0.0)
             n_batches += 1
+            if n_total and (n_batches == 1 or n_batches % log_every == 0 or n_batches == n_total):
+                phase = "train" if train else "val"
+                print(
+                    f"  [{phase}] batch {n_batches}/{n_total}  "
+                    f"loss={step.logs.get('loss', 0.0):.4f}",
+                    flush=True,
+                )
 
     return _aggregate_logs(log_keys, n_batches, totals)
 
@@ -94,9 +107,21 @@ def train_model(
         loss_fn = loss_fn.to(device)
     optim, sched = adapter.configure_optimizer(model)
 
+    print(f"Device: {device}", flush=True)
+    print("Loading CSV splits into memory (train, val, test)...", flush=True)
     train_loader = adapter.build_dataloader("train")
     val_loader = adapter.build_dataloader("validation")
     test_loader = adapter.build_dataloader("test")
+    print(
+        f"Training windows: {len(train_loader.dataset):,}  "
+        f"({len(train_loader):,} batches @ {train_loader.batch_size})",
+        flush=True,
+    )
+    print(
+        f"Validation windows: {len(val_loader.dataset):,}  "
+        f"({len(val_loader):,} batches)",
+        flush=True,
+    )
     train_cfg = adapter.model_cfg["training"]
     plot_cfg = train_cfg.get("plots", {})
     epochs = epochs or int(train_cfg["epochs"])
