@@ -138,20 +138,53 @@ class LiveTrainingMonitor:
         epoch: int,
         include_best: bool = False,
     ) -> list[Path]:
-        tag = "best" if include_best else "live"
+        self._prune_legacy_epoch_waveform_dirs()
         saved: list[Path] = []
-        saved.extend(
-            self._save_split_waveforms(
-                adapter, model, val_loader, device, split="validation", epoch=epoch, tag=tag
-            )
-        )
-        if test_loader is not None:
+        if not include_best:
             saved.extend(
                 self._save_split_waveforms(
-                    adapter, model, test_loader, device, split="test", epoch=epoch, tag=tag
+                    adapter, model, val_loader, device, split="validation", epoch=epoch, tag="latest"
                 )
             )
+            if test_loader is not None:
+                saved.extend(
+                    self._save_split_waveforms(
+                        adapter, model, test_loader, device, split="test", epoch=epoch, tag="latest"
+                    )
+                )
+        else:
+            saved.extend(
+                self._save_split_waveforms(
+                    adapter, model, val_loader, device, split="validation", epoch=epoch, tag="best"
+                )
+            )
+            if test_loader is not None:
+                saved.extend(
+                    self._save_split_waveforms(
+                        adapter, model, test_loader, device, split="test", epoch=epoch, tag="best"
+                    )
+                )
         return saved
+
+    def _waveform_tag_dir(self, split: str, tag: str) -> Path:
+        return self.waveforms_dir / split / tag
+
+    def _prune_legacy_epoch_waveform_dirs(self) -> None:
+        """Remove old live/epoch_XXX and best/epoch_XXX folders from earlier runs."""
+        if not self.waveforms_dir.exists():
+            return
+        for split_dir in self.waveforms_dir.iterdir():
+            if not split_dir.is_dir():
+                continue
+            for tag_dir in split_dir.iterdir():
+                if not tag_dir.is_dir():
+                    continue
+                if tag_dir.name == "live":
+                    shutil.rmtree(tag_dir, ignore_errors=True)
+                    continue
+                for child in tag_dir.iterdir():
+                    if child.is_dir() and child.name.startswith("epoch_"):
+                        shutil.rmtree(child, ignore_errors=True)
 
     def _save_split_waveforms(
         self,
@@ -171,13 +204,12 @@ class LiveTrainingMonitor:
             max_batches=self.plot_max_batches(),
         )
         aggregate = self._split_mains(adapter, split, len(bundle.y_true_watts))
-        output_dir = self.waveforms_dir / split / tag / f"epoch_{epoch:03d}"
+        output_dir = self._waveform_tag_dir(split, tag)
         if output_dir.exists():
             shutil.rmtree(output_dir)
 
         split_id = 0 if split == "validation" else 1
         rng = np.random.default_rng(self.seed + epoch * 1009 + split_id)
-        prefix = "best" if tag == "best" else f"epoch_{epoch:03d}"
         return save_appliance_on_waveforms(
             output_dir,
             appliances=self.appliances,
@@ -190,8 +222,8 @@ class LiveTrainingMonitor:
             period_samples=self.on_period_samples(),
             dpi=self.waveform_dpi(),
             rng=rng,
-            file_prefix=prefix,
-            title_prefix=f"{self.model_name} {split} epoch {epoch} — ",
+            file_prefix=tag,
+            title_prefix=f"{self.model_name} {split} {tag} epoch {epoch} — ",
         )
 
     def _split_mains(self, adapter, split: str, n_points: int) -> np.ndarray | None:

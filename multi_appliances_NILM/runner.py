@@ -72,6 +72,7 @@ def _run_epoch(
     grad_clip: float = 0.0,
     log_keys: list[str] | None = None,
     collect_states: bool = False,
+    desc: str | None = None,
 ) -> dict[str, float]:
     log_keys = log_keys or ["loss", "loss_state", "loss_power", "mae"]
     totals = {k: 0.0 for k in log_keys}
@@ -89,10 +90,17 @@ def _run_epoch(
     except TypeError:
         n_total = None
 
-    phase = "train" if train else "val"
+    phase = desc or ("train" if train else "val")
     context = torch.enable_grad() if train else torch.no_grad()
     with context:
-        pbar = tqdm(loader, total=n_total, desc=phase, leave=False, dynamic_ncols=True)
+        pbar = tqdm(
+            loader,
+            total=n_total,
+            desc=phase,
+            leave=False,
+            dynamic_ncols=True,
+            mininterval=1.0,
+        )
         for batch in pbar:
             batch = _batch_to_device(batch, device)
             if train:
@@ -185,6 +193,7 @@ def train_model(
     try:
         for epoch in range(epochs):
             epoch_no = epoch + 1
+            epoch_tag = f"Epoch {epoch_no}/{epochs}"
             train_logs = _run_epoch(
                 adapter,
                 model,
@@ -194,6 +203,7 @@ def train_model(
                 train=True,
                 optimizer=optim,
                 grad_clip=grad_clip,
+                desc=f"{epoch_tag} | train",
             )
             val_logs = _run_epoch(
                 adapter,
@@ -203,6 +213,7 @@ def train_model(
                 device=device,
                 train=False,
                 collect_states=(monitor_key == "val_f1" or scheduler_key == "val_f1"),
+                desc=f"{epoch_tag} | val",
             )
             val_loss = float(val_logs["loss"])
             val_f1 = float(val_logs.get("val_f1", 0.0))
@@ -213,7 +224,7 @@ def train_model(
 
             history.append(
                 {
-                    "epoch": epoch,
+                    "epoch": epoch_no,
                     **{f"train_{k}": v for k, v in train_logs.items()},
                     "val_loss": val_loss,
                     "val_f1": val_f1,
@@ -222,15 +233,22 @@ def train_model(
                 }
             )
             monitor.append_epoch(epoch=epoch_no, train_logs=train_logs, val_logs=val_logs)
-            print(
-                f"epoch {epoch:03d}  train_loss={train_logs['loss']:.4f}  "
-                f"val_loss={val_loss:.4f}  val_f1={val_f1:.4f}  "
+
+            improved = False
+            ckpt_score = val_f1 if monitor_key == "val_f1" else val_loss
+            if _is_better(ckpt_score, best_score, monitor_mode):
+                improved = True
+
+            tqdm.write(
+                f"{epoch_tag} | train_loss={train_logs['loss']:.4f} | "
+                f"val_loss={val_loss:.4f} | val_f1={val_f1:.4f} | "
                 f"val_mae={val_logs.get('mae', 0.0):.4f}"
+                + (" | new best" if improved else "")
             )
 
             if monitor.should_plot(epoch_no):
                 monitor.save_loss_plots(epoch=epoch_no, best_epoch=best_epoch or None)
-                saved = monitor.save_waveforms(
+                monitor.save_waveforms(
                     adapter,
                     model,
                     val_loader=val_loader,
@@ -238,18 +256,14 @@ def train_model(
                     device=device,
                     epoch=epoch_no,
                 )
-                print(
-                    f"  updated live plots: {monitor.live_history_png.name}, "
-                    f"{monitor.live_loss_png.name}, {len(saved)} waveform PNGs in {monitor.waveforms_dir}"
-                )
+                tqdm.write(f"  {epoch_tag} | saved latest waveforms -> .../waveforms/{{validation,test}}/latest/")
 
-            ckpt_score = val_f1 if monitor_key == "val_f1" else val_loss
-            if _is_better(ckpt_score, best_score, monitor_mode):
+            if improved:
                 best_score = ckpt_score
                 best_epoch = epoch_no
-                torch.save({"model_state_dict": model.state_dict(), "epoch": epoch}, best_path)
+                torch.save({"model_state_dict": model.state_dict(), "epoch": epoch_no}, best_path)
                 if monitor.should_plot(epoch_no):
-                    best_saved = monitor.save_waveforms(
+                    monitor.save_waveforms(
                         adapter,
                         model,
                         val_loader=val_loader,
@@ -258,7 +272,7 @@ def train_model(
                         epoch=best_epoch,
                         include_best=True,
                     )
-                    print(f"  updated best waveforms: {len(best_saved)} PNGs under {monitor.waveforms_dir}/**/best/")
+                    tqdm.write(f"  {epoch_tag} | saved best waveforms -> .../waveforms/{{validation,test}}/best/")
 
         with open(run_dir / "history.json", "w", encoding="utf-8") as f:
             json.dump(history, f, indent=2)
