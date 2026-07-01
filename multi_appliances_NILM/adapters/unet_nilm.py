@@ -106,7 +106,7 @@ class UNetNILMAdapter:
         median_idx = len(quantiles) // 2
         seq2quantile = self.model_cfg["seq2quantile"]
         appliances = self.cfg["appliances"]
-        denorm_style = str(self.model_cfg.get("data", {}).get("denorm_style", "author"))
+        denorm_style = str(self.model_cfg.get("data", {}).get("denorm_style", "standard"))
 
         pred_power_list, pred_state_list = [], []
         true_power_list, true_state_list = [], []

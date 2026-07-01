@@ -307,7 +307,7 @@ def _data_preprocess_note(
         elif sub_col:
             lines.append(f"sub_mains column: {sub_col}")
         lines.append(f"mains path: {'denoise' if data_cfg.get('use_denoised_mains') else 'noise'} (paper default: noise)")
-        lines.append(f"eval denorm: {data_cfg.get('denorm_style', 'author')}")
+        lines.append(f"eval denorm: {data_cfg.get('denorm_style', 'standard')}")
     elif scale := data_cfg.get("power_scale"):
         lines.append(f"preprocess: divide power/mains by {scale}")
         if thr := data_cfg.get("state_threshold_watts"):

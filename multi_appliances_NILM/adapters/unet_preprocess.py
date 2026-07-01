@@ -109,9 +109,13 @@ def denorm_appliance_power(
     appliances: list[str],
     seq2quantile: dict[str, Any],
     *,
-    style: str = "author",
+    style: str = "standard",
 ) -> np.ndarray:
-    """Inverse scaling for eval watts (author repo uses norm * std + std)."""
+    """Inverse z-score back to median-filtered appliance watts.
+
+    ``standard``: filtered_w = norm * std + mean (correct physical watts).
+    ``author``: filtered_w = norm * std + std (paper results.zip quirk; not true watts).
+    """
     out = np.array(power_norm, dtype=np.float64, copy=True)
     app_cfg = seq2quantile["appliances"]
     for i, app in enumerate(appliances):

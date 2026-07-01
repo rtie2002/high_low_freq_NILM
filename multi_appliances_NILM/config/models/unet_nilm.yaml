@@ -64,7 +64,7 @@ data:
     sub_mains: sub_mains      # optional; uses mains if column missing from CSV
   preprocess: unet_nilm
   use_denoised_mains: false   # false = noise path (paper default)
-  denorm_style: author        # author eval: norm * std + std
+  denorm_style: standard      # watts = norm*std + mean (use author only to match paper metrics)
   assume_raw_watts: true
 
 training:
