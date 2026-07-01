@@ -96,6 +96,7 @@ class WindowDataset(Dataset):
 
 
 from adapters.config import appliance_list
+from adapters.unet_preprocess import preprocess_unet_arrays
 
 
 def _appliance_order(experiment_cfg: dict[str, Any], model_cfg: dict[str, Any]) -> list[str]:
@@ -184,12 +185,17 @@ class NILMDataLoader:
         return path if path.is_absolute() else self.data_root / path
 
     def _load_split_csv(self, split: SplitName) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        return load_csv_arrays(
+        mains_col = resolve_mains_column(self.experiment, self.model_cfg)
+        x, y, z = load_csv_arrays(
             self._resolve_csv_path(split),
             self.csv_cfg,
             self.appliances,
-            mains_column=resolve_mains_column(self.experiment, self.model_cfg),
+            mains_column=mains_col,
         )
+        data_cfg = self.model_cfg.get("data", {})
+        if data_cfg.get("preprocess") == "unet_nilm" and "seq2quantile" in self.model_cfg:
+            x, y, z = preprocess_unet_arrays(x, y, self.appliances, self.model_cfg)
+        return x, y, z
 
     def get_splits(self) -> dict[SplitName, tuple[np.ndarray, np.ndarray, np.ndarray]]:
         if self._splits is not None:

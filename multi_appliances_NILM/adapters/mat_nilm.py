@@ -14,8 +14,10 @@ from adapters.common import (
     center_output_slice,
     denorm_power_array,
     get_power_scale,
+    get_state_threshold,
     scale_inputs,
     scale_targets,
+    states_from_power,
 )
 from adapters.types import StepOutput
 from model.MATNILM import MATconv
@@ -63,6 +65,8 @@ class MATNILMAdapter(AdapterDataMixin):
     ) -> StepOutput:
         x, y, z = batch
         scale = get_power_scale(self.model_cfg)
+        if (thr := get_state_threshold(self.model_cfg)) is not None:
+            z = states_from_power(y, thr)
         x = scale_inputs(x, scale)
         y = scale_targets(y, scale)
         z = z.float()
@@ -103,6 +107,8 @@ class MATNILMAdapter(AdapterDataMixin):
             if max_batches is not None and batch_idx >= max_batches:
                 break
             x, y, z = batch
+            if (thr := get_state_threshold(self.model_cfg)) is not None:
+                z = states_from_power(y, thr)
             x = scale_inputs(x.to(device), scale)
             y_pred_r, y_pred_c = model(x)
 

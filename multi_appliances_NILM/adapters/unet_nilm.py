@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from adapters.common import build_prediction_bundle
+from adapters.unet_preprocess import denorm_appliance_power
 from adapters.types import PredictionBundle, StepOutput
 from adapters.dataloader import NILMDataLoader, _resolve_input_length
 from model.UNETNILM import UNETNiLM
@@ -98,8 +99,9 @@ class UNetNILMAdapter:
         model.eval()
         quantiles = self.model_cfg["architecture"]["heads"]["quantiles"]
         median_idx = len(quantiles) // 2
-        appliance_stats = self.model_cfg["seq2quantile"]["appliances"]
+        seq2quantile = self.model_cfg["seq2quantile"]
         appliances = self.cfg["appliances"]
+        denorm = self.model_cfg.get("data", {}).get("preprocess") == "unet_nilm"
 
         pred_power_list, pred_state_list = [], []
         true_power_list, true_state_list = [], []
@@ -130,10 +132,9 @@ class UNetNILMAdapter:
         z_true = np.concatenate(true_state_list, axis=0)
         z_pred = np.concatenate(pred_state_list, axis=0)
 
-        for i, app in enumerate(appliances):
-            std = float(appliance_stats[app]["std"])
-            y_true[:, i] = y_true[:, i] * std + std
-            y_pred[:, i] = np.maximum(y_pred[:, i] * std + std, 0.0)
+        if denorm:
+            y_true = denorm_appliance_power(y_true, appliances, seq2quantile)
+            y_pred = denorm_appliance_power(y_pred, appliances, seq2quantile)
 
         return build_prediction_bundle(
             experiment_id=self.experiment["experiment_id"],

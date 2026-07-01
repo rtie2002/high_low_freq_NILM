@@ -12,6 +12,16 @@ from adapters.dataloader import NILMDataLoader, _resolve_input_length
 from adapters.types import PredictionBundle
 
 
+def get_state_threshold(model_cfg: dict[str, Any]) -> float | None:
+    """Return watts threshold for ON labels, or None to use CSV state columns."""
+    val = model_cfg.get("data", {}).get("state_threshold_watts")
+    return float(val) if val is not None else None
+
+
+def states_from_power(y: torch.Tensor, threshold_watts: float) -> torch.Tensor:
+    return (y > threshold_watts).long()
+
+
 def get_power_scale(model_cfg: dict[str, Any]) -> float:
     """Return 1.0 when CSV values are already scaled (e.g. UNet)."""
     return float(model_cfg.get("data", {}).get("power_scale", 1.0))

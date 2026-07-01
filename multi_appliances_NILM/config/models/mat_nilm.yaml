@@ -24,6 +24,7 @@ data:
   appliances: [dishwasher, fridge, microwave, washingmachine]
   mains_column: aggregate
   power_scale: 612.0            # divide CSV watts by this at train/eval (author /612)
+  state_threshold_watts: 15.0   # ON if raw power > 15 W (author SubSet)
 
 training:
   epochs: 200

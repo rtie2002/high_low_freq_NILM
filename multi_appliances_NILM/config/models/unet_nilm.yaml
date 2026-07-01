@@ -31,7 +31,7 @@ architecture:
     hidden_layers: [1024]
     batch_norm: true
   pool_filter: 32
-  dropout: 0.1
+  dropout: 0.25          # paper default (run_reproduce.py / model_pl.py)
   conv_block:
     kernel_size: 3
     stride: 2
@@ -54,10 +54,15 @@ seq2quantile:
     microwave: {window: 10, on_power_threshold: 200, mean: 500, std: 800}
   mains_denoise_window: 10
   mains_noise_window: 10
+  mains:
+    noise:   {mean: 389, std: 445}   # noise_inputs.npy (paper default)
+    denoise: {mean: 123, std: 369}   # denoise_inputs.npy (--denoise flag)
 
 data:
-  # Your UK-DALE CSVs use raw aggregate (watts), not author denoise_mains .npy
-  mains_column: aggregate
+  mains_column: aggregate          # raw watts in CSV; preprocessed online below
+  preprocess: unet_nilm            # quantile filter + z-score (author load_data.py)
+  use_denoised_mains: false        # false = noise path (paper default)
+  assume_raw_watts: true
 
 training:
   epochs: 50
@@ -67,7 +72,7 @@ training:
   beta_1: 0.999
   beta_2: 0.98
   eps: 1.0e-8
-  weight_decay: 0.0005
+  weight_decay: 0.0                # author Adam() omits weight_decay
   gradient_clip: 10.0
   patience_scheduler: 5
   num_workers: 0
