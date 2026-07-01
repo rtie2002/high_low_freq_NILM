@@ -10,7 +10,7 @@ windowing:
   force_even_input_length: true
   output_window_length: 1
   output_alignment: end
-  input_stride: 1
+  input_stride: 1              # increase to 4 or 8 for faster training (fewer windows)
   output_stride: 1
   seq2point:
     enabled: false
@@ -69,7 +69,7 @@ data:
 
 training:
   epochs: 50
-  batch_size: 128
+  batch_size: 512             # RTX 4090 — reduce if OOM
   learning_rate: 0.0001
   optimizer: Adam
   beta_1: 0.999
@@ -78,18 +78,25 @@ training:
   weight_decay: 0.0
   gradient_clip: 10.0
   patience_scheduler: 5
-  num_workers: 0
+  num_workers: 4                # parallel batch loading (0 on Windows if multiprocessing errors)
+  prefetch_factor: 4
+  persistent_workers: true
+  use_amp: true                 # bf16 mixed precision on Ada (4090)
+  amp_dtype: bf16
+  tf32: true
+  cudnn_benchmark: true
+  torch_compile: false        # set true for extra speed after verifying training stable
   seed: 7777
   checkpoint_monitor: val_f1
   scheduler_monitor: val_f1
 
   plots:
-    plot_mode: live
-    plot_interval: 1
+    plot_mode: interval         # live = every epoch (slow); interval = every N epochs
+    plot_interval: 5
     plot_on_periods: 5        # random ON events per appliance
     on_period_samples: 400    # timesteps per ON-period figure
-    waveform_dpi: 300         # high-resolution PNGs
-    plot_max_batches: 40
+    waveform_dpi: 200         # lower DPI = faster waveform saves
+    plot_max_batches: 20      # fewer batches for live waveform preview
 
 loss:
   state: nll

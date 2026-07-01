@@ -62,9 +62,12 @@ class WindowDataset(Dataset):
         stride: int,
         target_mode: TargetMode = "output_window",
     ):
-        self.inputs = inputs
-        self.targets = targets
-        self.states = states
+        self.inputs = np.ascontiguousarray(inputs, dtype=np.float32)
+        self.targets = np.ascontiguousarray(targets, dtype=np.float32)
+        self.states = np.ascontiguousarray(states, dtype=np.int64)
+        self.inputs_t = torch.from_numpy(self.inputs)
+        self.targets_t = torch.from_numpy(self.targets)
+        self.states_t = torch.from_numpy(self.states)
         self.windowing = windowing
         self.target_mode = target_mode
         self.seq_len = _resolve_input_length(windowing)
@@ -78,15 +81,15 @@ class WindowDataset(Dataset):
         start = int(self.indices[index])
         end = start + self.seq_len
 
-        x = torch.tensor(self.inputs[start:end], dtype=torch.float32).unsqueeze(-1)
+        x = self.inputs_t[start:end].unsqueeze(-1)
         if self.target_mode == "full_input":
-            y = torch.tensor(self.targets[start:end], dtype=torch.float32)
-            z = torch.tensor(self.states[start:end], dtype=torch.long)
+            y = self.targets_t[start:end]
+            z = self.states_t[start:end]
             return x, y, z
 
         out = _output_slice(start, self.seq_len, self.windowing)
-        y = torch.tensor(self.targets[out], dtype=torch.float32)
-        z = torch.tensor(self.states[out], dtype=torch.long)
+        y = self.targets_t[out]
+        z = self.states_t[out]
 
         out_len = int(self.windowing.get("output_window_length", 1))
         if out_len == 1:
@@ -350,6 +353,9 @@ def print_training_data_summary(
     print(f"  eval target mode:         {_target_mode(w, 'validation')}", flush=True)
     print(f"  batch size:               {batch_size}", flush=True)
     print(f"  epochs:                   {epochs}", flush=True)
+    if train_cfg.get("use_amp"):
+        print(f"  mixed precision:          {train_cfg.get('amp_dtype', 'bf16')}", flush=True)
+    print(f"  dataloader workers:       {int(train_cfg.get('num_workers', 0))}", flush=True)
     if train_cfg.get("checkpoint_monitor"):
         print(f"  checkpoint monitor:         {train_cfg['checkpoint_monitor']}", flush=True)
     print(flush=True)

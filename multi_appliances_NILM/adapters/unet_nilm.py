@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from adapters.common import build_prediction_bundle
+from adapters.common import build_dataloader, build_prediction_bundle
 from adapters.unet_preprocess import denorm_appliance_power
 from adapters.types import PredictionBundle, StepOutput
 from adapters.dataloader import NILMDataLoader, _resolve_input_length
@@ -61,13 +61,10 @@ class UNetNILMAdapter:
         return self._data_loader().build_dataset(split)
 
     def build_dataloader(self, split: str) -> DataLoader:
-        train_cfg = self.model_cfg["training"]
-        return DataLoader(
+        return build_dataloader(
             self.build_dataset(split),
-            batch_size=int(train_cfg["batch_size"]),
+            self.model_cfg["training"],
             shuffle=(split == "train"),
-            num_workers=int(train_cfg.get("num_workers", 0)),
-            pin_memory=torch.cuda.is_available(),
         )
 
     def training_step(

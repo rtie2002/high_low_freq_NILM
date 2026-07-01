@@ -53,6 +53,26 @@ def center_output_slice(windowing: dict[str, Any]) -> slice:
     return slice(start, start + out_len)
 
 
+def build_dataloader(
+    dataset: Dataset,
+    train_cfg: dict[str, Any],
+    *,
+    shuffle: bool,
+) -> DataLoader:
+    """PyTorch DataLoader with sensible defaults for GPU training."""
+    num_workers = int(train_cfg.get("num_workers", 0))
+    kwargs: dict[str, Any] = {
+        "batch_size": int(train_cfg["batch_size"]),
+        "shuffle": shuffle,
+        "num_workers": num_workers,
+        "pin_memory": torch.cuda.is_available(),
+    }
+    if num_workers > 0:
+        kwargs["persistent_workers"] = bool(train_cfg.get("persistent_workers", True))
+        kwargs["prefetch_factor"] = int(train_cfg.get("prefetch_factor", 4))
+    return DataLoader(dataset, **kwargs)
+
+
 class AdapterDataMixin:
     """Lazy NILMDataLoader + standard PyTorch DataLoader construction."""
 
@@ -71,13 +91,10 @@ class AdapterDataMixin:
         return self._data_loader().build_dataset(split)
 
     def build_standard_dataloader(self, split: str) -> DataLoader:
-        train_cfg = self.model_cfg["training"]
-        return DataLoader(
+        return build_dataloader(
             self.build_dataset(split),
-            batch_size=int(train_cfg["batch_size"]),
+            self.model_cfg["training"],
             shuffle=(split == "train"),
-            num_workers=int(train_cfg.get("num_workers", 0)),
-            pin_memory=torch.cuda.is_available(),
         )
 
 

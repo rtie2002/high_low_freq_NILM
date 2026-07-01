@@ -60,6 +60,21 @@ def _is_better(score: float, best: float, mode: str) -> bool:
     return score > best if mode == "max" else score < best
 
 
+def _resolve_amp_dtype(train_cfg: dict) -> torch.dtype:
+    name = str(train_cfg.get("amp_dtype", "bf16")).lower()
+    return torch.bfloat16 if name == "bf16" else torch.float16
+
+
+def _configure_cuda(train_cfg: dict) -> None:
+    if not torch.cuda.is_available():
+        return
+    if bool(train_cfg.get("cudnn_benchmark", True)):
+        torch.backends.cudnn.benchmark = True
+    if bool(train_cfg.get("tf32", True)):
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
+
 def _run_epoch(
     adapter,
     model: torch.nn.Module,
@@ -73,6 +88,9 @@ def _run_epoch(
     log_keys: list[str] | None = None,
     collect_states: bool = False,
     desc: str | None = None,
+    use_amp: bool = False,
+    amp_dtype: torch.dtype = torch.bfloat16,
+    scaler: torch.cuda.amp.GradScaler | None = None,
 ) -> dict[str, float]:
     log_keys = log_keys or ["loss", "loss_state", "loss_power", "mae"]
     totals = {k: 0.0 for k in log_keys}
@@ -105,26 +123,40 @@ def _run_epoch(
             batch = _batch_to_device(batch, device)
             if train:
                 optimizer.zero_grad(set_to_none=True)
-            step: StepOutput = adapter.training_step(model, loss_fn, batch)
+            with torch.autocast(
+                device_type=device.type,
+                dtype=amp_dtype,
+                enabled=use_amp and device.type == "cuda",
+            ):
+                step: StepOutput = adapter.training_step(model, loss_fn, batch)
             if train:
-                step.loss.backward()
-                if grad_clip > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                optimizer.step()
+                if scaler is not None and scaler.is_enabled():
+                    scaler.scale(step.loss).backward()
+                    if grad_clip > 0:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    step.loss.backward()
+                    if grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                    optimizer.step()
             for k in log_keys:
                 totals[k] += step.logs.get(k, 0.0)
             if collect_states and step.aux:
-                state_preds.append(step.aux["pred_state"].numpy())
-                state_trues.append(step.aux["true_state"].numpy())
+                state_preds.append(step.aux["pred_state"].detach())
+                state_trues.append(step.aux["true_state"].detach())
             n_batches += 1
-            pbar.set_postfix(loss=f"{step.logs.get('loss', 0.0):.4f}")
+            if n_batches % 20 == 0 or n_batches == n_total:
+                pbar.set_postfix(loss=f"{step.logs.get('loss', 0.0):.4f}")
 
     logs = _aggregate_logs(log_keys, n_batches, totals)
     if collect_states and state_preds:
         from adapters.unet_metrics import compute_unet_state_f1
 
-        z_pred = np.concatenate(state_preds, axis=0)
-        z_true = np.concatenate(state_trues, axis=0)
+        z_pred = torch.cat(state_preds, dim=0).cpu().numpy()
+        z_true = torch.cat(state_trues, dim=0).cpu().numpy()
         logs.update(compute_unet_state_f1(z_true, z_pred))
     return logs
 
@@ -137,13 +169,26 @@ def train_model(
     seed: int | None = None,
 ) -> Path:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    train_cfg = adapter.model_cfg["training"]
+    _configure_cuda(train_cfg)
+    use_amp = bool(train_cfg.get("use_amp", False)) and device.type == "cuda"
+    amp_dtype = _resolve_amp_dtype(train_cfg)
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp and amp_dtype == torch.float16)
+
     model = adapter.build_model(device)
+    if bool(train_cfg.get("torch_compile", False)) and hasattr(torch, "compile"):
+        model = torch.compile(model)
     loss_fn = adapter.build_loss()
     if isinstance(loss_fn, torch.nn.Module):
         loss_fn = loss_fn.to(device)
     optim, sched = adapter.configure_optimizer(model)
 
     print(f"Device: {device}", flush=True)
+    if device.type == "cuda":
+        name = torch.cuda.get_device_name(device)
+        amp_label = str(train_cfg.get("amp_dtype", "bf16")) if use_amp else "off"
+        workers = int(train_cfg.get("num_workers", 0))
+        tqdm.write(f"GPU: {name} | AMP: {amp_label} | DataLoader workers: {workers}")
     print("Loading CSV splits into memory (train, val, test)...", flush=True)
     train_loader = adapter.build_dataloader("train")
     val_loader = adapter.build_dataloader("validation")
@@ -204,6 +249,9 @@ def train_model(
                 optimizer=optim,
                 grad_clip=grad_clip,
                 desc=f"{epoch_tag} | train",
+                use_amp=use_amp,
+                amp_dtype=amp_dtype,
+                scaler=scaler,
             )
             val_logs = _run_epoch(
                 adapter,
@@ -214,6 +262,8 @@ def train_model(
                 train=False,
                 collect_states=(monitor_key == "val_f1" or scheduler_key == "val_f1"),
                 desc=f"{epoch_tag} | val",
+                use_amp=use_amp,
+                amp_dtype=amp_dtype,
             )
             val_loss = float(val_logs["loss"])
             val_f1 = float(val_logs.get("val_f1", 0.0))

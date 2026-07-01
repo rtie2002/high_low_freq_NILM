@@ -9,7 +9,7 @@ windowing:
   input_window_length: 864
   output_window_length: 64
   output_alignment: center
-  input_stride: 1
+  input_stride: 1              # increase to 4 for ~4x faster MATNILM epochs
   eval_stride: 64
   training_targets: full_input   # train on full input window (author SubSet behaviour)
 
@@ -28,22 +28,29 @@ data:
 
 training:
   epochs: 200
-  batch_size: 128
+  batch_size: 192               # RTX 4090 24GB — try 256 with use_amp
   learning_rate: 0.001
   optimizer: Adam
   weight_decay: 0.0
   gradient_clip: 0.0
-  num_workers: 0
+  num_workers: 4
+  prefetch_factor: 4
+  persistent_workers: true
+  use_amp: true
+  amp_dtype: bf16
+  tf32: true
+  cudnn_benchmark: true
+  torch_compile: false
   seed: 2026
   checkpoint_monitor: val_mae
 
   plots:
-    plot_mode: live
-    plot_interval: 1
+    plot_mode: interval
+    plot_interval: 10
     plot_on_periods: 5
     on_period_samples: 400
-    waveform_dpi: 300
-    plot_max_batches: 40
+    waveform_dpi: 200
+    plot_max_batches: 20
 
 loss:
   power: mse
