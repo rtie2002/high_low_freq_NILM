@@ -1,0 +1,91 @@
+# UNet-NILM model config (Faustine et al., BuildSys 2020)
+# Architecture: model/UNETNILM.py | Loss: model/UNETNILM_loss.py
+
+model:
+  name: unet_nilm
+  task: multi_appliance_joint
+
+windowing:
+  input_window_length: 100
+  force_even_input_length: true
+  output_window_length: 1
+  output_alignment: end
+  input_stride: 1
+  output_stride: 1
+  seq2point:
+    enabled: false
+    center_output: true
+    pad_mode: constant
+    pad_value: 0.0
+
+architecture:
+  in_size: 1
+  output_size: 5
+  unet:
+    num_layers: 5
+    features_start: 32
+  encoder:
+    d_model: 128
+    n_layers: 2
+  mlp:
+    hidden_layers: [1024]
+    batch_norm: true
+  pool_filter: 32
+  dropout: 0.1
+  conv_block:
+    kernel_size: 3
+    stride: 2
+    padding: 1
+    activation: PReLU
+    batch_norm: true
+    weight_norm: true
+  heads:
+    state_classes: 2
+    n_quantiles: 5
+    quantiles: [0.0025, 0.1, 0.5, 0.9, 0.975]
+
+seq2quantile:
+  quantile_percent: 50
+  appliances:
+    kettle: {window: 10, on_power_threshold: 2000, mean: 700, std: 1000}
+    fridge: {window: 50, on_power_threshold: 50, mean: 200, std: 400}
+    dishwasher: {window: 50, on_power_threshold: 10, mean: 700, std: 700}
+    washingmachine: {window: 50, on_power_threshold: 20, mean: 400, std: 700}
+    microwave: {window: 10, on_power_threshold: 200, mean: 500, std: 800}
+  mains_denoise_window: 10
+  mains_noise_window: 10
+
+data:
+  # UNet-NILM: pick denoised or raw mains column from your CSV
+  mains_columns:
+    denoised: denoise_mains
+    noise: noise_mains
+  use_denoised_mains: true
+
+training:
+  epochs: 50
+  batch_size: 128
+  learning_rate: 0.0001
+  optimizer: Adam
+  beta_1: 0.999
+  beta_2: 0.98
+  eps: 1.0e-8
+  weight_decay: 0.0005
+  gradient_clip: 10.0
+  patience_scheduler: 5
+  num_workers: 0
+  seed: 7777
+  checkpoint_monitor: val_maf1
+
+  plots:
+    plot_mode: live
+    plot_interval: 1
+    plot_on_periods: 5        # random ON events per appliance
+    on_period_samples: 400    # timesteps per ON-period figure
+    waveform_dpi: 300         # high-resolution PNGs
+    plot_max_batches: 40
+
+loss:
+  state: nll
+  power: quantile_pinball
+  combine: state_loss + power_loss

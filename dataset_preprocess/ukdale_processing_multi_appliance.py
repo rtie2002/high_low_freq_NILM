@@ -97,6 +97,18 @@ def get_arguments() -> argparse.Namespace:
         help="Output directory for --split_houses. Default: paths.save_path from config.",
     )
     parser.add_argument(
+        "--data_dir",
+        type=str,
+        default=None,
+        help="Override UK-DALE root (house_1/, house_2/, ...). Default: paths.data_dir from config.",
+    )
+    parser.add_argument(
+        "--house_filename",
+        type=str,
+        default="multi_appliance_house{house}_lf.csv",
+        help="Per-house filename for --split_houses. Use {house} placeholder.",
+    )
+    parser.add_argument(
         "--trim_to_common_start",
         action="store_true",
         default=True,
@@ -534,8 +546,8 @@ def print_on_summary(df: pd.DataFrame, appliances: list[str]) -> None:
         print(f"{app:<15} {on_rows:>8,} {on_pct:>13.3f}%")
 
 
-def per_house_output_path(output_dir: str, house: int) -> str:
-    return os.path.join(output_dir, f"multi_appliance_house{house}_lf.csv")
+def per_house_output_path(output_dir: str, house: int, filename_template: str) -> str:
+    return os.path.join(output_dir, filename_template.format(house=house))
 
 
 def main() -> None:
@@ -545,15 +557,18 @@ def main() -> None:
         config = yaml.safe_load(handle)
 
     paths, _ = resolve_paths(config, args.config)
+    if args.data_dir:
+        config["paths"]["data_dir"] = os.path.abspath(args.data_dir)
     if args.split_houses:
         houses = [int(item.strip()) for item in args.split_houses.split(",") if item.strip()]
         output_dir = os.path.abspath(args.output_dir or paths["save_path"])
         os.makedirs(output_dir, exist_ok=True)
         print(f"Writing one CSV per house to: {output_dir}")
+        print(f"data_dir: {config['paths']['data_dir']}")
         for house in houses:
             house_start = time.time()
             df, appliances = build_one_house_lf(config, args, house)
-            output_path = per_house_output_path(output_dir, house)
+            output_path = per_house_output_path(output_dir, house, args.house_filename)
             df.to_csv(output_path, index=False)
             print("[3/3] Saved low-frequency multi-appliance CSV")
             print(f"output : {output_path}")

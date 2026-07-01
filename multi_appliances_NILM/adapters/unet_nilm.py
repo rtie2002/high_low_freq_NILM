@@ -1,0 +1,165 @@
+"""UNet-NILM adapter — wires model, loss, and dataset into the shared pipeline."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
+
+from adapters.common import build_prediction_bundle
+from adapters.types import PredictionBundle, StepOutput
+from adapters.dataloader import NILMDataLoader, _resolve_input_length
+from model.UNETNILM import UNETNiLM
+from model.UNETNILM_loss import UNETNILMLoss
+
+
+class UNetNILMAdapter:
+    name = "unet_nilm"
+
+    def __init__(self, merged_cfg: dict[str, Any], data_root: str | None = None):
+        self.cfg = merged_cfg
+        self.experiment = merged_cfg["experiment"]
+        self.model_cfg = merged_cfg["model"]
+        self.data_root = data_root or merged_cfg.get("data_root")
+        self._data: NILMDataLoader | None = None
+
+    def _data_loader(self) -> NILMDataLoader:
+        if self._data is None:
+            self._data = NILMDataLoader(self.experiment, self.model_cfg, self.data_root)
+        return self._data
+
+    def build_model(self, device: torch.device) -> torch.nn.Module:
+        a = self.model_cfg["architecture"]
+        c = a["conv_block"]
+        model = UNETNiLM(
+            in_size=a["in_size"],
+            output_size=a["output_size"],
+            seq_len=_resolve_input_length(self.model_cfg["windowing"]),
+            d_model=a["encoder"]["d_model"],
+            n_layers=a["unet"]["num_layers"],
+            n_quantiles=a["heads"]["n_quantiles"],
+            features_start=a["unet"]["features_start"],
+            pool_filter=a["pool_filter"],
+            encoder_n_layers=a["encoder"]["n_layers"],
+            mlp_hidden=a["mlp"]["hidden_layers"],
+            dropout=a["dropout"],
+            kernel_size=c["kernel_size"],
+            stride=c["stride"],
+            padding=c["padding"],
+        )
+        return model.to(device)
+
+    def build_loss(self) -> UNETNILMLoss:
+        quantiles = self.model_cfg["architecture"]["heads"]["quantiles"]
+        return UNETNILMLoss(quantiles=quantiles)
+
+    def build_dataset(self, split: str) -> Dataset:
+        return self._data_loader().build_dataset(split)
+
+    def build_dataloader(self, split: str) -> DataLoader:
+        train_cfg = self.model_cfg["training"]
+        return DataLoader(
+            self.build_dataset(split),
+            batch_size=int(train_cfg["batch_size"]),
+            shuffle=(split == "train"),
+            num_workers=int(train_cfg.get("num_workers", 0)),
+            pin_memory=torch.cuda.is_available(),
+        )
+
+    def training_step(
+        self,
+        model: torch.nn.Module,
+        loss_fn: UNETNILMLoss,
+        batch: Any,
+    ) -> StepOutput:
+        x, y, z = batch
+        states_logits, power_logits = model(x)
+        out = loss_fn(states_logits, power_logits, y, z)
+        logs = {
+            "loss": float(out.loss.detach()),
+            "loss_state": float(out.loss_state.detach()),
+            "loss_power": float(out.loss_power.detach()),
+            "mae": float(out.mae.detach()),
+        }
+        return StepOutput(loss=out.loss, logs=logs)
+
+    @torch.no_grad()
+    def predict_dataloader(
+        self,
+        model: torch.nn.Module,
+        loader: DataLoader,
+        device: torch.device,
+        *,
+        max_batches: int | None = None,
+    ) -> PredictionBundle:
+        model.eval()
+        quantiles = self.model_cfg["architecture"]["heads"]["quantiles"]
+        median_idx = len(quantiles) // 2
+        appliance_stats = self.model_cfg["seq2quantile"]["appliances"]
+        appliances = self.cfg["appliances"]
+
+        pred_power_list, pred_state_list = [], []
+        true_power_list, true_state_list = [], []
+        sample_indices = []
+
+        offset = 0
+        for batch_idx, batch in enumerate(loader):
+            if max_batches is not None and batch_idx >= max_batches:
+                break
+            x, y, z = batch
+            x = x.to(device)
+            states_logits, power_logits = model(x)
+            pred_state = torch.max(F.softmax(states_logits, dim=1), dim=1).indices.cpu().numpy()
+            if power_logits.dim() == 3:
+                pred_power = power_logits[:, median_idx].cpu().numpy()
+            else:
+                pred_power = power_logits.cpu().numpy()
+
+            pred_power_list.append(pred_power)
+            pred_state_list.append(pred_state)
+            true_power_list.append(y.numpy())
+            true_state_list.append(z.numpy())
+            sample_indices.append(np.arange(offset, offset + len(x)))
+            offset += len(x)
+
+        y_true = np.concatenate(true_power_list, axis=0)
+        y_pred = np.concatenate(pred_power_list, axis=0)
+        z_true = np.concatenate(true_state_list, axis=0)
+        z_pred = np.concatenate(pred_state_list, axis=0)
+
+        for i, app in enumerate(appliances):
+            std = float(appliance_stats[app]["std"])
+            y_true[:, i] = y_true[:, i] * std + std
+            y_pred[:, i] = np.maximum(y_pred[:, i] * std + std, 0.0)
+
+        return build_prediction_bundle(
+            experiment_id=self.experiment["experiment_id"],
+            model_name=self.name,
+            split="test",
+            appliances=appliances,
+            sample_index=np.concatenate(sample_indices),
+            y_true_watts=y_true,
+            y_pred_watts=y_pred,
+            y_true_on=z_true,
+            y_pred_on=z_pred,
+        )
+
+    def configure_optimizer(self, model: torch.nn.Module):
+        t = self.model_cfg["training"]
+        optim = torch.optim.Adam(
+            model.parameters(),
+            lr=float(t["learning_rate"]),
+            betas=(float(t["beta_1"]), float(t["beta_2"])),
+            eps=float(t.get("eps", 1e-8)),
+            weight_decay=float(t.get("weight_decay", 0.0)),
+        )
+        sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optim,
+            patience=int(t.get("patience_scheduler", 5)),
+            min_lr=1e-6,
+            mode="max",
+        )
+        return optim, sched

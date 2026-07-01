@@ -1,0 +1,25 @@
+# Data paths + CSV columns + evaluation rules (you prepare the CSVs yourself).
+
+experiment_id: ukdale_cross_house_5w
+seed: 2026
+data_root: datasets/ukdale
+
+csv:
+  train_file: training/data.csv
+  validation_file: validating/data.csv
+  test_file: testing/data.csv
+
+  mains_column: aggregate
+
+  appliances:
+    kettle:         {power: kettle_power,         state: kettle_state}
+    fridge:         {power: fridge_power,         state: fridge_state}
+    dishwasher:     {power: dishwasher_power,     state: dishwasher_state}
+    washingmachine: {power: washingmachine_power, state: washingmachine_state}
+    microwave:      {power: microwave_power,      state: microwave_state}
+
+evaluation:
+  metrics: [mae, sae, f1, micro_f1]
+  on_threshold_watts: 15.0
+  sae_period: 1200
+  power_unit: watts

@@ -1,0 +1,50 @@
+# MATNILM model config (Zhang et al., BuildSys 2021)
+# Architecture: model/MATNILM.py | Loss: model/MATNILM_loss.py
+
+model:
+  name: mat_nilm
+  task: multi_appliance_joint
+
+windowing:
+  input_window_length: 864
+  output_window_length: 64
+  output_alignment: center
+  input_stride: 1
+  eval_stride: 64
+  training_targets: full_input   # train on full input window (author SubSet behaviour)
+
+architecture:
+  input_size: 1
+  hidden: 32
+  dropout: 0.1
+  num_appliances: 4
+
+data:
+  # Override experiment appliance list — MATNILM is fixed to 4 appliances (REDD order).
+  appliances: [dishwasher, fridge, microwave, washingmachine]
+  mains_column: aggregate
+  power_scale: 612.0            # divide CSV watts by this at train/eval (author /612)
+
+training:
+  epochs: 200
+  batch_size: 32
+  learning_rate: 0.001
+  optimizer: Adam
+  weight_decay: 0.0
+  gradient_clip: 0.0
+  num_workers: 0
+  seed: 2026
+  checkpoint_monitor: val_mae
+
+  plots:
+    plot_mode: live
+    plot_interval: 1
+    plot_on_periods: 5
+    on_period_samples: 400
+    waveform_dpi: 300
+    plot_max_batches: 40
+
+loss:
+  power: mse
+  state: bce
+  combine: power_loss + state_loss

@@ -38,12 +38,47 @@ TIME_COL = "readable_time"
 HOUSE_COL = "house"
 
 
+def resolve_house_csv(data_dir: Path, house: int) -> Path:
+    """Prefer ukdale_house{N}_lf_6s.csv, fall back to multi_appliance_house{N}_lf.csv."""
+    candidates = [
+        data_dir / f"ukdale_house{house}_lf_6s.csv",
+        data_dir / f"multi_appliance_house{house}_lf.csv",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[0]
+
+
 def project_paths(data_dir: Path) -> dict[int, Path]:
-    return {
-        1: data_dir / "multi_appliance_house1_lf.csv",
-        2: data_dir / "multi_appliance_house2_lf.csv",
-        5: data_dir / "multi_appliance_house5_lf.csv",
-    }
+    return {house: resolve_house_csv(data_dir, house) for house in (1, 2, 5)}
+
+
+def rename_on_to_state(df: pd.DataFrame) -> pd.DataFrame:
+    rename = {col: col.replace("_on", "_state") for col in df.columns if col.endswith("_on")}
+    return df.rename(columns=rename)
+
+
+def export_framework_splits(
+    training: pd.DataFrame,
+    validating: pd.DataFrame,
+    testing: pd.DataFrame,
+    export_dir: Path,
+    *,
+    rename_state_columns: bool = True,
+) -> None:
+    """Write multi_appliances_NILM/datasets/ukdale/{training,validating,testing}/data.csv."""
+    if rename_state_columns:
+        training = rename_on_to_state(training)
+        validating = rename_on_to_state(validating)
+        testing = rename_on_to_state(testing)
+
+    for split, frame in [("training", training), ("validating", validating), ("testing", testing)]:
+        out_dir = export_dir / split
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / "data.csv"
+        frame.to_csv(out_path, index=False)
+        print(f"  exported {split}: {out_path} ({len(frame):,} rows)")
 
 
 def load_last_days(csv_path: Path, days: float, *, tail_buffer_rows: int | None = None) -> pd.DataFrame:
@@ -225,6 +260,20 @@ def main() -> None:
             "train_houses: val = last val_days from each train house."
         ),
     )
+    parser.add_argument(
+        "--test_full",
+        action="store_true",
+        help="Use the full test-house CSV (recommended for deployment-style H2 holdout).",
+    )
+    parser.add_argument(
+        "--export_dir",
+        type=Path,
+        default=None,
+        help=(
+            "Also write training/data.csv, validating/data.csv, testing/data.csv "
+            "under this directory (multi_appliances_NILM layout)."
+        ),
+    )
     args = parser.parse_args()
 
     data_dir = args.data_dir.resolve()
@@ -267,7 +316,10 @@ def main() -> None:
     if test_path is None or not test_path.exists():
         raise FileNotFoundError(f"Expected CSV for test house {args.test_house}: {test_path}")
     print(f"\n[test pool] house {args.test_house}")
-    test_pool_df = loader(test_path)
+    if args.test_full or (args.val_source == "train_houses" and not args.full_range):
+        test_pool_df = load_full(test_path)
+    else:
+        test_pool_df = loader(test_path)
 
     if args.full_range:
         training_df, validating_df = temporal_train_val_split_by_ratio(train_frames, 0.85)
@@ -305,6 +357,16 @@ def main() -> None:
     summarize(out_train.name, training_df)
     summarize(out_val.name, validating_df)
     summarize(out_test.name, test_df)
+
+    if args.export_dir is not None:
+        print("\nFramework export")
+        export_framework_splits(
+            training_df,
+            validating_df,
+            test_df,
+            args.export_dir.resolve(),
+        )
+
     if args.val_source == "test_house":
         print("\nDone. Use csv_config: baseline/SGN/configs/training_data_ukdale_cross_house.json")
         print("      model_config: baseline/SGN/configs/sgn_ukdale_cross_house.json")
