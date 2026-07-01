@@ -56,11 +56,8 @@ seq2quantile:
   mains_noise_window: 10
 
 data:
-  # UNet-NILM: pick denoised or raw mains column from your CSV
-  mains_columns:
-    denoised: denoise_mains
-    noise: noise_mains
-  use_denoised_mains: true
+  # Your UK-DALE CSVs use raw aggregate (watts), not author denoise_mains .npy
+  mains_column: aggregate
 
 training:
   epochs: 50
