@@ -56,7 +56,16 @@ class LiveTrainingMonitor:
         return int(self.plot_cfg.get("plot_on_periods", 5))
 
     def on_period_samples(self) -> int:
-        return int(self.plot_cfg.get("on_period_samples", 400))
+        return int(self.plot_cfg.get("on_period_samples", 1200))
+
+    def on_period_margin_min(self) -> int:
+        return int(self.plot_cfg.get("on_period_margin_min", 40))
+
+    def on_period_margin_frac(self) -> float:
+        return float(self.plot_cfg.get("on_period_margin_frac", 0.08))
+
+    def waveform_figsize(self) -> float:
+        return float(self.plot_cfg.get("waveform_figsize", 5.5))
 
     def waveform_dpi(self) -> int:
         return int(self.plot_cfg.get("waveform_dpi", 300))
@@ -220,6 +229,9 @@ class LiveTrainingMonitor:
             aggregate=aggregate,
             n_periods=self.plot_on_periods(),
             period_samples=self.on_period_samples(),
+            margin_min=self.on_period_margin_min(),
+            margin_frac=self.on_period_margin_frac(),
+            figsize=self.waveform_figsize(),
             dpi=self.waveform_dpi(),
             rng=rng,
             file_prefix=tag,

@@ -94,7 +94,10 @@ training:
     plot_mode: interval         # live = every epoch (slow); interval = every N epochs
     plot_interval: 5
     plot_on_periods: 5        # random ON events per appliance
-    on_period_samples: 400    # timesteps per ON-period figure
+    on_period_samples: 1200    # max timesteps per figure (full ON event + padding)
+    on_period_margin_min: 40   # padding (samples) around each ON segment
+    on_period_margin_frac: 0.08
+    waveform_figsize: 5.5      # square figure side length (inches) for paper
     waveform_dpi: 200         # lower DPI = faster waveform saves
     plot_max_batches: 20      # fewer batches for live waveform preview
 

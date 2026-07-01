@@ -42,21 +42,22 @@ def _find_on_events(on: np.ndarray, *, min_duration: int = 10) -> list[tuple[int
     return [(int(s), int(e)) for s, e in zip(starts, ends) if e - s + 1 >= min_duration]
 
 
-def _pick_random_on_centers(
+def _pick_random_on_events(
     on: np.ndarray,
     power: np.ndarray,
     *,
     n_periods: int,
     rng: np.random.Generator,
     min_duration: int = 10,
-) -> list[int]:
+) -> list[tuple[int, int]]:
+    """Return (start, end) inclusive indices for random ON segments."""
     events = _find_on_events(on, min_duration=min_duration)
     if events:
         if len(events) <= n_periods:
             picks = events
         else:
             picks = [events[i] for i in rng.choice(len(events), size=n_periods, replace=False)]
-        return [int((start + end) // 2) for start, end in picks]
+        return [(int(s), int(e)) for s, e in picks]
 
     values = np.asarray(power, dtype=float).reshape(-1)
     if not len(values):
@@ -71,7 +72,36 @@ def _pick_random_on_centers(
             centers.append(int(idx))
         if len(centers) >= n_periods:
             break
-    return sorted(centers)
+    half = max(min_duration // 2, 10)
+    n = len(values)
+    return [(max(0, c - half), min(n - 1, c + half)) for c in sorted(centers)]
+
+
+def _window_for_on_event(
+    event_start: int,
+    event_end: int,
+    series_len: int,
+    *,
+    margin_min: int = 30,
+    margin_frac: float = 0.08,
+    max_samples: int | None = 1200,
+) -> tuple[int, int]:
+    """Slice bounds that include the full ON segment plus padding.
+
+    Long events (e.g. washing-machine cycles) are right-anchored when capped so
+    the heating / spin tail is not clipped off the right edge.
+    """
+    event_len = max(1, event_end - event_start + 1)
+    margin = max(margin_min, int(margin_frac * event_len))
+    start = max(0, event_start - margin)
+    end = min(series_len, event_end + margin)
+
+    if max_samples is not None and (end - start) > max_samples:
+        # Right-anchor so heating / spin tails are not clipped on long cycles.
+        end = min(series_len, event_end + margin)
+        start = max(0, end - max_samples)
+
+    return start, end
 
 
 def plot_single_on_period(
@@ -79,26 +109,45 @@ def plot_single_on_period(
     appliance: str,
     y_true_watts: np.ndarray,
     y_pred_watts: np.ndarray,
-    center: int,
     output_path: str | Path,
+    event_start: int | None = None,
+    event_end: int | None = None,
+    center: int | None = None,
     period_samples: int = 400,
+    margin_min: int = 30,
+    margin_frac: float = 0.08,
+    figsize: float = 5.5,
     aggregate: np.ndarray | None = None,
     y_pred_on: np.ndarray | None = None,
     title: str | None = None,
     dpi: int = WAVEFORM_DPI,
 ) -> Path:
-    """High-resolution true vs predicted waveform for one ON period."""
-    half = max(period_samples // 2, 10)
-    start = max(0, center - half)
-    end = min(len(y_true_watts), start + period_samples)
-    start = max(0, end - period_samples)
+    """True vs predicted waveform for one ON period (full event + padding)."""
+    n = len(y_true_watts)
+    if event_start is not None and event_end is not None:
+        start, end = _window_for_on_event(
+            event_start,
+            event_end,
+            n,
+            margin_min=margin_min,
+            margin_frac=margin_frac,
+            max_samples=period_samples if period_samples > 0 else None,
+        )
+    elif center is not None:
+        half = max(period_samples // 2, 10)
+        start = max(0, center - half)
+        end = min(n, start + period_samples)
+        start = max(0, end - period_samples)
+    else:
+        raise ValueError("Provide event_start/event_end or center")
 
     sl = slice(start, end)
     x = np.arange(start, end)
     true_v = np.asarray(y_true_watts, dtype=float)[sl]
     pred_v = np.maximum(np.asarray(y_pred_watts, dtype=float)[sl], 0.0)
 
-    fig, ax = plt.subplots(1, 1, figsize=(14, 4.5))
+    fig, ax = plt.subplots(1, 1, figsize=(figsize, figsize))
+    ax.set_box_aspect(1)
     agg_view = aggregate[sl] if aggregate is not None and len(aggregate) >= end else None
     if agg_view is not None:
         ax.fill_between(x, 0, agg_view, color="#d9d9d9", alpha=0.14)
@@ -117,7 +166,7 @@ def plot_single_on_period(
     ax.set_ylabel("Power (W)")
     ax.set_xlabel("Timestep index")
     ax.grid(True, alpha=0.25)
-    ax.set_title(title or f"{appliance} ON period (center={center})")
+    ax.set_title(title or f"{appliance} ON period [{start}:{end}]")
 
     handles, _ = ax.get_legend_handles_labels()
     handles.append(Patch(facecolor="#7ad66d", alpha=0.18, label="pred ON"))
@@ -145,7 +194,11 @@ def save_appliance_on_waveforms(
     y_pred_on: np.ndarray | None = None,
     aggregate: np.ndarray | None = None,
     n_periods: int = 5,
-    period_samples: int = 400,
+    period_samples: int = 1200,
+    margin_min: int = 40,
+    margin_frac: float = 0.08,
+    min_on_duration: int = 10,
+    figsize: float = 5.5,
     dpi: int = WAVEFORM_DPI,
     rng: np.random.Generator | None = None,
     file_prefix: str = "on",
@@ -164,20 +217,32 @@ def save_appliance_on_waveforms(
 
         true_on = y_true_on[:, idx] if y_true_on is not None else (y_true[:, idx] > 15.0).astype(np.float32)
         pred_on = y_pred_on[:, idx] if y_pred_on is not None else None
-        centers = _pick_random_on_centers(true_on, y_true[:, idx], n_periods=n_periods, rng=rng)
-        if not centers:
+        min_dur = max(min_on_duration, 30 if app == "washingmachine" else min_on_duration)
+        events = _pick_random_on_events(
+            true_on,
+            y_true[:, idx],
+            n_periods=n_periods,
+            rng=rng,
+            min_duration=min_dur,
+        )
+        if not events:
             continue
 
-        for period_i, center in enumerate(centers, start=1):
+        for period_i, (ev_start, ev_end) in enumerate(events, start=1):
+            center = (ev_start + ev_end) // 2
             path = app_dir / f"{file_prefix}_{period_i:02d}_t{center}.png"
             title = f"{title_prefix}{app} ON period {period_i}".strip()
             plot_single_on_period(
                 appliance=app,
                 y_true_watts=y_true[:, idx],
                 y_pred_watts=y_pred[:, idx],
-                center=center,
+                event_start=ev_start,
+                event_end=ev_end,
                 output_path=path,
                 period_samples=period_samples,
+                margin_min=margin_min,
+                margin_frac=margin_frac,
+                figsize=figsize,
                 aggregate=aggregate,
                 y_pred_on=pred_on,
                 title=title,
