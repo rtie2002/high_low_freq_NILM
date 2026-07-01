@@ -227,9 +227,10 @@ class LiveTrainingMonitor:
             model,
             loader,
             device,
+            split=split,
             max_batches=self.plot_max_batches(),
         )
-        aggregate = self._split_mains(adapter, split, len(bundle.y_true_watts))
+        aggregate = self._split_mains(adapter, split, bundle)
         output_dir = self._waveform_tag_dir(split, tag)
         if output_dir.exists():
             shutil.rmtree(output_dir)
@@ -244,6 +245,7 @@ class LiveTrainingMonitor:
             y_true_on=bundle.y_true_on,
             y_pred_on=bundle.y_pred_on,
             aggregate=aggregate,
+            csv_timesteps=bundle.csv_timesteps,
             n_periods=self.plot_on_periods(),
             period_samples=self.on_period_samples(),
             full_cycle_appliances=self.full_cycle_appliances(),
@@ -257,10 +259,14 @@ class LiveTrainingMonitor:
             title_prefix=f"{self.model_name} {split} {tag} epoch {epoch} — ",
         )
 
-    def _split_mains(self, adapter, split: str, n_points: int) -> np.ndarray | None:
+    def _split_mains(self, adapter, split: str, bundle) -> np.ndarray | None:
         try:
-            key = "validation" if split == "validation" else "test"
+            n_points = len(bundle.y_true_watts)
             data_loader = adapter._data_loader()
+            key = "validation" if split == "validation" else "test"
+            if bundle.csv_timesteps is not None and len(bundle.csv_timesteps) >= n_points:
+                raw_x, _, _ = data_loader.get_raw_csv_arrays(key)
+                return raw_x[bundle.csv_timesteps[:n_points]].astype(np.float32)
             x, _, _ = data_loader.get_splits()[key]
             windowing = data_loader.model_cfg["windowing"]
             seq_len = int(windowing["input_window_length"])

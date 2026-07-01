@@ -340,7 +340,7 @@ def evaluate_model(adapter, checkpoint: Path, run_dir: Path, split: str = "test"
     model.load_state_dict(ckpt["model_state_dict"])
 
     loader = adapter.build_dataloader(split)
-    bundle = adapter.predict_dataloader(model, loader, device)
+    bundle = adapter.predict_dataloader(model, loader, device, split=split)
 
     run_dir.mkdir(parents=True, exist_ok=True)
     pred_path = run_dir / f"{split}_predictions.npz"
@@ -369,6 +369,7 @@ def evaluate_model(adapter, checkpoint: Path, run_dir: Path, split: str = "test"
         y_pred_watts=bundle.y_pred_watts,
         y_true_on=bundle.y_true_on,
         y_pred_on=bundle.y_pred_on,
+        csv_timesteps=bundle.csv_timesteps,
         n_periods=int(plot_cfg.get("plot_on_periods", 5)),
         period_samples=period_samples,
         full_cycle_appliances=plot_cfg.get("full_cycle_appliances"),

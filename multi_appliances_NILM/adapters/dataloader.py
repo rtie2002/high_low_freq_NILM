@@ -199,6 +199,7 @@ class NILMDataLoader:
         self.csv_cfg = experiment_cfg.get("csv", {})
         self.appliances = _appliance_order(experiment_cfg, model_cfg)
         self._splits: dict[SplitName, tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None
+        self._raw_splits: dict[SplitName, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
 
     def _resolve_csv_path(self, split: SplitName) -> Path:
         key = _SPLIT_FILE_KEYS[split]
@@ -224,6 +225,7 @@ class NILMDataLoader:
             sub_mains_column=sub_col,
         )
         if data_cfg.get("preprocess") == "unet_nilm" and "seq2quantile" in self.model_cfg:
+            self._raw_splits[split] = (x.copy(), y.copy(), z.copy())
             x, y, z = preprocess_unet_arrays(
                 x,
                 y,
@@ -232,6 +234,24 @@ class NILMDataLoader:
                 sub_mains_watts=sub,
             )
         return x, y, z
+
+    def get_raw_csv_arrays(
+        self, split: SplitName
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Raw mains + appliance watts/states from CSV (before model preprocess)."""
+        if split not in self._raw_splits:
+            self.get_splits()
+        if split not in self._raw_splits:
+            x, y, z = self.get_splits()[split]
+            return x, y, z
+        return self._raw_splits[split]
+
+    def window_output_timesteps(self, split: str, n_windows: int) -> np.ndarray:
+        """CSV row index for each sliding-window model output (end-aligned)."""
+        key: SplitName = "validation" if split in ("val", "validation") else split  # type: ignore[assignment]
+        ds = self.build_dataset(split)
+        n = min(int(n_windows), len(ds))
+        return ds.indices[:n] + ds.seq_len - 1
 
     def get_splits(self) -> dict[SplitName, tuple[np.ndarray, np.ndarray, np.ndarray]]:
         if self._splits is not None:
@@ -311,6 +331,8 @@ def _data_preprocess_note(
             lines.append(f"sub_mains column: {sub_col}")
         lines.append(f"mains path: {'denoise' if data_cfg.get('use_denoised_mains') else 'noise'} (paper default: noise)")
         lines.append(f"eval denorm: {data_cfg.get('denorm_style', 'standard')}")
+        if src := data_cfg.get("waveform_ground_truth"):
+            lines.append(f"waveform ground truth: {src}")
     elif scale := data_cfg.get("power_scale"):
         lines.append(f"preprocess: divide power/mains by {scale}")
         if thr := data_cfg.get("state_threshold_watts"):

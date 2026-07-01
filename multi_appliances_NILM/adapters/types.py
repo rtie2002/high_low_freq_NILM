@@ -21,6 +21,7 @@ class PredictionBundle:
     y_pred_watts: np.ndarray
     y_true_on: np.ndarray | None = None
     y_pred_on: np.ndarray | None = None
+    csv_timesteps: np.ndarray | None = None
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -35,6 +36,7 @@ class PredictionBundle:
             y_pred_watts=self.y_pred_watts,
             y_true_on=self.y_true_on if self.y_true_on is not None else np.array([]),
             y_pred_on=self.y_pred_on if self.y_pred_on is not None else np.array([]),
+            csv_timesteps=self.csv_timesteps if self.csv_timesteps is not None else np.array([]),
         )
 
     @classmethod
@@ -45,6 +47,7 @@ class PredictionBundle:
             appliances = appliances.tolist()
         y_true_on = data["y_true_on"]
         y_pred_on = data["y_pred_on"]
+        csv_ts = data["csv_timesteps"] if "csv_timesteps" in data else np.array([])
         return cls(
             experiment_id=str(data["experiment_id"]),
             model_name=str(data["model_name"]),
@@ -55,6 +58,7 @@ class PredictionBundle:
             y_pred_watts=data["y_pred_watts"],
             y_true_on=None if y_true_on.size == 0 else y_true_on,
             y_pred_on=None if y_pred_on.size == 0 else y_pred_on,
+            csv_timesteps=None if csv_ts.size == 0 else csv_ts,
         )
 
 

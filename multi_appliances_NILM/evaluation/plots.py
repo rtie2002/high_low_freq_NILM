@@ -131,6 +131,7 @@ def plot_single_on_period(
     dynamic_figsize: bool = True,
     aggregate: np.ndarray | None = None,
     y_pred_on: np.ndarray | None = None,
+    csv_timesteps: np.ndarray | None = None,
     title: str | None = None,
     dpi: int = WAVEFORM_DPI,
 ) -> Path:
@@ -155,7 +156,14 @@ def plot_single_on_period(
         raise ValueError("Provide event_start/event_end or center")
 
     sl = slice(start, end)
-    x = np.arange(start, end)
+    if csv_timesteps is not None and len(csv_timesteps) >= end:
+        x = np.asarray(csv_timesteps[sl], dtype=int)
+        x_label = "CSV timestep (6 s)"
+        mains_label = "mains (W)"
+    else:
+        x = np.arange(start, end)
+        x_label = "Window index"
+        mains_label = "mains (norm)"
     true_v = np.asarray(y_true_watts, dtype=float)[sl]
     pred_v = np.maximum(np.asarray(y_pred_watts, dtype=float)[sl], 0.0)
 
@@ -168,7 +176,7 @@ def plot_single_on_period(
     agg_view = aggregate[sl] if aggregate is not None and len(aggregate) >= end else None
     if agg_view is not None:
         ax.fill_between(x, 0, agg_view, color="#d9d9d9", alpha=0.14)
-        ax.plot(x, agg_view, color="#8a8a8a", linewidth=0.9, alpha=0.55, label="mains (norm)")
+        ax.plot(x, agg_view, color="#8a8a8a", linewidth=0.9, alpha=0.55, label=mains_label)
 
     if y_pred_on is not None:
         on_mask = np.asarray(y_pred_on)[sl].astype(bool)
@@ -181,9 +189,14 @@ def plot_single_on_period(
     ax.plot(x, true_v, color="#1f77b4", linewidth=1.8, label=f"{appliance} true")
     ax.plot(x, pred_v, color="#d62728", linewidth=1.5, alpha=0.92, label=f"{appliance} pred")
     ax.set_ylabel("Power (W)")
-    ax.set_xlabel("Timestep index")
+    ax.set_xlabel(x_label)
     ax.grid(True, alpha=0.25)
-    ax.set_title(title or f"{appliance} ON [{start}:{end}] ({n_pts} steps)")
+    if csv_timesteps is not None and len(csv_timesteps) >= end:
+        t0, t1 = int(csv_timesteps[start]), int(csv_timesteps[end - 1])
+        title_suffix = f" [{t0}:{t1}] ({end - start} pts)"
+    else:
+        title_suffix = f" [{start}:{end}] ({end - start} steps)"
+    ax.set_title(title or f"{appliance} ON period{title_suffix}")
 
     handles, _ = ax.get_legend_handles_labels()
     handles.append(Patch(facecolor="#7ad66d", alpha=0.18, label="pred ON"))
@@ -210,6 +223,7 @@ def save_appliance_on_waveforms(
     y_true_on: np.ndarray | None = None,
     y_pred_on: np.ndarray | None = None,
     aggregate: np.ndarray | None = None,
+    csv_timesteps: np.ndarray | None = None,
     n_periods: int = 5,
     period_samples: int | None = None,
     full_cycle_appliances: Iterable[str] | None = None,
@@ -269,6 +283,7 @@ def save_appliance_on_waveforms(
                 dynamic_figsize=dynamic_figsize,
                 aggregate=aggregate,
                 y_pred_on=pred_on,
+                csv_timesteps=csv_timesteps,
                 title=title,
                 dpi=dpi,
             )

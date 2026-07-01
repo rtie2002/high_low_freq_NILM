@@ -96,6 +96,7 @@ class UNetNILMAdapter:
         loader: DataLoader,
         device: torch.device,
         *,
+        split: str = "validation",
         max_batches: int | None = None,
     ) -> PredictionBundle:
         model.eval()
@@ -135,19 +136,36 @@ class UNetNILMAdapter:
         z_pred = np.concatenate(pred_state_list, axis=0)
 
         if self.model_cfg.get("data", {}).get("preprocess") == "unet_nilm":
-            y_true = denorm_appliance_power(y_true, appliances, seq2quantile, style=denorm_style)
             y_pred = denorm_appliance_power(y_pred, appliances, seq2quantile, style=denorm_style)
+            gt_source = str(
+                self.model_cfg.get("data", {}).get("waveform_ground_truth", "csv_raw")
+            ).lower()
+            if gt_source == "csv_raw":
+                data_loader = self._data_loader()
+                split_key = "validation" if split in ("val", "validation") else split
+                raw_x, raw_y, raw_z = data_loader.get_raw_csv_arrays(split_key)  # type: ignore[arg-type]
+                ts = data_loader.window_output_timesteps(split_key, len(y_true))
+                y_true = raw_y[ts]
+                z_true = raw_z[ts]
+            else:
+                y_true = denorm_appliance_power(y_true, appliances, seq2quantile, style=denorm_style)
+
+        csv_timesteps = None
+        if self.model_cfg.get("data", {}).get("preprocess") == "unet_nilm":
+            split_key = "validation" if split in ("val", "validation") else split
+            csv_timesteps = self._data_loader().window_output_timesteps(split_key, len(y_true))
 
         return build_prediction_bundle(
             experiment_id=self.experiment["experiment_id"],
             model_name=self.name,
-            split="test",
+            split=split,
             appliances=appliances,
             sample_index=np.concatenate(sample_indices),
             y_true_watts=y_true,
             y_pred_watts=y_pred,
             y_true_on=z_true,
             y_pred_on=z_pred,
+            csv_timesteps=csv_timesteps,
         )
 
     def configure_optimizer(self, model: torch.nn.Module):

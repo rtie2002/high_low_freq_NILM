@@ -109,6 +109,7 @@ def build_prediction_bundle(
     y_pred_watts: np.ndarray,
     y_true_on: np.ndarray,
     y_pred_on: np.ndarray,
+    csv_timesteps: np.ndarray | None = None,
 ) -> PredictionBundle:
     """Standard PredictionBundle constructor used by all adapters."""
     return PredictionBundle(
@@ -121,4 +122,5 @@ def build_prediction_bundle(
         y_pred_watts=y_pred_watts,
         y_true_on=y_true_on.astype(np.int32),
         y_pred_on=y_pred_on.astype(np.int32),
+        csv_timesteps=csv_timesteps,
     )
