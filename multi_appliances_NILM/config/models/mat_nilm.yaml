@@ -28,7 +28,7 @@ data:
 
 training:
   epochs: 200
-  batch_size: 32                # author default (--batch 32). Larger batch does not fix slowness vs UNet.
+  batch_size: 64                # author default (--batch 32). Larger batch does not fix slowness vs UNet.
   learning_rate: 0.001
   optimizer: Adam
   weight_decay: 0.0
