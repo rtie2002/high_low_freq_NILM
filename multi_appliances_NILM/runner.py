@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+from adapters.dataloader import print_training_data_summary
 from adapters.types import StepOutput
 from evaluation.live_monitor import LiveTrainingMonitor
 from evaluation.metrics import evaluate_bundle
@@ -139,23 +140,28 @@ def train_model(
     train_loader = adapter.build_dataloader("train")
     val_loader = adapter.build_dataloader("validation")
     test_loader = adapter.build_dataloader("test")
-    print(
-        f"Training windows: {len(train_loader.dataset):,}  "
-        f"({len(train_loader):,} batches @ {train_loader.batch_size})",
-        flush=True,
-    )
-    print(
-        f"Validation windows: {len(val_loader.dataset):,}  "
-        f"({len(val_loader):,} batches)",
-        flush=True,
-    )
+
     train_cfg = adapter.model_cfg["training"]
-    plot_cfg = train_cfg.get("plots", {})
     epochs = epochs or int(train_cfg["epochs"])
     if seed is None:
         seed = adapter.cfg.get("seed") or train_cfg.get("seed")
     if seed is None:
         raise ValueError("Set seed in experiment yaml, model training config, or pass --seed")
+
+    data_loader = adapter._data_loader()
+    print_training_data_summary(
+        experiment_id=adapter.experiment["experiment_id"],
+        model_name=adapter.name,
+        appliances=adapter.cfg["appliances"],
+        model_cfg=adapter.model_cfg,
+        experiment_cfg=adapter.experiment,
+        data_loader=data_loader,
+        batch_size=int(train_loader.batch_size),
+        epochs=int(epochs),
+        device=str(device),
+    )
+
+    plot_cfg = train_cfg.get("plots", {})
     seed_everything(int(seed))
 
     run_dir.mkdir(parents=True, exist_ok=True)

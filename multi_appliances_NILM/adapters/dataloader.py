@@ -245,7 +245,7 @@ class NILMDataLoader:
         key: SplitName = "validation" if split in ("val", "validation") else split  # type: ignore[assignment]
         x, y, z = self.get_splits()[key]
         w = self.model_cfg["windowing"]
-        stride = int(w["input_stride"]) if split == "train" else int(w.get("eval_stride", w["input_stride"]))
+        stride = self._stride_for_split(split)
         return WindowDataset(
             x,
             y,
@@ -254,3 +254,129 @@ class NILMDataLoader:
             stride=stride,
             target_mode=_target_mode(w, split),
         )
+
+    def _stride_for_split(self, split: str) -> int:
+        w = self.model_cfg["windowing"]
+        if split == "train":
+            return int(w["input_stride"])
+        return int(w.get("eval_stride", w["input_stride"]))
+
+    def describe_split(self, split: str, *, batch_size: int) -> dict[str, Any]:
+        key: SplitName = "validation" if split in ("val", "validation") else split  # type: ignore[assignment]
+        csv_path = self._resolve_csv_path(key)
+        x, y, z = self.get_splits()[key]
+        w = self.model_cfg["windowing"]
+        stride = self._stride_for_split(split)
+        target_mode = _target_mode(w, split)
+        n_windows = len(WindowDataset(x, y, z, w, stride=stride, target_mode=target_mode))
+        n_batches = (n_windows + batch_size - 1) // batch_size if n_windows else 0
+        return {
+            "split": split,
+            "csv_path": str(csv_path),
+            "csv_name": csv_path.name,
+            "timesteps": len(x),
+            "n_appliances": y.shape[1] if y.ndim > 1 else 1,
+            "input_length": _resolve_input_length(w),
+            "output_length": int(w.get("output_window_length", 1)),
+            "output_alignment": w.get("output_alignment", "end"),
+            "stride": stride,
+            "target_mode": target_mode,
+            "windows": n_windows,
+            "batch_size": batch_size,
+            "batches": n_batches,
+        }
+
+
+def _data_preprocess_note(
+    model_cfg: dict[str, Any],
+    experiment_cfg: dict[str, Any],
+    data_loader: NILMDataLoader | None = None,
+) -> list[str]:
+    data_cfg = model_cfg.get("data", {})
+    lines: list[str] = []
+    if data_cfg.get("preprocess") == "unet_nilm":
+        mains_col, sub_col = resolve_mains_columns(experiment_cfg, model_cfg)
+        lines.append("preprocess: unet_nilm (median filter + z-score, online from CSV)")
+        lines.append(f"mains column: {mains_col}")
+        if sub_col and data_loader is not None:
+            header = set(pd.read_csv(data_loader._resolve_csv_path("train"), nrows=0).columns)
+            if sub_col not in header:
+                lines.append(f"sub_mains column: {sub_col} (not in CSV — falls back to mains)")
+            else:
+                lines.append(f"sub_mains column: {sub_col}")
+        elif sub_col:
+            lines.append(f"sub_mains column: {sub_col}")
+        lines.append(f"mains path: {'denoise' if data_cfg.get('use_denoised_mains') else 'noise'} (paper default: noise)")
+        lines.append(f"eval denorm: {data_cfg.get('denorm_style', 'author')}")
+    elif scale := data_cfg.get("power_scale"):
+        lines.append(f"preprocess: divide power/mains by {scale}")
+        if thr := data_cfg.get("state_threshold_watts"):
+            lines.append(f"state labels: power > {thr} W")
+    else:
+        lines.append("preprocess: none (use CSV values as loaded)")
+    return lines
+
+
+def print_training_data_summary(
+    *,
+    experiment_id: str,
+    model_name: str,
+    appliances: list[str],
+    model_cfg: dict[str, Any],
+    experiment_cfg: dict[str, Any],
+    data_loader: NILMDataLoader,
+    batch_size: int,
+    epochs: int,
+    device: str,
+) -> None:
+    w = model_cfg["windowing"]
+    train_cfg = model_cfg.get("training", {})
+    width = 78
+    bar = "=" * width
+    thin = "-" * width
+
+    print(bar, flush=True)
+    print(f"EXPERIMENT: {experiment_id}  |  MODEL: {model_name}  |  DEVICE: {device}", flush=True)
+    print(bar, flush=True)
+    print(f"Appliances ({len(appliances)}): {', '.join(appliances)}", flush=True)
+    print(flush=True)
+    print("Windowing", flush=True)
+    print(f"  input length (effective): {_resolve_input_length(w)}", flush=True)
+    print(f"  output length:            {int(w.get('output_window_length', 1))}", flush=True)
+    print(f"  output alignment:         {w.get('output_alignment', 'end')}", flush=True)
+    print(f"  train stride:             {int(w['input_stride'])}", flush=True)
+    print(f"  eval stride:              {int(w.get('eval_stride', w['input_stride']))}", flush=True)
+    print(f"  train target mode:        {_target_mode(w, 'train')}", flush=True)
+    print(f"  eval target mode:         {_target_mode(w, 'validation')}", flush=True)
+    print(f"  batch size:               {batch_size}", flush=True)
+    print(f"  epochs:                   {epochs}", flush=True)
+    if train_cfg.get("checkpoint_monitor"):
+        print(f"  checkpoint monitor:         {train_cfg['checkpoint_monitor']}", flush=True)
+    print(flush=True)
+    print("Data", flush=True)
+    for line in _data_preprocess_note(model_cfg, experiment_cfg, data_loader):
+        print(f"  {line}", flush=True)
+
+    for split in ("train", "validation", "test"):
+        info = data_loader.describe_split(split, batch_size=batch_size)
+        print(flush=True)
+        print(thin, flush=True)
+        print(f"SPLIT: {split.upper()}", flush=True)
+        print(f"  csv file:      {info['csv_path']}", flush=True)
+        print(f"  timesteps:     {info['timesteps']:,}  (rows after dropna)", flush=True)
+        print(f"  input length:  {info['input_length']}", flush=True)
+        print(f"  output length: {info['output_length']}", flush=True)
+        print(f"  stride:        {info['stride']}", flush=True)
+        print(f"  target mode:   {info['target_mode']}", flush=True)
+        print(f"  windows:       {info['windows']:,}", flush=True)
+        print(f"  batches:       {info['batches']:,}  (@ batch_size={batch_size})", flush=True)
+        if split == "train":
+            print(f"  used in:       training ({info['batches']:,} batches/epoch)", flush=True)
+        elif split == "validation":
+            print("  used in:       validation + checkpoint selection", flush=True)
+        else:
+            print("  used in:       final test evaluation (after training)", flush=True)
+
+    print(flush=True)
+    print(bar, flush=True)
+    print(flush=True)
