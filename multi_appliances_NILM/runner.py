@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from adapters.types import StepOutput
 from evaluation.live_monitor import LiveTrainingMonitor
@@ -40,6 +41,24 @@ def _batch_to_device(batch, device: torch.device):
     return batch
 
 
+def _resolve_checkpoint_monitor(train_cfg: dict) -> tuple[str, str, float]:
+    """Return (metric_key, mode, initial_best)."""
+    monitor = str(train_cfg.get("checkpoint_monitor", "val_loss")).lower()
+    aliases = {
+        "val_f1": "val_f1",
+        "val_maf1": "val_f1",
+        "val_loss": "val_loss",
+    }
+    key = aliases.get(monitor, monitor)
+    if key == "val_f1":
+        return key, "max", float("-inf")
+    return key, "min", float("inf")
+
+
+def _is_better(score: float, best: float, mode: str) -> bool:
+    return score > best if mode == "max" else score < best
+
+
 def _run_epoch(
     adapter,
     model: torch.nn.Module,
@@ -51,10 +70,13 @@ def _run_epoch(
     optimizer=None,
     grad_clip: float = 0.0,
     log_keys: list[str] | None = None,
+    collect_states: bool = False,
 ) -> dict[str, float]:
     log_keys = log_keys or ["loss", "loss_state", "loss_power", "mae"]
     totals = {k: 0.0 for k in log_keys}
     n_batches = 0
+    state_preds: list[np.ndarray] = []
+    state_trues: list[np.ndarray] = []
 
     if train:
         model.train()
@@ -65,11 +87,12 @@ def _run_epoch(
         n_total = len(loader)
     except TypeError:
         n_total = None
-    log_every = max(1, (n_total or 500) // 20)  # ~5% progress updates
 
+    phase = "train" if train else "val"
     context = torch.enable_grad() if train else torch.no_grad()
     with context:
-        for batch in loader:
+        pbar = tqdm(loader, total=n_total, desc=phase, leave=False, dynamic_ncols=True)
+        for batch in pbar:
             batch = _batch_to_device(batch, device)
             if train:
                 optimizer.zero_grad(set_to_none=True)
@@ -81,16 +104,20 @@ def _run_epoch(
                 optimizer.step()
             for k in log_keys:
                 totals[k] += step.logs.get(k, 0.0)
+            if collect_states and step.aux:
+                state_preds.append(step.aux["pred_state"].numpy())
+                state_trues.append(step.aux["true_state"].numpy())
             n_batches += 1
-            if n_total and (n_batches == 1 or n_batches % log_every == 0 or n_batches == n_total):
-                phase = "train" if train else "val"
-                print(
-                    f"  [{phase}] batch {n_batches}/{n_total}  "
-                    f"loss={step.logs.get('loss', 0.0):.4f}",
-                    flush=True,
-                )
+            pbar.set_postfix(loss=f"{step.logs.get('loss', 0.0):.4f}")
 
-    return _aggregate_logs(log_keys, n_batches, totals)
+    logs = _aggregate_logs(log_keys, n_batches, totals)
+    if collect_states and state_preds:
+        from adapters.unet_metrics import compute_unet_state_f1
+
+        z_pred = np.concatenate(state_preds, axis=0)
+        z_true = np.concatenate(state_trues, axis=0)
+        logs.update(compute_unet_state_f1(z_true, z_pred))
+    return logs
 
 
 def train_model(
@@ -133,7 +160,10 @@ def train_model(
 
     run_dir.mkdir(parents=True, exist_ok=True)
     best_path = run_dir / "best.pt"
-    best_score = float("inf")
+    monitor_key, monitor_mode, best_score = _resolve_checkpoint_monitor(train_cfg)
+    scheduler_key = str(train_cfg.get("scheduler_monitor", monitor_key)).lower()
+    if scheduler_key in {"val_f1", "val_maf1"}:
+        scheduler_key = "val_f1"
     best_epoch = 0
     history = []
     appliances = adapter.cfg["appliances"]
@@ -159,19 +189,37 @@ def train_model(
                 optimizer=optim,
                 grad_clip=grad_clip,
             )
-            val_logs = _run_epoch(adapter, model, loss_fn, val_loader, device=device, train=False)
+            val_logs = _run_epoch(
+                adapter,
+                model,
+                loss_fn,
+                val_loader,
+                device=device,
+                train=False,
+                collect_states=(monitor_key == "val_f1" or scheduler_key == "val_f1"),
+            )
             val_loss = float(val_logs["loss"])
+            val_f1 = float(val_logs.get("val_f1", 0.0))
 
+            sched_metric = val_f1 if scheduler_key == "val_f1" else val_loss
             if sched is not None:
-                sched.step(val_loss)
+                sched.step(sched_metric)
 
             history.append(
-                {"epoch": epoch, **{f"train_{k}": v for k, v in train_logs.items()}, "val_loss": val_loss}
+                {
+                    "epoch": epoch,
+                    **{f"train_{k}": v for k, v in train_logs.items()},
+                    "val_loss": val_loss,
+                    "val_f1": val_f1,
+                    "val_maf1": float(val_logs.get("val_maf1", val_f1)),
+                    "val_mif1": float(val_logs.get("val_mif1", 0.0)),
+                }
             )
             monitor.append_epoch(epoch=epoch_no, train_logs=train_logs, val_logs=val_logs)
             print(
                 f"epoch {epoch:03d}  train_loss={train_logs['loss']:.4f}  "
-                f"val_loss={val_loss:.4f}  val_mae={val_logs.get('mae', 0.0):.4f}"
+                f"val_loss={val_loss:.4f}  val_f1={val_f1:.4f}  "
+                f"val_mae={val_logs.get('mae', 0.0):.4f}"
             )
 
             if monitor.should_plot(epoch_no):
@@ -189,8 +237,9 @@ def train_model(
                     f"{monitor.live_loss_png.name}, {len(saved)} waveform PNGs in {monitor.waveforms_dir}"
                 )
 
-            if val_loss < best_score:
-                best_score = val_loss
+            ckpt_score = val_f1 if monitor_key == "val_f1" else val_loss
+            if _is_better(ckpt_score, best_score, monitor_mode):
+                best_score = ckpt_score
                 best_epoch = epoch_no
                 torch.save({"model_state_dict": model.state_dict(), "epoch": epoch}, best_path)
                 if monitor.should_plot(epoch_no):

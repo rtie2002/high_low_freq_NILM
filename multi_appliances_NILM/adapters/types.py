@@ -62,3 +62,4 @@ class PredictionBundle:
 class StepOutput:
     loss: object
     logs: dict[str, float] = field(default_factory=dict)
+    aux: dict[str, object] = field(default_factory=dict)

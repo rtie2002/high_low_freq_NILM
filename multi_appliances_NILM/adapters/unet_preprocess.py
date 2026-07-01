@@ -35,9 +35,15 @@ def binarize(power: np.ndarray, threshold: float) -> np.ndarray:
     return (power >= threshold).astype(np.int64)
 
 
-def _mains_noise_path(mains: np.ndarray, filter_window: int) -> np.ndarray:
-    """noise_inputs.npy path when sub_mains is unavailable."""
-    mains_denoise = quantile_filter(filter_window, mains, p=50.0)
+def _mains_noise_path(
+    mains: np.ndarray,
+    filter_window: int,
+    *,
+    sub_mains: np.ndarray | None = None,
+) -> np.ndarray:
+    """noise_inputs.npy path (author load_data.pre_process_uk_dale)."""
+    sub = np.asarray(sub_mains if sub_mains is not None else mains, dtype=np.float64)
+    mains_denoise = quantile_filter(filter_window, sub, p=50.0)
     floored = mains - float(np.percentile(mains, 1))
     floored = np.where(floored < mains_denoise, mains_denoise, floored)
     return quantile_filter(filter_window, floored, p=50.0)
@@ -53,6 +59,7 @@ def preprocess_mains(
     seq2quantile: dict[str, Any],
     *,
     use_denoised: bool = False,
+    sub_mains_watts: np.ndarray | None = None,
 ) -> np.ndarray:
     cfg = seq2quantile.get("mains", {})
     filter_window = int(
@@ -60,10 +67,15 @@ def preprocess_mains(
         else seq2quantile.get("mains_noise_window", 10)
     )
     if use_denoised:
-        filtered = _mains_denoise_path(mains_watts, filter_window)
+        sub = np.asarray(sub_mains_watts if sub_mains_watts is not None else mains_watts, dtype=np.float64)
+        filtered = _mains_denoise_path(sub, filter_window)
         norm = cfg.get("denoise", {"mean": 123.0, "std": 369.0})
     else:
-        filtered = _mains_noise_path(mains_watts, filter_window)
+        filtered = _mains_noise_path(
+            mains_watts,
+            filter_window,
+            sub_mains=sub_mains_watts,
+        )
         norm = cfg.get("noise", {"mean": 389.0, "std": 445.0})
     mean = float(norm["mean"])
     std = float(norm["std"])
@@ -96,15 +108,21 @@ def denorm_appliance_power(
     power_norm: np.ndarray,
     appliances: list[str],
     seq2quantile: dict[str, Any],
+    *,
+    style: str = "author",
 ) -> np.ndarray:
-    """Inverse z-score: norm * std + mean (watts)."""
+    """Inverse scaling for eval watts (author repo uses norm * std + std)."""
     out = np.array(power_norm, dtype=np.float64, copy=True)
     app_cfg = seq2quantile["appliances"]
     for i, app in enumerate(appliances):
         stats = app_cfg[app]
         std = float(stats["std"])
         mean = float(stats["mean"])
-        out[..., i] = np.maximum(out[..., i] * std + mean, 0.0)
+        if style == "author":
+            out[..., i] = out[..., i] * std + std
+        else:
+            out[..., i] = out[..., i] * std + mean
+        out[..., i] = np.maximum(out[..., i], 0.0)
     return out.astype(np.float32)
 
 
@@ -113,10 +131,17 @@ def preprocess_unet_arrays(
     power_watts: np.ndarray,
     appliances: list[str],
     model_cfg: dict[str, Any],
+    *,
+    sub_mains_watts: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     seq2quantile = model_cfg["seq2quantile"]
     data_cfg = model_cfg.get("data", {})
     use_denoised = bool(data_cfg.get("use_denoised_mains", False))
-    x = preprocess_mains(mains_watts, seq2quantile, use_denoised=use_denoised)
+    x = preprocess_mains(
+        mains_watts,
+        seq2quantile,
+        use_denoised=use_denoised,
+        sub_mains_watts=sub_mains_watts,
+    )
     y, z = preprocess_appliances(power_watts, appliances, seq2quantile)
     return x, y, z

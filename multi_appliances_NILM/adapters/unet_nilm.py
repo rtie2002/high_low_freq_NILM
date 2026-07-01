@@ -79,13 +79,18 @@ class UNetNILMAdapter:
         x, y, z = batch
         states_logits, power_logits = model(x)
         out = loss_fn(states_logits, power_logits, y, z)
+        pred_state = torch.max(F.softmax(states_logits, dim=1), dim=1).indices
         logs = {
             "loss": float(out.loss.detach()),
             "loss_state": float(out.loss_state.detach()),
             "loss_power": float(out.loss_power.detach()),
             "mae": float(out.mae.detach()),
         }
-        return StepOutput(loss=out.loss, logs=logs)
+        return StepOutput(
+            loss=out.loss,
+            logs=logs,
+            aux={"pred_state": pred_state.detach().cpu(), "true_state": z.detach().cpu()},
+        )
 
     @torch.no_grad()
     def predict_dataloader(
@@ -101,7 +106,7 @@ class UNetNILMAdapter:
         median_idx = len(quantiles) // 2
         seq2quantile = self.model_cfg["seq2quantile"]
         appliances = self.cfg["appliances"]
-        denorm = self.model_cfg.get("data", {}).get("preprocess") == "unet_nilm"
+        denorm_style = str(self.model_cfg.get("data", {}).get("denorm_style", "author"))
 
         pred_power_list, pred_state_list = [], []
         true_power_list, true_state_list = [], []
@@ -132,9 +137,9 @@ class UNetNILMAdapter:
         z_true = np.concatenate(true_state_list, axis=0)
         z_pred = np.concatenate(pred_state_list, axis=0)
 
-        if denorm:
-            y_true = denorm_appliance_power(y_true, appliances, seq2quantile)
-            y_pred = denorm_appliance_power(y_pred, appliances, seq2quantile)
+        if self.model_cfg.get("data", {}).get("preprocess") == "unet_nilm":
+            y_true = denorm_appliance_power(y_true, appliances, seq2quantile, style=denorm_style)
+            y_pred = denorm_appliance_power(y_pred, appliances, seq2quantile, style=denorm_style)
 
         return build_prediction_bundle(
             experiment_id=self.experiment["experiment_id"],

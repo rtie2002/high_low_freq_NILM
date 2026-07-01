@@ -59,25 +59,29 @@ seq2quantile:
     denoise: {mean: 123, std: 369}   # denoise_inputs.npy (--denoise flag)
 
 data:
-  mains_column: aggregate          # raw watts in CSV; preprocessed online below
-  preprocess: unet_nilm            # quantile filter + z-score (author load_data.py)
-  use_denoised_mains: false        # false = noise path (paper default)
+  mains_columns:
+    mains: aggregate          # author mains column (raw watts)
+    sub_mains: sub_mains      # optional; uses mains if column missing from CSV
+  preprocess: unet_nilm
+  use_denoised_mains: false   # false = noise path (paper default)
+  denorm_style: author        # author eval: norm * std + std
   assume_raw_watts: true
 
 training:
   epochs: 50
-  batch_size: 256
+  batch_size: 128
   learning_rate: 0.0001
   optimizer: Adam
   beta_1: 0.999
   beta_2: 0.98
   eps: 1.0e-8
-  weight_decay: 0.0                # author Adam() omits weight_decay
+  weight_decay: 0.0
   gradient_clip: 10.0
   patience_scheduler: 5
   num_workers: 0
   seed: 7777
-  checkpoint_monitor: val_maf1
+  checkpoint_monitor: val_f1
+  scheduler_monitor: val_f1
 
   plots:
     plot_mode: live

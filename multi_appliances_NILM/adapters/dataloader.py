@@ -140,24 +140,45 @@ def resolve_mains_column(experiment_cfg: dict[str, Any], model_cfg: dict[str, An
     raise ValueError("Set csv.mains_column in experiment.yaml or data.mains_column in model yaml")
 
 
+def resolve_mains_columns(
+    experiment_cfg: dict[str, Any], model_cfg: dict[str, Any]
+) -> tuple[str, str | None]:
+    """Return (mains, sub_mains) column names for UNet-style preprocessing."""
+    data_cfg = model_cfg.get("data", {})
+    mains_map = data_cfg.get("mains_columns", {})
+    if mains_map:
+        mains_col = str(mains_map.get("mains") or mains_map.get("noise") or "aggregate")
+        sub_col = mains_map.get("sub_mains") or mains_map.get("denoised")
+        return mains_col, str(sub_col) if sub_col else None
+
+    mains_col = resolve_mains_column(experiment_cfg, model_cfg)
+    return mains_col, data_cfg.get("sub_mains_column")
+
+
 def load_csv_arrays(
     csv_path: Path,
     csv_cfg: dict[str, Any],
     appliances: list[str],
     *,
     mains_column: str,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    sub_mains_column: str | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV not found: {csv_path}")
 
     power_cols, state_cols = _csv_column_map(csv_cfg, appliances)
     usecols = list(dict.fromkeys([mains_column, *power_cols, *state_cols]))
+    if sub_mains_column:
+        usecols = list(dict.fromkeys([*usecols, sub_mains_column]))
     df = pd.read_csv(csv_path, usecols=usecols).dropna(subset=usecols)
 
     x = df[mains_column].to_numpy(dtype=np.float32)
+    sub = None
+    if sub_mains_column and sub_mains_column in df.columns:
+        sub = df[sub_mains_column].to_numpy(dtype=np.float32)
     y = df[power_cols].to_numpy(dtype=np.float32)
     z = df[state_cols].to_numpy(dtype=np.float32)
-    return x, y, z.astype(np.int64)
+    return x, y, z.astype(np.int64), sub
 
 
 class NILMDataLoader:
@@ -185,16 +206,28 @@ class NILMDataLoader:
         return path if path.is_absolute() else self.data_root / path
 
     def _load_split_csv(self, split: SplitName) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        mains_col = resolve_mains_column(self.experiment, self.model_cfg)
-        x, y, z = load_csv_arrays(
+        data_cfg = self.model_cfg.get("data", {})
+        if data_cfg.get("preprocess") == "unet_nilm":
+            mains_col, sub_col = resolve_mains_columns(self.experiment, self.model_cfg)
+        else:
+            mains_col = resolve_mains_column(self.experiment, self.model_cfg)
+            sub_col = None
+
+        x, y, z, sub = load_csv_arrays(
             self._resolve_csv_path(split),
             self.csv_cfg,
             self.appliances,
             mains_column=mains_col,
+            sub_mains_column=sub_col,
         )
-        data_cfg = self.model_cfg.get("data", {})
         if data_cfg.get("preprocess") == "unet_nilm" and "seq2quantile" in self.model_cfg:
-            x, y, z = preprocess_unet_arrays(x, y, self.appliances, self.model_cfg)
+            x, y, z = preprocess_unet_arrays(
+                x,
+                y,
+                self.appliances,
+                self.model_cfg,
+                sub_mains_watts=sub,
+            )
         return x, y, z
 
     def get_splits(self) -> dict[SplitName, tuple[np.ndarray, np.ndarray, np.ndarray]]:
