@@ -54,7 +54,7 @@ training:
     on_period_margin_frac: 0.08
     waveform_figsize: 5.5
     waveform_dynamic_figsize: true
-    waveform_dpi: 200
+    waveform_dpi: 600
     plot_max_batches: 32
 
 loss:
