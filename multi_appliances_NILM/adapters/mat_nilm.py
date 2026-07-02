@@ -163,7 +163,7 @@ class MATNILMAdapter(AdapterDataMixin):
         z_pred = np.concatenate(pred_state, axis=0).reshape(-1, len(appliances))
         z_true = np.concatenate(true_state, axis=0).reshape(-1, len(appliances))
 
-        y_true = denorm_power_array(y_true, scale)
+        # CSV targets are already in watts; only model outputs are normalized.
         y_pred = denorm_power_array(y_pred, scale)
 
         return build_prediction_bundle(
