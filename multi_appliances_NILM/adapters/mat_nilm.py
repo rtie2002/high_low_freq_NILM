@@ -57,6 +57,34 @@ class MATNILMAdapter(AdapterDataMixin):
     def build_dataloader(self, split: str) -> DataLoader:
         return self.build_standard_dataloader(split)
 
+    def _align_loss_tensors(
+        self,
+        y_pred_r: torch.Tensor,
+        y_pred_c: torch.Tensor,
+        y: torch.Tensor,
+        z: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Match model outputs (864) to batch targets (864 train or 64 val/test)."""
+        w = self.model_cfg["windowing"]
+        out_slice = center_output_slice(w)
+        out_len = int(w.get("output_window_length", 1))
+
+        if y_pred_r.shape[1] == y.shape[1]:
+            return y_pred_r, y_pred_c, y, z
+
+        # Val/test: dataloader returns center output_window only.
+        if y.dim() == 3 and y.shape[1] == out_len:
+            return y_pred_r[:, out_slice, :], y_pred_c[:, out_slice, :], y, z
+
+        # Train: optional center-64 loss while keeping full_input targets in batch.
+        if w.get("training_loss_scope") == "center_output":
+            y_pred_r = y_pred_r[:, out_slice, :]
+            y_pred_c = y_pred_c[:, out_slice, :]
+            y = y[:, out_slice, :]
+            z = z[:, out_slice, :]
+
+        return y_pred_r, y_pred_c, y, z
+
     def training_step(
         self,
         model: torch.nn.Module,
@@ -72,6 +100,7 @@ class MATNILMAdapter(AdapterDataMixin):
         z = z.float()
 
         y_pred_r, y_pred_c = model(x)
+        y_pred_r, y_pred_c, y, z = self._align_loss_tensors(y_pred_r, y_pred_c, y, z)
         out = loss_fn(y_pred_r, y_pred_c, y, z)
         return StepOutput(
             loss=out.loss,
@@ -114,8 +143,13 @@ class MATNILMAdapter(AdapterDataMixin):
 
             y_pred_r = y_pred_r[:, out_slice, :].cpu().numpy()
             y_pred_c = torch.sigmoid(y_pred_c_logits[:, out_slice, :]).cpu().numpy()
-            y_true = y[:, out_slice, :].numpy() if y.dim() == 3 else y.numpy()
-            z_true = z[:, out_slice, :].numpy() if z.dim() == 3 else z.numpy()
+            out_len = int(self.model_cfg["windowing"].get("output_window_length", 1))
+            if y.dim() == 3 and y.shape[1] == out_len:
+                y_true = y.numpy()
+                z_true = z.numpy()
+            else:
+                y_true = y[:, out_slice, :].numpy() if y.dim() == 3 else y.numpy()
+                z_true = z[:, out_slice, :].numpy() if z.dim() == 3 else z.numpy()
 
             pred_power.append(y_pred_r.reshape(len(x), -1, len(appliances)))
             pred_state.append((y_pred_c >= 0.5).astype(np.int32).reshape(len(x), -1, len(appliances)))
