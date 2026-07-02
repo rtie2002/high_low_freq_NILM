@@ -132,6 +132,7 @@ class LiveTrainingMonitor:
     ) -> None:
         writer = getattr(self, writer_attr)
         if writer is None:
+            path.parent.mkdir(parents=True, exist_ok=True)
             handle = path.open("w", newline="", encoding="utf-8")
             setattr(self, file_attr, handle)
             writer = csv.DictWriter(handle, fieldnames=list(row))
