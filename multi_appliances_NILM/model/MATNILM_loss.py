@@ -1,4 +1,4 @@
-"""MATNILM loss — MSE (scaled power) + BCEWithLogits (on/off)."""
+"""MATNILM loss — MSE (scaled power) + BCELoss (on/off probabilities)."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ class MATNILMLoss(nn.Module):
         super().__init__()
         self.power_scale = float(power_scale)
         self.mse = nn.MSELoss()
-        self.bce = nn.BCEWithLogitsLoss()
+        self.bce = nn.BCELoss()
 
     def forward(
         self,

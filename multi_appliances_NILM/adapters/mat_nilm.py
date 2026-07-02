@@ -102,7 +102,7 @@ class MATNILMAdapter(AdapterDataMixin):
         y_pred_r, y_pred_c = model(x)
         y_pred_r, y_pred_c, y, z = self._align_loss_tensors(y_pred_r, y_pred_c, y, z)
         out = loss_fn(y_pred_r, y_pred_c, y, z)
-        pred_state = (torch.sigmoid(y_pred_c) >= 0.5).long()
+        pred_state = (y_pred_c >= 0.5).long()
         return StepOutput(
             loss=out.loss,
             logs={
@@ -141,10 +141,10 @@ class MATNILMAdapter(AdapterDataMixin):
             if (thr := get_state_threshold(self.model_cfg)) is not None:
                 z = states_from_power(y, thr)
             x = scale_inputs(x.to(device), scale)
-            y_pred_r, y_pred_c_logits = model(x)
+            y_pred_r, y_pred_c_prob = model(x)
 
             y_pred_r = y_pred_r[:, out_slice, :].cpu().numpy()
-            y_pred_c = torch.sigmoid(y_pred_c_logits[:, out_slice, :]).cpu().numpy()
+            y_pred_c = y_pred_c_prob[:, out_slice, :].cpu().numpy()
             out_len = int(self.model_cfg["windowing"].get("output_window_length", 1))
             if y.dim() == 3 and y.shape[1] == out_len:
                 y_true = y.numpy()
