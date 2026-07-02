@@ -30,9 +30,16 @@ class MATNILMLoss(nn.Module):
         y_true_r: torch.Tensor,
         y_true_c: torch.Tensor,
     ) -> MATNILMLossOutput:
-        y_true_c = y_true_c.float()
-        loss_r = self.mse(y_pred_r, y_true_r)
-        loss_c = self.bce(y_pred_c, y_true_c)
+        # Author MATNILM uses sigmoid probabilities + BCELoss. PyTorch AMP refuses
+        # BCELoss under autocast, so keep the same formula but compute it in FP32.
+        device_type = y_pred_c.device.type
+        with torch.amp.autocast(device_type=device_type, enabled=False):
+            y_pred_r_f = y_pred_r.float()
+            y_pred_c_f = y_pred_c.float()
+            y_true_r_f = y_true_r.float()
+            y_true_c_f = y_true_c.float()
+            loss_r = self.mse(y_pred_r_f, y_true_r_f)
+            loss_c = self.bce(y_pred_c_f, y_true_c_f)
         loss = loss_r + loss_c
-        mae = torch.mean(torch.abs((y_pred_r - y_true_r) * self.power_scale))
+        mae = torch.mean(torch.abs((y_pred_r.float() - y_true_r.float()) * self.power_scale))
         return MATNILMLossOutput(loss=loss, loss_power=loss_r, loss_state=loss_c, mae=mae)

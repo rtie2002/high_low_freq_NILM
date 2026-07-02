@@ -35,7 +35,7 @@ training:
   num_workers: 8
   prefetch_factor: 4
   persistent_workers: true
-  use_amp: true
+  use_amp: false
   amp_dtype: bf16
   tf32: true
   cudnn_benchmark: true
