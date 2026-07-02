@@ -193,6 +193,10 @@ def _run_epoch(
                     if grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                     optimizer.step()
+            for k in step.logs:
+                if k not in totals:
+                    totals[k] = 0.0
+                    log_keys.append(k)
             for k in log_keys:
                 totals[k] += step.logs.get(k, 0.0)
             if collect_states and step.aux:

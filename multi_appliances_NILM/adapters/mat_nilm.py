@@ -103,6 +103,11 @@ class MATNILMAdapter(AdapterDataMixin):
         y_pred_r, y_pred_c, y, z = self._align_loss_tensors(y_pred_r, y_pred_c, y, z)
         out = loss_fn(y_pred_r, y_pred_c, y, z)
         pred_state = (y_pred_c >= 0.5).long()
+        app_losses = {}
+        for app_i, app in enumerate(self.cfg["appliances"]):
+            loss_r_i = loss_fn.mse(y_pred_r[..., app_i].float(), y[..., app_i].float())
+            loss_c_i = loss_fn.bce(y_pred_c[..., app_i].float(), z[..., app_i].float())
+            app_losses[f"loss_{app}"] = float((loss_r_i + loss_c_i).detach())
         return StepOutput(
             loss=out.loss,
             logs={
@@ -110,6 +115,7 @@ class MATNILMAdapter(AdapterDataMixin):
                 "loss_power": float(out.loss_power.detach()),
                 "loss_state": float(out.loss_state.detach()),
                 "mae": float(out.mae.detach()),
+                **app_losses,
             },
             aux={"pred_state": pred_state.detach().cpu(), "true_state": z.long().detach().cpu()},
         )
@@ -167,6 +173,8 @@ class MATNILMAdapter(AdapterDataMixin):
 
         # CSV targets are already in watts; only model outputs are normalized.
         y_pred = denorm_power_array(y_pred, scale)
+        split_key = "validation" if split in ("val", "validation") else split
+        csv_timesteps = self._data_loader().window_output_timesteps(split_key, len(y_true))
 
         return build_prediction_bundle(
             experiment_id=self.experiment["experiment_id"],
@@ -178,6 +186,7 @@ class MATNILMAdapter(AdapterDataMixin):
             y_pred_watts=y_pred,
             y_true_on=z_true,
             y_pred_on=z_pred,
+            csv_timesteps=csv_timesteps,
         )
 
     def configure_optimizer(self, model: torch.nn.Module):

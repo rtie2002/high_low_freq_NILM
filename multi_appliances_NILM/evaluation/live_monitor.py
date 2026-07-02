@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 from evaluation.plots import (
     FULL_CYCLE_APPLIANCES,
     plot_loss_components,
+    plot_matnilm_training_losses,
     plot_training_history,
     save_appliance_on_waveforms,
 )
@@ -113,6 +114,12 @@ class LiveTrainingMonitor:
             "train_loss_power": train_logs.get("loss_power", float("nan")),
             "val_loss_power": val_logs.get("loss_power", float("nan")),
         }
+        for key, value in train_logs.items():
+            if key.startswith("loss_") and key not in ("loss_state", "loss_power"):
+                loss_row[f"train_{key}"] = value
+        for key, value in val_logs.items():
+            if key.startswith("loss_") and key not in ("loss_state", "loss_power"):
+                loss_row[f"val_{key}"] = value
         self._write_csv_row(history_row, self.history_path, "_history_file", "_history_writer")
         self._write_csv_row(loss_row, self.loss_detail_path, "_loss_file", "_loss_writer")
 
@@ -151,6 +158,13 @@ class LiveTrainingMonitor:
                 title=f"{self.model_name} loss components",
                 figsize=figsize,
             )
+            if self.model_name == "mat_nilm":
+                plot_matnilm_training_losses(
+                    self.loss_detail_path,
+                    self.run_dir / "live_matnilm_training_losses.png",
+                    appliances=self.appliances,
+                    figsize=figsize,
+                )
 
     @torch.no_grad()
     def save_waveforms(
@@ -302,3 +316,10 @@ class LiveTrainingMonitor:
                 title=f"{self.model_name} loss components",
                 figsize=figsize,
             )
+            if self.model_name == "mat_nilm":
+                plot_matnilm_training_losses(
+                    self.loss_detail_path,
+                    self.run_dir / "matnilm_training_losses.png",
+                    appliances=self.appliances,
+                    figsize=figsize,
+                )

@@ -55,7 +55,7 @@ training:
     waveform_figsize: 5.5
     waveform_dynamic_figsize: true
     waveform_dpi: 600
-    plot_max_batches: 32
+    plot_max_batches: null
 
 loss:
   power: mse
