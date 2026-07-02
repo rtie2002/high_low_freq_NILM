@@ -38,6 +38,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-config", type=Path, default=None)
     parser.add_argument("--data-path", type=Path, default=None, help="Override experiment data_root")
     parser.add_argument("--checkpoint", type=Path, default=None)
+    parser.add_argument(
+        "--init-checkpoint",
+        type=Path,
+        default=None,
+        help="Initialize training from a source-domain checkpoint before fine-tuning.",
+    )
     parser.add_argument("--run-dir", type=Path, default=None)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None, help="Override experiment/model seed")
@@ -77,7 +83,13 @@ def main() -> None:
     run_dir = args.run_dir or _default_run_dir(experiment["experiment_id"], args.model)
 
     if args.mode in ("train", "train_evaluate"):
-        ckpt = train_model(adapter, run_dir, epochs=args.epochs, seed=args.seed)
+        ckpt = train_model(
+            adapter,
+            run_dir,
+            epochs=args.epochs,
+            seed=args.seed,
+            init_checkpoint=args.init_checkpoint,
+        )
         print(f"Saved checkpoint: {ckpt}")
 
     if args.mode in ("evaluate", "train_evaluate"):

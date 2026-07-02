@@ -60,6 +60,45 @@ def _is_better(score: float, best: float, mode: str) -> bool:
     return score > best if mode == "max" else score < best
 
 
+def _load_init_checkpoint(model: torch.nn.Module, checkpoint: Path, device: torch.device) -> dict[str, int]:
+    """Load a source-domain checkpoint, skipping tensors whose shapes changed."""
+    if not checkpoint.exists():
+        raise FileNotFoundError(f"Initial checkpoint not found: {checkpoint}")
+
+    payload = torch.load(checkpoint, map_location=device)
+    source_state = payload.get("model_state_dict", payload)
+    target_state = model.state_dict()
+
+    loadable = {}
+    skipped = {}
+    for name, tensor in source_state.items():
+        if name not in target_state:
+            skipped[name] = "missing_in_target"
+            continue
+        if tuple(tensor.shape) != tuple(target_state[name].shape):
+            skipped[name] = f"shape {tuple(tensor.shape)} -> {tuple(target_state[name].shape)}"
+            continue
+        loadable[name] = tensor
+
+    missing, unexpected = model.load_state_dict(loadable, strict=False)
+    print(
+        f"Initialized from source checkpoint: {checkpoint}\n"
+        f"  loaded tensors : {len(loadable)}\n"
+        f"  skipped tensors: {len(skipped)}\n"
+        f"  missing tensors: {len(missing)}\n"
+        f"  unexpected     : {len(unexpected)}",
+        flush=True,
+    )
+    if skipped:
+        preview = list(skipped.items())[:12]
+        print("  skipped preview:", flush=True)
+        for name, reason in preview:
+            print(f"    {name}: {reason}", flush=True)
+        if len(skipped) > len(preview):
+            print(f"    ... {len(skipped) - len(preview)} more", flush=True)
+    return {"loaded": len(loadable), "skipped": len(skipped), "missing": len(missing)}
+
+
 def _resolve_amp_dtype(train_cfg: dict) -> torch.dtype:
     name = str(train_cfg.get("amp_dtype", "bf16")).lower()
     return torch.bfloat16 if name == "bf16" else torch.float16
@@ -167,6 +206,7 @@ def train_model(
     *,
     epochs: int | None = None,
     seed: int | None = None,
+    init_checkpoint: Path | None = None,
 ) -> Path:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_cfg = adapter.model_cfg["training"]
@@ -176,6 +216,10 @@ def train_model(
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp and amp_dtype == torch.float16)
 
     model = adapter.build_model(device)
+    configured_init = train_cfg.get("init_checkpoint") or train_cfg.get("pretrained_checkpoint")
+    init_checkpoint = init_checkpoint or (Path(configured_init) if configured_init else None)
+    if init_checkpoint is not None:
+        _load_init_checkpoint(model, init_checkpoint, device)
     if bool(train_cfg.get("torch_compile", False)) and hasattr(torch, "compile"):
         model = torch.compile(model)
     loss_fn = adapter.build_loss()
@@ -234,6 +278,8 @@ def train_model(
         seed=int(seed),
     )
     grad_clip = float(train_cfg.get("gradient_clip", 0.0))
+    early_stop_patience = int(train_cfg.get("early_stop_patience", 0))
+    epochs_without_improvement = 0
 
     try:
         for epoch in range(epochs):
@@ -311,6 +357,7 @@ def train_model(
             if improved:
                 best_score = ckpt_score
                 best_epoch = epoch_no
+                epochs_without_improvement = 0
                 torch.save({"model_state_dict": model.state_dict(), "epoch": epoch_no}, best_path)
                 if monitor.should_plot(epoch_no):
                     monitor.save_waveforms(
@@ -323,6 +370,15 @@ def train_model(
                         include_best=True,
                     )
                     tqdm.write(f"  {epoch_tag} | saved best waveforms -> .../waveforms/{{validation,test}}/best/")
+            else:
+                epochs_without_improvement += 1
+
+            if early_stop_patience > 0 and epochs_without_improvement >= early_stop_patience:
+                tqdm.write(
+                    f"{epoch_tag} | early stop — no {monitor_key} improvement "
+                    f"for {early_stop_patience} epochs (best epoch {best_epoch})"
+                )
+                break
 
         with open(run_dir / "history.json", "w", encoding="utf-8") as f:
             json.dump(history, f, indent=2)

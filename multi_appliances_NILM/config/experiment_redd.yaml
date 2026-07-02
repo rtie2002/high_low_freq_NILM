@@ -1,21 +1,22 @@
-# REDD experiment — 4 appliances for MATNILM (you prepare the CSVs yourself).
+# REDD experiment — MATNILM author pickles exported to CSV.
+# Generate CSVs: python scripts/export_matnilm_redd_csv.py
 
-experiment_id: redd_h1_temporal
+experiment_id: redd_matnilm_author
 seed: 2026
 data_root: datasets/redd
 
 csv:
-  train_file: training/data.csv
-  validation_file: validating/data.csv
-  test_file: testing/data.csv
+  train_file: training/redd_train_segment0_1d_2011-04-21_to_2011-04-22.csv
+  validation_file: validating/redd_val_segment0_1d_2011-05-23_to_2011-05-24.csv
+  test_file: testing/redd_test_segments0-5_35d_2011-04-18_to_2011-05-23.csv
 
   mains_column: aggregate
 
   appliances:
-    dishwasher:     {power: dishwasher_power,     state: dishwasher_state}
-    fridge:         {power: fridge_power,         state: fridge_state}
-    microwave:      {power: microwave_power,      state: microwave_state}
-    washingmachine: {power: washingmachine_power, state: washingmachine_state}
+    dishwasher:     {power: dishwasher_power,     state: dishwasher_on}
+    fridge:         {power: fridge_power,         state: fridge_on}
+    microwave:      {power: microwave_power,      state: microwave_on}
+    washingmachine: {power: washingmachine_power, state: washingmachine_on}
 
 evaluation:
   metrics: [mae, sae, f1, micro_f1]

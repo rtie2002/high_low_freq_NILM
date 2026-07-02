@@ -1,6 +1,5 @@
-# MATNILM — UK-DALE practical training (default)
-# ~100 train batches/epoch @ batch 256, ~5-10 min/epoch on RTX 4090.
-# Author-faithful slow path: config/models/mat_nilm_reproduce.yaml
+# MATNILM — author-faithful (slow on full UK-DALE: ~35 min/epoch, stride 1, ~805k windows)
+# Use mat_nilm.yaml (fast) for normal UK-DALE cross-house training.
 
 model:
   name: mat_nilm
@@ -10,9 +9,9 @@ windowing:
   input_window_length: 864
   output_window_length: 64
   output_alignment: center
-  input_stride: 32             # stride 1 = ~12k batches/epoch (~35 min); 32 = ~100 batches
+  input_stride: 1
   eval_stride: 64
-  training_targets: output_window   # paper center-64 loss (matches val/test)
+  training_targets: full_input
 
 architecture:
   input_size: 1
@@ -27,8 +26,8 @@ data:
   state_threshold_watts: 15.0
 
 training:
-  epochs: 50
-  batch_size: 256
+  epochs: 200
+  batch_size: 32
   learning_rate: 0.001
   optimizer: Adam
   weight_decay: 0.0
@@ -40,10 +39,10 @@ training:
   amp_dtype: bf16
   tf32: true
   cudnn_benchmark: true
-  torch_compile: true
+  torch_compile: false
   seed: 2026
   checkpoint_monitor: val_mae
-  early_stop_patience: 15        # stop when val_mae plateaus (author uses 30)
+  early_stop_patience: 30
 
   plots:
     plot_mode: interval
@@ -51,12 +50,7 @@ training:
     plot_on_periods: 3
     on_period_samples: 0
     full_cycle_appliances: [washingmachine, dishwasher]
-    on_period_margin_min: 40
-    on_period_margin_frac: 0.08
-    waveform_figsize: 5.5
-    waveform_dynamic_figsize: true
-    waveform_dpi: 200
-    plot_max_batches: 32         # faster live plots; null = full split
+    plot_max_batches: 32
 
 loss:
   power: mse
