@@ -92,10 +92,11 @@ def main() -> None:
         )
         print(f"Saved checkpoint: {ckpt}")
 
-    if args.mode in ("evaluate", "train_evaluate"):
+    if args.mode in ("train", "evaluate", "train_evaluate"):
         ckpt = args.checkpoint or (run_dir / "best.pt")
         if not ckpt.exists():
             raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
+        print(f"\nTest evaluation ({ckpt.name}):", flush=True)
         pred_path = evaluate_model(adapter, ckpt, run_dir, split="test")
         print(f"Saved predictions: {pred_path}")
 

@@ -102,6 +102,7 @@ class MATNILMAdapter(AdapterDataMixin):
         y_pred_r, y_pred_c = model(x)
         y_pred_r, y_pred_c, y, z = self._align_loss_tensors(y_pred_r, y_pred_c, y, z)
         out = loss_fn(y_pred_r, y_pred_c, y, z)
+        pred_state = (torch.sigmoid(y_pred_c) >= 0.5).long()
         return StepOutput(
             loss=out.loss,
             logs={
@@ -110,6 +111,7 @@ class MATNILMAdapter(AdapterDataMixin):
                 "loss_state": float(out.loss_state.detach()),
                 "mae": float(out.mae.detach()),
             },
+            aux={"pred_state": pred_state.detach().cpu(), "true_state": z.long().detach().cpu()},
         )
 
     @torch.no_grad()

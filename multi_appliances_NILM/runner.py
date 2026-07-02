@@ -48,12 +48,24 @@ def _resolve_checkpoint_monitor(train_cfg: dict) -> tuple[str, str, float]:
     aliases = {
         "val_f1": "val_f1",
         "val_maf1": "val_f1",
-        "val_loss": "val_loss",
+        "val_loss": "loss",
+        "val_mae": "mae",
     }
     key = aliases.get(monitor, monitor)
     if key == "val_f1":
         return key, "max", float("-inf")
     return key, "min", float("inf")
+
+
+def _epoch_score(monitor_key: str, logs: dict[str, float]) -> float:
+    """Map checkpoint monitor name to a value from epoch logs."""
+    if monitor_key in logs:
+        return float(logs[monitor_key])
+    if monitor_key == "val_f1":
+        return float(logs.get("val_f1", 0.0))
+    if monitor_key == "mae":
+        return float(logs.get("mae", float("inf")))
+    return float(logs.get("loss", float("inf")))
 
 
 def _is_better(score: float, best: float, mode: str) -> bool:
@@ -196,6 +208,9 @@ def _run_epoch(
 
         z_pred = torch.cat(state_preds, dim=0).cpu().numpy()
         z_true = torch.cat(state_trues, dim=0).cpu().numpy()
+        if z_pred.ndim > 2:
+            z_pred = z_pred.reshape(-1, z_pred.shape[-1])
+            z_true = z_true.reshape(-1, z_true.shape[-1])
         logs.update(compute_unet_state_f1(z_true, z_pred))
     return logs
 
@@ -264,9 +279,14 @@ def train_model(
     run_dir.mkdir(parents=True, exist_ok=True)
     best_path = run_dir / "best.pt"
     monitor_key, monitor_mode, best_score = _resolve_checkpoint_monitor(train_cfg)
-    scheduler_key = str(train_cfg.get("scheduler_monitor", monitor_key)).lower()
-    if scheduler_key in {"val_f1", "val_maf1"}:
-        scheduler_key = "val_f1"
+    scheduler_raw = str(train_cfg.get("scheduler_monitor", monitor_key)).lower()
+    scheduler_aliases = {
+        "val_f1": "val_f1",
+        "val_maf1": "val_f1",
+        "val_loss": "loss",
+        "val_mae": "mae",
+    }
+    scheduler_key = scheduler_aliases.get(scheduler_raw, scheduler_raw)
     best_epoch = 0
     history = []
     appliances = adapter.cfg["appliances"]
@@ -306,15 +326,16 @@ def train_model(
                 val_loader,
                 device=device,
                 train=False,
-                collect_states=(monitor_key == "val_f1" or scheduler_key == "val_f1"),
+                collect_states=True,
                 desc=f"{epoch_tag} | val",
                 use_amp=use_amp,
                 amp_dtype=amp_dtype,
             )
             val_loss = float(val_logs["loss"])
             val_f1 = float(val_logs.get("val_f1", 0.0))
+            val_mae = float(val_logs.get("mae", 0.0))
 
-            sched_metric = val_f1 if scheduler_key == "val_f1" else val_loss
+            sched_metric = _epoch_score(scheduler_key, val_logs)
             if sched is not None:
                 sched.step(sched_metric)
 
@@ -331,14 +352,14 @@ def train_model(
             monitor.append_epoch(epoch=epoch_no, train_logs=train_logs, val_logs=val_logs)
 
             improved = False
-            ckpt_score = val_f1 if monitor_key == "val_f1" else val_loss
+            ckpt_score = _epoch_score(monitor_key, val_logs)
             if _is_better(ckpt_score, best_score, monitor_mode):
                 improved = True
 
             tqdm.write(
                 f"{epoch_tag} | train_loss={train_logs['loss']:.4f} | "
                 f"val_loss={val_loss:.4f} | val_f1={val_f1:.4f} | "
-                f"val_mae={val_logs.get('mae', 0.0):.4f}"
+                f"val_mae={val_mae:.4f}"
                 + (" | new best" if improved else "")
             )
 
@@ -374,8 +395,9 @@ def train_model(
                 epochs_without_improvement += 1
 
             if early_stop_patience > 0 and epochs_without_improvement >= early_stop_patience:
+                monitor_label = str(train_cfg.get("checkpoint_monitor", monitor_key))
                 tqdm.write(
-                    f"{epoch_tag} | early stop — no {monitor_key} improvement "
+                    f"{epoch_tag} | early stop — no {monitor_label} improvement "
                     f"for {early_stop_patience} epochs (best epoch {best_epoch})"
                 )
                 break
