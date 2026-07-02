@@ -45,11 +45,16 @@ training:
   early_stop_patience: 30
 
   plots:
-    plot_mode: interval
-    plot_interval: 10
+    plot_mode: live
+    plot_interval: 1
     plot_on_periods: 3
     on_period_samples: 0
     full_cycle_appliances: [washingmachine, dishwasher]
+    on_period_margin_min: 40
+    on_period_margin_frac: 0.08
+    waveform_figsize: 5.5
+    waveform_dynamic_figsize: true
+    waveform_dpi: 200
     plot_max_batches: 32
 
 loss:

@@ -89,10 +89,10 @@ class ApplBlock(nn.Module):
         attn_output_r_g, _ = self.multihead_attn_r_g(global_attn, global_attn, global_attn)
         attn_output_r_g = attn_output_r_g.reshape(d_r_a.shape[0], d_r_a.shape[1], 4, embed_dim)
 
-        d_r_a = self.norm1(d_r_a + attn_output_r_g[:, :, 0, :])
-        f_r_a = self.norm1(f_r_a + attn_output_r_g[:, :, 1, :])
-        m_r_a = self.norm1(m_r_a + attn_output_r_g[:, :, 2, :])
-        w_r_a = self.norm1(w_r_a + attn_output_r_g[:, :, 3, :])
+        d_r_a = self.norm1(attn_output_r_g[:, :, 0, :] + attn_output_d)
+        f_r_a = self.norm1(attn_output_r_g[:, :, 1, :] + attn_output_f)
+        m_r_a = self.norm1(attn_output_r_g[:, :, 2, :] + attn_output_m)
+        w_r_a = self.norm1(attn_output_r_g[:, :, 3, :] + attn_output_w)
 
         d_r = self.dish(d_r_a)
         f_r = self.frid(f_r_a)
