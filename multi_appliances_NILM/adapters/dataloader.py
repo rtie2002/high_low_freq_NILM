@@ -231,6 +231,7 @@ class NILMDataLoader:
                 y,
                 self.appliances,
                 self.model_cfg,
+                csv_states=z,
                 sub_mains_watts=sub,
             )
         return x, y, z
@@ -247,11 +248,22 @@ class NILMDataLoader:
         return self._raw_splits[split]
 
     def window_output_timesteps(self, split: str, n_windows: int) -> np.ndarray:
-        """CSV row index for each sliding-window model output (end-aligned)."""
+        """CSV row index for each sliding-window model output."""
         key: SplitName = "validation" if split in ("val", "validation") else split  # type: ignore[assignment]
         ds = self.build_dataset(split)
         n = min(int(n_windows), len(ds))
-        return ds.indices[:n] + ds.seq_len - 1
+        w = self.model_cfg["windowing"]
+        out_len = int(w.get("output_window_length", 1))
+        alignment: OutputAlignment = w.get("output_alignment", "end")
+        if alignment == "center":
+            offset = (ds.seq_len - out_len) // 2
+        elif alignment == "end":
+            offset = ds.seq_len - out_len
+        else:
+            raise ValueError(f"Unsupported output_alignment: {alignment}")
+        if out_len == 1:
+            return ds.indices[:n] + offset
+        return (ds.indices[:n, None] + offset + np.arange(out_len)).reshape(-1)
 
     def get_splits(self) -> dict[SplitName, tuple[np.ndarray, np.ndarray, np.ndarray]]:
         if self._splits is not None:

@@ -35,9 +35,12 @@ class UNetNILMAdapter:
     def build_model(self, device: torch.device) -> torch.nn.Module:
         a = self.model_cfg["architecture"]
         c = a["conv_block"]
+        output_size = int(a.get("output_size", len(self.cfg["appliances"])))
+        if output_size != len(self.cfg["appliances"]):
+            output_size = len(self.cfg["appliances"])
         model = UNETNiLM(
             in_size=a["in_size"],
-            output_size=a["output_size"],
+            output_size=output_size,
             seq_len=_resolve_input_length(self.model_cfg["windowing"]),
             d_model=a["encoder"]["d_model"],
             n_layers=a["unet"]["num_layers"],

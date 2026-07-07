@@ -136,6 +136,7 @@ def preprocess_unet_arrays(
     appliances: list[str],
     model_cfg: dict[str, Any],
     *,
+    csv_states: np.ndarray | None = None,
     sub_mains_watts: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     seq2quantile = model_cfg["seq2quantile"]
@@ -148,4 +149,8 @@ def preprocess_unet_arrays(
         sub_mains_watts=sub_mains_watts,
     )
     y, z = preprocess_appliances(power_watts, appliances, seq2quantile)
+    if str(data_cfg.get("state_source", "seq2quantile")).lower() == "csv":
+        if csv_states is None:
+            raise ValueError("UNet data.state_source=csv requires CSV state columns.")
+        z = np.asarray(csv_states, dtype=np.int64)
     return x, y, z

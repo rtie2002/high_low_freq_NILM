@@ -64,6 +64,7 @@ data:
     sub_mains: sub_mains      # optional; uses mains if column missing from CSV
   preprocess: unet_nilm
   use_denoised_mains: false   # false = noise path (paper default)
+  state_source: csv           # csv = use provided *_on labels; seq2quantile = author label rebuild
   denorm_style: standard      # watts = norm*std + mean (use author only to match paper metrics)
   waveform_ground_truth: csv_raw   # waveforms/metrics: raw CSV watts + Algorithm1 ON labels
   assume_raw_watts: true
