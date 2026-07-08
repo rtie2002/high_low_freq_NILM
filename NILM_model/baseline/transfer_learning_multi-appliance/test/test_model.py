@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import Arguments
 from tqdm import tqdm
 
-para = Arguments.refit_params_appliance
+para = Arguments.redd_params_appliance
 
 appliance = Arguments.appliance_name
 args = Arguments.args
