@@ -26,7 +26,7 @@ train_loader, test_loader = dataloader.get_dataloaders()
 export_root = args.model_path
 
 try:
-    combined_model = torch.load(os.path.join(export_root, 'best_acc_model.pth'), map_location='cpu')
+    combined_model = torch.load(os.path.join(export_root, 'best_acc_model.pth'), map_location='cpu', weights_only=False)
     # combined_model = torch.load(os.path.join(export_root, 'checkpoint_39.pth'), map_location='cpu')
 
     print('Successfully loaded previous model...')
