@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import Arguments
 from tqdm import tqdm
 
-para = Arguments.redd_params_appliance
+para = Arguments.refit_params_appliance
 
 appliance = Arguments.appliance_name
 args = Arguments.args
@@ -27,7 +27,7 @@ train_loader, test_loader = dataloader.get_dataloaders()
 export_root = args.model_path
 try:
     # combined_model = torch.load(os.path.join(export_root, 'best_acc_model.pth'), map_location='cpu')
-    combined_model = torch.load(export_root, map_location='cpu')
+    combined_model = torch.load(export_root, map_location='cpu', weights_only=False)
     print('Successfully loaded previous model...')
 except FileNotFoundError:
     print('Failed to load old model...')

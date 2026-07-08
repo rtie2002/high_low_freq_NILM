@@ -1,0 +1,1 @@
+"""MultiNILM loss placeholder."""

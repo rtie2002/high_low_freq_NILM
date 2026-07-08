@@ -1,0 +1,1 @@
+"""MultiNILM model placeholder."""
