@@ -87,7 +87,13 @@ def _data_preprocess_note(
     else:
         lines.append("preprocess: none (use CSV values as loaded)")
     if thr := data_cfg.get("state_threshold_watts"):
-        lines.append(f"state labels: power > {thr} W")
+        source = str(data_cfg.get("state_label_source", "auto")).lower()
+        if source == "threshold":
+            lines.append(f"state labels: rebuilt from power > {thr} W")
+        elif source == "csv":
+            lines.append(f"state labels: CSV *_on columns (threshold {thr} W ignored)")
+        else:
+            lines.append(f"state labels: auto (threshold {thr} W if requested by model)")
     return lines
 
 

@@ -2,7 +2,8 @@ model_name: multinilm
 
 data:
   mains_column: aggregate
-  state_threshold_watts: null
+  state_label_source: threshold
+  state_threshold_watts: 15.0
 
 windowing:
   input_window_length: 864
