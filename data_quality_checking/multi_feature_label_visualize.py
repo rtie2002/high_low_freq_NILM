@@ -31,12 +31,21 @@ from matplotlib.widgets import Button, CheckButtons, RadioButtons, Slider, TextB
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+
+# Default run settings for "click Run" on this file.
+# Edit these once on the target machine, then run directly without arguments.
 DEFAULT_DATA_DIR = os.path.join(
     PROJECT_ROOT,
-    "feature_selection",
-    "dataset",
-    "on_only_wk30_wk31",
+    "multi_appliances_NILM",
+    "datasets",
+    "ukdale",
+    "training",
 )
+DEFAULT_FILE_PATH = None
+DEFAULT_LABEL = None
+DEFAULT_FEATURES = None
+DEFAULT_SCALE = "none"
+DEFAULT_VIEW_SPAN = 1024
 MAX_VISIBLE_FEATURES = 12
 MAX_LEGEND_ITEMS = 12
 
@@ -1003,19 +1012,23 @@ def interactive_viewer(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Multi-feature NILM label visualizer")
-    parser.add_argument("--path", type=str, default=None, help="CSV file to visualize")
+    parser.add_argument("--path", type=str, default=DEFAULT_FILE_PATH, help="CSV file to visualize")
     parser.add_argument("--data_dir", type=str, default=DEFAULT_DATA_DIR)
-    parser.add_argument("--label", type=str, default=None, help="Label column, e.g. kettle_power")
+    parser.add_argument("--label", type=str, default=DEFAULT_LABEL, help="Label column, e.g. kettle_power")
     parser.add_argument(
         "--features",
         type=str,
-        default=None,
+        default=DEFAULT_FEATURES,
         help="Comma-separated feature list. Label is auto-added if omitted.",
     )
-    parser.add_argument("--scale", choices=["none", "zscore", "minmax"], default="none")
-    parser.add_argument("--view_span", type=int, default=1024)
+    parser.add_argument("--scale", choices=["none", "zscore", "minmax"], default=DEFAULT_SCALE)
+    parser.add_argument("--view_span", type=int, default=DEFAULT_VIEW_SPAN)
     args = parser.parse_args()
 
+    print(
+        f"Using path={args.path or 'interactive select'}, "
+        f"data_dir={args.data_dir}, scale={args.scale}, view_span={args.view_span}",
+    )
     file_path = args.path or choose_file(args.data_dir)
     if not file_path or not os.path.exists(file_path):
         print(f"Error: file not found: {file_path}")
