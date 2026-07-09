@@ -71,6 +71,32 @@ class ResidualTemporalBlock(nn.Module):
         return residual + y
 
 
+class ApplianceHead(nn.Module):
+    """One appliance-specific decoder on top of the shared TCN features.
+
+    Each appliance gets its own small head instead of sharing one multi-channel
+    Conv1d. This reduces competition between appliances with very different
+    power scales and ON/OFF patterns.
+    """
+
+    def __init__(self, hidden_channels: int, dropout: float) -> None:
+        super().__init__()
+        self.feature_refine = nn.Sequential(
+            nn.Conv1d(hidden_channels, hidden_channels, kernel_size=1),
+            nn.BatchNorm1d(hidden_channels),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        self.power_head = nn.Conv1d(hidden_channels, 1, kernel_size=1)
+        self.state_head = nn.Conv1d(hidden_channels, 1, kernel_size=1)
+
+    def forward(self, shared_features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        features = self.feature_refine(shared_features)
+        power = self.power_head(features)
+        state = self.state_head(features)
+        return power, state
+
+
 class MultiNILM(nn.Module):
     """Simple CNN/TCN model for multi-appliance NILM.
 
@@ -99,21 +125,14 @@ class MultiNILM(nn.Module):
             Example: 864 -> 64
             Output: (B, hidden_channels, output_length)
 
-        5. power_head
-            Conv1d(hidden_channels -> num_appliances, kernel_size=1)
-            Output before permute: (B, num_appliances, output_length)
-
-        6. state_head
-            Conv1d(hidden_channels -> num_appliances, kernel_size=1)
-            Output before permute: (B, num_appliances, output_length)
-
-        7. final output format
-            Permute both heads to pipeline format:
+        5. appliance_heads (one per appliance)
+            Each head has its own power + state 1x1 conv decoders.
+            Outputs are concatenated back to:
             (B, output_length, num_appliances)
 
     Notes:
-        - power_head predicts appliance power.
-        - state_head predicts raw ON/OFF logits.
+        - Shared TCN learns aggregate patterns once.
+        - Per-appliance heads specialize power/state decoding per device.
         - Use BCEWithLogitsLoss for state_logits; apply sigmoid only for inference.
     """
 
@@ -162,18 +181,12 @@ class MultiNILM(nn.Module):
             )
         self.temporal_encoder = nn.Sequential(*temporal_blocks)
 
-        # Step 3a: predict appliance power for every output timestep.
-        self.power_head = nn.Conv1d(
-            in_channels=hidden_channels,
-            out_channels=self.num_appliances,
-            kernel_size=1,
-        )
-
-        # Step 3b: predict appliance ON/OFF logits for every output timestep.
-        self.state_head = nn.Conv1d(
-            in_channels=hidden_channels,
-            out_channels=self.num_appliances,
-            kernel_size=1,
+        # Step 3: one decoder head per appliance (dynamic count from experiment).
+        self.appliance_heads = nn.ModuleList(
+            [
+                ApplianceHead(hidden_channels=hidden_channels, dropout=dropout)
+                for _ in range(self.num_appliances)
+            ]
         )
 
     def _format_input(self, x: torch.Tensor) -> torch.Tensor:
@@ -209,7 +222,8 @@ class MultiNILM(nn.Module):
             -> aggregate_feature_extractor
             -> temporal_encoder
             -> resize to output_length
-            -> power_head and state_head
+            -> resize to output_length
+            -> per-appliance heads
             -> return (B, output_length, num_appliances)
         """
 
@@ -233,29 +247,21 @@ class MultiNILM(nn.Module):
             align_corners=False,
         )
 
-        # Step 5-6:
-        # Predict power and ON/OFF logits for every appliance.
-        power_pred = self.power_head(output_features)
-        state_logits = self.state_head(output_features)
+        # Step 5:
+        # Each appliance head predicts one power channel and one state channel.
+        power_parts: list[torch.Tensor] = []
+        state_parts: list[torch.Tensor] = []
+        for head in self.appliance_heads:
+            power_i, state_i = head(output_features)
+            power_parts.append(power_i)
+            state_parts.append(state_i)
 
-        # Step 7:
-        # PyTorch Conv1d always returns (batch, channels, length).
-        # In our output heads:
-        #   channels = appliances
-        #   length   = output time steps
-        #
-        # So after power_head/state_head, the shape is:
-        #   (B, num_appliances, output_length)
-        # Example for REDD:
-        #   (32, 4, 64)
-        #
-        # But our dataloader targets are stored as:
-        #   (B, output_length, num_appliances)
-        # Example for REDD:
-        #   (32, 64, 4)
-        #
-        # We permute the last two dimensions so prediction and target have
-        # the same shape during loss/evaluation.
+        power_pred = torch.cat(power_parts, dim=1)
+        state_logits = torch.cat(state_parts, dim=1)
+
+        # Step 6:
+        # Convert (B, num_appliances, output_length) -> (B, output_length, num_appliances)
+        # so predictions match dataloader target layout.
         power_pred = power_pred.permute(0, 2, 1)
         state_logits = state_logits.permute(0, 2, 1)
 
