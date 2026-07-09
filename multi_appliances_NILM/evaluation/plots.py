@@ -14,8 +14,6 @@ import numpy as np
 import pandas as pd
 from matplotlib.patches import Patch
 
-from evaluation.metrics import _resolve_state_source
-
 WAVEFORM_DPI = 300
 
 
@@ -234,8 +232,6 @@ def save_appliance_on_waveforms(
     y_pred_watts: np.ndarray,
     y_true_on: np.ndarray | None = None,
     y_pred_on: np.ndarray | None = None,
-    state_label_source: str = "auto",
-    on_threshold_watts: float | np.ndarray | None = 15.0,
     aggregate: np.ndarray | None = None,
     csv_timesteps: np.ndarray | None = None,
     n_periods: int = 5,
@@ -251,38 +247,29 @@ def save_appliance_on_waveforms(
     file_prefix: str = "on",
     title_prefix: str = "",
 ) -> list[Path]:
-    """Save N random ON-period plots per appliance under output_dir/<appliance>/."""
+    """Save N random ON-period plots per appliance under output_dir/<appliance>/.
+
+    Waveform plots intentionally use dataset CSV *_on labels for selecting true
+    ON periods (y_true_on). This is independent of data.state_label_source in
+    model yaml, which may still rebuild labels from power for training/F1.
+    """
     output_dir = Path(output_dir)
     rng = rng or np.random.default_rng()
     y_true = np.asarray(y_true_watts, dtype=float)
     y_pred = np.maximum(np.asarray(y_pred_watts, dtype=float), 0.0)
     saved: list[Path] = []
     full_cycle = set(full_cycle_appliances or FULL_CYCLE_APPLIANCES)
-    source, threshold = _resolve_state_source(state_label_source, on_threshold_watts)
+    if y_true_on is None:
+        raise ValueError("Waveform plots require dataset CSV ON/OFF labels in y_true_on")
 
     for idx, app in enumerate(appliances):
         app_dir = output_dir / app
         app_dir.mkdir(parents=True, exist_ok=True)
 
-        if source == "threshold":
-            app_threshold = float(threshold[idx] if np.ndim(threshold) > 0 else threshold)
-            true_on = (y_true[:, idx] > app_threshold).astype(np.float32)
-            pred_on = (y_pred[:, idx] > app_threshold).astype(np.float32)
-        else:
-            if y_true_on is not None:
-                true_on = y_true_on[:, idx]
-            else:
-                if threshold is None:
-                    raise ValueError("CSV/auto waveform plots require ON/OFF labels or a threshold fallback")
-                app_threshold = float(threshold[idx] if np.ndim(threshold) > 0 else threshold)
-                true_on = (y_true[:, idx] > app_threshold).astype(np.float32)
-            if y_pred_on is not None:
-                pred_on = y_pred_on[:, idx]
-            elif threshold is not None:
-                app_threshold = float(threshold[idx] if np.ndim(threshold) > 0 else threshold)
-                pred_on = (y_pred[:, idx] > app_threshold).astype(np.float32)
-            else:
-                pred_on = None
+        # Always follow dataset CSV labels for true ON/OFF event selection.
+        true_on = y_true_on[:, idx]
+        # Predicted ON shading comes from model outputs, not dataset labels.
+        pred_on = y_pred_on[:, idx] if y_pred_on is not None else None
         min_dur = max(min_on_duration, 60 if app in full_cycle else min_on_duration)
         events = _pick_random_on_events(
             true_on,

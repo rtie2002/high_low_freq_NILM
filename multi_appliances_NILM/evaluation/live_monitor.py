@@ -28,16 +28,12 @@ class LiveTrainingMonitor:
         model_name: str,
         appliances: list[str],
         plot_cfg: dict[str, Any],
-        state_label_source: str = "auto",
-        state_threshold_watts: float | np.ndarray | None = 15.0,
         seed: int = 0,
     ):
         self.run_dir = Path(run_dir)
         self.model_name = model_name
         self.appliances = list(appliances)
         self.plot_cfg = plot_cfg
-        self.state_label_source = str(state_label_source).lower()
-        self.state_threshold_watts = state_threshold_watts
         self.seed = int(seed)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.waveforms_dir = self.run_dir / "waveforms"
@@ -260,15 +256,18 @@ class LiveTrainingMonitor:
 
         split_id = 0 if split == "validation" else 1
         rng = np.random.default_rng(self.seed + epoch * 1009 + split_id)
+        # Waveform plots always use dataset CSV *_on labels for true ON periods.
+        waveform_true_on = adapter._data_loader().window_flattened_csv_states(
+            split,
+            len(bundle.y_true_watts),
+        )
         return save_appliance_on_waveforms(
             output_dir,
             appliances=self.appliances,
             y_true_watts=bundle.y_true_watts,
             y_pred_watts=bundle.y_pred_watts,
-            y_true_on=bundle.y_true_on,
+            y_true_on=waveform_true_on,
             y_pred_on=bundle.y_pred_on,
-            state_label_source=self.state_label_source,
-            on_threshold_watts=self.state_threshold_watts,
             aggregate=aggregate,
             csv_timesteps=bundle.csv_timesteps,
             n_periods=self.plot_on_periods(),

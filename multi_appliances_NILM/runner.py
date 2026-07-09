@@ -609,6 +609,15 @@ def _state_eval_thresholds(model_cfg: dict, experiment_cfg: dict, appliances: li
     return _evaluation_on_thresholds(experiment_cfg, appliances)
 
 
+def _waveform_dataset_on_labels(adapter, split: str, n_points: int) -> np.ndarray:
+    """Dataset CSV *_on labels for waveform plots only.
+
+    Waveforms always use the labels stored in the CSV files, even when training
+    and F1 metrics follow data.state_label_source=threshold in model yaml.
+    """
+    return adapter._data_loader().window_flattened_csv_states(split, n_points)
+
+
 def _save_latest_waveforms(
     *,
     monitor: LiveTrainingMonitor,
@@ -746,8 +755,6 @@ def train_model(
         model_name=adapter.name,
         appliances=appliances,
         plot_cfg=plot_cfg,
-        state_label_source=get_state_label_source(adapter.model_cfg),
-        state_threshold_watts=_state_eval_thresholds(adapter.model_cfg, adapter.experiment, appliances),
         seed=int(seed_int),
     )
     grad_clip = float(train_cfg.get("gradient_clip", 0.0))
@@ -931,7 +938,8 @@ def evaluate_model(adapter, checkpoint: Path, run_dir: Path, split: str = "test"
     metrics.to_csv(metrics_path, index=False)
 
     # Step 7:
-    # Save waveform figures for qualitative inspection of ON periods and power traces.
+    # Waveform plots always use dataset CSV *_on labels for true ON periods.
+    # Training/F1 above may still follow data.state_label_source in model yaml.
     plot_cfg = adapter.model_cfg.get("training", {}).get("plots", {})
     waveform_dir = run_dir / "waveforms" / split
     if waveform_dir.exists():
@@ -939,16 +947,15 @@ def evaluate_model(adapter, checkpoint: Path, run_dir: Path, split: str = "test"
 
     raw_period = plot_cfg.get("on_period_samples", 0)
     period_samples = None if raw_period is None or int(raw_period) <= 0 else int(raw_period)
+    waveform_true_on = _waveform_dataset_on_labels(adapter, split, len(bundle.y_true_watts))
 
     saved = save_appliance_on_waveforms(
         waveform_dir,
         appliances=bundle.appliances,
         y_true_watts=bundle.y_true_watts,
         y_pred_watts=bundle.y_pred_watts,
-        y_true_on=bundle.y_true_on,
+        y_true_on=waveform_true_on,
         y_pred_on=bundle.y_pred_on,
-        state_label_source=get_state_label_source(adapter.model_cfg),
-        on_threshold_watts=_state_eval_thresholds(adapter.model_cfg, adapter.experiment, bundle.appliances),
         csv_timesteps=bundle.csv_timesteps,
         n_periods=int(plot_cfg.get("plot_on_periods", 5)),
         period_samples=period_samples,

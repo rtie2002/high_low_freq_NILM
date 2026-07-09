@@ -334,6 +334,40 @@ class NILMDataLoader:
             return ds.indices[:n] + offset
         return (ds.indices[:n, None] + offset + np.arange(out_len)).reshape(-1)
 
+    def get_raw_csv_arrays(self, split: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return raw CSV mains/power/state arrays without threshold relabelling."""
+        return self.get_splits()[_split_key(split)]
+
+    def window_flattened_csv_states(self, split: str, n_points: int) -> np.ndarray:
+        """Align dataset CSV *_on columns with flattened model output timesteps.
+
+        Waveform plotting uses these labels only. Training loss and F1 metrics
+        may still follow data.state_label_source in the model yaml.
+        """
+        key = _split_key(split)
+        x, y, z_csv = self.get_splits()[key]
+        w = self.model_cfg["windowing"]
+        ds = WindowDataset(
+            x,
+            y,
+            z_csv,
+            w,
+            stride=self._stride_for_split(split),
+            target_mode=_target_mode(w, split),
+            normalization=self.norm,
+            state_label_source="csv",
+        )
+        if len(ds) == 0:
+            return np.zeros((0, len(self.appliances)), dtype=np.int32)
+
+        rows: list[np.ndarray] = []
+        for i in range(len(ds)):
+            _, _, z = ds[i]
+            z_np = z.numpy() if hasattr(z, "numpy") else np.asarray(z)
+            rows.append(z_np.reshape(-1, len(self.appliances)))
+        flat = np.concatenate(rows, axis=0)
+        return flat[: int(n_points)].astype(np.int32)
+
     def get_splits(self) -> dict[SplitName, tuple[np.ndarray, np.ndarray, np.ndarray]]:
         if self._splits is not None:
             return self._splits
