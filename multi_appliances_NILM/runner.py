@@ -48,6 +48,8 @@ from adapters.dataloader import (
     _resolve_input_length,
     _target_mode,
     get_normalization_cfg,
+    get_state_label_source,
+    get_state_threshold,
     resolve_mains_column,
 )
 from evaluation.live_monitor import LiveTrainingMonitor
@@ -204,6 +206,32 @@ def _state_f1_logs(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
     macro_f1 = float(np.mean(scores)) if scores else 0.0
     micro_f1 = float(2 * total_tp / max(2 * total_tp + total_fp + total_fn, 1))
     return {"val_f1": macro_f1, "val_maf1": macro_f1, "val_mif1": micro_f1}
+
+
+def _epoch_state_arrays(adapter, aux_batches: dict[str, list[np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
+    """Build validation ON/OFF arrays from the source selected in model yaml."""
+    source = get_state_label_source(adapter.model_cfg)
+    if source == "threshold":
+        threshold = _state_eval_thresholds(adapter.model_cfg, adapter.experiment, adapter.cfg["appliances"])
+        if threshold is None:
+            raise ValueError("threshold state_label_source requires data.state_threshold_watts")
+        loader = adapter._data_loader()
+        y_pred = np.concatenate(aux_batches["pred_power"], axis=0)
+        y_true = np.concatenate(aux_batches["true_power"], axis=0)
+        if y_pred.ndim > 2:
+            y_pred = y_pred.reshape(-1, y_pred.shape[-1])
+            y_true = y_true.reshape(-1, y_true.shape[-1])
+        y_pred = loader.denorm_to_watts(y_pred)
+        y_true = loader.denorm_to_watts(y_true)
+        threshold = np.asarray(threshold, dtype=np.float32)
+        return (y_true > threshold).astype(np.int32), (y_pred > threshold).astype(np.int32)
+
+    z_pred = np.concatenate(aux_batches["pred_state"], axis=0)
+    z_true = np.concatenate(aux_batches["true_state"], axis=0)
+    if z_pred.ndim > 2:
+        z_pred = z_pred.reshape(-1, z_pred.shape[-1])
+        z_true = z_true.reshape(-1, z_true.shape[-1])
+    return z_true.astype(np.int32), z_pred.astype(np.int32)
 
 
 def _batch_to_device(batch, device: torch.device):
@@ -374,10 +402,14 @@ def _run_epoch(
     totals = {k: 0.0 for k in log_keys}
     n_batches = 0
 
-    # During validation we collect all ON/OFF predictions so we can calculate
-    # F1 over the whole validation split, not just one mini-batch.
-    state_preds: list[np.ndarray] = []
-    state_trues: list[np.ndarray] = []
+    # During validation we collect state/power outputs so F1 can follow the
+    # source selected in model yaml: CSV labels or thresholded watts.
+    aux_batches: dict[str, list[np.ndarray]] = {
+        "pred_state": [],
+        "true_state": [],
+        "pred_power": [],
+        "true_power": [],
+    }
 
     # Important difference between training and validation:
     #   train mode enables dropout/BatchNorm update behavior.
@@ -451,10 +483,11 @@ def _run_epoch(
             for k in log_keys:
                 totals[k] += step.logs.get(k, 0.0)
 
-            # Validation F1 needs predicted and true states from all batches.
+            # Validation F1 is computed at epoch end using the configured state source.
             if collect_states and step.aux:
-                state_preds.append(step.aux["pred_state"].detach())
-                state_trues.append(step.aux["true_state"].detach())
+                for key in aux_batches:
+                    if key in step.aux:
+                        aux_batches[key].append(step.aux[key].detach().cpu().numpy())
 
             n_batches += 1
             if n_batches % 20 == 0 or n_batches == n_total:
@@ -464,12 +497,8 @@ def _run_epoch(
     logs = _aggregate_logs(log_keys, n_batches, totals)
 
     # Add val_f1/val_maf1/val_mif1 for validation checkpointing and monitoring.
-    if collect_states and state_preds:
-        z_pred = torch.cat(state_preds, dim=0).cpu().numpy()
-        z_true = torch.cat(state_trues, dim=0).cpu().numpy()
-        if z_pred.ndim > 2:
-            z_pred = z_pred.reshape(-1, z_pred.shape[-1])
-            z_true = z_true.reshape(-1, z_true.shape[-1])
+    if collect_states and aux_batches["true_state"]:
+        z_true, z_pred = _epoch_state_arrays(adapter, aux_batches)
         logs.update(_state_f1_logs(z_true, z_pred))
     return logs
 
@@ -567,6 +596,17 @@ def _evaluation_on_thresholds(experiment_cfg: dict, appliances: list[str]) -> fl
     if per_app := evaluation.get("on_thresholds_watts"):
         return np.asarray([float(per_app[app]) for app in appliances], dtype=np.float32)
     return float(evaluation.get("on_threshold_watts", 15.0))
+
+
+def _state_eval_thresholds(model_cfg: dict, experiment_cfg: dict, appliances: list[str]) -> float | np.ndarray | None:
+    """Choose evaluation thresholds from the model yaml when threshold mode is enabled."""
+    source = get_state_label_source(model_cfg)
+    if source != "threshold":
+        return None
+    thr = get_state_threshold(model_cfg)
+    if thr is not None:
+        return float(thr)
+    return _evaluation_on_thresholds(experiment_cfg, appliances)
 
 
 def _save_latest_waveforms(
@@ -706,6 +746,8 @@ def train_model(
         model_name=adapter.name,
         appliances=appliances,
         plot_cfg=plot_cfg,
+        state_label_source=get_state_label_source(adapter.model_cfg),
+        state_threshold_watts=_state_eval_thresholds(adapter.model_cfg, adapter.experiment, appliances),
         seed=int(seed_int),
     )
     grad_clip = float(train_cfg.get("gradient_clip", 0.0))
@@ -882,7 +924,8 @@ def evaluate_model(adapter, checkpoint: Path, run_dir: Path, split: str = "test"
     metrics = evaluate_bundle(
         bundle,
         sae_period=int(adapter.experiment["evaluation"].get("sae_period", 1200)),
-        on_threshold_watts=_evaluation_on_thresholds(adapter.experiment, bundle.appliances),
+        on_threshold_watts=_state_eval_thresholds(adapter.model_cfg, adapter.experiment, bundle.appliances),
+        state_label_source=get_state_label_source(adapter.model_cfg),
     )
     metrics_path = run_dir / f"{split}_metrics.csv"
     metrics.to_csv(metrics_path, index=False)
@@ -904,6 +947,8 @@ def evaluate_model(adapter, checkpoint: Path, run_dir: Path, split: str = "test"
         y_pred_watts=bundle.y_pred_watts,
         y_true_on=bundle.y_true_on,
         y_pred_on=bundle.y_pred_on,
+        state_label_source=get_state_label_source(adapter.model_cfg),
+        on_threshold_watts=_state_eval_thresholds(adapter.model_cfg, adapter.experiment, bundle.appliances),
         csv_timesteps=bundle.csv_timesteps,
         n_periods=int(plot_cfg.get("plot_on_periods", 5)),
         period_samples=period_samples,

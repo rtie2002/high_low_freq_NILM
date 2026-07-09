@@ -8,6 +8,19 @@ import pandas as pd
 from adapters.common import PredictionBundle
 
 
+def _resolve_state_source(
+    state_label_source: str,
+    on_threshold_watts: float | np.ndarray | None,
+) -> tuple[str, np.ndarray | None]:
+    source = str(state_label_source).lower()
+    if source not in {"auto", "csv", "threshold"}:
+        raise ValueError("state_label_source must be one of: auto, csv, threshold")
+    threshold = None if on_threshold_watts is None else np.asarray(on_threshold_watts, dtype=np.float32)
+    if source == "threshold" and threshold is None:
+        raise ValueError("threshold state_label_source requires on_threshold_watts")
+    return source, threshold
+
+
 def _tp_fp_fn(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     tp = np.sum(y_true * y_pred, axis=0).astype(np.float64)
     fp = np.sum((1 - y_true) * y_pred, axis=0).astype(np.float64)
@@ -55,17 +68,27 @@ def _on_off_labels(
     bundle: PredictionBundle,
     y_true: np.ndarray,
     y_pred: np.ndarray,
-    on_threshold_watts: float | np.ndarray,
+    on_threshold_watts: float | np.ndarray | None,
+    state_label_source: str = "auto",
 ) -> tuple[np.ndarray, np.ndarray]:
-    threshold = np.asarray(on_threshold_watts, dtype=np.float32)
+    source, threshold = _resolve_state_source(state_label_source, on_threshold_watts)
+    if source == "threshold":
+        z_true = (y_true > threshold).astype(np.int32)
+        z_pred = (y_pred > threshold).astype(np.int32)
+        return z_true, z_pred
+
     if bundle.y_true_on is not None:
         z_true = bundle.y_true_on.astype(np.int32)
     else:
+        if threshold is None:
+            raise ValueError("CSV/auto state evaluation requires stored ON/OFF labels or a threshold fallback")
         z_true = (y_true > threshold).astype(np.int32)
 
     if bundle.y_pred_on is not None:
         z_pred = bundle.y_pred_on.astype(np.int32)
     else:
+        if threshold is None:
+            raise ValueError("CSV/auto state evaluation requires stored predicted ON/OFF labels or a threshold fallback")
         z_pred = (y_pred > threshold).astype(np.int32)
     return z_true, z_pred
 
@@ -74,12 +97,13 @@ def evaluate_bundle(
     bundle: PredictionBundle,
     *,
     sae_period: int = 1200,
-    on_threshold_watts: float | np.ndarray = 15.0,
+    on_threshold_watts: float | np.ndarray | None = 15.0,
+    state_label_source: str = "auto",
 ) -> pd.DataFrame:
     """Per-appliance MAE/SAE/F1 plus one overall summary row."""
     y_true = bundle.y_true_watts
     y_pred = np.maximum(bundle.y_pred_watts, 0.0)
-    z_true, z_pred = _on_off_labels(bundle, y_true, y_pred, on_threshold_watts)
+    z_true, z_pred = _on_off_labels(bundle, y_true, y_pred, on_threshold_watts, state_label_source)
 
     mae_vals = mae(y_true, y_pred)
     sae_vals = sae(y_true, y_pred, sae_period)

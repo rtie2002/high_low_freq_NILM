@@ -109,7 +109,12 @@ class MATNILMAdapter(BaseNILMAdapter):
                 "mae": float(out.mae.detach()),
                 **app_losses,
             },
-            aux={"pred_state": pred_state.detach().cpu(), "true_state": z.long().detach().cpu()},
+            aux={
+                "pred_state": pred_state.detach().cpu(),
+                "true_state": z.long().detach().cpu(),
+                "pred_power": y_pred_r.detach().cpu(),
+                "true_power": y.detach().cpu(),
+            },
         )
 
     @torch.no_grad()

@@ -135,7 +135,12 @@ class MultiNILMAdapter(BaseNILMAdapter):
                 "mae": float(out.mae.detach()),
             },
             # Move state tensors to CPU because runner.py collects them across batches.
-            aux={"pred_state": pred_state.detach().cpu(), "true_state": z.long().detach().cpu()},
+            aux={
+                "pred_state": pred_state.detach().cpu(),
+                "true_state": z.long().detach().cpu(),
+                "pred_power": power_pred.detach().cpu(),
+                "true_power": y.detach().cpu(),
+            },
         )
 
     @torch.no_grad()
