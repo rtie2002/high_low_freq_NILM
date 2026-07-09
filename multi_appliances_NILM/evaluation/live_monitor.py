@@ -257,7 +257,10 @@ class LiveTrainingMonitor:
         split_id = 0 if split == "validation" else 1
         rng = np.random.default_rng(self.seed + epoch * 1009 + split_id)
         # Waveform plots always use dataset CSV *_on labels for true ON periods.
-        waveform_true_on = adapter._data_loader().window_flattened_csv_states(
+        waveform_true_on = adapter._data_loader().csv_on_labels_at_timesteps(
+            split,
+            bundle.csv_timesteps[: len(bundle.y_true_watts)],
+        ) if bundle.csv_timesteps is not None and len(bundle.csv_timesteps) >= len(bundle.y_true_watts) else adapter._data_loader().window_flattened_csv_states(
             split,
             len(bundle.y_true_watts),
         )

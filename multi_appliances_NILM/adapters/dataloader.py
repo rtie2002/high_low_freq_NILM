@@ -397,6 +397,12 @@ class NILMDataLoader:
         csv_timesteps = np.nonzero(covered)[0].astype(np.int64)
         return timeline[covered], csv_timesteps
 
+    def csv_on_labels_at_timesteps(self, split: str, csv_timesteps: np.ndarray) -> np.ndarray:
+        """Dataset CSV *_on labels at the same CSV rows as a prediction bundle."""
+        _, _, z_csv = self.get_splits()[_split_key(split)]
+        indices = np.asarray(csv_timesteps, dtype=np.int64)
+        return z_csv[indices].astype(np.int32)
+
     def get_raw_csv_arrays(self, split: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return raw CSV mains/power/state arrays without threshold relabelling."""
         return self.get_splits()[_split_key(split)]
