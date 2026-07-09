@@ -1,0 +1,53 @@
+# BERT4NILM transfer-learning baseline
+# NILM_model/baseline/transfer_learning_multi-appliance/Arguments.py
+model_name: transfer_multi_appliance
+
+data:
+  mains_column: aggregate
+  state_label_source: threshold
+
+windowing:
+  # Baseline: window_size=480, window_stride=120 (train + val windows)
+  input_window_length: 480
+  output_window_length: 480
+  output_alignment: end
+  input_stride: 120
+  eval_stride: 120
+  training_targets: full_input
+
+architecture:
+  hidden: 256
+  attn_heads: 2
+  encoder_layers: 2
+  head_transformer_layers: 1
+  dropout: 0.1
+
+transfer:
+  freeze_encoder: false
+
+training:
+  batch_size: 32
+  epochs: 100
+  learning_rate: 0.0001
+  weight_decay: 0.0
+  optimizer: adam
+  seed: 155
+  num_workers: 8
+  persistent_workers: true
+  prefetch_factor: 4
+  use_amp: false
+  amp_dtype: bf16
+  checkpoint_monitor: val_mae
+  early_stop_patience: 60
+  gradient_clip: 0.0
+  cudnn_benchmark: true
+  tf32: true
+  plots:
+    plot_mode: live
+    plot_interval: 1
+    plot_on_periods: 5
+    waveform_figsize: 5.5
+    waveform_dpi: 300
+    waveform_dynamic_figsize: true
+    on_period_margin_min: 40
+    on_period_margin_frac: 0.08

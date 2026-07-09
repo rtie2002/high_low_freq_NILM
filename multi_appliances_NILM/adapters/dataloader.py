@@ -406,6 +406,16 @@ class NILMDataLoader:
         """Convert normalized targets or predictions back to watts."""
         return self.norm.denorm(y)
 
+    def estimate_state_pos_weights(self, split: str = "train") -> np.ndarray:
+        """Per-appliance BCE pos_weight = (1 - p) / p from training ON rate p."""
+        _, y, z = self.get_splits()[_split_key(split)]
+        if self.state_threshold_watts is not None:
+            on = (y > self.state_threshold_watts).astype(np.float64)
+        else:
+            on = z.astype(np.float64)
+        p = np.clip(on.mean(axis=0), 1e-4, 1.0 - 1e-4)
+        return ((1.0 - p) / p).astype(np.float32)
+
     def describe_split(self, split: str, *, batch_size: int) -> dict[str, Any]:
         key = _split_key(split)
         csv_path = self._resolve_csv_path(key)

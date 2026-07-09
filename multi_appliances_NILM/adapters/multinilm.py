@@ -13,6 +13,41 @@ from model.MultiNILM import MultiNILM
 from model.MultiNILM_loss import MultiNILMLoss
 
 
+def _resolve_pos_weight(adapter: "MultiNILMAdapter", loss_cfg: dict) -> list[float] | None:
+    """Use yaml pos_weight, or auto-balance rare ON events from the train split."""
+    configured = loss_cfg.get("pos_weight")
+    if configured is not None and str(configured).lower() not in {"auto", "null", "none"}:
+        return configured
+    return adapter._data_loader().estimate_state_pos_weights("train").tolist()
+
+
+def _pred_on_from_config(
+    adapter: "MultiNILMAdapter",
+    power_norm: np.ndarray,
+    state_prob: np.ndarray,
+) -> np.ndarray:
+    """Build binary ON/OFF predictions for metrics and saved bundles."""
+    source = str(adapter.model_cfg.get("evaluation", {}).get("pred_on_source", "state_head")).lower()
+    if source == "state_head":
+        return (state_prob >= 0.5).astype(np.int32)
+
+    loader = adapter._data_loader()
+    power_watts = loader.denorm_to_watts(power_norm)
+    threshold = loader.state_threshold_watts
+    if threshold is None:
+        raise ValueError("pred_on_source=power_threshold requires threshold training labels")
+    threshold = np.asarray(threshold, dtype=np.float32)
+    power_on = (power_watts > threshold).astype(np.int32)
+    if source == "power_threshold":
+        return power_on
+    if source == "combined":
+        state_on = (state_prob >= 0.5).astype(np.int32)
+        return np.maximum(state_on, power_on).astype(np.int32)
+    raise ValueError(
+        "evaluation.pred_on_source must be one of: state_head, power_threshold, combined"
+    )
+
+
 class MultiNILMAdapter(BaseNILMAdapter):
     # This name is used by main.py, logs, run folders, and saved predictions.
     name = "multinilm"
@@ -60,8 +95,8 @@ class MultiNILMAdapter(BaseNILMAdapter):
             # Weight of ON/OFF classification loss.
             lambda_state=float(loss_cfg.get("lambda_state", 0.1)),
 
-            # Optional ON-class weighting for imbalanced ON/OFF labels.
-            pos_weight=loss_cfg.get("pos_weight"),
+            # Auto-balance rare ON timesteps when pos_weight is null/auto.
+            pos_weight=_resolve_pos_weight(self, loss_cfg),
 
             # Used only for MAE logging. This comes from dataset normalization
             # stats when available, otherwise from legacy scalar power_scale.
@@ -116,8 +151,14 @@ class MultiNILMAdapter(BaseNILMAdapter):
         # This is not used in the loss.
         state_prob = torch.sigmoid(state_logits)
 
-        # Binary ON/OFF prediction using threshold 0.5.
-        pred_state = (state_prob >= 0.5).long()
+        # Binary ON/OFF prediction for metrics (configurable scoring source).
+        pred_state = torch.from_numpy(
+            _pred_on_from_config(
+                self,
+                power_pred.detach().cpu().numpy(),
+                state_prob.detach().cpu().numpy(),
+            )
+        ).long()
 
         app_logs = {}
         for app_i, app in enumerate(self.cfg["appliances"]):
@@ -186,8 +227,13 @@ class MultiNILMAdapter(BaseNILMAdapter):
 
             pred_power.append(power_pred.cpu().numpy())
 
-            # Convert state probability to binary ON/OFF label.
-            pred_state.append((state_prob.cpu().numpy() >= 0.5).astype(np.int32))
+            pred_state.append(
+                _pred_on_from_config(
+                    self,
+                    power_pred.cpu().numpy(),
+                    state_prob.cpu().numpy(),
+                )
+            )
 
             # y and z are ground truth from dataloader.
             # They are already on CPU because we did not move them to device.

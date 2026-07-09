@@ -92,9 +92,14 @@ class ApplianceHead(nn.Module):
 
     def forward(self, shared_features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         features = self.feature_refine(shared_features)
-        power = self.power_head(features)
-        state = self.state_head(features)
-        return power, state
+        power_raw = self.power_head(features)
+        state_logits = self.state_head(features)
+
+        # Match transfer-learning baseline: gate power by predicted ON probability.
+        # State logits stay unbounded for BCEWithLogitsLoss.
+        state_prob = torch.sigmoid(state_logits)
+        power = power_raw * state_prob
+        return power, state_logits
 
 
 class MultiNILM(nn.Module):
@@ -249,6 +254,7 @@ class MultiNILM(nn.Module):
 
         # Step 5:
         # Each appliance head predicts one power channel and one state channel.
+        # Power is gated by sigmoid(state) like the transfer-learning baseline.
         power_parts: list[torch.Tensor] = []
         state_parts: list[torch.Tensor] = []
         for head in self.appliance_heads:

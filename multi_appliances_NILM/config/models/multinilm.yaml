@@ -4,6 +4,10 @@ data:
   mains_column: aggregate
   state_label_source: threshold
 
+evaluation:
+  # state_head | power_threshold | combined
+  pred_on_source: combined
+
 windowing:
   input_window_length: 864
   output_window_length: 256
@@ -14,14 +18,14 @@ windowing:
 
 architecture:
   input_channels: 1
-  hidden_channels: 64
+  hidden_channels: 128
   num_blocks: 5
   kernel_size: 5
   dropout: 0.1
 
 loss:
   lambda_state: 1
-  pos_weight: null
+  pos_weight: auto
 
 training:
   batch_size: 32
@@ -33,8 +37,8 @@ training:
   prefetch_factor: 4
   use_amp: false
   amp_dtype: bf16
-  checkpoint_monitor: val_mae
-  early_stop_patience: 20
+  checkpoint_monitor: val_f1
+  early_stop_patience: 30
   gradient_clip: 1.0
   cudnn_benchmark: true
   tf32: true
