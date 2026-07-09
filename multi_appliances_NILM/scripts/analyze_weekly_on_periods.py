@@ -123,6 +123,65 @@ def _load_state_frame(csv_path: Path, experiment_cfg: dict[str, Any]) -> tuple[p
     return state_df, appliances
 
 
+def _extract_on_events(
+    full_df: pd.DataFrame,
+    state_df: pd.DataFrame,
+    appliances: list[str],
+    *,
+    timestamp_column: str | None,
+    sample_seconds: float,
+    week_start: str,
+    house_label: str,
+) -> pd.DataFrame:
+    ts_col = timestamp_column or _detect_timestamp_column(full_df)
+    if ts_col is not None:
+        timestamp = pd.to_datetime(full_df[ts_col], errors="coerce")
+    else:
+        timestamp = pd.Series(pd.NaT, index=full_df.index)
+
+    week_key = (
+        timestamp.dt.to_period(_period_alias(week_start)).astype(str)
+        if ts_col is not None
+        else (pd.Series(range(len(full_df)), index=full_df.index) // int(round((7 * 24 * 3600) / sample_seconds))).astype(str)
+    )
+
+    rows: list[dict[str, object]] = []
+    for app in appliances:
+        state = state_df[app].fillna(0).astype(int)
+        in_event = False
+        start_idx = -1
+        for idx, value in enumerate(state):
+            if value == 1 and not in_event:
+                in_event = True
+                start_idx = idx
+            end_now = in_event and (value == 0 or idx == len(state) - 1)
+            if not end_now:
+                continue
+
+            end_idx = idx - 1 if value == 0 else idx
+            steps = end_idx - start_idx + 1
+            start_time = timestamp.iloc[start_idx] if ts_col is not None else pd.NaT
+            end_time = timestamp.iloc[end_idx] if ts_col is not None else pd.NaT
+            rows.append(
+                {
+                    "house": house_label,
+                    "appliance": app,
+                    "week": week_key.iloc[start_idx],
+                    "start_index": int(start_idx),
+                    "end_index": int(end_idx),
+                    "timesteps": int(steps),
+                    "duration_seconds": float(steps * sample_seconds),
+                    "duration_minutes": float(steps * sample_seconds / 60.0),
+                    "start_time": start_time,
+                    "end_time": end_time,
+                }
+            )
+            in_event = False
+            start_idx = -1
+
+    return pd.DataFrame(rows)
+
+
 def summarize_csv(
     csv_path: Path,
     experiment_cfg: dict[str, Any],
@@ -253,8 +312,9 @@ def main() -> None:
             print(f"Skipping missing file: {csv_path}")
             continue
         try:
-            full_df = pd.read_csv(csv_path, nrows=5)
+            full_df = pd.read_csv(csv_path)
             house_label = _house_label(full_df, csv_path)
+            state_df, _ = _load_state_frame(csv_path, experiment_cfg)
             summary = summarize_csv(
                 csv_path=csv_path,
                 experiment_cfg=experiment_cfg,
@@ -282,6 +342,29 @@ def main() -> None:
         print("\nPer-appliance breakdown for top weeks:\n")
         print(_compact_app_breakdown(summary, appliances, args.top_k).to_string(index=False))
 
+        events = _extract_on_events(
+            full_df,
+            state_df,
+            appliances,
+            timestamp_column=args.timestamp_column,
+            sample_seconds=args.sample_seconds,
+            week_start=args.week_start,
+            house_label=house_label,
+        )
+        if not events.empty:
+            print("\nSample ON events (first 15 by longest duration):\n")
+            event_preview = events.sort_values(["duration_seconds", "timesteps"], ascending=[False, False]).head(15)
+            show_cols = [
+                "house",
+                "appliance",
+                "week",
+                "start_time",
+                "end_time",
+                "timesteps",
+                "duration_minutes",
+            ]
+            print(event_preview[show_cols].to_string(index=False))
+
         blocks = _best_blocks(summary, appliances, args.block_weeks)
         for block_len, block_df in blocks.items():
             if block_df.empty:
@@ -298,6 +381,9 @@ def main() -> None:
         out_path = csv_path.with_name(csv_path.stem + "_weekly_on_summary.csv")
         summary.to_csv(out_path, index=False)
         print(f"\nSaved full weekly summary to: {out_path}")
+        events_path = csv_path.with_name(csv_path.stem + "_on_events.csv")
+        events.to_csv(events_path, index=False)
+        print(f"Saved ON event table to: {events_path}")
 
 
 if __name__ == "__main__":
