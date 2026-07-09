@@ -355,6 +355,48 @@ class NILMDataLoader:
             return ds.indices[:n] + offset
         return (ds.indices[:n, None] + offset + np.arange(out_len)).reshape(-1)
 
+    def reconstruct_timeline_from_windows(
+        self,
+        split: str,
+        window_values: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Map (n_windows, out_len, A) onto the CSV timeline with overlap averaging.
+
+        When eval stride < output length, multiple windows cover the same CSV row.
+        Averaging removes window-boundary pulses in plots and test metrics.
+        """
+        key = _split_key(split)
+        x, _, _ = self.get_splits()[key]
+        total = len(x)
+        window_values = np.asarray(window_values, dtype=np.float64)
+        if window_values.ndim != 3:
+            raise ValueError(f"Expected (n_windows, out_len, A), got {window_values.shape}")
+
+        ds = self._make_window_dataset(split)
+        n = min(len(window_values), len(ds))
+        window_values = window_values[:n]
+        w = self.model_cfg["windowing"]
+        out_len = int(w.get("output_window_length", 1))
+        offset = _output_row_offset(w, ds.seq_len)
+        n_apps = window_values.shape[-1]
+
+        acc = np.zeros((total, n_apps), dtype=np.float64)
+        cnt = np.zeros((total, n_apps), dtype=np.float64)
+        for i in range(n):
+            start = int(ds.indices[i]) + offset
+            end = min(total, start + out_len)
+            span = end - start
+            if span <= 0:
+                continue
+            acc[start:end] += window_values[i, :span]
+            cnt[start:end] += 1.0
+
+        covered = cnt.max(axis=1) > 0
+        cnt = np.maximum(cnt, 1.0)
+        timeline = (acc / cnt).astype(np.float32)
+        csv_timesteps = np.nonzero(covered)[0].astype(np.int64)
+        return timeline[covered], csv_timesteps
+
     def get_raw_csv_arrays(self, split: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return raw CSV mains/power/state arrays without threshold relabelling."""
         return self.get_splits()[_split_key(split)]

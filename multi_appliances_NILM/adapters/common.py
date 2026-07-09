@@ -310,25 +310,31 @@ class BaseNILMAdapter(AdapterDataMixin):
         # Step 1:
         # Recover the appliance order and canonical split name used by evaluation.
         appliances, split_key = self._prediction_context(split)
-
-        # Step 2:
-        # Concatenate per-batch arrays into one long (N, A) timeline.
-        y_pred = np.concatenate(pred_power_batches, axis=0).reshape(-1, len(appliances))
-        y_true = np.concatenate(true_power_batches, axis=0).reshape(-1, len(appliances))
-        z_pred = np.concatenate(pred_state_batches, axis=0).reshape(-1, len(appliances))
-        z_true = np.concatenate(true_state_batches, axis=0).reshape(-1, len(appliances))
-
-        # Step 3:
-        # Convert predictions and targets from normalized space back to watts.
         loader = self._data_loader()
+        w = self.model_cfg.get("windowing", {})
+        use_overlap = str(w.get("eval_reconstruction", "flat")).lower() == "overlap_mean"
+
+        power_windows = np.concatenate(pred_power_batches, axis=0)
+        state_windows = np.concatenate(pred_state_batches, axis=0)
+        true_power_windows = np.concatenate(true_power_batches, axis=0)
+        true_state_windows = np.concatenate(true_state_batches, axis=0)
+
+        if use_overlap:
+            y_pred, csv_timesteps = loader.reconstruct_timeline_from_windows(split_key, power_windows)
+            y_true, _ = loader.reconstruct_timeline_from_windows(split_key, true_power_windows)
+            state_prob, _ = loader.reconstruct_timeline_from_windows(split_key, state_windows.astype(np.float64))
+            z_true_f, _ = loader.reconstruct_timeline_from_windows(split_key, true_state_windows.astype(np.float64))
+            z_pred = (state_prob >= 0.5).astype(np.int32)
+            z_true = (z_true_f >= 0.5).astype(np.int32)
+        else:
+            y_pred = power_windows.reshape(-1, len(appliances))
+            y_true = true_power_windows.reshape(-1, len(appliances))
+            z_pred = state_windows.reshape(-1, len(appliances))
+            z_true = true_state_windows.reshape(-1, len(appliances))
+            csv_timesteps = loader.window_output_timesteps(split_key, len(y_true))
+
         y_pred = loader.denorm_to_watts(y_pred)
         y_true = loader.denorm_to_watts(y_true)
-
-        # Step 4:
-        # Reconstruct which original CSV timestep each flattened output belongs to.
-        csv_timesteps = loader.window_output_timesteps(split_key, len(y_true))
-
-        # Step 5:
         # Return the standard prediction object used everywhere else in the repo.
         return build_prediction_bundle(
             experiment_id=self.experiment["experiment_id"],

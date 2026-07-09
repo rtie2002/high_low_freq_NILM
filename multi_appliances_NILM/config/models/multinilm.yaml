@@ -13,7 +13,8 @@ windowing:
   output_window_length: 256
   output_alignment: center
   input_stride: 216
-  eval_stride: 256
+  eval_stride: 128
+  eval_reconstruction: overlap_mean
   training_targets: output_window
 
 architecture:

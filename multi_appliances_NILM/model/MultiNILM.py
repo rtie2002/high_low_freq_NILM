@@ -125,9 +125,9 @@ class MultiNILM(nn.Module):
             Default dilation sequence: 1, 2, 4, 8, 16
             Output: (B, hidden_channels, T)
 
-        4. temporal resizing
-            F.interpolate changes the time axis from input length to output_length.
-            Example: 864 -> 64
+        4. temporal alignment
+            Center-crop (or pad) features to output_length so each output step
+            matches the same CSV timestep as the dataloader center targets.
             Output: (B, hidden_channels, output_length)
 
         5. appliance_heads (one per appliance)
@@ -219,6 +219,19 @@ class MultiNILM(nn.Module):
 
         return x.float()
 
+    def _align_output_time(self, features: torch.Tensor) -> torch.Tensor:
+        """Crop or pad features on the time axis to match label alignment."""
+        time_len = features.shape[-1]
+        if time_len == self.output_length:
+            return features
+        if time_len > self.output_length:
+            offset = (time_len - self.output_length) // 2
+            return features[:, :, offset : offset + self.output_length]
+        pad_total = self.output_length - time_len
+        pad_left = pad_total // 2
+        pad_right = pad_total - pad_left
+        return F.pad(features, (pad_left, pad_right))
+
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the full MultiNILM architecture.
 
@@ -243,14 +256,10 @@ class MultiNILM(nn.Module):
         features = self.temporal_encoder(features)
 
         # Step 4:
-        # Convert the feature timeline to the required output length.
-        # Example: input length 864 -> output length 64.
-        output_features = F.interpolate(
-            features,
-            size=self.output_length,
-            mode="linear",
-            align_corners=False,
-        )
+        # Keep the same time indices as the dataloader center targets.
+        # Do NOT interpolate the full window into output_length — that misaligns
+        # labels and creates repeating pulse artifacts per window.
+        output_features = self._align_output_time(features)
 
         # Step 5:
         # Each appliance head predicts one power channel and one state channel.
