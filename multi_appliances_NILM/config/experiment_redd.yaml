@@ -23,6 +23,11 @@ normalization:
     washingmachine: {mean: 1000, std: 1500}
 
 evaluation:
-  on_threshold_watts: 15.0
+  # Baseline per-appliance ON thresholds (Arguments.py → redd_params_appliance)
+  on_thresholds_watts:
+    dishwasher: 50
+    fridge: 50
+    microwave: 50
+    washingmachine: 20
   sae_period: 1200
   power_unit: watts

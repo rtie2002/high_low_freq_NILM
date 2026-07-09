@@ -23,6 +23,19 @@ MODELS = {
     "multinilm": MultiNILMAdapter,
 }
 
+# Default run settings for "click Run on main.py".
+# Edit these once, then run this file directly without command-line arguments.
+DEFAULT_MODE = "train_evaluate"
+DEFAULT_MODEL = "multinilm"
+DEFAULT_EXPERIMENT = ROOT / "config" / "experiment_ukdale.yaml"
+DEFAULT_MODEL_CONFIG: Path | None = None
+DEFAULT_DATA_PATH: Path | None = None
+DEFAULT_CHECKPOINT: Path | None = None
+DEFAULT_INIT_CHECKPOINT: Path | None = None
+DEFAULT_RUN_DIR: Path | None = None
+DEFAULT_EPOCHS: int | None = None
+DEFAULT_SEED: int | None = None
+
 
 def get_adapter(model_name: str, merged_cfg: dict, data_root: str | None = None):
     if model_name not in MODELS:
@@ -38,23 +51,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         choices=["train", "evaluate", "train_evaluate", "compare"],
-        required=True,
+        default=DEFAULT_MODE,
         help="train | evaluate | train_evaluate | compare",
     )
-    parser.add_argument("--model", choices=sorted(MODELS), default=None)
+    parser.add_argument("--model", choices=sorted(MODELS), default=DEFAULT_MODEL)
     parser.add_argument(
         "--experiment",
         type=Path,
-        default=ROOT / "config/experiment.yaml",
+        default=DEFAULT_EXPERIMENT,
         help="Dataset config (UK-DALE default). Try config/experiment_redd.yaml or experiment_refit.yaml",
     )
-    parser.add_argument("--model-config", type=Path, default=None, help="Override config/models/<model>.yaml")
-    parser.add_argument("--data-path", type=Path, default=None, help="Override experiment data_root")
-    parser.add_argument("--checkpoint", type=Path, default=None)
-    parser.add_argument("--init-checkpoint", type=Path, default=None, help="Fine-tune from another checkpoint")
-    parser.add_argument("--run-dir", type=Path, default=None)
-    parser.add_argument("--epochs", type=int, default=None)
-    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--model-config", type=Path, default=DEFAULT_MODEL_CONFIG, help="Override config/models/<model>.yaml")
+    parser.add_argument("--data-path", type=Path, default=DEFAULT_DATA_PATH, help="Override experiment data_root")
+    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
+    parser.add_argument("--init-checkpoint", type=Path, default=DEFAULT_INIT_CHECKPOINT, help="Fine-tune from another checkpoint")
+    parser.add_argument("--run-dir", type=Path, default=DEFAULT_RUN_DIR)
+    parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     return parser.parse_args()
 
 
@@ -68,13 +81,15 @@ def _default_run_dir(experiment_id: str, model_name: str) -> Path:
 
 def main() -> None:
     args = parse_args()
+    print(
+        f"Using mode={args.mode}, model={args.model}, "
+        f"experiment={args.experiment}, model_config={args.model_config or 'auto'}",
+        flush=True,
+    )
     if args.mode == "compare":
         experiment = load_experiment(args.experiment)
         print(compare_experiment(ROOT / "runs", experiment["experiment_id"]))
         return
-
-    if args.model is None:
-        raise SystemExit("--model is required for train / evaluate / train_evaluate")
 
     experiment = load_experiment(args.experiment)
     model_cfg_path = args.model_config or _default_model_config(args.model)

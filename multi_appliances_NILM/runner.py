@@ -555,6 +555,14 @@ def _compute_scheduler_key(train_cfg: dict, monitor_key: str) -> str:
     return scheduler_aliases.get(scheduler_raw, scheduler_raw)
 
 
+def _evaluation_on_thresholds(experiment_cfg: dict, appliances: list[str]) -> float | np.ndarray:
+    """Return one global ON threshold or one threshold per appliance."""
+    evaluation = experiment_cfg.get("evaluation", {})
+    if per_app := evaluation.get("on_thresholds_watts"):
+        return np.asarray([float(per_app[app]) for app in appliances], dtype=np.float32)
+    return float(evaluation.get("on_threshold_watts", 15.0))
+
+
 def _save_latest_waveforms(
     *,
     monitor: LiveTrainingMonitor,
@@ -868,7 +876,7 @@ def evaluate_model(adapter, checkpoint: Path, run_dir: Path, split: str = "test"
     metrics = evaluate_bundle(
         bundle,
         sae_period=int(adapter.experiment["evaluation"].get("sae_period", 1200)),
-        on_threshold_watts=float(adapter.experiment["evaluation"].get("on_threshold_watts", 15.0)),
+        on_threshold_watts=_evaluation_on_thresholds(adapter.experiment, bundle.appliances),
     )
     metrics_path = run_dir / f"{split}_metrics.csv"
     metrics.to_csv(metrics_path, index=False)

@@ -30,7 +30,8 @@ class MATNILMAdapter(BaseNILMAdapter):
             raise ValueError(
                 f"MATNILM requires exactly {MATconv.NUM_APPLIANCES} appliances; "
                 f"got {len(appliances)}: {appliances}. "
-                "Set data.appliances in config/models/mat_nilm.yaml."
+                "Choose an experiment yaml that defines 4 appliances "
+                "(for example config/experiment_redd.yaml)."
             )
 
     def build_model(self, device: torch.device) -> torch.nn.Module:

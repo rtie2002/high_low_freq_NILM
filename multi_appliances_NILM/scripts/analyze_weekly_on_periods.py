@@ -1,0 +1,196 @@
+#!/usr/bin/env python
+"""Summarize weekly appliance ON activity from full-house CSV files.
+
+Use this to answer:
+    "Which week has the most ON activity across all appliances?"
+
+The script prefers binary *_on columns. If they are missing, it can rebuild
+ON/OFF labels from power columns using thresholds from an experiment yaml.
+"""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+
+import sys
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from adapters.config import load_experiment
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Rank weeks by total appliance ON activity.")
+    parser.add_argument(
+        "--csv",
+        type=Path,
+        nargs="+",
+        required=True,
+        help="One or more full-house CSV files, e.g. house1/house2/house5.",
+    )
+    parser.add_argument(
+        "--experiment",
+        type=Path,
+        default=ROOT / "config" / "experiment_ukdale.yaml",
+        help="Experiment yaml used for appliance names, state columns, and thresholds.",
+    )
+    parser.add_argument(
+        "--timestamp-column",
+        type=str,
+        default=None,
+        help="Timestamp column name. If omitted, auto-detect common names.",
+    )
+    parser.add_argument(
+        "--sample-seconds",
+        type=float,
+        default=6.0,
+        help="Used when no timestamp column exists; UK-DALE default is 6 s.",
+    )
+    parser.add_argument(
+        "--week-start",
+        type=str,
+        default="MON",
+        choices=["MON", "SUN"],
+        help="How to define weekly buckets.",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=10,
+        help="How many top weeks to print per file.",
+    )
+    return parser.parse_args()
+
+
+def _detect_timestamp_column(df: pd.DataFrame) -> str | None:
+    for name in ("timestamp", "datetime", "time", "DateTime", "date", "Date"):
+        if name in df.columns:
+            return name
+    return None
+
+
+def _period_alias(week_start: str) -> str:
+    return "W-MON" if week_start == "MON" else "W-SUN"
+
+
+def _on_episode_count(state: pd.Series) -> int:
+    state_i = state.astype("int8")
+    return int(((state_i == 1) & (state_i.shift(fill_value=0) == 0)).sum())
+
+
+def _load_state_frame(csv_path: Path, experiment_cfg: dict[str, Any]) -> tuple[pd.DataFrame, list[str]]:
+    csv_cfg = experiment_cfg["csv"]
+    app_cfg = csv_cfg["appliances"]
+    appliances = list(app_cfg.keys())
+
+    df = pd.read_csv(csv_path)
+    state_columns = {app: app_cfg[app]["state"] for app in appliances}
+    power_columns = {app: app_cfg[app]["power"] for app in appliances}
+    thresholds = experiment_cfg.get("evaluation", {}).get("on_thresholds_watts", {})
+    global_threshold = float(experiment_cfg.get("evaluation", {}).get("on_threshold_watts", 15.0))
+
+    state_df = pd.DataFrame(index=df.index)
+    for app in appliances:
+        state_col = state_columns[app]
+        power_col = power_columns[app]
+        if state_col in df.columns:
+            state_df[app] = df[state_col].fillna(0).astype(int)
+        elif power_col in df.columns:
+            thr = float(thresholds.get(app, global_threshold))
+            state_df[app] = (df[power_col].fillna(0) > thr).astype(int)
+        else:
+            raise ValueError(f"Missing both state and power columns for appliance '{app}' in {csv_path}")
+    return state_df, appliances
+
+
+def summarize_csv(
+    csv_path: Path,
+    experiment_cfg: dict[str, Any],
+    timestamp_column: str | None,
+    sample_seconds: float,
+    week_start: str,
+) -> pd.DataFrame:
+    full_df = pd.read_csv(csv_path)
+    ts_col = timestamp_column or _detect_timestamp_column(full_df)
+
+    state_df, appliances = _load_state_frame(csv_path, experiment_cfg)
+
+    if ts_col is not None:
+        timestamp = pd.to_datetime(full_df[ts_col], errors="coerce")
+        if timestamp.isna().all():
+            raise ValueError(f"Could not parse timestamp column '{ts_col}' in {csv_path}")
+        week_key = timestamp.dt.to_period(_period_alias(week_start))
+    else:
+        rows_per_week = int(round((7 * 24 * 3600) / sample_seconds))
+        week_key = pd.Series(range(len(full_df)), index=full_df.index) // rows_per_week
+
+    rows = []
+    grouped = state_df.groupby(week_key)
+    for week_id, group in grouped:
+        if len(group) == 0:
+            continue
+        on_samples = group.sum(axis=0)
+        on_hours = on_samples * sample_seconds / 3600.0
+        on_episodes = {app: _on_episode_count(group[app]) for app in appliances}
+
+        row = {
+            "week": str(week_id),
+            "rows": int(len(group)),
+            "total_on_hours_all_appliances": float(on_hours.sum()),
+            "total_on_episodes_all_appliances": int(sum(on_episodes.values())),
+        }
+        for app in appliances:
+            row[f"{app}_on_hours"] = float(on_hours[app])
+            row[f"{app}_on_episodes"] = int(on_episodes[app])
+        rows.append(row)
+
+    summary = pd.DataFrame(rows)
+    if summary.empty:
+        return summary
+    return summary.sort_values(
+        ["total_on_hours_all_appliances", "total_on_episodes_all_appliances"],
+        ascending=[False, False],
+    ).reset_index(drop=True)
+
+
+def main() -> None:
+    args = parse_args()
+    experiment_cfg = load_experiment(args.experiment)
+
+    for csv_path in args.csv:
+        print("=" * 100)
+        print(f"FILE: {csv_path}")
+        summary = summarize_csv(
+            csv_path=csv_path,
+            experiment_cfg=experiment_cfg,
+            timestamp_column=args.timestamp_column,
+            sample_seconds=args.sample_seconds,
+            week_start=args.week_start,
+        )
+        if summary.empty:
+            print("No weekly summary could be created.")
+            continue
+
+        print("\nTop weeks by total ON hours across all appliances:\n")
+        cols = [
+            "week",
+            "rows",
+            "total_on_hours_all_appliances",
+            "total_on_episodes_all_appliances",
+        ]
+        print(summary[cols].head(args.top_k).to_string(index=False))
+
+        out_path = csv_path.with_name(csv_path.stem + "_weekly_on_summary.csv")
+        summary.to_csv(out_path, index=False)
+        print(f"\nSaved full weekly summary to: {out_path}")
+
+
+if __name__ == "__main__":
+    main()

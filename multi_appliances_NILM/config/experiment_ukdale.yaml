@@ -1,4 +1,5 @@
-# UK-DALE (5 appliances)
+# UK-DALE (5 appliances) — normalization follows
+# NILM_model/baseline/transfer_learning_multi-appliance/Arguments.py
 experiment_id: ukdale_cross_house_5w
 seed: 2026
 data_root: datasets/ukdale
@@ -25,6 +26,11 @@ normalization:
     microwave:      {mean: 60,  std: 300}
 
 evaluation:
-  on_threshold_watts: 15.0
+  on_thresholds_watts:
+    kettle: 40
+    fridge: 50
+    dishwasher: 30
+    washingmachine: 30
+    microwave: 100
   sae_period: 1200
   power_unit: watts

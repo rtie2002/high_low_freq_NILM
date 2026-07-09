@@ -15,8 +15,8 @@ architecture:
   dropout: 0.1
 
 data:
-  # MATconv is fixed at 4 appliances; override order/subset here when needed.
-  appliances: [dishwasher, fridge, microwave, washingmachine]
+  # Appliance order now comes from the selected experiment yaml.
+  # MATconv itself is still fixed to 4 outputs, so the experiment must define 4 appliances.
   mains_column: aggregate
   state_threshold_watts: 15.0
 

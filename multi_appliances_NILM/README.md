@@ -2,6 +2,20 @@
 
 One training pipeline. Switch **dataset** and **model** via YAML — no code changes.
 
+## Run `main.py` directly
+
+If you want to click Run on `main.py` and use one default setup every time,
+edit the block near the top of `main.py`:
+
+```python
+DEFAULT_MODE = "train"
+DEFAULT_MODEL = "multinilm"
+DEFAULT_EXPERIMENT = ROOT / "config" / "experiment.yaml"
+DEFAULT_MODEL_CONFIG = None
+```
+
+Then running `main.py` with no command-line arguments will use those defaults automatically.
+
 ## How it works
 
 ```text

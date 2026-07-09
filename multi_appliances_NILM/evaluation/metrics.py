@@ -55,17 +55,18 @@ def _on_off_labels(
     bundle: PredictionBundle,
     y_true: np.ndarray,
     y_pred: np.ndarray,
-    on_threshold_watts: float,
+    on_threshold_watts: float | np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
+    threshold = np.asarray(on_threshold_watts, dtype=np.float32)
     if bundle.y_true_on is not None:
         z_true = bundle.y_true_on.astype(np.int32)
     else:
-        z_true = (y_true > on_threshold_watts).astype(np.int32)
+        z_true = (y_true > threshold).astype(np.int32)
 
     if bundle.y_pred_on is not None:
         z_pred = bundle.y_pred_on.astype(np.int32)
     else:
-        z_pred = (y_pred > on_threshold_watts).astype(np.int32)
+        z_pred = (y_pred > threshold).astype(np.int32)
     return z_true, z_pred
 
 
@@ -73,7 +74,7 @@ def evaluate_bundle(
     bundle: PredictionBundle,
     *,
     sae_period: int = 1200,
-    on_threshold_watts: float = 15.0,
+    on_threshold_watts: float | np.ndarray = 15.0,
 ) -> pd.DataFrame:
     """Per-appliance MAE/SAE/F1 plus one overall summary row."""
     y_true = bundle.y_true_watts

@@ -25,6 +25,12 @@ normalization:
     microwave:      {mean: 500, std: 800}
 
 evaluation:
-  on_threshold_watts: 15.0
+  # Baseline per-appliance ON thresholds (Arguments.py → refit_params_appliance)
+  on_thresholds_watts:
+    kettle: 20
+    fridge: 19
+    dishwasher: 20
+    washingmachine: 20
+    microwave: 500
   sae_period: 1200
   power_unit: watts
