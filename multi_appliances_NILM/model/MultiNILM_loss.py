@@ -1,13 +1,11 @@
 """MultiNILM loss.
 
-Author-style implementation:
+Paper-style multitask loss (equation 16):
 
-    total_loss = power_loss + lambda_state * state_loss
+    L = sum_{i=1}^{n} ( L_power^i + lambda * L_state^i )
 
-where:
-
-    power_loss = MSE(power_pred, power_true)
-    state_loss = BCE(state_pred, state_true)
+where each appliance i has its own power MSE and state BCE, computed over
+batch and time, then summed across appliances.
 
 MultiNILM outputs raw state logits, so we use BCEWithLogitsLoss instead of
 BCELoss. This is the same BCE idea, but numerically safer.
@@ -19,6 +17,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 @dataclass
@@ -27,30 +26,23 @@ class MultiNILMLossOutput:
     loss_power: torch.Tensor
     loss_state: torch.Tensor
     mae: torch.Tensor
+    loss_power_per_appliance: torch.Tensor
+    loss_state_per_appliance: torch.Tensor
 
 
 class MultiNILMLoss(nn.Module):
-    """MSE power loss + BCE ON/OFF loss.
+    """Per-appliance MSE power loss + per-appliance BCE ON/OFF loss.
 
     Formula:
 
-        L = L_power + lambda_state * L_state
+        L = sum_i L_power^i + lambda_state * sum_i L_state^i
 
-        L_power = mean((y_true - y_pred)^2)
+        L_power^i = mean_{batch,time} (y_true^i - y_pred^i)^2
 
-        L_state = -mean(
-            o_true * log(o_pred)
-            + (1 - o_true) * log(1 - o_pred)
-        )
+        L_state^i = mean_{batch,time} BCEWithLogits(o_pred^i, o_true^i)
 
-    Symbol meaning:
-
-        y_true / power_true   = true appliance power
-        y_pred / power_pred   = predicted appliance power
-        o_true / state_true   = true ON/OFF state, 0 or 1
-        o_pred                = predicted ON probability
-        state_logits          = raw model output before sigmoid
-        lambda_state          = weight for ON/OFF loss
+    This matches the paper structure where every appliance contributes its own
+    regression and classification terms before the final sum.
     """
 
     def __init__(
@@ -65,18 +57,39 @@ class MultiNILMLoss(nn.Module):
 
         if pos_weight is not None:
             pos_weight = torch.as_tensor(pos_weight, dtype=torch.float32)
+            self.register_buffer("pos_weight", pos_weight)
+        else:
+            self.pos_weight = None
 
-        # L_power = mean((power_true - power_pred)^2)
-        self.mse = nn.MSELoss()
+    def _per_appliance_power_loss(
+        self,
+        power_pred: torch.Tensor,
+        power_true: torch.Tensor,
+    ) -> torch.Tensor:
+        # Shape: (batch, time, appliances) -> one MSE per appliance.
+        return torch.mean((power_pred - power_true) ** 2, dim=(0, 1))
 
-        # L_state = BCE(state prediction, true ON/OFF state)
-        #
-        # The paper formula writes BCE using probability o_pred:
-        #   o_pred = sigmoid(state_logits)
-        #
-        # Instead of doing sigmoid manually and then BCELoss, PyTorch recommends
-        # BCEWithLogitsLoss. It combines sigmoid + BCE in one stable operation.
-        self.bce = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    def _per_appliance_state_loss(
+        self,
+        state_logits: torch.Tensor,
+        state_true: torch.Tensor,
+    ) -> torch.Tensor:
+        losses = []
+        n_apps = state_logits.shape[-1]
+        for app_i in range(n_apps):
+            logits_i = state_logits[..., app_i]
+            target_i = state_true[..., app_i]
+            weight_i = None
+            if self.pos_weight is not None:
+                weight_i = self.pos_weight[app_i] if self.pos_weight.ndim > 0 else self.pos_weight
+            losses.append(
+                F.binary_cross_entropy_with_logits(
+                    logits_i,
+                    target_i,
+                    pos_weight=weight_i,
+                )
+            )
+        return torch.stack(losses)
 
     def forward(
         self,
@@ -90,41 +103,26 @@ class MultiNILMLoss(nn.Module):
         power_true = power_true.float()
         state_true = state_true.float()
 
-        # Power regression term:
-        #   L_power = mean((y_true - y_pred)^2)
-        #
-        # Shape of power_pred and power_true:
-        #   (batch, output_length, num_appliances)
-        #
-        # nn.MSELoss() averages over batch, time, and appliances.
-        loss_power = self.mse(power_pred, power_true)
+        loss_power_per_app = self._per_appliance_power_loss(power_pred, power_true)
+        loss_state_per_app = self._per_appliance_state_loss(state_logits, state_true)
 
-        # State classification term:
-        #   L_state = BCE(o_pred, o_true)
-        #
-        # state_logits are raw model outputs:
-        #   state probability = sigmoid(state_logits)
-        #
-        # state_true contains binary labels:
-        #   1 = appliance ON
-        #   0 = appliance OFF
-        loss_state = self.bce(state_logits, state_true)
-
-        # Final multitask loss:
-        #   L = L_power + lambda_state * L_state
+        # Paper equation (16a): sum appliance losses, not one global average.
+        loss_power = loss_power_per_app.sum()
+        loss_state = loss_state_per_app.sum()
         loss = loss_power + self.lambda_state * loss_state
 
-        # MAE is only for logging/monitoring.
-        # It is not used to update the model in this loss.
-        #
-        # If targets are normalized by a scale, power_scale converts MAE back
-        # toward real power units for easier interpretation.
         scale = self.power_scale.to(device=power_pred.device, dtype=power_pred.dtype)
-        mae = torch.mean(torch.abs((power_pred - power_true) * scale))
+        if scale.ndim > 0:
+            mae_per_app = torch.mean(torch.abs(power_pred - power_true), dim=(0, 1)) * scale
+            mae = mae_per_app.mean()
+        else:
+            mae = torch.mean(torch.abs((power_pred - power_true) * scale))
 
         return MultiNILMLossOutput(
             loss=loss,
             loss_power=loss_power,
             loss_state=loss_state,
             mae=mae,
+            loss_power_per_appliance=loss_power_per_app.detach(),
+            loss_state_per_appliance=loss_state_per_app.detach(),
         )

@@ -108,10 +108,8 @@ class MultiNILMAdapter(BaseNILMAdapter):
         #   sigmoid is NOT applied before BCEWithLogitsLoss.
         power_pred, state_logits = model(x)
 
-        # Compute:
-        #   loss_power = MSE(power_pred, y)
-        #   loss_state = BCEWithLogits(state_logits, z)
-        #   loss = loss_power + lambda_state * loss_state
+        # Compute paper-style multitask loss:
+        #   L = sum_i ( L_power^i + lambda_state * L_state^i )
         out = loss_fn(power_pred, state_logits, y, z)
 
         # Convert logits to probabilities only for metric/F1 logging.
@@ -120,6 +118,11 @@ class MultiNILMAdapter(BaseNILMAdapter):
 
         # Binary ON/OFF prediction using threshold 0.5.
         pred_state = (state_prob >= 0.5).long()
+
+        app_logs = {}
+        for app_i, app in enumerate(self.cfg["appliances"]):
+            app_logs[f"loss_power_{app}"] = float(out.loss_power_per_appliance[app_i].detach())
+            app_logs[f"loss_state_{app}"] = float(out.loss_state_per_appliance[app_i].detach())
 
         # StepOutput is what runner.py expects.
         # runner.py uses:
@@ -133,6 +136,7 @@ class MultiNILMAdapter(BaseNILMAdapter):
                 "loss_power": float(out.loss_power.detach()),
                 "loss_state": float(out.loss_state.detach()),
                 "mae": float(out.mae.detach()),
+                **app_logs,
             },
             # Move state tensors to CPU because runner.py collects them across batches.
             aux={
