@@ -20,7 +20,7 @@ architecture:
   dropout: 0.1
 
 loss:
-  lambda_state: 0.1
+  lambda_state: 1
   pos_weight: null
 
 training:
