@@ -198,7 +198,7 @@ def _best_blocks(summary: pd.DataFrame, appliances: list[str], block_weeks: list
         chrono["_order"] = range(len(chrono))
     chrono = chrono.sort_values("_order").reset_index(drop=True)
 
-    numeric_cols = [c for c in chrono.columns if c != "week"]
+    numeric_cols = [c for c in chrono.columns if c not in ("week", "_order")]
     out: dict[int, pd.DataFrame] = {}
     for block_len in block_weeks:
         if block_len <= 0 or len(chrono) < block_len:
@@ -220,6 +220,25 @@ def _best_blocks(summary: pd.DataFrame, appliances: list[str], block_weeks: list
         )
         out[block_len] = block_df.reset_index(drop=True)
     return out
+
+
+def _compact_app_breakdown(summary: pd.DataFrame, appliances: list[str], top_k: int) -> pd.DataFrame:
+    rows = []
+    for _, row in summary.head(top_k).iterrows():
+        app_parts = []
+        for app in appliances:
+            hours = float(row[f"{app}_on_hours"])
+            events = int(row[f"{app}_on_episodes"])
+            app_parts.append(f"{app}:{hours:.1f}h/{events}e")
+        rows.append(
+            {
+                "week": row["week"],
+                "total_h": round(float(row["total_on_hours_all_appliances"]), 2),
+                "total_e": int(row["total_on_episodes_all_appliances"]),
+                "per_appliance": " | ".join(app_parts),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def main() -> None:
@@ -260,8 +279,8 @@ def main() -> None:
         ]
         print(summary[cols].head(args.top_k).to_string(index=False))
 
-        print("\nPer-appliance breakdown for top weeks (_h = ON hours, _e = ON episodes):\n")
-        print(_top_week_appliance_table(summary, appliances, args.top_k).to_string(index=False))
+        print("\nPer-appliance breakdown for top weeks:\n")
+        print(_compact_app_breakdown(summary, appliances, args.top_k).to_string(index=False))
 
         blocks = _best_blocks(summary, appliances, args.block_weeks)
         for block_len, block_df in blocks.items():
