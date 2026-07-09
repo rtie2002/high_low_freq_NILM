@@ -19,7 +19,6 @@ data:
   # MATconv itself is still fixed to 4 outputs, so the experiment must define 4 appliances.
   mains_column: aggregate
   state_label_source: threshold
-  state_threshold_watts: 15.0
 
 training:
   epochs: 50

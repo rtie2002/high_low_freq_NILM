@@ -17,7 +17,9 @@ def _resolve_state_source(
         raise ValueError("state_label_source must be one of: auto, csv, threshold")
     threshold = None if on_threshold_watts is None else np.asarray(on_threshold_watts, dtype=np.float32)
     if source == "threshold" and threshold is None:
-        raise ValueError("threshold state_label_source requires on_threshold_watts")
+        raise ValueError(
+            "threshold state_label_source requires experiment evaluation.on_thresholds_watts"
+        )
     return source, threshold
 
 
@@ -73,23 +75,21 @@ def _on_off_labels(
 ) -> tuple[np.ndarray, np.ndarray]:
     source, threshold = _resolve_state_source(state_label_source, on_threshold_watts)
     if source == "threshold":
+        # True ON/OFF from per-appliance experiment thresholds.
+        # Predicted ON/OFF from the model state head.
         z_true = (y_true > threshold).astype(np.int32)
-        z_pred = (y_pred > threshold).astype(np.int32)
+        if bundle.y_pred_on is None:
+            raise ValueError("threshold evaluation requires predicted ON/OFF states in the bundle")
+        z_pred = bundle.y_pred_on.astype(np.int32)
         return z_true, z_pred
 
-    if bundle.y_true_on is not None:
-        z_true = bundle.y_true_on.astype(np.int32)
-    else:
-        if threshold is None:
-            raise ValueError("CSV/auto state evaluation requires stored ON/OFF labels or a threshold fallback")
-        z_true = (y_true > threshold).astype(np.int32)
+    if bundle.y_true_on is None:
+        raise ValueError("CSV evaluation requires true ON/OFF labels in the bundle")
+    z_true = bundle.y_true_on.astype(np.int32)
 
-    if bundle.y_pred_on is not None:
-        z_pred = bundle.y_pred_on.astype(np.int32)
-    else:
-        if threshold is None:
-            raise ValueError("CSV/auto state evaluation requires stored predicted ON/OFF labels or a threshold fallback")
-        z_pred = (y_pred > threshold).astype(np.int32)
+    if bundle.y_pred_on is None:
+        raise ValueError("CSV evaluation requires predicted ON/OFF labels in the bundle")
+    z_pred = bundle.y_pred_on.astype(np.int32)
     return z_true, z_pred
 
 
@@ -97,7 +97,7 @@ def evaluate_bundle(
     bundle: PredictionBundle,
     *,
     sae_period: int = 1200,
-    on_threshold_watts: float | np.ndarray | None = 15.0,
+    on_threshold_watts: float | np.ndarray | None = None,
     state_label_source: str = "auto",
 ) -> pd.DataFrame:
     """Per-appliance MAE/SAE/F1 plus one overall summary row."""

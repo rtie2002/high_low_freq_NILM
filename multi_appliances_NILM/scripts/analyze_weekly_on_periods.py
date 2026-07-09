@@ -107,7 +107,10 @@ def _load_state_frame(csv_path: Path, experiment_cfg: dict[str, Any]) -> tuple[p
     state_columns = {app: app_cfg[app]["state"] for app in appliances}
     power_columns = {app: app_cfg[app]["power"] for app in appliances}
     thresholds = experiment_cfg.get("evaluation", {}).get("on_thresholds_watts", {})
-    global_threshold = float(experiment_cfg.get("evaluation", {}).get("on_threshold_watts", 15.0))
+    if not thresholds:
+        raise ValueError(
+            f"{csv_path}: experiment.evaluation.on_thresholds_watts is required"
+        )
 
     state_df = pd.DataFrame(index=df.index)
     for app in appliances:
@@ -116,7 +119,11 @@ def _load_state_frame(csv_path: Path, experiment_cfg: dict[str, Any]) -> tuple[p
         if state_col in df.columns:
             state_df[app] = df[state_col].fillna(0).astype(int)
         elif power_col in df.columns:
-            thr = float(thresholds.get(app, global_threshold))
+            if app not in thresholds:
+                raise ValueError(
+                    f"Missing on_thresholds_watts for appliance '{app}' in experiment yaml"
+                )
+            thr = float(thresholds[app])
             state_df[app] = (df[power_col].fillna(0) > thr).astype(int)
         else:
             raise ValueError(f"Missing both state and power columns for appliance '{app}' in {csv_path}")

@@ -43,14 +43,15 @@ import torch
 from tqdm import tqdm
 
 from adapters.common import StepOutput
+from adapters.config import appliance_list
 from adapters.dataloader import (
     NILMDataLoader,
     _resolve_input_length,
     _target_mode,
     get_normalization_cfg,
     get_state_label_source,
-    get_state_threshold,
     resolve_mains_column,
+    resolve_state_thresholds_watts,
 )
 from evaluation.live_monitor import LiveTrainingMonitor
 from evaluation.metrics import evaluate_bundle
@@ -88,14 +89,12 @@ def _data_preprocess_note(
         lines.append(f"preprocess: divide power/mains by {scale}")
     else:
         lines.append("preprocess: none (use CSV values as loaded)")
-    if thr := data_cfg.get("state_threshold_watts"):
-        source = str(data_cfg.get("state_label_source", "auto")).lower()
-        if source == "threshold":
-            lines.append(f"state labels: rebuilt from power > {thr} W")
-        elif source == "csv":
-            lines.append(f"state labels: CSV *_on columns (threshold {thr} W ignored)")
-        else:
-            lines.append(f"state labels: auto (threshold {thr} W if requested by model)")
+    if str(data_cfg.get("state_label_source", "auto")).lower() == "threshold":
+        per_app = resolve_state_thresholds_watts(experiment_cfg, appliance_list(experiment_cfg, model_cfg))
+        summary = ", ".join(f"{app}>{int(val)}W" for app, val in zip(appliance_list(experiment_cfg, model_cfg), per_app))
+        lines.append(f"state labels: per-appliance thresholds from experiment yaml ({summary})")
+    elif str(data_cfg.get("state_label_source", "auto")).lower() == "csv":
+        lines.append("state labels: dataset CSV *_on columns")
     return lines
 
 
@@ -214,17 +213,18 @@ def _epoch_state_arrays(adapter, aux_batches: dict[str, list[np.ndarray]]) -> tu
     if source == "threshold":
         threshold = _state_eval_thresholds(adapter.model_cfg, adapter.experiment, adapter.cfg["appliances"])
         if threshold is None:
-            raise ValueError("threshold state_label_source requires data.state_threshold_watts")
+            raise ValueError("threshold state_label_source requires ON thresholds")
         loader = adapter._data_loader()
-        y_pred = np.concatenate(aux_batches["pred_power"], axis=0)
         y_true = np.concatenate(aux_batches["true_power"], axis=0)
-        if y_pred.ndim > 2:
-            y_pred = y_pred.reshape(-1, y_pred.shape[-1])
+        if y_true.ndim > 2:
             y_true = y_true.reshape(-1, y_true.shape[-1])
-        y_pred = loader.denorm_to_watts(y_pred)
         y_true = loader.denorm_to_watts(y_true)
         threshold = np.asarray(threshold, dtype=np.float32)
-        return (y_true > threshold).astype(np.int32), (y_pred > threshold).astype(np.int32)
+        z_true = (y_true > threshold).astype(np.int32)
+        z_pred = np.concatenate(aux_batches["pred_state"], axis=0)
+        if z_pred.ndim > 2:
+            z_pred = z_pred.reshape(-1, z_pred.shape[-1])
+        return z_true, z_pred.astype(np.int32)
 
     z_pred = np.concatenate(aux_batches["pred_state"], axis=0)
     z_true = np.concatenate(aux_batches["true_state"], axis=0)
@@ -590,23 +590,11 @@ def _compute_scheduler_key(train_cfg: dict, monitor_key: str) -> str:
     return scheduler_aliases.get(scheduler_raw, scheduler_raw)
 
 
-def _evaluation_on_thresholds(experiment_cfg: dict, appliances: list[str]) -> float | np.ndarray:
-    """Return one global ON threshold or one threshold per appliance."""
-    evaluation = experiment_cfg.get("evaluation", {})
-    if per_app := evaluation.get("on_thresholds_watts"):
-        return np.asarray([float(per_app[app]) for app in appliances], dtype=np.float32)
-    return float(evaluation.get("on_threshold_watts", 15.0))
-
-
-def _state_eval_thresholds(model_cfg: dict, experiment_cfg: dict, appliances: list[str]) -> float | np.ndarray | None:
-    """Choose evaluation thresholds from the model yaml when threshold mode is enabled."""
-    source = get_state_label_source(model_cfg)
-    if source != "threshold":
+def _state_eval_thresholds(model_cfg: dict, experiment_cfg: dict, appliances: list[str]) -> np.ndarray | None:
+    """Per-appliance ON thresholds from experiment yaml when threshold mode is enabled."""
+    if get_state_label_source(model_cfg) != "threshold":
         return None
-    thr = get_state_threshold(model_cfg)
-    if thr is not None:
-        return float(thr)
-    return _evaluation_on_thresholds(experiment_cfg, appliances)
+    return resolve_state_thresholds_watts(experiment_cfg, appliances)
 
 
 def _waveform_dataset_on_labels(adapter, split: str, n_points: int) -> np.ndarray:

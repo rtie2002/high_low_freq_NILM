@@ -27,9 +27,24 @@ _SPLIT_FILE_KEYS = {
 }
 
 
-def get_state_threshold(model_cfg: dict[str, Any]) -> float | None:
-    val = model_cfg.get("data", {}).get("state_threshold_watts")
-    return float(val) if val is not None else None
+def resolve_state_thresholds_watts(
+    experiment_cfg: dict[str, Any],
+    appliances: list[str],
+) -> np.ndarray:
+    """Per-appliance ON thresholds from the selected experiment yaml only."""
+    per_app = experiment_cfg.get("evaluation", {}).get("on_thresholds_watts")
+    if not isinstance(per_app, dict) or not per_app:
+        raise ValueError(
+            "experiment.evaluation.on_thresholds_watts must define one threshold "
+            "per appliance for the selected dataset"
+        )
+    missing = [app for app in appliances if app not in per_app]
+    if missing:
+        raise ValueError(
+            "experiment.evaluation.on_thresholds_watts missing appliances: "
+            + ", ".join(missing)
+        )
+    return np.asarray([float(per_app[app]) for app in appliances], dtype=np.float32)
 
 
 def get_state_label_source(model_cfg: dict[str, Any]) -> str:
@@ -178,7 +193,7 @@ class WindowDataset(Dataset):
         stride: int,
         target_mode: TargetMode = "output_window",
         normalization: NormalizationStats | None = None,
-        state_threshold_watts: float | None = None,
+        state_threshold_watts: float | np.ndarray | None = None,
         state_label_source: str = "auto",
     ):
         norm = normalization or NormalizationStats()
@@ -186,13 +201,15 @@ class WindowDataset(Dataset):
         self.targets = np.ascontiguousarray(targets, dtype=np.float32)
         self.states = np.ascontiguousarray(states, dtype=np.int64)
 
-        use_threshold_labels = state_label_source == "threshold" or (
-            state_label_source == "auto" and state_threshold_watts is not None
-        )
+        use_threshold_labels = state_label_source == "threshold"
         if use_threshold_labels:
             if state_threshold_watts is None:
-                raise ValueError("state_label_source='threshold' requires data.state_threshold_watts")
-            self.states = (self.targets > float(state_threshold_watts)).astype(np.int64)
+                raise ValueError(
+                    "state_label_source='threshold' requires experiment "
+                    "evaluation.on_thresholds_watts"
+                )
+            threshold = np.asarray(state_threshold_watts, dtype=np.float32)
+            self.states = (self.targets > threshold).astype(np.int64)
 
         self.targets = np.ascontiguousarray(norm.normalize_targets(self.targets), dtype=np.float32)
 
@@ -279,8 +296,12 @@ class NILMDataLoader:
         self.data_root = Path(data_root)
         self.csv_cfg = experiment_cfg.get("csv", {})
         self.appliances = appliance_list(experiment_cfg, model_cfg)
-        self.state_threshold_watts = get_state_threshold(model_cfg)
         self.state_label_source = get_state_label_source(model_cfg)
+        self.state_threshold_watts = (
+            resolve_state_thresholds_watts(experiment_cfg, self.appliances)
+            if self.state_label_source == "threshold"
+            else None
+        )
         self.norm = NormalizationStats.from_config(experiment_cfg, model_cfg, self.appliances)
         self.loss_scale = self.norm.loss_scale
         self._splits: dict[SplitName, tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None
