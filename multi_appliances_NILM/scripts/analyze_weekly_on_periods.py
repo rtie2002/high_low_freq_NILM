@@ -66,11 +66,18 @@ def parse_args() -> argparse.Namespace:
         default=10,
         help="How many top weeks to print per file.",
     )
+    parser.add_argument(
+        "--block-weeks",
+        type=int,
+        nargs="*",
+        default=[2, 4, 8],
+        help="Continuous block lengths (in weeks) to rank.",
+    )
     return parser.parse_args()
 
 
 def _detect_timestamp_column(df: pd.DataFrame) -> str | None:
-    for name in ("timestamp", "datetime", "time", "DateTime", "date", "Date"):
+    for name in ("readable_time", "timestamp", "datetime", "time", "DateTime", "date", "Date"):
         if name in df.columns:
             return name
     return None
@@ -83,6 +90,12 @@ def _period_alias(week_start: str) -> str:
 def _on_episode_count(state: pd.Series) -> int:
     state_i = state.astype("int8")
     return int(((state_i == 1) & (state_i.shift(fill_value=0) == 0)).sum())
+
+
+def _house_label(full_df: pd.DataFrame, csv_path: Path) -> str:
+    if "house" in full_df.columns and not full_df["house"].empty:
+        return f"house {full_df['house'].iloc[0]}"
+    return csv_path.stem
 
 
 def _load_state_frame(csv_path: Path, experiment_cfg: dict[str, Any]) -> tuple[pd.DataFrame, list[str]]:
@@ -160,24 +173,84 @@ def summarize_csv(
     ).reset_index(drop=True)
 
 
+def _top_week_appliance_table(summary: pd.DataFrame, appliances: list[str], top_k: int) -> pd.DataFrame:
+    rows = []
+    for _, row in summary.head(top_k).iterrows():
+        out: dict[str, object] = {
+            "week": row["week"],
+            "total_hours": round(float(row["total_on_hours_all_appliances"]), 2),
+            "total_events": int(row["total_on_episodes_all_appliances"]),
+        }
+        for app in appliances:
+            out[f"{app}_h"] = round(float(row[f"{app}_on_hours"]), 2)
+            out[f"{app}_e"] = int(row[f"{app}_on_episodes"])
+        rows.append(out)
+    return pd.DataFrame(rows)
+
+
+def _best_blocks(summary: pd.DataFrame, appliances: list[str], block_weeks: list[int]) -> dict[int, pd.DataFrame]:
+    if summary.empty:
+        return {}
+
+    chrono = summary.copy()
+    chrono["_order"] = pd.to_datetime(chrono["week"].str.split("/").str[0], errors="coerce")
+    if chrono["_order"].isna().any():
+        chrono["_order"] = range(len(chrono))
+    chrono = chrono.sort_values("_order").reset_index(drop=True)
+
+    numeric_cols = [c for c in chrono.columns if c != "week"]
+    out: dict[int, pd.DataFrame] = {}
+    for block_len in block_weeks:
+        if block_len <= 0 or len(chrono) < block_len:
+            continue
+        rows = []
+        for start in range(0, len(chrono) - block_len + 1):
+            block = chrono.iloc[start : start + block_len]
+            row: dict[str, object] = {
+                "start_week": block.iloc[0]["week"],
+                "end_week": block.iloc[-1]["week"],
+                "weeks": int(block_len),
+            }
+            for col in numeric_cols:
+                row[col] = float(block[col].sum()) if "hours" in col else int(block[col].sum())
+            rows.append(row)
+        block_df = pd.DataFrame(rows).sort_values(
+            ["total_on_hours_all_appliances", "total_on_episodes_all_appliances"],
+            ascending=[False, False],
+        )
+        out[block_len] = block_df.reset_index(drop=True)
+    return out
+
+
 def main() -> None:
     args = parse_args()
     experiment_cfg = load_experiment(args.experiment)
+    appliances = list(experiment_cfg["csv"]["appliances"].keys())
 
     for csv_path in args.csv:
         print("=" * 100)
         print(f"FILE: {csv_path}")
-        summary = summarize_csv(
-            csv_path=csv_path,
-            experiment_cfg=experiment_cfg,
-            timestamp_column=args.timestamp_column,
-            sample_seconds=args.sample_seconds,
-            week_start=args.week_start,
-        )
+        if not csv_path.exists():
+            print(f"Skipping missing file: {csv_path}")
+            continue
+        try:
+            full_df = pd.read_csv(csv_path, nrows=5)
+            house_label = _house_label(full_df, csv_path)
+            summary = summarize_csv(
+                csv_path=csv_path,
+                experiment_cfg=experiment_cfg,
+                timestamp_column=args.timestamp_column,
+                sample_seconds=args.sample_seconds,
+                week_start=args.week_start,
+            )
+        except Exception as exc:
+            print(f"Failed to summarize {csv_path}: {exc}")
+            continue
         if summary.empty:
             print("No weekly summary could be created.")
             continue
 
+        print(f"\nDetected: {house_label}")
         print("\nTop weeks by total ON hours across all appliances:\n")
         cols = [
             "week",
@@ -186,6 +259,22 @@ def main() -> None:
             "total_on_episodes_all_appliances",
         ]
         print(summary[cols].head(args.top_k).to_string(index=False))
+
+        print("\nPer-appliance breakdown for top weeks (_h = ON hours, _e = ON episodes):\n")
+        print(_top_week_appliance_table(summary, appliances, args.top_k).to_string(index=False))
+
+        blocks = _best_blocks(summary, appliances, args.block_weeks)
+        for block_len, block_df in blocks.items():
+            if block_df.empty:
+                continue
+            print(f"\nBest continuous {block_len}-week blocks:\n")
+            display_cols = [
+                "start_week",
+                "end_week",
+                "total_on_hours_all_appliances",
+                "total_on_episodes_all_appliances",
+            ]
+            print(block_df[display_cols].head(min(5, args.top_k)).to_string(index=False))
 
         out_path = csv_path.with_name(csv_path.stem + "_weekly_on_summary.csv")
         summary.to_csv(out_path, index=False)
