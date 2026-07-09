@@ -52,7 +52,19 @@ class LiveTrainingMonitor:
         return str(self.plot_cfg.get("plot_mode", "live")).lower()
 
     def plot_interval(self) -> int:
-        return max(1, int(self.plot_cfg.get("plot_interval", 1)))
+        if "plot_interval" in self.plot_cfg:
+            return max(1, int(self.plot_cfg["plot_interval"]))
+        return max(1, int(self.plot_cfg.get("every_n_epochs", 1)))
+
+    def should_plot(self, epoch_no: int) -> bool:
+        if self.plot_cfg.get("enabled") is False:
+            return False
+        mode = self.plot_mode()
+        if mode == "end":
+            return False
+        if mode == "interval":
+            return epoch_no % self.plot_interval() == 0
+        return True
 
     def plot_on_periods(self) -> int:
         return int(self.plot_cfg.get("plot_on_periods", 5))
@@ -88,14 +100,6 @@ class LiveTrainingMonitor:
     def plot_max_batches(self) -> int | None:
         value = self.plot_cfg.get("plot_max_batches")
         return None if value is None else int(value)
-
-    def should_plot(self, epoch_no: int) -> bool:
-        mode = self.plot_mode()
-        if mode == "end":
-            return False
-        if mode == "interval":
-            return epoch_no % self.plot_interval() == 0
-        return True
 
     def append_epoch(self, *, epoch: int, train_logs: dict[str, float], val_logs: dict[str, float]) -> None:
         history_row = {

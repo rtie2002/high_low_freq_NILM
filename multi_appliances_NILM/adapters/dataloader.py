@@ -1,12 +1,11 @@
-"""
-Shared NILM dataloader — load pre-split CSVs, apply model-specific windows.
+"""Shared NILM data pipeline.
 
-Experiment yaml: data paths and column mapping (you split the data yourself).
-Model yaml: windowing (input/output length, alignment, stride).
+Flow: experiment config -> load CSV arrays -> normalize -> sliding windows -> tensors.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -15,14 +14,111 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
+from adapters.config import appliance_list
+
 SplitName = Literal["train", "validation", "test"]
 OutputAlignment = Literal["end", "center"]
+TargetMode = Literal["output_window", "full_input"]
 
 _SPLIT_FILE_KEYS = {
     "train": "train_file",
     "validation": "validation_file",
     "test": "test_file",
 }
+
+
+def get_state_threshold(model_cfg: dict[str, Any]) -> float | None:
+    val = model_cfg.get("data", {}).get("state_threshold_watts")
+    return float(val) if val is not None else None
+
+
+def get_power_scale(model_cfg: dict[str, Any]) -> float:
+    """Legacy divide-by-scale fallback when experiment has no normalization block."""
+    return float(model_cfg.get("data", {}).get("power_scale", 1.0))
+
+
+def get_normalization_cfg(experiment_cfg: dict[str, Any]) -> dict[str, Any] | None:
+    norm = experiment_cfg.get("normalization")
+    return norm if isinstance(norm, dict) else None
+
+
+@dataclass
+class NormalizationStats:
+    """Single place for z-score (or legacy scale) normalize / denormalize."""
+
+    input_mean: float | None = None
+    input_std: float | None = None
+    target_mean: np.ndarray | None = None
+    target_std: np.ndarray | None = None
+    legacy_scale: float = 1.0
+
+    @classmethod
+    def from_config(
+        cls,
+        experiment_cfg: dict[str, Any],
+        model_cfg: dict[str, Any],
+        appliances: list[str],
+    ) -> NormalizationStats:
+        legacy_scale = get_power_scale(model_cfg)
+        norm = get_normalization_cfg(experiment_cfg)
+        if not norm:
+            return cls(legacy_scale=legacy_scale)
+
+        aggregate = norm.get("aggregate", {})
+        agg_mean, agg_std = aggregate.get("mean"), aggregate.get("std")
+        input_mean = float(agg_mean) if agg_mean is not None else None
+        input_std = float(agg_std) if agg_std is not None else None
+
+        app_cfg = norm.get("appliances", {})
+        means, stds = [], []
+        for app in appliances:
+            cfg = app_cfg.get(app)
+            if not cfg or "mean" not in cfg or "std" not in cfg:
+                raise ValueError(f"Normalization stats missing for appliance '{app}'")
+            means.append(float(cfg["mean"]))
+            stds.append(float(cfg["std"]))
+
+        return cls(
+            input_mean=input_mean,
+            input_std=input_std,
+            target_mean=np.asarray(means, dtype=np.float32),
+            target_std=np.asarray(stds, dtype=np.float32),
+            legacy_scale=legacy_scale,
+        )
+
+    @property
+    def loss_scale(self) -> float | np.ndarray:
+        """Scale for converting normalized MAE back toward watts."""
+        if self.target_std is not None:
+            return self.target_std
+        return self.legacy_scale
+
+    def normalize_inputs(self, x: np.ndarray) -> np.ndarray:
+        if self.input_mean is not None and self.input_std is not None:
+            return (x - self.input_mean) / self.input_std
+        if self.legacy_scale != 1.0:
+            return x / self.legacy_scale
+        return x
+
+    def normalize_targets(self, y: np.ndarray) -> np.ndarray:
+        if self.target_mean is not None and self.target_std is not None:
+            return (y - self.target_mean) / self.target_std
+        if self.legacy_scale != 1.0:
+            return y / self.legacy_scale
+        return y
+
+    def denorm(self, y: np.ndarray) -> np.ndarray:
+        if self.target_mean is not None and self.target_std is not None:
+            return np.maximum((y * self.target_std) + self.target_mean, 0.0)
+        if self.legacy_scale != 1.0:
+            return np.maximum(y * self.legacy_scale, 0.0)
+        return y
+
+
+def _split_key(split: str) -> SplitName:
+    if split in ("val", "validation"):
+        return "validation"
+    return split  # type: ignore[return-value]
 
 
 def _resolve_input_length(windowing: dict[str, Any]) -> int:
@@ -32,21 +128,33 @@ def _resolve_input_length(windowing: dict[str, Any]) -> int:
     return seq_len
 
 
-def _output_slice(start: int, seq_len: int, windowing: dict[str, Any]) -> slice:
+def _output_row_offset(windowing: dict[str, Any], seq_len: int) -> int:
     out_len = int(windowing.get("output_window_length", 1))
     alignment: OutputAlignment = windowing.get("output_alignment", "end")
+    if alignment == "center":
+        return (seq_len - out_len) // 2
     if alignment == "end":
-        out_end = start + seq_len
-        out_start = out_end - out_len
-    elif alignment == "center":
-        out_start = start + (seq_len - out_len) // 2
-        out_end = out_start + out_len
-    else:
-        raise ValueError(f"Unsupported output_alignment: {alignment}")
-    return slice(out_start, out_end)
+        return seq_len - out_len
+    raise ValueError(f"Unsupported output_alignment: {alignment}")
 
 
-TargetMode = Literal["output_window", "full_input"]
+def _output_slice(start: int, seq_len: int, windowing: dict[str, Any]) -> slice:
+    out_len = int(windowing.get("output_window_length", 1))
+    offset = _output_row_offset(windowing, seq_len)
+    return slice(start + offset, start + offset + out_len)
+
+
+def _count_windows(n_timesteps: int, windowing: dict[str, Any], stride: int) -> int:
+    seq_len = _resolve_input_length(windowing)
+    if n_timesteps < seq_len:
+        return 0
+    return len(np.arange(0, n_timesteps - seq_len, max(1, stride)))
+
+
+def _target_mode(windowing: dict[str, Any], split: str) -> TargetMode:
+    if split == "train" and windowing.get("training_targets") == "full_input":
+        return "full_input"
+    return "output_window"
 
 
 class WindowDataset(Dataset):
@@ -61,10 +169,19 @@ class WindowDataset(Dataset):
         *,
         stride: int,
         target_mode: TargetMode = "output_window",
+        normalization: NormalizationStats | None = None,
+        state_threshold_watts: float | None = None,
     ):
-        self.inputs = np.ascontiguousarray(inputs, dtype=np.float32)
+        norm = normalization or NormalizationStats()
+        self.inputs = np.ascontiguousarray(norm.normalize_inputs(inputs), dtype=np.float32)
         self.targets = np.ascontiguousarray(targets, dtype=np.float32)
         self.states = np.ascontiguousarray(states, dtype=np.int64)
+
+        if state_threshold_watts is not None:
+            self.states = (self.targets > float(state_threshold_watts)).astype(np.int64)
+
+        self.targets = np.ascontiguousarray(norm.normalize_targets(self.targets), dtype=np.float32)
+
         self.inputs_t = torch.from_numpy(self.inputs)
         self.targets_t = torch.from_numpy(self.targets)
         self.states_t = torch.from_numpy(self.states)
@@ -80,36 +197,18 @@ class WindowDataset(Dataset):
     def __getitem__(self, index: int):
         start = int(self.indices[index])
         end = start + self.seq_len
-
         x = self.inputs_t[start:end].unsqueeze(-1)
+
         if self.target_mode == "full_input":
-            y = self.targets_t[start:end]
-            z = self.states_t[start:end]
-            return x, y, z
+            return x, self.targets_t[start:end], self.states_t[start:end]
 
         out = _output_slice(start, self.seq_len, self.windowing)
         y = self.targets_t[out]
         z = self.states_t[out]
-
-        out_len = int(self.windowing.get("output_window_length", 1))
-        if out_len == 1:
+        if int(self.windowing.get("output_window_length", 1)) == 1:
             y = y.squeeze(0)
             z = z.squeeze(0)
         return x, y, z
-
-
-from adapters.config import appliance_list
-from adapters.unet_preprocess import preprocess_unet_arrays
-
-
-def _appliance_order(experiment_cfg: dict[str, Any], model_cfg: dict[str, Any]) -> list[str]:
-    return appliance_list(experiment_cfg, model_cfg)
-
-
-def _target_mode(windowing: dict[str, Any], split: str) -> TargetMode:
-    if split == "train" and windowing.get("training_targets") == "full_input":
-        return "full_input"
-    return "output_window"
 
 
 def _csv_column_map(csv_cfg: dict[str, Any], appliances: list[str]) -> tuple[list[str], list[str]]:
@@ -124,38 +223,12 @@ def _csv_column_map(csv_cfg: dict[str, Any], appliances: list[str]) -> tuple[lis
 
 
 def resolve_mains_column(experiment_cfg: dict[str, Any], model_cfg: dict[str, Any]) -> str:
-    """Experiment default; model yaml can override (e.g. UNet denoised vs noise mains)."""
-    data_cfg = model_cfg.get("data", {})
-    if mains_col := data_cfg.get("mains_column"):
+    """Model yaml can override experiment csv.mains_column."""
+    if mains_col := model_cfg.get("data", {}).get("mains_column"):
         return str(mains_col)
-
-    mains_map = data_cfg.get("mains_columns", {})
-    if mains_map:
-        use_denoised = data_cfg.get("use_denoised_mains", True)
-        key = "denoised" if use_denoised else "noise"
-        if key not in mains_map:
-            raise ValueError(f"data.mains_columns.{key} missing in model config")
-        return str(mains_map[key])
-
-    csv_cfg = experiment_cfg.get("csv", {})
-    if mains_col := csv_cfg.get("mains_column"):
+    if mains_col := experiment_cfg.get("csv", {}).get("mains_column"):
         return str(mains_col)
-    raise ValueError("Set csv.mains_column in experiment.yaml or data.mains_column in model yaml")
-
-
-def resolve_mains_columns(
-    experiment_cfg: dict[str, Any], model_cfg: dict[str, Any]
-) -> tuple[str, str | None]:
-    """Return (mains, sub_mains) column names for UNet-style preprocessing."""
-    data_cfg = model_cfg.get("data", {})
-    mains_map = data_cfg.get("mains_columns", {})
-    if mains_map:
-        mains_col = str(mains_map.get("mains") or mains_map.get("noise") or "aggregate")
-        sub_col = mains_map.get("sub_mains") or mains_map.get("denoised")
-        return mains_col, str(sub_col) if sub_col else None
-
-    mains_col = resolve_mains_column(experiment_cfg, model_cfg)
-    return mains_col, data_cfg.get("sub_mains_column")
+    raise ValueError("Set csv.mains_column in experiment yaml or data.mains_column in model yaml")
 
 
 def load_csv_arrays(
@@ -164,28 +237,22 @@ def load_csv_arrays(
     appliances: list[str],
     *,
     mains_column: str,
-    sub_mains_column: str | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV not found: {csv_path}")
 
     power_cols, state_cols = _csv_column_map(csv_cfg, appliances)
     usecols = list(dict.fromkeys([mains_column, *power_cols, *state_cols]))
-    available = set(pd.read_csv(csv_path, nrows=0).columns)
-    sub_col = sub_mains_column if sub_mains_column and sub_mains_column in available else None
-    if sub_col:
-        usecols = list(dict.fromkeys([*usecols, sub_col]))
     df = pd.read_csv(csv_path, usecols=usecols).dropna(subset=usecols)
 
     x = df[mains_column].to_numpy(dtype=np.float32)
-    sub = df[sub_col].to_numpy(dtype=np.float32) if sub_col else None
     y = df[power_cols].to_numpy(dtype=np.float32)
-    z = df[state_cols].to_numpy(dtype=np.float32)
-    return x, y, z.astype(np.int64), sub
+    z = df[state_cols].to_numpy(dtype=np.int64)
+    return x, y, z
 
 
 class NILMDataLoader:
-    """Load your pre-split CSVs once, build per-model windowed datasets."""
+    """Load pre-split CSVs once, build per-model windowed datasets."""
 
     def __init__(
         self,
@@ -197,9 +264,11 @@ class NILMDataLoader:
         self.model_cfg = model_cfg
         self.data_root = Path(data_root)
         self.csv_cfg = experiment_cfg.get("csv", {})
-        self.appliances = _appliance_order(experiment_cfg, model_cfg)
+        self.appliances = appliance_list(experiment_cfg, model_cfg)
+        self.state_threshold_watts = get_state_threshold(model_cfg)
+        self.norm = NormalizationStats.from_config(experiment_cfg, model_cfg, self.appliances)
+        self.loss_scale = self.norm.loss_scale
         self._splits: dict[SplitName, tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None
-        self._raw_splits: dict[SplitName, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
 
     def _resolve_csv_path(self, split: SplitName) -> Path:
         key = _SPLIT_FILE_KEYS[split]
@@ -210,84 +279,11 @@ class NILMDataLoader:
         return path if path.is_absolute() else self.data_root / path
 
     def _load_split_csv(self, split: SplitName) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        data_cfg = self.model_cfg.get("data", {})
-        if data_cfg.get("preprocess") == "unet_nilm":
-            mains_col, sub_col = resolve_mains_columns(self.experiment, self.model_cfg)
-        else:
-            mains_col = resolve_mains_column(self.experiment, self.model_cfg)
-            sub_col = None
-
-        x, y, z, sub = load_csv_arrays(
+        return load_csv_arrays(
             self._resolve_csv_path(split),
             self.csv_cfg,
             self.appliances,
-            mains_column=mains_col,
-            sub_mains_column=sub_col,
-        )
-        if data_cfg.get("preprocess") == "unet_nilm" and "seq2quantile" in self.model_cfg:
-            self._raw_splits[split] = (x.copy(), y.copy(), z.copy())
-            x, y, z = preprocess_unet_arrays(
-                x,
-                y,
-                self.appliances,
-                self.model_cfg,
-                csv_states=z,
-                sub_mains_watts=sub,
-            )
-        return x, y, z
-
-    def get_raw_csv_arrays(
-        self, split: SplitName
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Raw mains + appliance watts/states from CSV (before model preprocess)."""
-        if split not in self._raw_splits:
-            self.get_splits()
-        if split not in self._raw_splits:
-            x, y, z = self.get_splits()[split]
-            return x, y, z
-        return self._raw_splits[split]
-
-    def window_output_timesteps(self, split: str, n_windows: int) -> np.ndarray:
-        """CSV row index for each sliding-window model output."""
-        key: SplitName = "validation" if split in ("val", "validation") else split  # type: ignore[assignment]
-        ds = self.build_dataset(split)
-        n = min(int(n_windows), len(ds))
-        w = self.model_cfg["windowing"]
-        out_len = int(w.get("output_window_length", 1))
-        alignment: OutputAlignment = w.get("output_alignment", "end")
-        if alignment == "center":
-            offset = (ds.seq_len - out_len) // 2
-        elif alignment == "end":
-            offset = ds.seq_len - out_len
-        else:
-            raise ValueError(f"Unsupported output_alignment: {alignment}")
-        if out_len == 1:
-            return ds.indices[:n] + offset
-        return (ds.indices[:n, None] + offset + np.arange(out_len)).reshape(-1)
-
-    def get_splits(self) -> dict[SplitName, tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        if self._splits is not None:
-            return self._splits
-
-        self._splits = {
-            "train": self._load_split_csv("train"),
-            "validation": self._load_split_csv("validation"),
-            "test": self._load_split_csv("test"),
-        }
-        return self._splits
-
-    def build_dataset(self, split: str) -> Dataset:
-        key: SplitName = "validation" if split in ("val", "validation") else split  # type: ignore[assignment]
-        x, y, z = self.get_splits()[key]
-        w = self.model_cfg["windowing"]
-        stride = self._stride_for_split(split)
-        return WindowDataset(
-            x,
-            y,
-            z,
-            w,
-            stride=stride,
-            target_mode=_target_mode(w, split),
+            mains_column=resolve_mains_column(self.experiment, self.model_cfg),
         )
 
     def _stride_for_split(self, split: str) -> int:
@@ -296,21 +292,64 @@ class NILMDataLoader:
             return int(w["input_stride"])
         return int(w.get("eval_stride", w["input_stride"]))
 
-    def describe_split(self, split: str, *, batch_size: int) -> dict[str, Any]:
-        key: SplitName = "validation" if split in ("val", "validation") else split  # type: ignore[assignment]
-        csv_path = self._resolve_csv_path(key)
+    def _make_window_dataset(self, split: str) -> WindowDataset:
+        key = _split_key(split)
         x, y, z = self.get_splits()[key]
+        w = self.model_cfg["windowing"]
+        return WindowDataset(
+            x,
+            y,
+            z,
+            w,
+            stride=self._stride_for_split(split),
+            target_mode=_target_mode(w, split),
+            normalization=self.norm,
+            state_threshold_watts=self.state_threshold_watts,
+        )
+
+    def window_output_timesteps(self, split: str, n_windows: int) -> np.ndarray:
+        """CSV row index for each sliding-window model output."""
+        ds = self._make_window_dataset(split)
+        n = min(int(n_windows), len(ds))
+        w = self.model_cfg["windowing"]
+        out_len = int(w.get("output_window_length", 1))
+        offset = _output_row_offset(w, ds.seq_len)
+        if out_len == 1:
+            return ds.indices[:n] + offset
+        return (ds.indices[:n, None] + offset + np.arange(out_len)).reshape(-1)
+
+    def get_splits(self) -> dict[SplitName, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        if self._splits is not None:
+            return self._splits
+        self._splits = {
+            "train": self._load_split_csv("train"),
+            "validation": self._load_split_csv("validation"),
+            "test": self._load_split_csv("test"),
+        }
+        return self._splits
+
+    def build_dataset(self, split: str) -> Dataset:
+        return self._make_window_dataset(split)
+
+    def denorm_to_watts(self, y: np.ndarray) -> np.ndarray:
+        """Convert normalized targets or predictions back to watts."""
+        return self.norm.denorm(y)
+
+    def describe_split(self, split: str, *, batch_size: int) -> dict[str, Any]:
+        key = _split_key(split)
+        csv_path = self._resolve_csv_path(key)
+        x, _, _ = self.get_splits()[key]
         w = self.model_cfg["windowing"]
         stride = self._stride_for_split(split)
         target_mode = _target_mode(w, split)
-        n_windows = len(WindowDataset(x, y, z, w, stride=stride, target_mode=target_mode))
+        n_windows = _count_windows(len(x), w, stride)
         n_batches = (n_windows + batch_size - 1) // batch_size if n_windows else 0
         return {
             "split": split,
             "csv_path": str(csv_path),
             "csv_name": csv_path.name,
             "timesteps": len(x),
-            "n_appliances": y.shape[1] if y.ndim > 1 else 1,
+            "n_appliances": len(self.appliances),
             "input_length": _resolve_input_length(w),
             "output_length": int(w.get("output_window_length", 1)),
             "output_alignment": w.get("output_alignment", "end"),
@@ -320,103 +359,3 @@ class NILMDataLoader:
             "batch_size": batch_size,
             "batches": n_batches,
         }
-
-
-def _data_preprocess_note(
-    model_cfg: dict[str, Any],
-    experiment_cfg: dict[str, Any],
-    data_loader: NILMDataLoader | None = None,
-) -> list[str]:
-    data_cfg = model_cfg.get("data", {})
-    lines: list[str] = []
-    if data_cfg.get("preprocess") == "unet_nilm":
-        mains_col, sub_col = resolve_mains_columns(experiment_cfg, model_cfg)
-        lines.append("preprocess: unet_nilm (median filter + z-score, online from CSV)")
-        lines.append(f"mains column: {mains_col}")
-        if sub_col and data_loader is not None:
-            header = set(pd.read_csv(data_loader._resolve_csv_path("train"), nrows=0).columns)
-            if sub_col not in header:
-                lines.append(f"sub_mains column: {sub_col} (not in CSV — falls back to mains)")
-            else:
-                lines.append(f"sub_mains column: {sub_col}")
-        elif sub_col:
-            lines.append(f"sub_mains column: {sub_col}")
-        lines.append(f"mains path: {'denoise' if data_cfg.get('use_denoised_mains') else 'noise'} (paper default: noise)")
-        lines.append(f"eval denorm: {data_cfg.get('denorm_style', 'standard')}")
-        if src := data_cfg.get("waveform_ground_truth"):
-            lines.append(f"waveform ground truth: {src}")
-    elif scale := data_cfg.get("power_scale"):
-        lines.append(f"preprocess: divide power/mains by {scale}")
-        if thr := data_cfg.get("state_threshold_watts"):
-            lines.append(f"state labels: power > {thr} W")
-    else:
-        lines.append("preprocess: none (use CSV values as loaded)")
-    return lines
-
-
-def print_training_data_summary(
-    *,
-    experiment_id: str,
-    model_name: str,
-    appliances: list[str],
-    model_cfg: dict[str, Any],
-    experiment_cfg: dict[str, Any],
-    data_loader: NILMDataLoader,
-    batch_size: int,
-    epochs: int,
-    device: str,
-) -> None:
-    w = model_cfg["windowing"]
-    train_cfg = model_cfg.get("training", {})
-    width = 78
-    bar = "=" * width
-    thin = "-" * width
-
-    print(bar, flush=True)
-    print(f"EXPERIMENT: {experiment_id}  |  MODEL: {model_name}  |  DEVICE: {device}", flush=True)
-    print(bar, flush=True)
-    print(f"Appliances ({len(appliances)}): {', '.join(appliances)}", flush=True)
-    print(flush=True)
-    print("Windowing", flush=True)
-    print(f"  input length (effective): {_resolve_input_length(w)}", flush=True)
-    print(f"  output length:            {int(w.get('output_window_length', 1))}", flush=True)
-    print(f"  output alignment:         {w.get('output_alignment', 'end')}", flush=True)
-    print(f"  train stride:             {int(w['input_stride'])}", flush=True)
-    print(f"  eval stride:              {int(w.get('eval_stride', w['input_stride']))}", flush=True)
-    print(f"  train target mode:        {_target_mode(w, 'train')}", flush=True)
-    print(f"  eval target mode:         {_target_mode(w, 'validation')}", flush=True)
-    print(f"  batch size:               {batch_size}", flush=True)
-    print(f"  epochs:                   {epochs}", flush=True)
-    if train_cfg.get("use_amp"):
-        print(f"  mixed precision:          {train_cfg.get('amp_dtype', 'bf16')}", flush=True)
-    print(f"  dataloader workers:       {int(train_cfg.get('num_workers', 0))}", flush=True)
-    if train_cfg.get("checkpoint_monitor"):
-        print(f"  checkpoint monitor:         {train_cfg['checkpoint_monitor']}", flush=True)
-    print(flush=True)
-    print("Data", flush=True)
-    for line in _data_preprocess_note(model_cfg, experiment_cfg, data_loader):
-        print(f"  {line}", flush=True)
-
-    for split in ("train", "validation", "test"):
-        info = data_loader.describe_split(split, batch_size=batch_size)
-        print(flush=True)
-        print(thin, flush=True)
-        print(f"SPLIT: {split.upper()}", flush=True)
-        print(f"  csv file:      {info['csv_path']}", flush=True)
-        print(f"  timesteps:     {info['timesteps']:,}  (rows after dropna)", flush=True)
-        print(f"  input length:  {info['input_length']}", flush=True)
-        print(f"  output length: {info['output_length']}", flush=True)
-        print(f"  stride:        {info['stride']}", flush=True)
-        print(f"  target mode:   {info['target_mode']}", flush=True)
-        print(f"  windows:       {info['windows']:,}", flush=True)
-        print(f"  batches:       {info['batches']:,}  (@ batch_size={batch_size})", flush=True)
-        if split == "train":
-            print(f"  used in:       training ({info['batches']:,} batches/epoch)", flush=True)
-        elif split == "validation":
-            print("  used in:       validation + checkpoint selection", flush=True)
-        else:
-            print("  used in:       final test evaluation (after training)", flush=True)
-
-    print(flush=True)
-    print(bar, flush=True)
-    print(flush=True)

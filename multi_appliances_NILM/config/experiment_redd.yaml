@@ -1,6 +1,4 @@
-# REDD experiment — MATNILM author pickles exported to CSV.
-# Generate CSVs: python scripts/export_matnilm_redd_csv.py
-
+# REDD (4 appliances) — default pairing for MATNILM
 experiment_id: redd_matnilm_author
 seed: 2026
 data_root: datasets/redd
@@ -9,17 +7,22 @@ csv:
   train_file: training/redd_train_segment0_1d_2011-04-21_to_2011-04-22.csv
   validation_file: validating/redd_val_segment0_1d_2011-05-23_to_2011-05-24.csv
   test_file: testing/redd_test_segments0-5_35d_2011-04-18_to_2011-05-23.csv
-
   mains_column: aggregate
-
   appliances:
     dishwasher:     {power: dishwasher_power,     state: dishwasher_on}
     fridge:         {power: fridge_power,         state: fridge_on}
     microwave:      {power: microwave_power,      state: microwave_on}
     washingmachine: {power: washingmachine_power, state: washingmachine_on}
 
+normalization:
+  aggregate: {mean: 300, std: 550}
+  appliances:
+    dishwasher:     {mean: 400, std: 450}
+    fridge:         {mean: 70,  std: 100}
+    microwave:      {mean: 150, std: 500}
+    washingmachine: {mean: 1000, std: 1500}
+
 evaluation:
-  metrics: [mae, sae, f1, micro_f1]
   on_threshold_watts: 15.0
   sae_period: 1200
   power_unit: watts

@@ -1,4 +1,6 @@
-from model.UNETNILM import UNETNiLM
-from model.UNETNILM_loss import UNETNILMLoss, QuantileLoss
+from model.MATNILM import MATconv
+from model.MATNILM_loss import MATNILMLoss
+from model.MultiNILM import MultiNILM
+from model.MultiNILM_loss import MultiNILMLoss
 
-__all__ = ["UNETNiLM", "UNETNILMLoss", "QuantileLoss"]
+__all__ = ["MATconv", "MATNILMLoss", "MultiNILM", "MultiNILMLoss"]

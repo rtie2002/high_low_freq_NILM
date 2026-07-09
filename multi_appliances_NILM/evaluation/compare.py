@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from adapters.types import PredictionBundle
+from adapters.common import PredictionBundle
 from evaluation.metrics import evaluate_bundle
 
 

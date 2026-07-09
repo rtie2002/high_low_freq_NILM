@@ -1,36 +1,29 @@
-# MATNILM — UK-DALE practical training (default)
-# ~100 train batches/epoch @ batch 256, ~5-10 min/epoch on RTX 4090.
-# Author-faithful slow path: config/models/mat_nilm_reproduce.yaml
-
-model:
-  name: mat_nilm
-  task: multi_appliance_joint
+# MATNILM — 4-appliance architecture (REDD default). Windowing/training tuned for practical runs.
+model_name: mat_nilm
 
 windowing:
   input_window_length: 864
   output_window_length: 64
   output_alignment: center
-  input_stride: 32             # stride 1 = ~12k batches/epoch (~35 min); 32 = ~100 batches
+  input_stride: 32
   eval_stride: 64
-  training_targets: output_window   # paper center-64 loss (matches val/test)
+  training_targets: output_window
 
 architecture:
   input_size: 1
   hidden: 32
   dropout: 0.1
-  num_appliances: 4
 
 data:
+  # MATconv is fixed at 4 appliances; override order/subset here when needed.
   appliances: [dishwasher, fridge, microwave, washingmachine]
   mains_column: aggregate
-  power_scale: 612.0
   state_threshold_watts: 15.0
 
 training:
   epochs: 50
   batch_size: 256
   learning_rate: 0.001
-  optimizer: Adam
   weight_decay: 0.0
   gradient_clip: 0.0
   num_workers: 8
@@ -41,10 +34,8 @@ training:
   tf32: true
   cudnn_benchmark: true
   torch_compile: true
-  seed: 2026
   checkpoint_monitor: val_mae
-  early_stop_patience: 15        # stop when val_mae plateaus (author uses 30)
-
+  early_stop_patience: 15
   plots:
     plot_mode: interval
     plot_interval: 10
@@ -56,9 +47,4 @@ training:
     waveform_figsize: 5.5
     waveform_dynamic_figsize: true
     waveform_dpi: 200
-    plot_max_batches: 32         # faster live plots; null = full split
-
-loss:
-  power: mse
-  state: bce
-  combine: power_loss + state_loss
+    plot_max_batches: 32

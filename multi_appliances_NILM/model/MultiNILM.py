@@ -1,16 +1,18 @@
-"""Simple multi-appliance NILM model.
+"""MultiNILM: a clear multi-appliance NILM baseline.
 
-MultiNILM is intentionally small and easy to debug:
+This model is intentionally written in a beginner-readable style.
 
-    aggregate window -> shared temporal CNN/TCN encoder -> power + ON/OFF heads
+Task:
+    Input  : aggregate power window
+    Output : appliance power + appliance ON/OFF state for every appliance
 
-The model predicts all appliances at the same time. It returns:
+Expected shapes:
+    x            : (batch, input_length) or (batch, 1, input_length)
+    power_pred   : (batch, output_length, num_appliances)
+    state_logits : (batch, output_length, num_appliances)
 
-    power_pred:   (B, output_length, num_appliances)
-    state_logits: (B, output_length, num_appliances)
-
-The state head returns logits, so the matching loss should use
-``BCEWithLogitsLoss``. Do not apply sigmoid before the loss.
+Important:
+    state_logits are raw logits. Use BCEWithLogitsLoss for ON/OFF loss.
 """
 
 from __future__ import annotations
@@ -23,40 +25,97 @@ from torch import nn
 from torch.nn import functional as F
 
 
-class ResidualTCNBlock(nn.Module):
-    """Small residual temporal block with dilated Conv1d."""
+class ResidualTemporalBlock(nn.Module):
+    """One temporal convolution block.
+
+    The block keeps the same tensor shape:
+
+        input : (batch, channels, time)
+        output: (batch, channels, time)
+
+    We add the input back to the output so the model can learn a small
+    correction instead of relearning the full signal at every layer.
+    """
 
     def __init__(
         self,
         channels: int,
-        kernel_size: int = 5,
-        dilation: int = 1,
-        dropout: float = 0.1,
+        kernel_size: int,
+        dilation: int,
+        dropout: float,
     ) -> None:
         super().__init__()
-        padding = (kernel_size - 1) * dilation // 2
-        self.net = nn.Sequential(
-            nn.Conv1d(
-                channels,
-                channels,
-                kernel_size=kernel_size,
-                padding=padding,
-                dilation=dilation,
-            ),
-            nn.BatchNorm1d(channels),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Conv1d(channels, channels, kernel_size=1),
-            nn.BatchNorm1d(channels),
-            nn.GELU(),
+
+        # Same-length padding for odd kernel sizes.
+        padding = ((kernel_size - 1) * dilation) // 2
+
+        self.conv = nn.Conv1d(
+            in_channels=channels,
+            out_channels=channels,
+            kernel_size=kernel_size,
+            padding=padding,
+            dilation=dilation,
         )
+        self.norm = nn.BatchNorm1d(channels)
+        self.activation = nn.GELU()
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.net(x)
+        residual = x
+
+        y = self.conv(x)
+        y = self.norm(y)
+        y = self.activation(y)
+        y = self.dropout(y)
+
+        return residual + y
 
 
 class MultiNILM(nn.Module):
-    """Basic multi-output CNN/TCN for multi-appliance NILM."""
+    """Simple CNN/TCN model for multi-appliance NILM.
+
+    Layer-by-layer architecture:
+
+        Input aggregate window
+            Shape: (B, T) or (B, 1, T)
+
+        1. _format_input
+            Convert input to Conv1d format.
+            Output: (B, 1, T)
+
+        2. aggregate_feature_extractor
+            Conv1d(input_channels -> hidden_channels, kernel_size=7, padding=3)
+            BatchNorm1d(hidden_channels)
+            GELU
+            Output: (B, hidden_channels, T)
+
+        3. temporal_encoder
+            ResidualTemporalBlock x num_blocks
+            Default dilation sequence: 1, 2, 4, 8, 16
+            Output: (B, hidden_channels, T)
+
+        4. temporal resizing
+            F.interpolate changes the time axis from input length to output_length.
+            Example: 864 -> 64
+            Output: (B, hidden_channels, output_length)
+
+        5. power_head
+            Conv1d(hidden_channels -> num_appliances, kernel_size=1)
+            Output before permute: (B, num_appliances, output_length)
+
+        6. state_head
+            Conv1d(hidden_channels -> num_appliances, kernel_size=1)
+            Output before permute: (B, num_appliances, output_length)
+
+        7. final output format
+            Permute both heads to pipeline format:
+            (B, output_length, num_appliances)
+
+    Notes:
+        - power_head predicts appliance power.
+        - state_head predicts raw ON/OFF logits.
+        - Use BCEWithLogitsLoss for state_logits; apply sigmoid only for inference.
+    """
 
     def __init__(
         self,
@@ -67,84 +126,140 @@ class MultiNILM(nn.Module):
         num_blocks: int = 5,
         kernel_size: int = 5,
         dropout: float = 0.1,
-        nonnegative_power: bool = False,
     ) -> None:
         super().__init__()
-        if num_appliances <= 0:
-            raise ValueError("num_appliances must be positive.")
-        if output_length <= 0:
-            raise ValueError("output_length must be positive.")
 
         self.input_channels = int(input_channels)
         self.num_appliances = int(num_appliances)
         self.output_length = int(output_length)
-        self.nonnegative_power = bool(nonnegative_power)
 
-        self.stem = nn.Sequential(
-            nn.Conv1d(input_channels, hidden_channels, kernel_size=7, padding=3),
+        # Step 1: first learnable layer.
+        # Convert the aggregate power waveform into hidden temporal features.
+        self.aggregate_feature_extractor = nn.Sequential(
+            nn.Conv1d(
+                in_channels=self.input_channels,
+                out_channels=hidden_channels,
+                kernel_size=7,
+                padding=3,
+            ),
             nn.BatchNorm1d(hidden_channels),
             nn.GELU(),
         )
 
-        blocks = []
-        for idx in range(num_blocks):
-            dilation = 2 ** idx
-            blocks.append(
-                ResidualTCNBlock(
+        # Step 2: process temporal features with dilated convolution blocks.
+        # Dilation values 1, 2, 4, 8, ... let the model see short and longer
+        # appliance patterns without making the network very deep.
+        temporal_blocks = []
+        for block_index in range(num_blocks):
+            dilation = 2 ** block_index
+            temporal_blocks.append(
+                ResidualTemporalBlock(
                     channels=hidden_channels,
                     kernel_size=kernel_size,
                     dilation=dilation,
                     dropout=dropout,
                 )
             )
-        self.encoder = nn.Sequential(*blocks)
+        self.temporal_encoder = nn.Sequential(*temporal_blocks)
 
-        self.power_head = nn.Sequential(
-            nn.Conv1d(hidden_channels, hidden_channels, kernel_size=1),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Conv1d(hidden_channels, num_appliances, kernel_size=1),
-        )
-        self.state_head = nn.Sequential(
-            nn.Conv1d(hidden_channels, hidden_channels, kernel_size=1),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Conv1d(hidden_channels, num_appliances, kernel_size=1),
+        # Step 3a: predict appliance power for every output timestep.
+        self.power_head = nn.Conv1d(
+            in_channels=hidden_channels,
+            out_channels=self.num_appliances,
+            kernel_size=1,
         )
 
-    def _prepare_input(self, x: torch.Tensor) -> torch.Tensor:
+        # Step 3b: predict appliance ON/OFF logits for every output timestep.
+        self.state_head = nn.Conv1d(
+            in_channels=hidden_channels,
+            out_channels=self.num_appliances,
+            kernel_size=1,
+        )
+
+    def _format_input(self, x: torch.Tensor) -> torch.Tensor:
+        """Convert input to Conv1d format: (batch, channels, time)."""
+
+        # Common dataloader format: (batch, time)
         if x.dim() == 2:
             x = x.unsqueeze(1)
+
+        # Alternative format: (batch, time, channels)
         elif x.dim() == 3 and x.shape[-1] == self.input_channels:
             x = x.permute(0, 2, 1)
 
         if x.dim() != 3:
             raise ValueError(
-                "Expected input shape (B, T), (B, C, T), or (B, T, C); "
+                "MultiNILM expected x with shape (B, T), (B, C, T), or (B, T, C); "
                 f"got {tuple(x.shape)}."
             )
+
         if x.shape[1] != self.input_channels:
             raise ValueError(
-                f"Expected {self.input_channels} input channel(s), got {x.shape[1]}."
+                f"MultiNILM expected {self.input_channels} input channel(s), "
+                f"got {x.shape[1]}."
             )
-        return x
+
+        return x.float()
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        x = self._prepare_input(x.float())
-        features = self.encoder(self.stem(x))
-        features = F.interpolate(
+        """Run the full MultiNILM architecture.
+
+        Flow:
+            aggregate input
+            -> aggregate_feature_extractor
+            -> temporal_encoder
+            -> resize to output_length
+            -> power_head and state_head
+            -> return (B, output_length, num_appliances)
+        """
+
+        x = self._format_input(x)
+
+        # Step 1-2:
+        # Raw aggregate waveform -> hidden temporal representation.
+        features = self.aggregate_feature_extractor(x)
+
+        # Step 3:
+        # Learn appliance-related temporal patterns from the aggregate signal.
+        features = self.temporal_encoder(features)
+
+        # Step 4:
+        # Convert the feature timeline to the required output length.
+        # Example: input length 864 -> output length 64.
+        output_features = F.interpolate(
             features,
             size=self.output_length,
             mode="linear",
             align_corners=False,
         )
 
-        power = self.power_head(features)
-        if self.nonnegative_power:
-            power = F.relu(power)
-        state_logits = self.state_head(features)
+        # Step 5-6:
+        # Predict power and ON/OFF logits for every appliance.
+        power_pred = self.power_head(output_features)
+        state_logits = self.state_head(output_features)
 
-        return power.permute(0, 2, 1), state_logits.permute(0, 2, 1)
+        # Step 7:
+        # PyTorch Conv1d always returns (batch, channels, length).
+        # In our output heads:
+        #   channels = appliances
+        #   length   = output time steps
+        #
+        # So after power_head/state_head, the shape is:
+        #   (B, num_appliances, output_length)
+        # Example for REDD:
+        #   (32, 4, 64)
+        #
+        # But our dataloader targets are stored as:
+        #   (B, output_length, num_appliances)
+        # Example for REDD:
+        #   (32, 64, 4)
+        #
+        # We permute the last two dimensions so prediction and target have
+        # the same shape during loss/evaluation.
+        power_pred = power_pred.permute(0, 2, 1)
+        state_logits = state_logits.permute(0, 2, 1)
+
+        return power_pred, state_logits
 
 
 @dataclass
@@ -156,10 +271,11 @@ class MultiNILMConfig:
     num_blocks: int = 5
     kernel_size: int = 5
     dropout: float = 0.1
-    nonnegative_power: bool = False
 
 
 def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
+    """Read MultiNILM settings from the model YAML architecture section."""
+
     return MultiNILMConfig(
         input_channels=int(architecture.get("input_channels", architecture.get("input_size", 1))),
         num_appliances=int(architecture.get("num_appliances", 5)),
@@ -168,5 +284,4 @@ def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
         num_blocks=int(architecture.get("num_blocks", 5)),
         kernel_size=int(architecture.get("kernel_size", 5)),
         dropout=float(architecture.get("dropout", 0.1)),
-        nonnegative_power=bool(architecture.get("nonnegative_power", False)),
     )

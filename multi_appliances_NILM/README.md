@@ -1,145 +1,125 @@
 # Multi-Appliance NILM
 
-Unified experiment framework for comparing NILM models on the **same splits** and **same metrics**, while each model keeps its own architecture, windows, loss, and dataset logic.
+One training pipeline. Switch **dataset** and **model** via YAML — no code changes.
 
-## Folder layout
+## How it works
+
+```text
+--experiment config/experiment_*.yaml   → which CSVs, columns, normalization
+--model + config/models/*.yaml          → window size, stride, architecture, training
+         ↓
+    main.py → adapter (model glue) → runner.py (train/eval loop)
+         ↓
+    adapters/dataloader.py (shared CSV → windows → normalize)
+         ↓
+    evaluation/ (metrics + plots from PredictionBundle)
+```
+
+| Layer | Controls |
+|-------|----------|
+| `config/experiment*.yaml` | Dataset: paths, appliances, z-score stats, eval thresholds |
+| `config/models/*.yaml` | Model: `windowing`, `architecture`, `loss`, `training` |
+| `adapters/*.py` | Per-model forward + loss + prediction format |
+| `runner.py` | Shared epochs, checkpointing, live plots |
+
+## Project layout
 
 ```text
 multi_appliances_NILM/
-├── main.py                     # CLI entry
-├── runner.py                   # train + evaluate loops
+├── main.py                 # CLI
+├── runner.py               # train + evaluate loops
 ├── config/
-│   ├── experiment.yaml         # data paths, CSV columns, evaluation
-│   └── models/                 # per-model: architecture, windows, training
-│       └── unet_nilm.yaml
-│       └── mat_nilm.yaml
-│   experiment_redd.yaml        # optional 4-appliance REDD experiment
-├── adapters/                   # model glue + shared dataloader
-│   ├── config.py               # load YAML configs
-│   ├── common.py               # shared helpers (scaling, PredictionBundle, DataLoader)
-│   ├── dataloader.py           # CSV load, split, windowing
-│   ├── types.py                # PredictionBundle (standard test output)
-│   ├── unet_nilm.py            # UNet plug-in (model + loss + data)
-│   └── mat_nilm.py             # MATNILM plug-in
-├── model/                      # neural network only
-│   ├── UNETNILM.py
-│   ├── UNETNILM_loss.py
-│   ├── MATNILM.py
-│   └── MATNILM_loss.py
-├── datasets/                   # YOUR CSV files (gitignored)
-│   └── ukdale/
-│       ├── training/
-│       ├── validating/
-│       └── testing/
-├── evaluation/                 # metrics & cross-model comparison
-│   ├── metrics.py
-│   └── compare.py
-│
-# Not in repo (created when you run train / add data):
-#   datasets/ukdale/training/data.csv
-#   datasets/ukdale/validating/data.csv
-#   datasets/ukdale/testing/data.csv
-#   runs/<experiment>/<model>/     ← checkpoints & metrics (gitignored)
+│   ├── experiment.yaml         # UK-DALE (5 apps)
+│   ├── experiment_redd.yaml    # REDD (4 apps)
+│   ├── experiment_refit.yaml   # REFIT (5 apps)
+│   └── models/
+│       ├── multinilm.yaml      # any N appliances
+│       └── mat_nilm.yaml       # fixed 4-appliance MATNILM
+├── adapters/
+│   ├── config.py           # load + merge YAML
+│   ├── dataloader.py       # CSV, normalization, windows
+│   ├── common.py           # BaseNILMAdapter, PredictionBundle
+│   ├── multinilm.py
+│   └── mat_nilm.py
+├── model/                  # nn.Module + loss only
+├── evaluation/             # metrics, plots, compare
+└── datasets/               # your CSVs (gitignored)
 ```
 
-## Design rules
-
-| Shared across models | Model-specific |
-|---------------------|----------------|
-| Experiment config (`config/experiment.yaml`) | Architecture (`model/`) |
-| Metrics (`evaluation/`) | Loss (`model/*_loss.py`) |
-| Train/eval loop (`runner.py`) | Windowing (`config/models/`) |
-| Data load (`adapters/dataloader.py`) | Adapter (`adapters/`) |
-| Prediction export format (`PredictionBundle`) | Training hyperparams (`config/models/`) |
-| Run output layout (`runs/`) | |
-
-**Fair comparison:** models may differ internally, but every adapter exports the same `PredictionBundle` on the same test timesteps. Metrics are computed from that bundle only.
-
-## Data (CSV)
-
-Put your preprocessed CSV in each folder under `datasets/ukdale/`:
-
-```text
-datasets/ukdale/
-  training/data.csv
-  validating/data.csv
-  testing/data.csv
-```
-
-Each file: one row per timestep (6 s). Values should already be **preprocessed** (normalized mains/power, binary states).
-
-Required columns (names in `config/experiment.yaml` under `csv.appliances`):
-
-```text
-aggregate,                    # csv.mains_column (model yaml can override)
-kettle_power, kettle_state,
-fridge_power, fridge_state,
-dishwasher_power, dishwasher_state,
-washingmachine_power, washingmachine_state,
-microwave_power, microwave_state
-```
-
-You split the data yourself — the framework just loads `training/`, `validating/`, and `testing/` CSVs.
-
-**Training outputs** — created automatically on first `train` / `evaluate`:
-
-```text
-runs/ukdale_h1_temporal/unet_nilm/
-  best.pt
-  history.csv / history.json
-  loss_detail.csv
-  live_training_loss.png
-  live_loss_components.png
-  waveforms/
-    validation/live/epoch_001/kettle/on_01_t1234.png   ← 5 random ON periods each
-    validation/live/epoch_001/fridge/...
-    validation/best/epoch_003/kettle/best_01_t5678.png
-    test/live/...
-  test_predictions.npz
-  test_metrics.csv
-  waveforms/test/kettle/on_01_t....png   ← after evaluate
-```
-
-All models share `adapters/dataloader.py`. Each model only sets `windowing` in its yaml
-(input/output length, alignment, stride).
-
-## Quick start
+## Switch dataset
 
 ```powershell
-cd multi_appliances_NILM
+# UK-DALE (default)
+python main.py --model multinilm --mode train
 
-# Train UNet-NILM (UK-DALE, 5 appliances)
-python main.py --model unet_nilm --mode train
-
-# Train MATNILM (REDD, 4 appliances — use experiment_redd.yaml)
+# REDD
 python main.py --model mat_nilm --mode train --experiment config/experiment_redd.yaml
 
-# Or override data folder
-python main.py --model unet_nilm --mode train --data-path path/to/csv/folder
+# REFIT
+python main.py --model multinilm --mode train --experiment config/experiment_refit.yaml
 
-# Evaluate checkpoint on test split
-python main.py --model unet_nilm --mode evaluate ^
-  --experiment config/experiment.yaml ^
-  --model-config config/models/unet_nilm.yaml ^
-  --checkpoint runs/ukdale_h1_temporal/unet_nilm/best.pt
-
-# Compare all models under one experiment
-python main.py --mode compare --experiment ukdale_h1_temporal
+# Custom data folder
+python main.py --model multinilm --mode train --data-path D:\my\csv\folder
 ```
 
-## Adding a new model
+## Switch model / hyperparameters
 
-1. Add `model/YourModel.py` and `model/YourModel_loss.py`
-2. Add `config/models/your_model.yaml`
-3. Add `adapters/your_model.py` — reuse `adapters/dataloader.py` and `adapters/common.py`
+Each model yaml owns its windowing and training settings:
+
+```yaml
+windowing:
+  input_window_length: 864
+  output_window_length: 64
+  input_stride: 32        # train stride
+  eval_stride: 64         # validation/test stride
+  training_targets: output_window   # or full_input (MATNILM train mode)
+```
+
+Override with `--model-config path/to/custom.yaml`.
+
+Optional appliance subset in model yaml:
+
+```yaml
+data:
+  appliances: [fridge, microwave]   # must match experiment csv.appliances keys
+```
+
+## CSV format
+
+Place pre-split files under `datasets/<name>/{training,validating,testing}/`.
+Filenames are set in `experiment_*.yaml` → `csv.train_file`, etc.
+
+Required columns (per experiment `csv.appliances`):
+
+```text
+aggregate                    # mains (csv.mains_column)
+kettle_power, kettle_on      # example appliance pair
+fridge_power, fridge_on
+...
+```
+
+Values: raw watts + binary ON/OFF state. Normalization is applied in `dataloader.py` using `normalization:` stats in the experiment yaml.
+
+## Evaluate and compare
+
+```powershell
+python main.py --model multinilm --mode evaluate ^
+  --experiment config/experiment.yaml ^
+  --checkpoint runs/ukdale_cross_house_5w/multinilm/best.pt
+
+python main.py --mode compare --experiment config/experiment.yaml
+```
+
+## Add a new model
+
+1. `model/YourModel.py` + `model/YourModel_loss.py`
+2. `config/models/your_model.yaml` with `model_name: your_model`
+3. `adapters/your_model.py` extending `BaseNILMAdapter`
 4. Register in `main.py` → `MODELS`
 
-Shared pieces (do not duplicate per model):
+Reuse as-is: `dataloader.py`, `common.py`, `runner.py`, `evaluation/`.
 
-| Module | Reuse for |
-|--------|-----------|
-| `adapters/dataloader.py` | CSV load, windowing, optional `training_targets: full_input` |
-| `adapters/common.py` | `AdapterDataMixin`, power scaling, `build_prediction_bundle` |
-| `adapters/config.py` | YAML merge; optional `data.appliances` override in model yaml |
-| `runner.py` | Train/eval loop |
-| `evaluation/metrics.py` | MAE, SAE, F1 from `PredictionBundle` |
+## Model notes
+
+- **MultiNILM**: supports any appliance count from experiment yaml.
+- **MATNILM**: architecture is fixed at **4 appliances**; use `data.appliances` in `mat_nilm.yaml` or a 4-app experiment (e.g. REDD).

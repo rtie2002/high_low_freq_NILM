@@ -1,1 +1,49 @@
-# MultiNILM model config placeholder.
+model_name: multinilm
+
+data:
+  mains_column: aggregate
+  state_threshold_watts: null
+
+windowing:
+  input_window_length: 864
+  output_window_length: 64
+  output_alignment: center
+  input_stride: 1
+  eval_stride: 64
+  training_targets: output_window
+
+architecture:
+  input_channels: 1
+  hidden_channels: 64
+  num_blocks: 5
+  kernel_size: 5
+  dropout: 0.1
+
+loss:
+  lambda_state: 0.1
+  pos_weight: null
+
+training:
+  batch_size: 32
+  epochs: 100
+  learning_rate: 0.001
+  weight_decay: 0.0
+  num_workers: 8
+  persistent_workers: true
+  prefetch_factor: 4
+  use_amp: false
+  amp_dtype: bf16
+  checkpoint_monitor: val_mae
+  early_stop_patience: 20
+  gradient_clip: 1.0
+  cudnn_benchmark: true
+  tf32: true
+  plots:
+    plot_mode: live
+    plot_interval: 1
+    plot_on_periods: 5
+    waveform_figsize: 5.5
+    waveform_dpi: 300
+    waveform_dynamic_figsize: true
+    on_period_margin_min: 40
+    on_period_margin_frac: 0.08

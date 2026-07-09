@@ -1,4 +1,4 @@
-"""Load experiment + model YAML configs."""
+"""Load and merge experiment + model YAML configs."""
 
 from __future__ import annotations
 
@@ -14,15 +14,26 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
 
 
 def load_experiment(path: str | Path) -> dict[str, Any]:
+    """Dataset side: CSV paths, columns, normalization, evaluation."""
     return load_yaml(path)
 
 
 def load_model_config(path: str | Path) -> dict[str, Any]:
+    """Model side: windowing, architecture, loss, training hyperparameters."""
     return load_yaml(path)
 
 
+def model_name_from_config(model_cfg: dict[str, Any]) -> str:
+    """Read model id from config/models/*.yaml (top-level model_name)."""
+    if name := model_cfg.get("model_name"):
+        return str(name)
+    if nested := model_cfg.get("model", {}).get("name"):
+        return str(nested)
+    raise ValueError("Model yaml must define model_name (e.g. model_name: multinilm)")
+
+
 def appliance_list(experiment: dict[str, Any], model_cfg: dict[str, Any] | None = None) -> list[str]:
-    """Appliance order from model data.appliances override, else csv.appliances keys."""
+    """Appliance channel order for targets, model outputs, and metrics."""
     if model_cfg:
         if apps := model_cfg.get("data", {}).get("appliances"):
             return list(apps)
@@ -30,9 +41,11 @@ def appliance_list(experiment: dict[str, Any], model_cfg: dict[str, Any] | None 
 
 
 def merge_configs(experiment: dict[str, Any], model_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Single runtime config passed to adapters and runner."""
     return {
         "experiment": experiment,
         "model": model_cfg,
+        "model_name": model_name_from_config(model_cfg),
         "experiment_id": experiment["experiment_id"],
         "appliances": appliance_list(experiment, model_cfg),
         "data_root": experiment.get("data_root"),

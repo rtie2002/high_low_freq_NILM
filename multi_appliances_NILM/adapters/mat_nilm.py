@@ -9,30 +9,21 @@ import torch
 from torch.utils.data import DataLoader
 
 from adapters.common import (
-    AdapterDataMixin,
-    build_prediction_bundle,
+    BaseNILMAdapter,
+    StepOutput,
     center_output_slice,
-    denorm_power_array,
-    get_power_scale,
-    get_state_threshold,
-    scale_inputs,
-    scale_targets,
-    states_from_power,
 )
-from adapters.types import StepOutput
 from model.MATNILM import MATconv
 from model.MATNILM_loss import MATNILMLoss
 
 
-class MATNILMAdapter(AdapterDataMixin):
+class MATNILMAdapter(BaseNILMAdapter):
     name = "mat_nilm"
 
     def __init__(self, merged_cfg: dict[str, Any], data_root: str | None = None):
-        self.cfg = merged_cfg
-        self.experiment = merged_cfg["experiment"]
-        self.model_cfg = merged_cfg["model"]
-        self.data_root = data_root or merged_cfg.get("data_root")
-        self._data = None
+        # BaseNILMAdapter stores cfg, experiment, model_cfg, data_root, and
+        # lazy DataLoader setup. MATNILM only adds its own appliance check.
+        super().__init__(merged_cfg, data_root=data_root)
 
         appliances = self.cfg["appliances"]
         if len(appliances) != MATconv.NUM_APPLIANCES:
@@ -52,10 +43,7 @@ class MATNILMAdapter(AdapterDataMixin):
         return model.to(device)
 
     def build_loss(self) -> MATNILMLoss:
-        return MATNILMLoss(power_scale=get_power_scale(self.model_cfg))
-
-    def build_dataloader(self, split: str) -> DataLoader:
-        return self.build_standard_dataloader(split)
+        return MATNILMLoss(power_scale=self._data_loader().loss_scale)
 
     def _align_loss_tensors(
         self,
@@ -85,18 +73,21 @@ class MATNILMAdapter(AdapterDataMixin):
 
         return y_pred_r, y_pred_c, y, z
 
-    def training_step(
+    def step(
         self,
         model: torch.nn.Module,
         loss_fn: MATNILMLoss,
         batch: Any,
     ) -> StepOutput:
+        """Run one batch through MATNILM and return loss/logs.
+
+        runner.py uses this same method for training and validation. The runner
+        controls gradients; the adapter only handles model-specific forward and
+        loss calculation.
+        """
         x, y, z = batch
-        scale = get_power_scale(self.model_cfg)
-        if (thr := get_state_threshold(self.model_cfg)) is not None:
-            z = states_from_power(y, thr)
-        x = scale_inputs(x, scale)
-        y = scale_targets(y, scale)
+        # The dataloader now owns normalization and optional state rebuilding,
+        # so adapters receive model-ready tensors and only run model logic.
         z = z.float()
 
         y_pred_r, y_pred_c = model(x)
@@ -131,8 +122,6 @@ class MATNILMAdapter(AdapterDataMixin):
         split: str = "test",
     ) -> Any:
         model.eval()
-        scale = get_power_scale(self.model_cfg)
-        appliances = self.cfg["appliances"]
         out_slice = center_output_slice(self.model_cfg["windowing"])
 
         pred_power, pred_state = [], []
@@ -144,9 +133,7 @@ class MATNILMAdapter(AdapterDataMixin):
             if max_batches is not None and batch_idx >= max_batches:
                 break
             x, y, z = batch
-            if (thr := get_state_threshold(self.model_cfg)) is not None:
-                z = states_from_power(y, thr)
-            x = scale_inputs(x.to(device), scale)
+            x = x.to(device)
             y_pred_r, y_pred_c_prob = model(x)
 
             y_pred_r = y_pred_r[:, out_slice, :].cpu().numpy()
@@ -159,41 +146,20 @@ class MATNILMAdapter(AdapterDataMixin):
                 y_true = y[:, out_slice, :].numpy() if y.dim() == 3 else y.numpy()
                 z_true = z[:, out_slice, :].numpy() if z.dim() == 3 else z.numpy()
 
-            pred_power.append(y_pred_r.reshape(len(x), -1, len(appliances)))
-            pred_state.append((y_pred_c >= 0.5).astype(np.int32).reshape(len(x), -1, len(appliances)))
-            true_power.append(y_true.reshape(len(x), -1, len(appliances)))
-            true_state.append(z_true.reshape(len(x), -1, len(appliances)))
-            sample_indices.append(np.arange(offset, offset + len(x)))
+            n_apps = len(self.cfg["appliances"])
+            pred_power.append(y_pred_r.reshape(len(x), -1, n_apps))
+            pred_state.append((y_pred_c >= 0.5).astype(np.int32).reshape(len(x), -1, n_apps))
+            true_power.append(y_true.reshape(len(x), -1, n_apps))
+            true_state.append(z_true.reshape(len(x), -1, n_apps))
+            sample_indices.append(self._sample_index(offset, len(x)))
             offset += len(x)
 
-        y_pred = np.concatenate(pred_power, axis=0).reshape(-1, len(appliances))
-        y_true = np.concatenate(true_power, axis=0).reshape(-1, len(appliances))
-        z_pred = np.concatenate(pred_state, axis=0).reshape(-1, len(appliances))
-        z_true = np.concatenate(true_state, axis=0).reshape(-1, len(appliances))
-
-        # CSV targets are already in watts; only model outputs are normalized.
-        y_pred = denorm_power_array(y_pred, scale)
-        split_key = "validation" if split in ("val", "validation") else split
-        csv_timesteps = self._data_loader().window_output_timesteps(split_key, len(y_true))
-
-        return build_prediction_bundle(
-            experiment_id=self.experiment["experiment_id"],
-            model_name=self.name,
+        return self.finalize_prediction_bundle(
             split=split,
-            appliances=appliances,
-            sample_index=np.concatenate(sample_indices),
-            y_true_watts=y_true,
-            y_pred_watts=y_pred,
-            y_true_on=z_true,
-            y_pred_on=z_pred,
-            csv_timesteps=csv_timesteps,
+            sample_indices=sample_indices,
+            pred_power_batches=pred_power,
+            pred_state_batches=pred_state,
+            true_power_batches=true_power,
+            true_state_batches=true_state,
         )
 
-    def configure_optimizer(self, model: torch.nn.Module):
-        t = self.model_cfg["training"]
-        optim = torch.optim.Adam(
-            model.parameters(),
-            lr=float(t["learning_rate"]),
-            weight_decay=float(t.get("weight_decay", 0.0)),
-        )
-        return optim, None

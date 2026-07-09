@@ -17,9 +17,9 @@ class MATNILMLossOutput:
 
 
 class MATNILMLoss(nn.Module):
-    def __init__(self, power_scale: float = 1.0):
+    def __init__(self, power_scale: float | list[float] | torch.Tensor = 1.0):
         super().__init__()
-        self.power_scale = float(power_scale)
+        self.register_buffer("power_scale", torch.as_tensor(power_scale, dtype=torch.float32))
         self.mse = nn.MSELoss()
         self.bce = nn.BCELoss()
 
@@ -41,5 +41,6 @@ class MATNILMLoss(nn.Module):
             loss_r = self.mse(y_pred_r_f, y_true_r_f)
             loss_c = self.bce(y_pred_c_f, y_true_c_f)
         loss = loss_r + loss_c
-        mae = torch.mean(torch.abs((y_pred_r.float() - y_true_r.float()) * self.power_scale))
+        scale = self.power_scale.to(device=y_pred_r.device, dtype=y_pred_r.dtype)
+        mae = torch.mean(torch.abs((y_pred_r.float() - y_true_r.float()) * scale))
         return MATNILMLossOutput(loss=loss, loss_power=loss_r, loss_state=loss_c, mae=mae)
