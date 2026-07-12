@@ -715,6 +715,14 @@ def train_model(
     # Step 3:
     # Build model, optional init checkpoint, loss, and optimizer.
     model = _build_model(adapter, device, train_cfg, init_checkpoint)
+    print("\nModel architecture:", flush=True)
+    print(model, flush=True)
+    param_stats = count_model_parameters(model)
+    print(
+        f"Parameters: {format_parameter_count(param_stats['parameters_total'])} "
+        f"({param_stats['parameters_trainable']:,} trainable)",
+        flush=True,
+    )
     loss_fn, optim, sched = _build_loss_and_optimizer(adapter, model, device)
 
     print(f"Device: {device}", flush=True)
