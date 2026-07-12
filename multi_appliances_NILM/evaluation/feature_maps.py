@@ -7,7 +7,7 @@ Layers are discovered automatically from the model graph; no hard-coded architec
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -21,8 +21,12 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from adapters.dataloader import _output_row_offset
-from evaluation.plots import _find_on_events
+from adapters.dataloader import WindowDataset, _output_row_offset, _output_slice, _split_key
+from evaluation.plots import (
+    FULL_CYCLE_APPLIANCES,
+    _find_on_events,
+    _window_for_on_event,
+)
 
 
 @dataclass
@@ -224,44 +228,138 @@ def _display_maps(
 _HEATMAP_GRID_SLOTS = [(0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]
 
 
-def _window_on_score(z: np.ndarray, min_duration: int) -> float:
-    events = _find_on_events(z, min_duration=min_duration)
-    if not events:
-        return float(z.mean())
-    return float(max(e - s + 1 for s, e in events))
+@dataclass(frozen=True)
+class OnPeriodPlotSettings:
+    margin_min: int = 40
+    margin_frac: float = 0.08
+    period_samples: int | None = None
+    full_cycle_appliances: frozenset[str] = FULL_CYCLE_APPLIANCES
+    dynamic_figsize: bool = True
+
+    @classmethod
+    def from_plot_cfg(cls, plot_cfg: dict[str, Any] | None) -> OnPeriodPlotSettings:
+        plot_cfg = plot_cfg or {}
+        raw = plot_cfg.get("on_period_samples", 0)
+        period_samples = None if raw is None or int(raw) <= 0 else int(raw)
+        full_cycle = plot_cfg.get("full_cycle_appliances")
+        return cls(
+            margin_min=int(plot_cfg.get("on_period_margin_min", 40)),
+            margin_frac=float(plot_cfg.get("on_period_margin_frac", 0.08)),
+            period_samples=period_samples,
+            full_cycle_appliances=frozenset(full_cycle or FULL_CYCLE_APPLIANCES),
+            dynamic_figsize=bool(plot_cfg.get("waveform_dynamic_figsize", True)),
+        )
 
 
-def find_on_windows(
-    loader: DataLoader,
+def _output_csv_on_labels(
+    data_loader,
+    split: str,
+    dataset: WindowDataset,
+    index: int,
+) -> np.ndarray:
+    """Dataset CSV *_on labels on the same timeline as model outputs."""
+    _, _, z_csv = data_loader.get_splits()[_split_key(split)]
+    start = int(dataset.indices[index])
+    if dataset.target_mode == "full_input":
+        sl = slice(start, start + dataset.seq_len)
+    else:
+        sl = _output_slice(start, dataset.seq_len, dataset.windowing)
+    return z_csv[sl].astype(np.float64)
+
+
+def _crop_to_on_period(
+    series_len: int,
+    event_start: int,
+    event_end: int,
     *,
+    settings: OnPeriodPlotSettings,
+    appliance: str,
+) -> tuple[int, int]:
+    period_cap = None if appliance in settings.full_cycle_appliances else settings.period_samples
+    return _window_for_on_event(
+        event_start,
+        event_end,
+        series_len,
+        margin_min=settings.margin_min,
+        margin_frac=settings.margin_frac,
+        max_samples=period_cap,
+    )
+
+
+def _slice_on_period(
+    arr: np.ndarray,
+    start: int,
+    end: int,
+    *,
+    channel_first: bool = False,
+) -> np.ndarray:
+    if channel_first:
+        return arr[:, start:end]
+    return arr[start:end]
+
+
+def _figsize_for_period(
+    cfg: FeatureMapConfig,
+    n_samples: int,
+    settings: OnPeriodPlotSettings,
+) -> tuple[float, float]:
+    fig_w, fig_h = cfg.figsize
+    if settings.dynamic_figsize and n_samples > 200:
+        fig_w = min(fig_w * 2.5, fig_w * (n_samples / 200) ** 0.45)
+    return fig_w, fig_h
+
+
+def find_on_period_examples(
+    data_loader,
+    split: str,
+    *,
+    appliance: str,
     appliance_idx: int,
     max_examples: int,
     min_on_duration: int,
-    max_batches: int = 64,
-) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]]:
-    """Return [(x, y, z, batch_index), ...] windows with clear ON periods."""
-    candidates: list[tuple[float, torch.Tensor, torch.Tensor, torch.Tensor, int]] = []
+    settings: OnPeriodPlotSettings,
+    max_windows: int = 2048,
+) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, int, int]]:
+    """Return windows with clear CSV-labelled ON periods and event bounds."""
+    dataset = data_loader._make_window_dataset(split)
+    min_dur = max(min_on_duration, 60 if appliance in settings.full_cycle_appliances else min_on_duration)
+    candidates: list[tuple[float, torch.Tensor, torch.Tensor, torch.Tensor, int, int, int]] = []
 
-    for batch_idx, batch in enumerate(loader):
-        if batch_idx >= max_batches:
-            break
-        x, y, z = batch
-        for i in range(len(x)):
-            z_i = z[i, :, appliance_idx].numpy() if z.dim() == 3 else z[i, appliance_idx].numpy()
-            score = _window_on_score(z_i, min_on_duration)
-            if score <= 0:
-                continue
-            candidates.append((score, x[i : i + 1], y[i : i + 1], z[i : i + 1], batch_idx * len(x) + i))
+    for index in range(min(len(dataset), max_windows)):
+        x, y, z = dataset[index]
+        csv_on = _output_csv_on_labels(data_loader, split, dataset, index)
+        if csv_on.ndim == 1:
+            on = csv_on
+        else:
+            on = csv_on[:, appliance_idx]
+        events = _find_on_events(on, min_duration=min_dur)
+        if not events:
+            continue
+
+        ev_start, ev_end = max(events, key=lambda t: t[1] - t[0])
+        score = float(ev_end - ev_start + 1)
+        candidates.append(
+            (
+                score,
+                x.unsqueeze(0),
+                y.unsqueeze(0),
+                z.unsqueeze(0),
+                index,
+                int(ev_start),
+                int(ev_end),
+            )
+        )
 
     candidates.sort(key=lambda item: item[0], reverse=True)
     if not candidates:
-        x, y, z = next(iter(loader))
-        return [(x[:1], y[:1], z[:1], 0)]
+        x, y, z = dataset[0]
+        n = len(y) if y.dim() == 1 else y.shape[0]
+        return [(x.unsqueeze(0), y.unsqueeze(0), z.unsqueeze(0), 0, 0, max(0, n - 1))]
 
-    out = []
-    for score, x, y, z, idx in candidates[:max_examples]:
-        out.append((x, y, z, idx))
-    return out
+    return [
+        (x, y, z, index, ev_start, ev_end)
+        for _, x, y, z, index, ev_start, ev_end in candidates[:max_examples]
+    ]
 
 
 def _plot_input_panel(ax: plt.Axes, aggregate_w: np.ndarray, gt_w: np.ndarray) -> None:
@@ -358,6 +456,7 @@ def save_feature_maps(
     if not cfg.enabled:
         return []
 
+    on_period = OnPeriodPlotSettings.from_plot_cfg(plot_cfg)
     appliances = appliances or adapter.cfg["appliances"]
     layers = discover_feature_layers(model, appliances)
     if not layers:
@@ -409,17 +508,21 @@ def save_feature_maps(
         return layer_maps
 
     for app_idx, app in enumerate(appliances):
-        windows = find_on_windows(
-            loader,
+        max_windows = 2048 if max_batches is None else max(256, max_batches * 32)
+        examples = find_on_period_examples(
+            data_loader,
+            split,
+            appliance=app,
             appliance_idx=app_idx,
             max_examples=cfg.max_examples,
             min_on_duration=cfg.min_on_duration,
-            max_batches=64 if max_batches is None else max_batches,
+            settings=on_period,
+            max_windows=max_windows,
         )
         app_dir = output_dir / app
         app_dir.mkdir(parents=True, exist_ok=True)
 
-        for ex_i, (x, y, z, _win_idx) in enumerate(windows):
+        for ex_i, (x, y, z, _dataset_idx, ev_start, ev_end) in enumerate(examples):
             x_dev = x.to(device)
             with capture_activations(layers) as cap, torch.no_grad():
                 model(x_dev)
@@ -429,13 +532,31 @@ def save_feature_maps(
                 continue
 
             agg_w, gt_w = _denorm_window(x, y, app_idx)
+            series_len = len(gt_w)
+            crop_start, crop_end = _crop_to_on_period(
+                series_len,
+                ev_start,
+                ev_end,
+                settings=on_period,
+                appliance=app,
+            )
+            agg_w = _slice_on_period(agg_w, crop_start, crop_end)
+            gt_w = _slice_on_period(gt_w, crop_start, crop_end)
+            layer_maps = [
+                (label, _slice_on_period(arr, crop_start, crop_end, channel_first=True))
+                for label, arr in layer_maps
+            ]
 
+            fig_cfg = replace(
+                cfg,
+                figsize=_figsize_for_period(cfg, len(agg_w), on_period),
+            )
             fig = plot_feature_map_figure(
                 aggregate_w=agg_w,
                 gt_w=gt_w,
                 layer_maps=layer_maps,
                 appliance=app,
-                cfg=cfg,
+                cfg=fig_cfg,
             )
             out_path = app_dir / f"feature_map_{ex_i:02d}.png"
             fig.savefig(out_path, dpi=cfg.dpi, bbox_inches="tight")
