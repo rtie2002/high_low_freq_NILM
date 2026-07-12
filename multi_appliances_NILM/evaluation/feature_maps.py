@@ -21,6 +21,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
+from adapters.dataloader import _output_row_offset
 from evaluation.plots import _find_on_events
 
 
@@ -78,7 +79,12 @@ def _pick_best_conv(convs: list[nn.Conv1d]) -> nn.Conv1d | None:
     if not convs:
         return None
     wide = [c for c in convs if int(c.kernel_size[0]) > 1]
-    return wide[-1] if wide else convs[-1]
+    if wide:
+        return wide[-1]
+    multi_channel = [c for c in convs if int(c.out_channels) > 1]
+    if multi_channel:
+        return multi_channel[-1]
+    return convs[-1]
 
 
 def _module_path(root: nn.Module, target: nn.Module) -> str:
@@ -173,7 +179,10 @@ class ActivationCapture:
         self.store.clear()
 
     def remove(self) -> None:
-        self.clear()
+        """Unregister hooks but keep captured tensors for post-processing."""
+        for handle in self._handles:
+            handle.remove()
+        self._handles.clear()
 
 
 @contextmanager
@@ -201,6 +210,27 @@ def _activation_to_map(tensor: torch.Tensor) -> np.ndarray:
     if arr.shape[0] > arr.shape[1]:
         arr = arr.T
     return arr
+
+
+def _align_aggregate_to_targets(
+    aggregate_w: np.ndarray,
+    target_len: int,
+    windowing: dict[str, Any],
+) -> np.ndarray:
+    """Crop/pad aggregate watts to the same timeline as model output targets."""
+    agg = aggregate_w.reshape(-1)
+    if len(agg) == target_len:
+        return agg
+    seq_len = len(agg)
+    offset = _output_row_offset(windowing, seq_len)
+    end = min(seq_len, offset + target_len)
+    if end <= offset:
+        return agg[:target_len]
+    out = agg[offset:end]
+    if len(out) < target_len:
+        pad = target_len - len(out)
+        out = np.pad(out, (0, pad), mode="constant")
+    return out[:target_len]
 
 
 def _normalize_map(arr: np.ndarray, mode: str) -> np.ndarray:
@@ -349,25 +379,39 @@ def save_feature_maps(
             x_dev = x.to(device)
             with capture_activations(layers) as cap, torch.no_grad():
                 model(x_dev)
-
-            layer_maps: list[tuple[str, np.ndarray]] = []
-            for spec in layers:
-                if spec.label not in cap.store:
-                    continue
-                try:
-                    arr = _activation_to_map(cap.store[spec.label])
-                except ValueError:
-                    continue
-                layer_maps.append((spec.label, arr))
+                layer_maps: list[tuple[str, np.ndarray]] = []
+                for spec in layers:
+                    if spec.label not in cap.store:
+                        continue
+                    try:
+                        arr = _activation_to_map(cap.store[spec.label])
+                    except ValueError:
+                        continue
+                    layer_maps.append((spec.label, arr))
 
             if not layer_maps:
                 continue
 
-            agg_w = data_loader.denorm_to_watts(x[0, :, 0].numpy()).reshape(-1)
-            if y.dim() == 3:
-                gt_w = data_loader.denorm_to_watts(y[0, :, app_idx].numpy()).reshape(-1)
+            norm = data_loader.norm
+            agg = x[0, :, 0].numpy().reshape(-1)
+            if norm.input_mean is not None and norm.input_std is not None:
+                agg_w = np.maximum(agg * float(norm.input_std) + float(norm.input_mean), 0.0)
             else:
-                gt_w = data_loader.denorm_to_watts(y[0, app_idx].numpy()).reshape(-1)
+                agg_w = agg
+            if y.dim() == 3:
+                gt = y[0, :, app_idx].numpy().reshape(-1)
+            else:
+                gt = y[0, app_idx].numpy().reshape(-1)
+            if norm.target_mean is not None and norm.target_std is not None:
+                gt_w = np.maximum(
+                    gt * float(norm.target_std[app_idx]) + float(norm.target_mean[app_idx]),
+                    0.0,
+                )
+            else:
+                gt_w = data_loader.denorm_to_watts(gt)
+
+            windowing = adapter.model_cfg.get("windowing", {})
+            agg_w = _align_aggregate_to_targets(agg_w, len(gt_w), windowing)
 
             fig = plot_feature_map_figure(
                 aggregate_w=agg_w,
@@ -387,6 +431,12 @@ def save_feature_maps(
         print(
             f"Saved {len(saved)} feature-map PNG(s) under {output_dir}/ "
             f"(layers: {layer_list})",
+            flush=True,
+        )
+    else:
+        print(
+            f"Feature maps: enabled but no PNGs saved under {output_dir}/ "
+            f"(check ON windows or conv hooks for {adapter.name})",
             flush=True,
         )
     return saved
