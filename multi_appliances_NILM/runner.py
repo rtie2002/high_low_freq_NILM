@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from pathlib import Path
 
 from typing import Any
@@ -56,6 +57,14 @@ from adapters.dataloader import (
 from evaluation.live_monitor import LiveTrainingMonitor
 from evaluation.metrics import evaluate_bundle
 from evaluation.plots import save_appliance_on_waveforms
+from evaluation.run_summary import (
+    build_hardware_info,
+    checkpoint_size_mb,
+    count_model_parameters,
+    format_parameter_count,
+    print_evaluation_report,
+    save_run_manifest,
+)
 
 
 def seed_everything(seed: int) -> None:
@@ -164,6 +173,18 @@ def _print_training_data_summary(
     print(flush=True)
     print(bar, flush=True)
     print(flush=True)
+
+
+def _format_duration(seconds: float) -> str:
+    """Format seconds as a compact human-readable duration."""
+    total = max(0, int(round(seconds)))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
 
 
 def _aggregate_logs(log_keys: list[str], n_batches: int, totals: dict[str, float]) -> dict[str, float]:
@@ -425,6 +446,7 @@ def _run_epoch(
         n_total = None
 
     phase = desc or ("train" if train else "val")
+    epoch_started = time.perf_counter()
 
     # Important difference between training and validation:
     #   torch.enable_grad() allows backward() during training.
@@ -500,6 +522,7 @@ def _run_epoch(
     if collect_states and aux_batches["true_state"]:
         z_true, z_pred = _epoch_state_arrays(adapter, aux_batches)
         logs.update(_state_f1_logs(z_true, z_pred))
+    logs["elapsed_sec"] = time.perf_counter() - epoch_started
     return logs
 
 
@@ -735,6 +758,30 @@ def train_model(
     run_dir.mkdir(parents=True, exist_ok=True)
     best_path = run_dir / "best.pt"
 
+    param_stats = count_model_parameters(model)
+    save_run_manifest(
+        run_dir / "run_manifest.json",
+        {
+            "experiment_id": adapter.experiment["experiment_id"],
+            "model_name": adapter.name,
+            "seed": int(seed_int),
+            "batch_size": int(train_loader.batch_size),
+            "epochs_configured": int(epochs),
+            "checkpoint_monitor": str(train_cfg.get("checkpoint_monitor", "val_loss")),
+            "windowing": adapter.model_cfg.get("windowing", {}),
+            "appliances": adapter.cfg["appliances"],
+            **param_stats,
+            **build_hardware_info(device),
+        },
+    )
+    try:
+        import yaml
+
+        with open(run_dir / "config_merged.yaml", "w", encoding="utf-8") as f:
+            yaml.safe_dump(adapter.cfg, f, sort_keys=False)
+    except Exception:
+        pass
+
     # Decide which validation metric saves best.pt.
     # Example:
     #   checkpoint_monitor: val_mae -> lower is better
@@ -756,6 +803,7 @@ def train_model(
     grad_clip = float(train_cfg.get("gradient_clip", 0.0))
     early_stop_patience = int(train_cfg.get("early_stop_patience", 0))
     epochs_without_improvement = 0
+    training_started = time.perf_counter()
 
     try:
         # Step 7:
@@ -806,6 +854,10 @@ def train_model(
             val_loss = float(val_logs["loss"])
             val_f1 = float(val_logs.get("val_f1", 0.0))
             val_mae = float(val_logs.get("mae", 0.0))
+            train_time_sec = float(train_logs.get("elapsed_sec", 0.0))
+            val_time_sec = float(val_logs.get("elapsed_sec", 0.0))
+            epoch_time_sec = train_time_sec + val_time_sec
+            cumulative_time_sec = time.perf_counter() - training_started
 
             # 6c. Optional scheduler step after validation.
             sched_metric = _epoch_score(scheduler_key, val_logs)
@@ -816,11 +868,15 @@ def train_model(
             history.append(
                 {
                     "epoch": epoch_no,
-                    **{f"train_{k}": v for k, v in train_logs.items()},
+                    **{f"train_{k}": v for k, v in train_logs.items() if k != "elapsed_sec"},
                     "val_loss": val_loss,
                     "val_f1": val_f1,
                     "val_maf1": float(val_logs.get("val_maf1", val_f1)),
                     "val_mif1": float(val_logs.get("val_mif1", 0.0)),
+                    "train_time_sec": train_time_sec,
+                    "val_time_sec": val_time_sec,
+                    "epoch_time_sec": epoch_time_sec,
+                    "cumulative_time_sec": cumulative_time_sec,
                 }
             )
             monitor.append_epoch(epoch=epoch_no, train_logs=train_logs, val_logs=val_logs)
@@ -834,7 +890,10 @@ def train_model(
             tqdm.write(
                 f"{epoch_tag} | train_loss={train_logs['loss']:.4f} | "
                 f"val_loss={val_loss:.4f} | val_f1={val_f1:.4f} | "
-                f"val_mae={val_mae:.4f}"
+                f"val_mae={val_mae:.4f} | "
+                f"time={_format_duration(epoch_time_sec)} "
+                f"(train {_format_duration(train_time_sec)}, "
+                f"val {_format_duration(val_time_sec)})"
                 + (" | new best" if improved else "")
             )
 
@@ -883,8 +942,36 @@ def train_model(
 
         # Step 8:
         # Save the final history file and close out the live monitor state.
+        total_training_sec = time.perf_counter() - training_started
+        epochs_completed = len(history)
+        timing_summary = {
+            "total_seconds": total_training_sec,
+            "total_formatted": _format_duration(total_training_sec),
+            "epochs_completed": epochs_completed,
+            "best_epoch": best_epoch,
+            "best_score": float(best_score) if best_epoch > 0 else None,
+            "checkpoint_monitor": monitor_key,
+            "avg_epoch_seconds": total_training_sec / max(epochs_completed, 1),
+            "avg_epoch_formatted": _format_duration(total_training_sec / max(epochs_completed, 1)),
+            **param_stats,
+            "checkpoint_file": best_path.name,
+            "checkpoint_size_mb": checkpoint_size_mb(best_path),
+        }
         with open(run_dir / "history.json", "w", encoding="utf-8") as f:
             json.dump(history, f, indent=2)
+        with open(run_dir / "training_time.json", "w", encoding="utf-8") as f:
+            json.dump(timing_summary, f, indent=2)
+        save_run_manifest(run_dir / "run_manifest.json", timing_summary)
+        ckpt_mb = timing_summary["checkpoint_size_mb"]
+        ckpt_note = f"checkpoint {ckpt_mb:.2f} MB" if ckpt_mb is not None else "checkpoint n/a"
+        tqdm.write(
+            f"Training finished in {timing_summary['total_formatted']} "
+            f"({epochs_completed} epochs, best epoch {best_epoch}, "
+            f"avg {_format_duration(timing_summary['avg_epoch_seconds'])}/epoch) | "
+            f"params {format_parameter_count(param_stats['parameters_total'])} | "
+            f"{ckpt_note}",
+            flush=True,
+        )
         monitor.finalize(best_epoch=best_epoch)
     finally:
         monitor.close()
@@ -971,14 +1058,6 @@ def evaluate_model(adapter, checkpoint: Path, run_dir: Path, split: str = "test"
         title_prefix=f"{adapter.name} {split} â€” ",
     )
 
-    per_app = metrics[metrics["appliance"] != "overall"]
-    overall = metrics[metrics["appliance"] == "overall"]
-    print(per_app[["appliance", "mae", "sae", "f1"]].to_string(index=False))
-    if not overall.empty:
-        row = overall.iloc[0]
-        print(
-            f"overall  mae={row['mae']:.4f}  sae={row['sae']:.4f}  "
-            f"f1={row['f1']:.4f}  micro_f1={row['micro_f1']:.4f}"
-        )
+    print_evaluation_report(metrics, run_dir, split=split)
     print(f"Saved {len(saved)} waveform PNGs under {waveform_dir}/<appliance>/")
     return pred_path

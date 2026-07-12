@@ -8,6 +8,7 @@ import pandas as pd
 
 from adapters.common import PredictionBundle
 from evaluation.metrics import evaluate_bundle
+from evaluation.run_summary import enrich_compare_table
 
 
 def compare_experiment(runs_dir: Path, experiment_id: str) -> pd.DataFrame:
@@ -27,6 +28,30 @@ def compare_experiment(runs_dir: Path, experiment_id: str) -> pd.DataFrame:
         raise FileNotFoundError(f"No test_predictions.npz under {exp_dir}")
 
     table = pd.concat(frames, ignore_index=True)
+    table = enrich_compare_table(table, runs_dir, experiment_id)
     out_path = exp_dir / "compare_results.csv"
     table.to_csv(out_path, index=False)
+
+    overall = table[table["appliance"] == "overall"].copy()
+    if not overall.empty:
+        show_cols = [
+            c
+            for c in [
+                "model",
+                "mae",
+                "sae",
+                "f1",
+                "micro_f1",
+                "parameters_m",
+                "training_time",
+                "checkpoint_mb",
+                "best_epoch",
+                "best_score",
+            ]
+            if c in overall.columns
+        ]
+        print("\nModel comparison (overall test metrics + cost):", flush=True)
+        print(overall[show_cols].to_string(index=False), flush=True)
+        print(f"\nSaved full table: {out_path}", flush=True)
+
     return table

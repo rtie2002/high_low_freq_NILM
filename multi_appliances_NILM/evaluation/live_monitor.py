@@ -102,12 +102,22 @@ class LiveTrainingMonitor:
         return None if value is None else int(value)
 
     def append_epoch(self, *, epoch: int, train_logs: dict[str, float], val_logs: dict[str, float]) -> None:
+        train_time_sec = float(train_logs.get("elapsed_sec", float("nan")))
+        val_time_sec = float(val_logs.get("elapsed_sec", float("nan")))
+        epoch_time_sec = (
+            train_time_sec + val_time_sec
+            if np.isfinite(train_time_sec) and np.isfinite(val_time_sec)
+            else float("nan")
+        )
         history_row = {
             "epoch": epoch,
             "train_loss": train_logs.get("loss", float("nan")),
             "val_loss": val_logs.get("loss", float("nan")),
             "train_mae": train_logs.get("mae", float("nan")),
             "val_mae": val_logs.get("mae", float("nan")),
+            "train_time_sec": train_time_sec,
+            "val_time_sec": val_time_sec,
+            "epoch_time_sec": epoch_time_sec,
         }
         loss_row = {
             "epoch": epoch,
