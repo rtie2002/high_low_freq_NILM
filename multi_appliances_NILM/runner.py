@@ -289,9 +289,11 @@ def _batch_to_device(batch, device: torch.device):
 def _resolve_checkpoint_monitor(train_cfg: dict) -> tuple[str, str, float]:
     """Decide which validation metric selects best.pt.
 
-    Config example:
+    Config examples:
 
         checkpoint_monitor: val_mae
+        checkpoint_monitor: val_f1
+        checkpoint_monitor: val_mae_minus_f1   # transfer-learning baseline: MAE - F1
 
     Return:
 
@@ -305,6 +307,8 @@ def _resolve_checkpoint_monitor(train_cfg: dict) -> tuple[str, str, float]:
         "val_maf1": "val_f1",
         "val_loss": "loss",
         "val_mae": "mae",
+        "val_mae_minus_f1": "val_mae_minus_f1",
+        "mae_minus_f1": "val_mae_minus_f1",
     }
     key = aliases.get(monitor, monitor)
     if key == "val_f1":
@@ -314,6 +318,8 @@ def _resolve_checkpoint_monitor(train_cfg: dict) -> tuple[str, str, float]:
 
 def _epoch_score(monitor_key: str, logs: dict[str, float]) -> float:
     """Read the checkpoint metric from one epoch's validation logs."""
+    if monitor_key == "val_mae_minus_f1":
+        return float(logs.get("mae", float("inf"))) - float(logs.get("val_f1", 0.0))
     if monitor_key in logs:
         return float(logs[monitor_key])
     if monitor_key == "val_f1":
@@ -621,6 +627,8 @@ def _compute_scheduler_key(train_cfg: dict, monitor_key: str) -> str:
         "val_maf1": "val_f1",
         "val_loss": "loss",
         "val_mae": "mae",
+        "val_mae_minus_f1": "val_mae_minus_f1",
+        "mae_minus_f1": "val_mae_minus_f1",
     }
     return scheduler_aliases.get(scheduler_raw, scheduler_raw)
 
@@ -893,10 +901,14 @@ def train_model(
             if _is_better(ckpt_score, best_score, monitor_mode):
                 improved = True
 
+            ckpt_note = ""
+            if monitor_key == "val_mae_minus_f1":
+                ckpt_note = f" | ckpt={ckpt_score:.4f} (mae-f1)"
+
             tqdm.write(
                 f"{epoch_tag} | train_loss={train_logs['loss']:.4f} | "
                 f"val_loss={val_loss:.4f} | val_f1={val_f1:.4f} | val_acc={val_acc:.4f} | "
-                f"val_mae={val_mae:.4f} | "
+                f"val_mae={val_mae:.4f}{ckpt_note} | "
                 f"time={_format_duration(epoch_time_sec)} "
                 f"(train {_format_duration(train_time_sec)}, "
                 f"val {_format_duration(val_time_sec)})"
