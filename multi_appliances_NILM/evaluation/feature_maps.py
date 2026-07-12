@@ -81,6 +81,18 @@ def _pick_best_conv(convs: list[nn.Conv1d]) -> nn.Conv1d | None:
     return convs[-1]
 
 
+def _pick_head_feature_module(head: nn.Module) -> nn.Module | None:
+    """Appliance-head features for plotting (not shared encoder, not 1-ch power/state).
+
+    MultiNILM: hook feature_refine output (Conv+BN+GELU) — per-appliance latent features.
+    TransferNILM: hook the k=5 head conv (paper-style last conv in the head).
+    """
+    refine = getattr(head, "feature_refine", None)
+    if isinstance(refine, nn.Sequential):
+        return refine
+    return _pick_best_conv(_meaningful_convs(head))
+
+
 def discover_feature_layers(model: nn.Module, appliances: list[str]) -> list[LayerSpec]:
     layers: list[LayerSpec] = []
     seen: set[int] = set()
@@ -97,11 +109,11 @@ def discover_feature_layers(model: nn.Module, appliances: list[str]) -> list[Lay
         if not isinstance(heads, nn.ModuleList):
             continue
         for idx, head in enumerate(heads):
-            conv = _pick_best_conv(_meaningful_convs(head))
-            if conv is None:
+            module = _pick_head_feature_module(head)
+            if module is None:
                 continue
             app = appliances[idx] if idx < len(appliances) else f"head_{idx}"
-            add(f"CNN {app}", conv)
+            add(f"CNN {app}", module)
 
     if not layers:
         for name, module in model.named_modules():
