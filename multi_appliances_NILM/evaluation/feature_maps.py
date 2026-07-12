@@ -25,6 +25,7 @@ from adapters.dataloader import WindowDataset, _output_row_offset, _output_slice
 from evaluation.plots import (
     FULL_CYCLE_APPLIANCES,
     _find_on_events,
+    _pick_random_on_events,
     _window_for_on_event,
 )
 
@@ -184,27 +185,6 @@ def _activation_to_map(tensor: torch.Tensor) -> np.ndarray:
     return arr
 
 
-def _align_aggregate_to_targets(
-    aggregate_w: np.ndarray,
-    target_len: int,
-    windowing: dict[str, Any],
-) -> np.ndarray:
-    """Crop/pad aggregate watts to the same timeline as model output targets."""
-    agg = aggregate_w.reshape(-1)
-    if len(agg) == target_len:
-        return agg
-    seq_len = len(agg)
-    offset = _output_row_offset(windowing, seq_len)
-    end = min(seq_len, offset + target_len)
-    if end <= offset:
-        return agg[:target_len]
-    out = agg[offset:end]
-    if len(out) < target_len:
-        pad = target_len - len(out)
-        out = np.pad(out, (0, pad), mode="constant")
-    return out[:target_len]
-
-
 def _prepare_activation_map(arr: np.ndarray, cfg: FeatureMapConfig) -> np.ndarray:
     out = np.asarray(arr, dtype=np.float64)
     if cfg.display_activation == "relu":
@@ -309,6 +289,108 @@ def _figsize_for_period(
     return fig_w, fig_h
 
 
+def _output_csv_range(dataset: WindowDataset, index: int) -> tuple[int, int]:
+    """CSV row range [start, end) covered by one model output window."""
+    offset = _output_row_offset(dataset.windowing, dataset.seq_len)
+    start = int(dataset.indices[index]) + offset
+    out_len = int(dataset.windowing.get("output_window_length", 1))
+    if dataset.target_mode == "full_input":
+        out_len = dataset.seq_len
+        start = int(dataset.indices[index])
+    return start, start + out_len
+
+
+def _event_margin(ev_start: int, ev_end: int, settings: OnPeriodPlotSettings) -> int:
+    event_len = max(1, ev_end - ev_start + 1)
+    return max(settings.margin_min, int(settings.margin_frac * event_len))
+
+
+def _event_fits_window(ev_start: int, ev_end: int, win_start: int, win_end: int) -> bool:
+    return win_start <= ev_start and win_end > ev_end
+
+
+def _find_best_window_for_event(
+    dataset: WindowDataset,
+    ev_start: int,
+    ev_end: int,
+    *,
+    settings: OnPeriodPlotSettings,
+    require_full_event: bool,
+) -> tuple[int, int, int] | None:
+    """Return (dataset_index, local_event_start, local_event_end) for a CSV ON event."""
+    margin = _event_margin(ev_start, ev_end, settings)
+    best: tuple[float, int, int, int] | None = None
+
+    for index in range(len(dataset)):
+        win_start, win_end = _output_csv_range(dataset, index)
+        win_len = win_end - win_start
+        if require_full_event and not _event_fits_window(ev_start, ev_end, win_start, win_end):
+            continue
+
+        local_start = max(ev_start, win_start) - win_start
+        local_end = min(ev_end, win_end - 1) - win_start
+        if local_end < local_start:
+            continue
+
+        left_room = local_start
+        right_room = win_len - 1 - local_end
+        score = float(min(left_room, right_room))
+        if left_room >= margin and right_room >= margin:
+            score += 10_000.0
+        if require_full_event:
+            score += float(ev_end - ev_start + 1)
+
+        if best is None or score > best[0]:
+            best = (score, index, int(local_start), int(local_end))
+
+    if best is None:
+        return None
+    _, index, local_start, local_end = best
+    return index, local_start, local_end
+
+
+def _raw_series_for_csv_slice(
+    data_loader,
+    split: str,
+    csv_start: int,
+    csv_end: int,
+    appliance_idx: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    x_raw, y_raw, _ = data_loader.get_splits()[_split_key(split)]
+    csv_end = min(int(csv_end), len(x_raw))
+    csv_start = max(0, int(csv_start))
+    agg_w = x_raw[csv_start:csv_end].astype(np.float64)
+    gt_w = data_loader.norm.denorm(y_raw[csv_start:csv_end])
+    if gt_w.ndim == 2:
+        gt_w = gt_w[:, appliance_idx]
+    return agg_w, np.asarray(gt_w, dtype=np.float64).reshape(-1)
+
+
+def _split_long_event(
+    ev_start: int,
+    ev_end: int,
+    *,
+    max_len: int,
+    min_duration: int,
+) -> list[tuple[int, int]]:
+    """Break an ON run into segments short enough to fit one model window."""
+    if ev_end < ev_start:
+        return []
+    if ev_end - ev_start + 1 <= max_len:
+        return [(ev_start, ev_end)]
+
+    chunks: list[tuple[int, int]] = []
+    start = ev_start
+    while start <= ev_end:
+        end = min(ev_end, start + max_len - 1)
+        if end - start + 1 >= min_duration:
+            chunks.append((start, end))
+        if end >= ev_end:
+            break
+        start = end + 1
+    return chunks
+
+
 def find_on_period_examples(
     data_loader,
     split: str,
@@ -318,48 +400,118 @@ def find_on_period_examples(
     max_examples: int,
     min_on_duration: int,
     settings: OnPeriodPlotSettings,
-    max_windows: int = 2048,
+    seed: int = 0,
 ) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, int, int]]:
-    """Return windows with clear CSV-labelled ON periods and event bounds."""
+    """Pick CSV-labelled ON periods that fit fully inside one model window."""
     dataset = data_loader._make_window_dataset(split)
-    min_dur = max(min_on_duration, 60 if appliance in settings.full_cycle_appliances else min_on_duration)
-    candidates: list[tuple[float, torch.Tensor, torch.Tensor, torch.Tensor, int, int, int]] = []
+    _, y_raw, z_csv = data_loader.get_splits()[_split_key(split)]
+    on_flat = z_csv[:, appliance_idx].astype(np.float64)
+    power_flat = data_loader.norm.denorm(y_raw)[:, appliance_idx]
 
-    for index in range(min(len(dataset), max_windows)):
-        x, y, z = dataset[index]
-        csv_on = _output_csv_on_labels(data_loader, split, dataset, index)
-        if csv_on.ndim == 1:
-            on = csv_on
-        else:
-            on = csv_on[:, appliance_idx]
-        events = _find_on_events(on, min_duration=min_dur)
-        if not events:
+    min_dur = max(min_on_duration, 60 if appliance in settings.full_cycle_appliances else min_on_duration)
+    prefer_longest = appliance in settings.full_cycle_appliances
+    rng = np.random.default_rng(seed)
+
+    flat_events = _pick_random_on_events(
+        on_flat,
+        power_flat,
+        n_periods=max(max_examples * 8, max_examples),
+        rng=rng,
+        min_duration=min_dur,
+        prefer_longest=prefer_longest,
+    )
+
+    out_len = int(dataset.windowing.get("output_window_length", 256))
+    max_event_len = max(out_len - 2 * settings.margin_min, min_dur)
+    expanded_events: list[tuple[int, int]] = []
+    for ev_start, ev_end in flat_events:
+        expanded_events.extend(
+            _split_long_event(
+                ev_start,
+                ev_end,
+                max_len=max_event_len,
+                min_duration=min_dur,
+            )
+        )
+
+    examples: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, int, int]] = []
+    seen: set[tuple[int, int, int]] = set()
+
+    for ev_start, ev_end in expanded_events:
+        if len(examples) >= max_examples:
+            break
+
+        placement = _find_best_window_for_event(
+            dataset,
+            ev_start,
+            ev_end,
+            settings=settings,
+            require_full_event=not prefer_longest,
+        )
+        if placement is None and prefer_longest:
+            placement = _find_best_window_for_event(
+                dataset,
+                ev_start,
+                ev_end,
+                settings=settings,
+                require_full_event=False,
+            )
+        if placement is None:
             continue
 
-        ev_start, ev_end = max(events, key=lambda t: t[1] - t[0])
-        score = float(ev_end - ev_start + 1)
-        candidates.append(
+        index, local_start, local_end = placement
+        win_start, win_end = _output_csv_range(dataset, index)
+        win_len = win_end - win_start
+        crop_start, crop_end = _crop_to_on_period(
+            win_len,
+            local_start,
+            local_end,
+            settings=settings,
+            appliance=appliance,
+        )
+
+        key = (index, crop_start, crop_end)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        x, y, z = dataset[index]
+        examples.append(
             (
-                score,
                 x.unsqueeze(0),
                 y.unsqueeze(0),
                 z.unsqueeze(0),
                 index,
-                int(ev_start),
-                int(ev_end),
+                int(crop_start),
+                int(crop_end),
             )
         )
 
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    if not candidates:
-        x, y, z = dataset[0]
-        n = len(y) if y.dim() == 1 else y.shape[0]
-        return [(x.unsqueeze(0), y.unsqueeze(0), z.unsqueeze(0), 0, 0, max(0, n - 1))]
+    if examples:
+        return examples
 
-    return [
-        (x, y, z, index, ev_start, ev_end)
-        for _, x, y, z, index, ev_start, ev_end in candidates[:max_examples]
-    ]
+    # Fallback: first window with any CSV-labelled ON in its output range.
+    for index in range(len(dataset)):
+        csv_on = _output_csv_on_labels(data_loader, split, dataset, index)
+        on = csv_on if csv_on.ndim == 1 else csv_on[:, appliance_idx]
+        events = _find_on_events(on, min_duration=min_dur)
+        if not events:
+            continue
+        local_start, local_end = max(events, key=lambda t: t[1] - t[0])
+        win_start, win_end = _output_csv_range(dataset, index)
+        crop_start, crop_end = _crop_to_on_period(
+            win_end - win_start,
+            local_start,
+            local_end,
+            settings=settings,
+            appliance=appliance,
+        )
+        x, y, z = dataset[index]
+        return [(x.unsqueeze(0), y.unsqueeze(0), z.unsqueeze(0), index, crop_start, crop_end)]
+
+    x, y, z = dataset[0]
+    n = len(y) if y.dim() == 1 else y.shape[0]
+    return [(x.unsqueeze(0), y.unsqueeze(0), z.unsqueeze(0), 0, 0, max(0, n - 1))]
 
 
 def _plot_input_panel(ax: plt.Axes, aggregate_w: np.ndarray, gt_w: np.ndarray) -> None:
@@ -468,32 +620,7 @@ def save_feature_maps(
     data_loader = adapter._data_loader()
     model.eval()
     saved: list[Path] = []
-
-    def _denorm_window(
-        x: torch.Tensor,
-        y: torch.Tensor,
-        app_idx: int,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        norm = data_loader.norm
-        agg = x[0, :, 0].numpy().reshape(-1)
-        if norm.input_mean is not None and norm.input_std is not None:
-            agg_w = np.maximum(agg * float(norm.input_std) + float(norm.input_mean), 0.0)
-        else:
-            agg_w = agg
-        if y.dim() == 3:
-            gt = y[0, :, app_idx].numpy().reshape(-1)
-        else:
-            gt = y[0, app_idx].numpy().reshape(-1)
-        if norm.target_mean is not None and norm.target_std is not None:
-            gt_w = np.maximum(
-                gt * float(norm.target_std[app_idx]) + float(norm.target_mean[app_idx]),
-                0.0,
-            )
-        else:
-            gt_w = data_loader.denorm_to_watts(gt)
-        windowing = adapter.model_cfg.get("windowing", {})
-        agg_w = _align_aggregate_to_targets(agg_w, len(gt_w), windowing)
-        return agg_w, gt_w
+    seed = int(adapter.cfg.get("seed", 0))
 
     def _collect_layer_maps(cap: ActivationCapture) -> list[tuple[str, np.ndarray]]:
         layer_maps: list[tuple[str, np.ndarray]] = []
@@ -508,7 +635,6 @@ def save_feature_maps(
         return layer_maps
 
     for app_idx, app in enumerate(appliances):
-        max_windows = 2048 if max_batches is None else max(256, max_batches * 32)
         examples = find_on_period_examples(
             data_loader,
             split,
@@ -517,12 +643,12 @@ def save_feature_maps(
             max_examples=cfg.max_examples,
             min_on_duration=cfg.min_on_duration,
             settings=on_period,
-            max_windows=max_windows,
+            seed=seed + app_idx * 997 + (0 if split == "validation" else 1) * 17,
         )
         app_dir = output_dir / app
         app_dir.mkdir(parents=True, exist_ok=True)
 
-        for ex_i, (x, y, z, _dataset_idx, ev_start, ev_end) in enumerate(examples):
+        for ex_i, (x, y, z, dataset_idx, crop_start, crop_end) in enumerate(examples):
             x_dev = x.to(device)
             with capture_activations(layers) as cap, torch.no_grad():
                 model(x_dev)
@@ -531,17 +657,15 @@ def save_feature_maps(
             if not layer_maps:
                 continue
 
-            agg_w, gt_w = _denorm_window(x, y, app_idx)
-            series_len = len(gt_w)
-            crop_start, crop_end = _crop_to_on_period(
-                series_len,
-                ev_start,
-                ev_end,
-                settings=on_period,
-                appliance=app,
+            dataset = data_loader._make_window_dataset(split)
+            win_start, _ = _output_csv_range(dataset, dataset_idx)
+            agg_w, gt_w = _raw_series_for_csv_slice(
+                data_loader,
+                split,
+                win_start + crop_start,
+                win_start + crop_end,
+                app_idx,
             )
-            agg_w = _slice_on_period(agg_w, crop_start, crop_end)
-            gt_w = _slice_on_period(gt_w, crop_start, crop_end)
             layer_maps = [
                 (label, _slice_on_period(arr, crop_start, crop_end, channel_first=True))
                 for label, arr in layer_maps
