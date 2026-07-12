@@ -57,7 +57,7 @@ training:
     on_period_margin_min: 40
     on_period_margin_frac: 0.08
     feature_maps:
-      enabled: false
+      enabled: true
       max_examples: 2
       layer_mode: auto
       cmap: hot

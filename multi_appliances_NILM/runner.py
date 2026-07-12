@@ -194,24 +194,23 @@ def _aggregate_logs(log_keys: list[str], n_batches: int, totals: dict[str, float
 
 
 def _state_f1_logs(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
-    """Compute validation F1 from collected ON/OFF predictions.
+    """Compute validation ON/OFF metrics from collected state predictions.
 
-    This helper is generic for MATNILM, MultiNILM, and future models.
-    Each adapter only needs to return these two tensors in StepOutput.aux:
+    Each adapter returns pred_state / true_state (or threshold-derived labels)
+    in StepOutput.aux. Reported metrics:
 
-        pred_state -> predicted ON/OFF labels
-        true_state -> true ON/OFF labels
-
-    The runner then reports:
-
-        val_f1   : mean F1 over appliances
-        val_maf1 : same value, kept for compatibility
-        val_mif1 : micro F1 over all appliance/timestep decisions
+        val_f1     : macro mean F1 over appliances (ON-class focus)
+        val_maf1   : same as val_f1 (compat)
+        val_mif1   : micro F1 pooled over all appliance×timestep decisions
+        val_acc    : macro mean accuracy over appliances
+        val_macc   : same as val_acc (compat)
+        val_miacc  : micro accuracy pooled over all decisions
     """
     y_true = y_true.astype(bool)
     y_pred = y_pred.astype(bool)
-    scores = []
-    total_tp = total_fp = total_fn = 0
+    f1_scores = []
+    acc_scores = []
+    total_tp = total_fp = total_fn = total_tn = 0
 
     for app_i in range(y_true.shape[1]):
         yt = y_true[:, app_i]
@@ -219,14 +218,26 @@ def _state_f1_logs(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
         tp = int(np.logical_and(yt, yp).sum())
         fp = int(np.logical_and(~yt, yp).sum())
         fn = int(np.logical_and(yt, ~yp).sum())
+        tn = int(np.logical_and(~yt, ~yp).sum())
         total_tp += tp
         total_fp += fp
         total_fn += fn
-        scores.append(2 * tp / max(2 * tp + fp + fn, 1))
+        total_tn += tn
+        f1_scores.append(2 * tp / max(2 * tp + fp + fn, 1))
+        acc_scores.append((tp + tn) / max(tp + tn + fp + fn, 1))
 
-    macro_f1 = float(np.mean(scores)) if scores else 0.0
+    macro_f1 = float(np.mean(f1_scores)) if f1_scores else 0.0
     micro_f1 = float(2 * total_tp / max(2 * total_tp + total_fp + total_fn, 1))
-    return {"val_f1": macro_f1, "val_maf1": macro_f1, "val_mif1": micro_f1}
+    macro_acc = float(np.mean(acc_scores)) if acc_scores else 0.0
+    micro_acc = float((total_tp + total_tn) / max(total_tp + total_tn + total_fp + total_fn, 1))
+    return {
+        "val_f1": macro_f1,
+        "val_maf1": macro_f1,
+        "val_mif1": micro_f1,
+        "val_acc": macro_acc,
+        "val_macc": macro_acc,
+        "val_miacc": micro_acc,
+    }
 
 
 def _epoch_state_arrays(adapter, aux_batches: dict[str, list[np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
@@ -854,6 +865,7 @@ def train_model(
             )
             val_loss = float(val_logs["loss"])
             val_f1 = float(val_logs.get("val_f1", 0.0))
+            val_acc = float(val_logs.get("val_acc", 0.0))
             val_mae = float(val_logs.get("mae", 0.0))
             train_time_sec = float(train_logs.get("elapsed_sec", 0.0))
             val_time_sec = float(val_logs.get("elapsed_sec", 0.0))
@@ -872,8 +884,10 @@ def train_model(
                     **{f"train_{k}": v for k, v in train_logs.items() if k != "elapsed_sec"},
                     "val_loss": val_loss,
                     "val_f1": val_f1,
+                    "val_acc": val_acc,
                     "val_maf1": float(val_logs.get("val_maf1", val_f1)),
                     "val_mif1": float(val_logs.get("val_mif1", 0.0)),
+                    "val_miacc": float(val_logs.get("val_miacc", val_acc)),
                     "train_time_sec": train_time_sec,
                     "val_time_sec": val_time_sec,
                     "epoch_time_sec": epoch_time_sec,
@@ -890,7 +904,7 @@ def train_model(
 
             tqdm.write(
                 f"{epoch_tag} | train_loss={train_logs['loss']:.4f} | "
-                f"val_loss={val_loss:.4f} | val_f1={val_f1:.4f} | "
+                f"val_loss={val_loss:.4f} | val_f1={val_f1:.4f} | val_acc={val_acc:.4f} | "
                 f"val_mae={val_mae:.4f} | "
                 f"time={_format_duration(epoch_time_sec)} "
                 f"(train {_format_duration(train_time_sec)}, "
