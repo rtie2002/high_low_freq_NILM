@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from adapters.common import BaseNILMAdapter, StepOutput, center_output_slice
+from adapters.multinilm import _pred_on_from_config, _to_numpy
 from model.TransferNILM import TransferMultiApplianceModel, transfer_nilm_config
 from model.TransferNILM_loss import TransferNILMLoss
 
@@ -72,7 +73,9 @@ class TransferMultiApplianceAdapter(BaseNILMAdapter):
         power_pred, state_prob = model(x)
         power_pred, state_prob, y, z = self._align_loss_tensors(power_pred, state_prob, y, z)
         out = loss_fn(power_pred, state_prob, y, z)
-        pred_state = (state_prob >= 0.5).long()
+        pred_state = torch.from_numpy(
+            _pred_on_from_config(self, _to_numpy(power_pred), _to_numpy(state_prob))
+        ).long()
 
         app_logs = {}
         for app_i, app in enumerate(self.cfg["appliances"]):
@@ -125,8 +128,8 @@ class TransferMultiApplianceAdapter(BaseNILMAdapter):
             x = x.to(device)
             power_pred, state_prob = model(x)
 
-            power_pred = power_pred[:, out_slice, :].cpu().numpy()
-            state_prob = state_prob[:, out_slice, :].cpu().numpy()
+            power_np = power_pred[:, out_slice, :]
+            state_np = state_prob[:, out_slice, :]
 
             if y.dim() == 3 and y.shape[1] == out_len:
                 y_true = y.numpy()
@@ -136,8 +139,12 @@ class TransferMultiApplianceAdapter(BaseNILMAdapter):
                 z_true = z[:, out_slice, :].numpy() if z.dim() == 3 else z.numpy()
 
             n_apps = len(self.cfg["appliances"])
-            pred_power.append(power_pred.reshape(len(x), -1, n_apps))
-            pred_state.append((state_prob >= 0.5).astype(np.int32).reshape(len(x), -1, n_apps))
+            pred_power.append(_to_numpy(power_np).reshape(len(x), -1, n_apps))
+            pred_state.append(
+                _pred_on_from_config(self, _to_numpy(power_np), _to_numpy(state_np)).reshape(
+                    len(x), -1, n_apps
+                )
+            )
             true_power.append(y_true.reshape(len(x), -1, n_apps))
             true_state.append(z_true.reshape(len(x), -1, n_apps))
             sample_indices.append(self._sample_index(offset, len(x)))
