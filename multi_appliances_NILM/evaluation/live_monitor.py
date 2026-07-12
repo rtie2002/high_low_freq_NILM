@@ -11,6 +11,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
 from evaluation.plots import (
     FULL_CYCLE_APPLIANCES,
     plot_loss_components,
@@ -181,6 +182,12 @@ class LiveTrainingMonitor:
                     figsize=figsize,
                 )
 
+    def feature_map_cfg(self) -> FeatureMapConfig:
+        return FeatureMapConfig.from_dict(self.plot_cfg.get("feature_maps"))
+
+    def should_plot_feature_maps(self) -> bool:
+        return self.feature_map_cfg().enabled
+
     @torch.no_grad()
     def save_waveforms(
         self,
@@ -207,6 +214,18 @@ class LiveTrainingMonitor:
                         adapter, model, test_loader, device, split="test", epoch=epoch, tag="latest"
                     )
                 )
+            if self.should_plot_feature_maps():
+                saved.extend(
+                    self._save_feature_maps(
+                        adapter, model, val_loader, device, split="validation", epoch=epoch, tag="latest"
+                    )
+                )
+                if test_loader is not None:
+                    saved.extend(
+                        self._save_feature_maps(
+                            adapter, model, test_loader, device, split="test", epoch=epoch, tag="latest"
+                        )
+                    )
         else:
             saved.extend(
                 self._save_split_waveforms(
@@ -219,7 +238,44 @@ class LiveTrainingMonitor:
                         adapter, model, test_loader, device, split="test", epoch=epoch, tag="best"
                     )
                 )
+            if self.should_plot_feature_maps():
+                saved.extend(
+                    self._save_feature_maps(
+                        adapter, model, val_loader, device, split="validation", epoch=epoch, tag="best"
+                    )
+                )
+                if test_loader is not None:
+                    saved.extend(
+                        self._save_feature_maps(
+                            adapter, model, test_loader, device, split="test", epoch=epoch, tag="best"
+                        )
+                    )
         return saved
+
+    def _save_feature_maps(
+        self,
+        adapter,
+        model: torch.nn.Module,
+        loader: DataLoader,
+        device: torch.device,
+        *,
+        split: str,
+        epoch: int,
+        tag: str,
+    ) -> list[Path]:
+        cfg = self.feature_map_cfg()
+        if not cfg.enabled:
+            return []
+        output_dir = self.run_dir / "feature_maps" / split / tag / f"epoch_{epoch:04d}"
+        return save_feature_maps(
+            adapter,
+            model,
+            loader,
+            output_dir,
+            split=split,
+            device=device,
+            cfg=cfg,
+        )
 
     def _waveform_tag_dir(self, split: str, tag: str) -> Path:
         return self.waveforms_dir / split / tag

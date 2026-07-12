@@ -55,6 +55,7 @@ from adapters.dataloader import (
     resolve_state_thresholds_watts,
 )
 from evaluation.live_monitor import LiveTrainingMonitor
+from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
 from evaluation.metrics import evaluate_bundle
 from evaluation.plots import save_appliance_on_waveforms
 from evaluation.run_summary import (
@@ -1066,4 +1067,18 @@ def evaluate_model(
 
     print_evaluation_report(metrics, run_dir, split=split, show_cost_summary=show_cost_summary)
     print(f"Saved {len(saved)} waveform PNGs under {waveform_dir}/<appliance>/")
+
+    feature_cfg = FeatureMapConfig.from_dict(plot_cfg.get("feature_maps"))
+    if feature_cfg.enabled:
+        feature_dir = run_dir / "feature_maps" / split
+        save_feature_maps(
+            adapter,
+            model,
+            loader,
+            feature_dir,
+            split=split,
+            device=device,
+            cfg=feature_cfg,
+        )
+
     return pred_path

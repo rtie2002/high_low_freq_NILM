@@ -56,3 +56,11 @@ training:
     waveform_dynamic_figsize: true
     on_period_margin_min: 40
     on_period_margin_frac: 0.08
+    feature_maps:
+      enabled: false
+      max_examples: 2
+      layer_mode: auto
+      cmap: hot
+      normalize: per_map
+      min_on_duration: 10
+      dpi: 200
