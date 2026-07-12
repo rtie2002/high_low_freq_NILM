@@ -57,7 +57,7 @@ from adapters.dataloader import (
 from evaluation.live_monitor import LiveTrainingMonitor
 from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
 from evaluation.metrics import evaluate_bundle
-from evaluation.plots import save_appliance_on_waveforms
+from evaluation.plots import dataset_on_labels_for_bundle, save_appliance_on_waveforms
 from evaluation.run_summary import (
     build_hardware_info,
     checkpoint_size_mb,
@@ -632,23 +632,6 @@ def _state_eval_thresholds(model_cfg: dict, experiment_cfg: dict, appliances: li
     return resolve_state_thresholds_watts(experiment_cfg, appliances)
 
 
-def _waveform_dataset_on_labels(
-    adapter,
-    split: str,
-    n_points: int,
-    csv_timesteps: np.ndarray | None = None,
-) -> np.ndarray:
-    """Dataset CSV *_on labels for waveform plots only.
-
-    When the prediction bundle carries csv_timesteps (overlap reconstruction),
-    index raw CSV labels at those rows so ON periods align with y_true/y_pred.
-    """
-    loader = adapter._data_loader()
-    if csv_timesteps is not None and len(csv_timesteps) >= n_points:
-        return loader.csv_on_labels_at_timesteps(split, csv_timesteps[:n_points])
-    return loader.window_flattened_csv_states(split, n_points)
-
-
 def _save_latest_waveforms(
     *,
     monitor: LiveTrainingMonitor,
@@ -1059,8 +1042,8 @@ def evaluate_model(
 
     raw_period = plot_cfg.get("on_period_samples", 0)
     period_samples = None if raw_period is None or int(raw_period) <= 0 else int(raw_period)
-    waveform_true_on = _waveform_dataset_on_labels(
-        adapter,
+    waveform_true_on = dataset_on_labels_for_bundle(
+        adapter._data_loader(),
         split,
         len(bundle.y_true_watts),
         bundle.csv_timesteps,

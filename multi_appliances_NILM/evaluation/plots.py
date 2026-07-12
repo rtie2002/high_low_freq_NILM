@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
@@ -43,6 +44,80 @@ def _find_on_events(on: np.ndarray, *, min_duration: int = 10) -> list[tuple[int
 
 
 FULL_CYCLE_APPLIANCES = frozenset({"washingmachine", "dishwasher"})
+
+
+@dataclass(frozen=True)
+class OnPeriodSelection:
+    event_start: int
+    event_end: int
+    crop_start: int
+    crop_end: int
+
+
+def dataset_on_labels_for_bundle(
+    data_loader,
+    split: str,
+    n_points: int,
+    csv_timesteps: np.ndarray | None = None,
+) -> np.ndarray:
+    """Dataset CSV *_on labels aligned with a prediction bundle timeline."""
+    if csv_timesteps is not None and len(csv_timesteps) >= n_points:
+        return data_loader.csv_on_labels_at_timesteps(split, csv_timesteps[:n_points])
+    return data_loader.window_flattened_csv_states(split, n_points)
+
+
+def select_appliance_on_periods(
+    appliances: list[str],
+    y_true_watts: np.ndarray,
+    y_true_on: np.ndarray,
+    *,
+    n_periods: int,
+    period_samples: int | None = None,
+    full_cycle_appliances: Iterable[str] | None = None,
+    margin_min: int = 40,
+    margin_frac: float = 0.08,
+    min_on_duration: int = 10,
+    rng: np.random.Generator | None = None,
+) -> dict[str, list[OnPeriodSelection]]:
+    """Pick ON periods from dataset CSV labels (same logic as waveform plots)."""
+    rng = rng or np.random.default_rng()
+    y_true = np.asarray(y_true_watts, dtype=float)
+    full_cycle = set(full_cycle_appliances or FULL_CYCLE_APPLIANCES)
+    series_len = len(y_true)
+    out: dict[str, list[OnPeriodSelection]] = {}
+
+    for idx, app in enumerate(appliances):
+        true_on = y_true_on[:, idx]
+        min_dur = max(min_on_duration, 60 if app in full_cycle else min_on_duration)
+        events = _pick_random_on_events(
+            true_on,
+            y_true[:, idx],
+            n_periods=n_periods,
+            rng=rng,
+            min_duration=min_dur,
+            prefer_longest=(app in full_cycle),
+        )
+        app_cap = None if app in full_cycle else period_samples
+        periods: list[OnPeriodSelection] = []
+        for ev_start, ev_end in events:
+            crop_start, crop_end = _window_for_on_event(
+                ev_start,
+                ev_end,
+                series_len,
+                margin_min=margin_min,
+                margin_frac=margin_frac,
+                max_samples=app_cap if app_cap and app_cap > 0 else None,
+            )
+            periods.append(
+                OnPeriodSelection(
+                    event_start=int(ev_start),
+                    event_end=int(ev_end),
+                    crop_start=int(crop_start),
+                    crop_end=int(crop_end),
+                )
+            )
+        out[app] = periods
+    return out
 
 
 def _pick_random_on_events(
@@ -258,44 +333,39 @@ def save_appliance_on_waveforms(
     y_true = np.asarray(y_true_watts, dtype=float)
     y_pred = np.maximum(np.asarray(y_pred_watts, dtype=float), 0.0)
     saved: list[Path] = []
-    full_cycle = set(full_cycle_appliances or FULL_CYCLE_APPLIANCES)
     if y_true_on is None:
         raise ValueError("Waveform plots require dataset CSV ON/OFF labels in y_true_on")
+
+    selections = select_appliance_on_periods(
+        appliances,
+        y_true,
+        y_true_on,
+        n_periods=n_periods,
+        period_samples=period_samples,
+        full_cycle_appliances=full_cycle_appliances,
+        margin_min=margin_min,
+        margin_frac=margin_frac,
+        min_on_duration=min_on_duration,
+        rng=rng,
+    )
 
     for idx, app in enumerate(appliances):
         app_dir = output_dir / app
         app_dir.mkdir(parents=True, exist_ok=True)
-
-        # Always follow dataset CSV labels for true ON/OFF event selection.
-        true_on = y_true_on[:, idx]
-        # Predicted ON shading comes from model outputs, not dataset labels.
         pred_on = y_pred_on[:, idx] if y_pred_on is not None else None
-        min_dur = max(min_on_duration, 60 if app in full_cycle else min_on_duration)
-        events = _pick_random_on_events(
-            true_on,
-            y_true[:, idx],
-            n_periods=n_periods,
-            rng=rng,
-            min_duration=min_dur,
-            prefer_longest=(app in full_cycle),
-        )
-        if not events:
-            continue
 
-        app_cap = None if app in full_cycle else period_samples
-
-        for period_i, (ev_start, ev_end) in enumerate(events, start=1):
-            center = (ev_start + ev_end) // 2
+        for period_i, period in enumerate(selections.get(app, []), start=1):
+            center = (period.event_start + period.event_end) // 2
             path = app_dir / f"{file_prefix}_{period_i:02d}_t{center}.png"
             title = f"{title_prefix}{app} ON period {period_i}".strip()
             plot_single_on_period(
                 appliance=app,
                 y_true_watts=y_true[:, idx],
                 y_pred_watts=y_pred[:, idx],
-                event_start=ev_start,
-                event_end=ev_end,
+                event_start=period.event_start,
+                event_end=period.event_end,
                 output_path=path,
-                period_samples=app_cap,
+                period_samples=None if app in set(full_cycle_appliances or FULL_CYCLE_APPLIANCES) else period_samples,
                 margin_min=margin_min,
                 margin_frac=margin_frac,
                 figsize=figsize,
