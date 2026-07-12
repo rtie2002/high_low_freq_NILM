@@ -19,10 +19,10 @@ windowing:
 
 architecture:
   input_channels: 1
-  hidden_channels: 128
-  num_blocks: 5
+  hidden_channels: 192
+  num_blocks: 6
   kernel_size: 5
-  dropout: 0.1
+  dropout: 0.08
 
 loss:
   lambda_state: 1
@@ -32,12 +32,12 @@ training:
   batch_size: 32
   epochs: 100
   learning_rate: 0.0001
-  weight_decay: 0.0
+  weight_decay: 0.00001
   num_workers: 0
-  use_amp: true
+  use_amp: false
   amp_dtype: bf16
   checkpoint_monitor: val_f1
-  early_stop_patience: 30
+  early_stop_patience: 40
   gradient_clip: 1.0
   cudnn_benchmark: true
   tf32: true

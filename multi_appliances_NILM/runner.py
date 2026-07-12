@@ -970,7 +970,6 @@ def train_model(
             f"avg {_format_duration(timing_summary['avg_epoch_seconds'])}/epoch) | "
             f"params {format_parameter_count(param_stats['parameters_total'])} | "
             f"{ckpt_note}",
-            flush=True,
         )
         monitor.finalize(best_epoch=best_epoch)
     finally:
