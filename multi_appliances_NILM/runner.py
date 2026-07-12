@@ -509,7 +509,7 @@ def _run_epoch(
             if collect_states and step.aux:
                 for key in aux_batches:
                     if key in step.aux:
-                        aux_batches[key].append(step.aux[key].detach().cpu().numpy())
+                        aux_batches[key].append(step.aux[key].detach().float().cpu().numpy())
 
             n_batches += 1
             if n_batches % 20 == 0 or n_batches == n_total:

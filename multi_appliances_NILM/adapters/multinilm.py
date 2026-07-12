@@ -13,6 +13,11 @@ from model.MultiNILM import MultiNILM
 from model.MultiNILM_loss import MultiNILMLoss
 
 
+def _to_numpy(t: torch.Tensor) -> np.ndarray:
+    """NumPy does not support bfloat16; cast to float32 when AMP is enabled."""
+    return t.detach().float().cpu().numpy()
+
+
 def _resolve_pos_weight(adapter: "MultiNILMAdapter", loss_cfg: dict) -> list[float] | None:
     """Use yaml pos_weight, or auto-balance rare ON events from the train split."""
     configured = loss_cfg.get("pos_weight")
@@ -155,8 +160,8 @@ class MultiNILMAdapter(BaseNILMAdapter):
         pred_state = torch.from_numpy(
             _pred_on_from_config(
                 self,
-                power_pred.detach().cpu().numpy(),
-                state_prob.detach().cpu().numpy(),
+                _to_numpy(power_pred),
+                _to_numpy(state_prob),
             )
         ).long()
 
@@ -183,7 +188,7 @@ class MultiNILMAdapter(BaseNILMAdapter):
             aux={
                 "pred_state": pred_state.detach().cpu(),
                 "true_state": z.long().detach().cpu(),
-                "pred_power": power_pred.detach().cpu(),
+                "pred_power": power_pred.detach().float().cpu(),
                 "true_power": y.detach().cpu(),
             },
         )
@@ -225,13 +230,13 @@ class MultiNILMAdapter(BaseNILMAdapter):
             # Convert logits to probabilities for ON/OFF prediction.
             state_prob = torch.sigmoid(state_logits)
 
-            pred_power.append(power_pred.cpu().numpy())
+            pred_power.append(_to_numpy(power_pred))
 
             pred_state.append(
                 _pred_on_from_config(
                     self,
-                    power_pred.cpu().numpy(),
-                    state_prob.cpu().numpy(),
+                    _to_numpy(power_pred),
+                    _to_numpy(state_prob),
                 )
             )
 
