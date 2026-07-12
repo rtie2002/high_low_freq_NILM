@@ -1,6 +1,6 @@
 """Dynamic conv activation / feature-map plots for any model with Conv1d layers.
 
-Paper-style figure: input + ground truth on top, heatmaps of conv activations below.
+Figure: input + ground truth (top-left), per-appliance CNN activation heatmaps (3x2 grid).
 Layers are discovered automatically from the model graph; no hard-coded architecture.
 """
 
@@ -29,36 +29,33 @@ from evaluation.plots import _find_on_events
 class LayerSpec:
     label: str
     module: nn.Module
-    module_path: str
 
 
 @dataclass
 class FeatureMapConfig:
     enabled: bool = False
     max_examples: int = 3
-    layer_mode: str = "auto"
-    cmap: str = "hot"
+    cmap: str = "magma"
     dpi: int = 200
-    figsize: tuple[float, float] = (14.0, 8.0)
-    normalize: str = "per_map"
+    figsize: tuple[float, float] = (10.0, 9.0)
+    display_activation: str = "relu"
     min_on_duration: int = 10
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> FeatureMapConfig:
         raw = raw or {}
-        fig = raw.get("figsize", (14.0, 8.0))
+        fig = raw.get("figsize", (10.0, 9.0))
         if isinstance(fig, (list, tuple)) and len(fig) == 2:
             figsize = (float(fig[0]), float(fig[1]))
         else:
-            figsize = (14.0, 8.0)
+            figsize = (10.0, 9.0)
         return cls(
             enabled=bool(raw.get("enabled", False)),
             max_examples=max(1, int(raw.get("max_examples", 3))),
-            layer_mode=str(raw.get("layer_mode", "auto")).lower(),
-            cmap=str(raw.get("cmap", "hot")),
+            cmap=str(raw.get("cmap", "magma")),
             dpi=int(raw.get("dpi", 200)),
             figsize=figsize,
-            normalize=str(raw.get("normalize", "per_map")).lower(),
+            display_activation=str(raw.get("display_activation", "relu")).lower(),
             min_on_duration=max(1, int(raw.get("min_on_duration", 10))),
         )
 
@@ -87,21 +84,8 @@ def _pick_best_conv(convs: list[nn.Conv1d]) -> nn.Conv1d | None:
     return convs[-1]
 
 
-def _module_path(root: nn.Module, target: nn.Module) -> str:
-    for name, module in root.named_modules():
-        if module is target:
-            return name or "root"
-    return repr(target)
-
-
-def discover_feature_layers(
-    model: nn.Module,
-    appliances: list[str],
-    *,
-    mode: str = "auto",
-) -> list[LayerSpec]:
-    """Find conv layers to plot. Works across MultiNILM, TransferNILM, etc."""
-    mode = mode.lower()
+def discover_feature_layers(model: nn.Module, appliances: list[str]) -> list[LayerSpec]:
+    """Find per-appliance head conv layers to plot."""
     layers: list[LayerSpec] = []
     seen: set[int] = set()
 
@@ -110,41 +94,25 @@ def discover_feature_layers(
         if key in seen:
             return
         seen.add(key)
-        layers.append(
-            LayerSpec(
-                label=label,
-                module=module,
-                module_path=_module_path(model, module),
-            )
-        )
+        layers.append(LayerSpec(label=label, module=module))
 
-    if mode in {"auto", "heads"}:
-        for list_name in ("appliance_heads", "heads"):
-            heads = getattr(model, list_name, None)
-            if not isinstance(heads, nn.ModuleList):
+    for list_name in ("appliance_heads", "heads"):
+        heads = getattr(model, list_name, None)
+        if not isinstance(heads, nn.ModuleList):
+            continue
+        for idx, head in enumerate(heads):
+            conv = _pick_best_conv(_meaningful_convs(head))
+            if conv is None:
                 continue
-            for idx, head in enumerate(heads):
-                conv = _pick_best_conv(_meaningful_convs(head))
-                if conv is None:
-                    continue
-                app = appliances[idx] if idx < len(appliances) else f"head_{idx}"
-                add(f"CNN {app}", conv)
+            app = appliances[idx] if idx < len(appliances) else f"head_{idx}"
+            add(f"CNN {app}", conv)
 
-        for enc_name in ("temporal_encoder", "encoder", "aggregate_feature_extractor"):
-            enc = getattr(model, enc_name, None)
-            if enc is None:
-                continue
-            conv = _pick_best_conv(_meaningful_convs(enc))
-            if conv is not None:
-                add(f"Shared {enc_name}", conv)
-                break
-
-    if mode == "all_conv1d" or (mode == "auto" and not layers):
+    if not layers:
         for name, module in model.named_modules():
             if _is_conv1d(module) and int(module.kernel_size[0]) > 1:
                 add(name or "conv", module)
 
-    if mode == "auto" and not layers:
+    if not layers:
         for name, module in model.named_modules():
             if _is_conv1d(module):
                 add(name or "conv", module)
@@ -233,13 +201,27 @@ def _align_aggregate_to_targets(
     return out[:target_len]
 
 
-def _normalize_map(arr: np.ndarray, mode: str) -> np.ndarray:
-    if mode == "none":
-        return arr
-    scale = float(np.max(np.abs(arr))) if mode == "global" else float(np.max(arr))
-    if scale <= 1e-12:
-        return arr
-    return arr / scale
+def _prepare_activation_map(arr: np.ndarray, cfg: FeatureMapConfig) -> np.ndarray:
+    out = np.asarray(arr, dtype=np.float64)
+    if cfg.display_activation == "relu":
+        out = np.maximum(out, 0.0)
+    return out
+
+
+def _display_maps(
+    layer_maps: list[tuple[str, np.ndarray]],
+    cfg: FeatureMapConfig,
+) -> tuple[list[tuple[str, np.ndarray]], float, float]:
+    """Return display arrays plus shared vmin/vmax for imshow."""
+    prepared = [(label, _prepare_activation_map(arr, cfg)) for label, arr in layer_maps]
+    if not prepared:
+        return prepared, 0.0, 1.0
+
+    global_max = max(float(np.max(arr)) for _, arr in prepared)
+    return prepared, 0.0, max(global_max, 1e-12)
+
+
+_HEATMAP_GRID_SLOTS = [(0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]
 
 
 def _window_on_score(z: np.ndarray, min_duration: int) -> float:
@@ -282,57 +264,79 @@ def find_on_windows(
     return out
 
 
+def _plot_input_panel(ax: plt.Axes, aggregate_w: np.ndarray, gt_w: np.ndarray) -> None:
+    t = np.arange(len(aggregate_w))
+    ax.plot(t, aggregate_w, label="Input window", color="#1f77b4", linewidth=1.0)
+    ax.plot(t, gt_w, label="Ground truth", color="#ff7f0e", linewidth=1.0)
+    ax.set_ylabel("Power [W]")
+    ax.set_xlim(0, max(1, len(t) - 1))
+    ax.legend(loc="upper right", fontsize=8)
+    ax.set_xlabel("samples")
+
+
+def _plot_activation_panel(
+    ax: plt.Axes,
+    display: np.ndarray,
+    label: str,
+    *,
+    cfg: FeatureMapConfig,
+    vmin: float,
+    vmax: float,
+) -> Any:
+    im = ax.imshow(
+        display,
+        aspect="auto",
+        origin="lower",
+        cmap=cfg.cmap,
+        interpolation="nearest",
+        vmin=vmin,
+        vmax=vmax,
+        extent=(0, display.shape[1], 0, display.shape[0]),
+    )
+    ax.set_ylabel("Channels")
+    ax.set_xlabel("samples")
+    ax.set_title(label)
+    return im
+
+
 def plot_feature_map_figure(
     *,
     aggregate_w: np.ndarray,
     gt_w: np.ndarray,
     layer_maps: list[tuple[str, np.ndarray]],
     appliance: str,
-    title: str,
     cfg: FeatureMapConfig,
 ) -> plt.Figure:
-    n_rows = 1 + len(layer_maps)
-    fig_h = max(3.0, 1.8 * n_rows)
-    fig, axes = plt.subplots(n_rows, 1, figsize=(cfg.figsize[0], fig_h), squeeze=False)
+    display_maps, vmin, vmax = _display_maps(layer_maps, cfg)
 
-    ax_in = axes[0, 0]
-    t = np.arange(len(aggregate_w))
-    ax_in.plot(t, aggregate_w, label="Input", color="#1f77b4", linewidth=1.2)
-    ax_in.plot(t, gt_w, label="Ground truth", color="#ff7f0e", linewidth=1.2)
-    ax_in.set_ylabel("Power [W]")
-    ax_in.set_xlim(0, max(1, len(t) - 1))
-    ax_in.legend(loc="upper right", fontsize=8)
-    ax_in.set_title(f"{title} — {appliance}")
-
-    global_vmax = 0.0
-    if cfg.normalize == "global":
-        for _, arr in layer_maps:
-            global_vmax = max(global_vmax, float(np.max(arr)))
+    fig, axes = plt.subplots(3, 2, figsize=cfg.figsize, squeeze=True)
+    _plot_input_panel(axes[0, 0], aggregate_w, gt_w)
+    axes[0, 0].set_title(
+        f"Latent features comparison on aggregate containing {appliance} footprint"
+    )
 
     last_im = None
-    for row, (label, arr) in enumerate(layer_maps, start=1):
-        if cfg.normalize == "global" and global_vmax > 0:
-            display = arr / global_vmax
-        else:
-            display = _normalize_map(arr, cfg.normalize)
-
-        ax = axes[row, 0]
-        last_im = ax.imshow(
+    for slot, (label, display) in zip(_HEATMAP_GRID_SLOTS, display_maps):
+        row, col = slot
+        last_im = _plot_activation_panel(
+            axes[row, col],
             display,
-            aspect="auto",
-            origin="lower",
-            cmap=cfg.cmap,
-            interpolation="nearest",
-            extent=(0, display.shape[1], 0, display.shape[0]),
+            label,
+            cfg=cfg,
+            vmin=vmin,
+            vmax=vmax,
         )
-        ax.set_ylabel("Channels")
-        ax.set_xlabel("Samples")
-        ax.set_title(label)
 
     if last_im is not None:
-        fig.colorbar(last_im, ax=axes.ravel().tolist(), fraction=0.02, pad=0.02, label="Activation")
-
-    fig.tight_layout()
+        fig.subplots_adjust(bottom=0.08, hspace=0.35, wspace=0.25)
+        cbar = fig.colorbar(
+            last_im,
+            ax=axes.ravel().tolist(),
+            orientation="horizontal",
+            fraction=0.035,
+            pad=0.06,
+        )
+        cbar.set_label("Activation")
     return fig
 
 
@@ -346,15 +350,16 @@ def save_feature_maps(
     device: torch.device,
     appliances: list[str] | None = None,
     cfg: FeatureMapConfig | None = None,
+    max_batches: int | None = None,
 ) -> list[Path]:
-    """Run one forward pass per ON window and save paper-style activation figures."""
+    """Run one forward pass per ON window and save activation figures."""
     plot_cfg = adapter.model_cfg.get("training", {}).get("plots", {})
     cfg = cfg or FeatureMapConfig.from_dict(plot_cfg.get("feature_maps"))
     if not cfg.enabled:
         return []
 
     appliances = appliances or adapter.cfg["appliances"]
-    layers = discover_feature_layers(model, appliances, mode=cfg.layer_mode)
+    layers = discover_feature_layers(model, appliances)
     if not layers:
         print(f"Feature maps: no Conv1d layers found for {adapter.name}", flush=True)
         return []
@@ -365,60 +370,71 @@ def save_feature_maps(
     model.eval()
     saved: list[Path] = []
 
+    def _denorm_window(
+        x: torch.Tensor,
+        y: torch.Tensor,
+        app_idx: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        norm = data_loader.norm
+        agg = x[0, :, 0].numpy().reshape(-1)
+        if norm.input_mean is not None and norm.input_std is not None:
+            agg_w = np.maximum(agg * float(norm.input_std) + float(norm.input_mean), 0.0)
+        else:
+            agg_w = agg
+        if y.dim() == 3:
+            gt = y[0, :, app_idx].numpy().reshape(-1)
+        else:
+            gt = y[0, app_idx].numpy().reshape(-1)
+        if norm.target_mean is not None and norm.target_std is not None:
+            gt_w = np.maximum(
+                gt * float(norm.target_std[app_idx]) + float(norm.target_mean[app_idx]),
+                0.0,
+            )
+        else:
+            gt_w = data_loader.denorm_to_watts(gt)
+        windowing = adapter.model_cfg.get("windowing", {})
+        agg_w = _align_aggregate_to_targets(agg_w, len(gt_w), windowing)
+        return agg_w, gt_w
+
+    def _collect_layer_maps(cap: ActivationCapture) -> list[tuple[str, np.ndarray]]:
+        layer_maps: list[tuple[str, np.ndarray]] = []
+        for spec in layers:
+            if spec.label not in cap.store:
+                continue
+            try:
+                arr = _activation_to_map(cap.store[spec.label])
+            except ValueError:
+                continue
+            layer_maps.append((spec.label, arr))
+        return layer_maps
+
     for app_idx, app in enumerate(appliances):
         windows = find_on_windows(
             loader,
             appliance_idx=app_idx,
             max_examples=cfg.max_examples,
             min_on_duration=cfg.min_on_duration,
+            max_batches=64 if max_batches is None else max_batches,
         )
         app_dir = output_dir / app
         app_dir.mkdir(parents=True, exist_ok=True)
 
-        for ex_i, (x, y, z, win_idx) in enumerate(windows):
+        for ex_i, (x, y, z, _win_idx) in enumerate(windows):
             x_dev = x.to(device)
             with capture_activations(layers) as cap, torch.no_grad():
                 model(x_dev)
-                layer_maps: list[tuple[str, np.ndarray]] = []
-                for spec in layers:
-                    if spec.label not in cap.store:
-                        continue
-                    try:
-                        arr = _activation_to_map(cap.store[spec.label])
-                    except ValueError:
-                        continue
-                    layer_maps.append((spec.label, arr))
+                layer_maps = _collect_layer_maps(cap)
 
             if not layer_maps:
                 continue
 
-            norm = data_loader.norm
-            agg = x[0, :, 0].numpy().reshape(-1)
-            if norm.input_mean is not None and norm.input_std is not None:
-                agg_w = np.maximum(agg * float(norm.input_std) + float(norm.input_mean), 0.0)
-            else:
-                agg_w = agg
-            if y.dim() == 3:
-                gt = y[0, :, app_idx].numpy().reshape(-1)
-            else:
-                gt = y[0, app_idx].numpy().reshape(-1)
-            if norm.target_mean is not None and norm.target_std is not None:
-                gt_w = np.maximum(
-                    gt * float(norm.target_std[app_idx]) + float(norm.target_mean[app_idx]),
-                    0.0,
-                )
-            else:
-                gt_w = data_loader.denorm_to_watts(gt)
-
-            windowing = adapter.model_cfg.get("windowing", {})
-            agg_w = _align_aggregate_to_targets(agg_w, len(gt_w), windowing)
+            agg_w, gt_w = _denorm_window(x, y, app_idx)
 
             fig = plot_feature_map_figure(
                 aggregate_w=agg_w,
                 gt_w=gt_w,
                 layer_maps=layer_maps,
                 appliance=app,
-                title=f"{adapter.name} {split} window {win_idx}",
                 cfg=cfg,
             )
             out_path = app_dir / f"feature_map_{ex_i:02d}.png"

@@ -59,8 +59,7 @@ training:
     feature_maps:
       enabled: true
       max_examples: 2
-      layer_mode: auto
-      cmap: hot
-      normalize: per_map
+      cmap: magma
+      display_activation: relu
       min_on_duration: 10
       dpi: 200

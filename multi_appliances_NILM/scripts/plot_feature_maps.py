@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Plot conv feature maps from a trained checkpoint (paper-style activation heatmaps)."""
+"""Plot conv feature maps from a trained checkpoint."""
 
 from __future__ import annotations
 

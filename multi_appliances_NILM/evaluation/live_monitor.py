@@ -205,6 +205,7 @@ class LiveTrainingMonitor:
         include_best: bool = False,
     ) -> list[Path]:
         self._prune_legacy_epoch_waveform_dirs()
+        self._prune_legacy_epoch_feature_map_dirs()
         saved: list[Path] = []
         if not include_best:
             saved.extend(
@@ -256,6 +257,24 @@ class LiveTrainingMonitor:
                     )
         return saved
 
+    def _feature_map_tag_dir(self, split: str, tag: str) -> Path:
+        return self.run_dir / "feature_maps" / split / tag
+
+    def _prune_legacy_epoch_feature_map_dirs(self) -> None:
+        """Remove old epoch_XXXX folders under feature_maps/{split}/{tag}/."""
+        feature_root = self.run_dir / "feature_maps"
+        if not feature_root.exists():
+            return
+        for split_dir in feature_root.iterdir():
+            if not split_dir.is_dir():
+                continue
+            for tag_dir in split_dir.iterdir():
+                if not tag_dir.is_dir():
+                    continue
+                for child in tag_dir.iterdir():
+                    if child.is_dir() and child.name.startswith("epoch_"):
+                        shutil.rmtree(child, ignore_errors=True)
+
     def _save_feature_maps(
         self,
         adapter,
@@ -270,7 +289,9 @@ class LiveTrainingMonitor:
         cfg = self.feature_map_cfg()
         if not cfg.enabled:
             return []
-        output_dir = self.run_dir / "feature_maps" / split / tag / f"epoch_{epoch:04d}"
+        output_dir = self._feature_map_tag_dir(split, tag)
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
         return save_feature_maps(
             adapter,
             model,
@@ -279,6 +300,7 @@ class LiveTrainingMonitor:
             split=split,
             device=device,
             cfg=cfg,
+            max_batches=self.plot_max_batches(),
         )
 
     def _waveform_tag_dir(self, split: str, tag: str) -> Path:

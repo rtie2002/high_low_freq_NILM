@@ -927,7 +927,7 @@ def train_model(
                 tqdm.write(f"  {epoch_tag} | saved latest waveforms -> .../waveforms/{{validation,test}}/latest/")
                 if FeatureMapConfig.from_dict(plot_cfg.get("feature_maps")).enabled:
                     tqdm.write(
-                        f"  {epoch_tag} | saved feature maps -> .../feature_maps/{{validation,test}}/latest/epoch_{epoch_no:04d}/"
+                        f"  {epoch_tag} | saved latest feature maps -> .../feature_maps/{{validation,test}}/latest/"
                     )
 
             # 6g. Save best checkpoint when validation metric improves.
@@ -947,6 +947,10 @@ def train_model(
                         best_epoch_no=best_epoch,
                     )
                     tqdm.write(f"  {epoch_tag} | saved best waveforms -> .../waveforms/{{validation,test}}/best/")
+                    if FeatureMapConfig.from_dict(plot_cfg.get("feature_maps")).enabled:
+                        tqdm.write(
+                            f"  {epoch_tag} | saved best feature maps -> .../feature_maps/{{validation,test}}/best/"
+                        )
             else:
                 epochs_without_improvement += 1
 
