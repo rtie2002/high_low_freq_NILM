@@ -12,7 +12,7 @@ windowing:
   input_window_length: 864
   output_window_length: &output_len 256
   output_alignment: center
-  input_stride: 216
+  input_stride: 864
   eval_stride: *output_len
   eval_reconstruction: flat
   training_targets: output_window
