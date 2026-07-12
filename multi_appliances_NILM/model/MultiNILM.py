@@ -71,6 +71,50 @@ class ResidualTemporalBlock(nn.Module):
         return residual + y
 
 
+class StagedFeatureExtractor(nn.Module):
+    """Gradually widen channel depth before the shared TCN (seq2point-style).
+
+    Example schedule [16, 32, 64]:
+        Conv1d 1→16  k=7  + BN + GELU
+        Conv1d 16→32 k=5  + BN + GELU
+        Conv1d 32→64 k=5  + BN + GELU
+    """
+
+    def __init__(
+        self,
+        input_channels: int,
+        channel_schedule: list[int],
+        stem_kernel_size: int = 7,
+        stage_kernel_size: int = 5,
+    ) -> None:
+        super().__init__()
+        if not channel_schedule:
+            raise ValueError("channel_schedule must contain at least one width.")
+
+        layers: list[nn.Module] = []
+        in_channels = int(input_channels)
+        for stage_index, out_channels in enumerate(channel_schedule):
+            kernel_size = stem_kernel_size if stage_index == 0 else stage_kernel_size
+            padding = kernel_size // 2
+            layers.extend(
+                [
+                    nn.Conv1d(
+                        in_channels=in_channels,
+                        out_channels=int(out_channels),
+                        kernel_size=kernel_size,
+                        padding=padding,
+                    ),
+                    nn.BatchNorm1d(int(out_channels)),
+                    nn.GELU(),
+                ]
+            )
+            in_channels = int(out_channels)
+        self.stages = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.stages(x)
+
+
 class ApplianceHead(nn.Module):
     """One appliance-specific decoder on top of the shared TCN features.
 
@@ -115,9 +159,7 @@ class MultiNILM(nn.Module):
             Output: (B, 1, T)
 
         2. aggregate_feature_extractor
-            Conv1d(input_channels -> hidden_channels, kernel_size=7, padding=3)
-            BatchNorm1d(hidden_channels)
-            GELU
+            Either staged Conv1d widening (channel_schedule) or one Conv1d jump.
             Output: (B, hidden_channels, T)
 
         3. temporal_encoder
@@ -147,6 +189,9 @@ class MultiNILM(nn.Module):
         num_appliances: int = 5,
         output_length: int = 64,
         hidden_channels: int = 64,
+        channel_schedule: list[int] | None = None,
+        stem_kernel_size: int = 7,
+        stage_kernel_size: int = 5,
         num_blocks: int = 5,
         kernel_size: int = 5,
         dropout: float = 0.1,
@@ -156,19 +201,33 @@ class MultiNILM(nn.Module):
         self.input_channels = int(input_channels)
         self.num_appliances = int(num_appliances)
         self.output_length = int(output_length)
+        self.hidden_channels = int(hidden_channels)
 
-        # Step 1: first learnable layer.
-        # Convert the aggregate power waveform into hidden temporal features.
-        self.aggregate_feature_extractor = nn.Sequential(
-            nn.Conv1d(
-                in_channels=self.input_channels,
-                out_channels=hidden_channels,
-                kernel_size=7,
-                padding=3,
-            ),
-            nn.BatchNorm1d(hidden_channels),
-            nn.GELU(),
-        )
+        # Step 1: widen aggregate power into temporal feature maps.
+        if channel_schedule:
+            schedule = [int(width) for width in channel_schedule]
+            if schedule[-1] != self.hidden_channels:
+                raise ValueError(
+                    "hidden_channels must match the last entry in channel_schedule; "
+                    f"got hidden_channels={self.hidden_channels}, schedule={schedule}."
+                )
+            self.aggregate_feature_extractor = StagedFeatureExtractor(
+                input_channels=self.input_channels,
+                channel_schedule=schedule,
+                stem_kernel_size=int(stem_kernel_size),
+                stage_kernel_size=int(stage_kernel_size),
+            )
+        else:
+            self.aggregate_feature_extractor = nn.Sequential(
+                nn.Conv1d(
+                    in_channels=self.input_channels,
+                    out_channels=self.hidden_channels,
+                    kernel_size=int(stem_kernel_size),
+                    padding=int(stem_kernel_size) // 2,
+                ),
+                nn.BatchNorm1d(self.hidden_channels),
+                nn.GELU(),
+            )
 
         # Step 2: process temporal features with dilated convolution blocks.
         # Dilation values 1, 2, 4, 8, ... let the model see short and longer
@@ -178,7 +237,7 @@ class MultiNILM(nn.Module):
             dilation = 2 ** block_index
             temporal_blocks.append(
                 ResidualTemporalBlock(
-                    channels=hidden_channels,
+                    channels=self.hidden_channels,
                     kernel_size=kernel_size,
                     dilation=dilation,
                     dropout=dropout,
@@ -189,7 +248,7 @@ class MultiNILM(nn.Module):
         # Step 3: one decoder head per appliance (dynamic count from experiment).
         self.appliance_heads = nn.ModuleList(
             [
-                ApplianceHead(hidden_channels=hidden_channels, dropout=dropout)
+                ApplianceHead(hidden_channels=self.hidden_channels, dropout=dropout)
                 for _ in range(self.num_appliances)
             ]
         )
@@ -289,6 +348,9 @@ class MultiNILMConfig:
     num_appliances: int = 5
     output_length: int = 64
     hidden_channels: int = 64
+    channel_schedule: list[int] | None = None
+    stem_kernel_size: int = 7
+    stage_kernel_size: int = 5
     num_blocks: int = 5
     kernel_size: int = 5
     dropout: float = 0.1
@@ -302,6 +364,9 @@ def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
         num_appliances=int(architecture.get("num_appliances", 5)),
         output_length=int(architecture.get("output_length", 64)),
         hidden_channels=int(architecture.get("hidden_channels", architecture.get("hidden", 64))),
+        channel_schedule=architecture.get("channel_schedule"),
+        stem_kernel_size=int(architecture.get("stem_kernel_size", 7)),
+        stage_kernel_size=int(architecture.get("stage_kernel_size", 5)),
         num_blocks=int(architecture.get("num_blocks", 5)),
         kernel_size=int(architecture.get("kernel_size", 5)),
         dropout=float(architecture.get("dropout", 0.1)),

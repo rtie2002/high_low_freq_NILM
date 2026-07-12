@@ -74,8 +74,15 @@ class MultiNILMAdapter(BaseNILMAdapter):
             # Example: 64 for REDD MATNILM-style center output.
             output_length=int(self.model_cfg["windowing"].get("output_window_length", 1)),
 
-            # CNN hidden feature channels.
+            # CNN hidden feature channels (final width for TCN + heads).
             hidden_channels=int(arch.get("hidden_channels", arch.get("hidden", 64))),
+
+            # Gradual widening before TCN, e.g. [16, 32, 64].
+            channel_schedule=arch.get("channel_schedule"),
+
+            # First staged conv kernel (default 7); later stages use stage_kernel_size.
+            stem_kernel_size=int(arch.get("stem_kernel_size", 7)),
+            stage_kernel_size=int(arch.get("stage_kernel_size", 5)),
 
             # Number of residual temporal convolution blocks.
             num_blocks=int(arch.get("num_blocks", 5)),
