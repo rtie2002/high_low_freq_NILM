@@ -152,8 +152,9 @@ def print_evaluation_report(
     run_dir: Path,
     *,
     split: str,
+    show_cost_summary: bool = True,
 ) -> None:
-    """Print per-appliance metrics table plus model size / training cost."""
+    """Print per-appliance metrics table plus optional model size / training cost."""
     per_app = metrics[metrics["appliance"] != "overall"]
     overall = metrics[metrics["appliance"] == "overall"]
 
@@ -167,7 +168,71 @@ def print_evaluation_report(
             f"f1={row['f1']:.4f}  micro_f1={row['micro_f1']:.4f}",
             flush=True,
         )
-    print_run_cost_summary(run_dir, title="Training cost & model size")
+    if show_cost_summary:
+        print_run_cost_summary(run_dir, title="Training cost & model size")
+
+
+def print_val_test_comparison(run_dir: Path) -> None:
+    """Compare validation vs test metrics to inspect generalization gap."""
+    val_path = run_dir / "validation_metrics.csv"
+    test_path = run_dir / "test_metrics.csv"
+    if not val_path.exists() or not test_path.exists():
+        missing = [p.name for p in (val_path, test_path) if not p.exists()]
+        print(f"\nValidation vs test comparison skipped (missing: {', '.join(missing)})", flush=True)
+        return
+
+    val_df = pd.read_csv(val_path)
+    test_df = pd.read_csv(test_path)
+    val_app = val_df[val_df["appliance"] != "overall"].set_index("appliance")
+    test_app = test_df[test_df["appliance"] != "overall"].set_index("appliance")
+    appliances = [app for app in val_app.index if app in test_app.index]
+
+    rows = []
+    for app in appliances:
+        v = val_app.loc[app]
+        t = test_app.loc[app]
+        rows.append({
+            "appliance": app,
+            "val_mae": float(v["mae"]),
+            "test_mae": float(t["mae"]),
+            "mae_gap": float(t["mae"] - v["mae"]),
+            "val_f1": float(v["f1"]),
+            "test_f1": float(t["f1"]),
+            "f1_gap": float(t["f1"] - v["f1"]),
+            "val_sae": float(v["sae"]),
+            "test_sae": float(t["sae"]),
+        })
+
+    compare_df = pd.DataFrame(rows)
+    compare_path = run_dir / "validation_test_comparison.csv"
+    compare_df.to_csv(compare_path, index=False)
+
+    val_overall = val_df[val_df["appliance"] == "overall"].iloc[0]
+    test_overall = test_df[test_df["appliance"] == "overall"].iloc[0]
+    mae_gap = float(test_overall["mae"] - val_overall["mae"])
+    f1_gap = float(test_overall["f1"] - val_overall["f1"])
+
+    print("\nValidation vs test comparison:", flush=True)
+    print(
+        compare_df[
+            ["appliance", "val_mae", "test_mae", "mae_gap", "val_f1", "test_f1", "f1_gap"]
+        ].to_string(index=False, float_format=lambda x: f"{x:.4f}"),
+        flush=True,
+    )
+    print(
+        f"overall  val_mae={val_overall['mae']:.4f}  test_mae={test_overall['mae']:.4f}  "
+        f"mae_gap={mae_gap:+.4f}  "
+        f"val_f1={val_overall['f1']:.4f}  test_f1={test_overall['f1']:.4f}  "
+        f"f1_gap={f1_gap:+.4f}",
+        flush=True,
+    )
+    if abs(mae_gap) < 5 and abs(f1_gap) < 0.05:
+        print("  transfer note: validation and test are close — similar generalization.", flush=True)
+    elif test_overall["mae"] > val_overall["mae"] or test_overall["f1"] < val_overall["f1"]:
+        print("  transfer note: test is worse than validation — possible domain/house gap.", flush=True)
+    else:
+        print("  transfer note: test is better than validation — check split overlap or leakage.", flush=True)
+    print(f"Saved comparison table: {compare_path}", flush=True)
 
 
 def enrich_compare_table(table: pd.DataFrame, runs_dir: Path, experiment_id: str) -> pd.DataFrame:

@@ -16,6 +16,7 @@ from adapters.mat_nilm import MATNILMAdapter
 from adapters.multinilm import MultiNILMAdapter
 from adapters.transfer_multi_appliance import TransferMultiApplianceAdapter
 from evaluation.compare import compare_experiment
+from evaluation.run_summary import print_run_cost_summary, print_val_test_comparison
 from runner import evaluate_model, train_model
 
 # Register new models here: name -> adapter class
@@ -126,9 +127,18 @@ def main() -> None:
         ckpt = args.checkpoint or (run_dir / "best.pt")
         if not ckpt.exists():
             raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
-        print(f"\nTest evaluation ({ckpt.name}):", flush=True)
-        pred_path = evaluate_model(adapter, ckpt, run_dir, split="test")
-        print(f"Saved predictions: {pred_path}")
+        for split in ("validation", "test"):
+            print(f"\n{split.capitalize()} evaluation ({ckpt.name}):", flush=True)
+            pred_path = evaluate_model(
+                adapter,
+                ckpt,
+                run_dir,
+                split=split,
+                show_cost_summary=False,
+            )
+            print(f"Saved predictions: {pred_path}")
+        print_val_test_comparison(run_dir)
+        print_run_cost_summary(run_dir)
 
 
 if __name__ == "__main__":

@@ -978,7 +978,14 @@ def train_model(
     return best_path
 
 
-def evaluate_model(adapter, checkpoint: Path, run_dir: Path, split: str = "test") -> Path:
+def evaluate_model(
+    adapter,
+    checkpoint: Path,
+    run_dir: Path,
+    split: str = "test",
+    *,
+    show_cost_summary: bool = True,
+) -> Path:
     """Run inference from a saved checkpoint and save results.
 
     Step by step:
@@ -1057,6 +1064,6 @@ def evaluate_model(adapter, checkpoint: Path, run_dir: Path, split: str = "test"
         title_prefix=f"{adapter.name} {split} â€” ",
     )
 
-    print_evaluation_report(metrics, run_dir, split=split)
+    print_evaluation_report(metrics, run_dir, split=split, show_cost_summary=show_cost_summary)
     print(f"Saved {len(saved)} waveform PNGs under {waveform_dir}/<appliance>/")
     return pred_path

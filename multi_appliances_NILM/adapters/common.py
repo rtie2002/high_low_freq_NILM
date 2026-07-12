@@ -286,7 +286,21 @@ class BaseNILMAdapter(AdapterDataMixin):
             lr=float(train_cfg["learning_rate"]),
             weight_decay=float(train_cfg.get("weight_decay", 0.0)),
         )
-        return optimizer, None
+        scheduler = None
+        sched_name = str(train_cfg.get("scheduler", "")).lower()
+        if sched_name in {"reduce_on_plateau", "plateau"}:
+            monitor = str(
+                train_cfg.get("scheduler_monitor", train_cfg.get("checkpoint_monitor", "val_mae"))
+            ).lower()
+            mode = "max" if monitor in {"val_f1", "val_maf1"} else "min"
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode=mode,
+                factor=float(train_cfg.get("scheduler_factor", 0.5)),
+                patience=int(train_cfg.get("scheduler_patience", 5)),
+                min_lr=float(train_cfg.get("scheduler_min_lr", 1e-6)),
+            )
+        return optimizer, scheduler
 
     def _prediction_context(self, split: str) -> tuple[list[str], str]:
         """Return the appliance order and normalized split name used by evaluation."""
