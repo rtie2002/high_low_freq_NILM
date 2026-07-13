@@ -381,7 +381,12 @@ def _checkpoint_mae_for_score(monitor_key: str, train_cfg: dict, logs: dict[str,
     return float(logs.get("mae", float("inf")))
 
 
-def _batch_to_device(batch, device: torch.device):
+def _batch_to_device(
+    batch,
+    device: torch.device,
+    *,
+    dtype: torch.dtype | None = None,
+):
     """Move every tensor inside a batch to GPU/CPU.
 
     Dataloader batches are usually:
@@ -390,13 +395,19 @@ def _batch_to_device(batch, device: torch.device):
 
     but this helper also supports nested tuples/lists/dicts, so future models
     can use richer batch formats without changing runner.py.
+
+    When ``dtype`` is set, floating-point tensors are cast (e.g. float64 training).
+    Integer tensors such as state labels are left unchanged.
     """
     if isinstance(batch, (tuple, list)):
-        return type(batch)(_batch_to_device(item, device) for item in batch)
+        return type(batch)(_batch_to_device(item, device, dtype=dtype) for item in batch)
     if isinstance(batch, dict):
-        return {key: _batch_to_device(value, device) for key, value in batch.items()}
+        return {key: _batch_to_device(value, device, dtype=dtype) for key, value in batch.items()}
     if isinstance(batch, torch.Tensor):
-        return batch.to(device, non_blocking=True)
+        out = batch.to(device, non_blocking=True)
+        if dtype is not None and out.is_floating_point():
+            out = out.to(dtype=dtype)
+        return out
     return batch
 
 
@@ -597,8 +608,13 @@ def _run_epoch(
             mininterval=1.0,
         )
         for batch in pbar:
-            # Move x/y/z tensors to the same device as the model.
-            batch = _batch_to_device(batch, device)
+            # Move x/y/z tensors to the same device (and dtype when model is float64).
+            model_dtype = next(model.parameters()).dtype
+            batch = _batch_to_device(
+                batch,
+                device,
+                dtype=model_dtype if model_dtype == torch.float64 else None,
+            )
 
             # Clear previous gradients before computing the next training batch.
             if train:

@@ -37,6 +37,8 @@ class TransferNILMLoss(nn.Module):
         power_true: torch.Tensor,
         state_true: torch.Tensor,
     ) -> TransferNILMLossOutput:
+        power_true = power_true.to(dtype=power_pred.dtype)
+        state_true = state_true.to(dtype=state_prob.dtype)
         device_type = power_pred.device.type
         with torch.amp.autocast(device_type=device_type, enabled=False):
             loss_power = self.mse(power_pred, power_true)

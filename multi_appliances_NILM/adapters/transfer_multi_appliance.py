@@ -68,7 +68,8 @@ class TransferMultiApplianceAdapter(BaseNILMAdapter):
         batch: Any,
     ) -> StepOutput:
         x, y, z = batch
-        z = z.float()
+        compute_dtype = next(model.parameters()).dtype
+        z = z.to(dtype=compute_dtype)
 
         power_pred, state_prob = model(x)
         power_pred, state_prob, y, z = self._align_loss_tensors(power_pred, state_prob, y, z)
@@ -79,8 +80,8 @@ class TransferMultiApplianceAdapter(BaseNILMAdapter):
 
         app_logs = {}
         for app_i, app in enumerate(self.cfg["appliances"]):
-            loss_r_i = loss_fn.mse(power_pred[..., app_i].float(), y[..., app_i].float())
-            loss_c_i = loss_fn.bce(state_prob[..., app_i].float(), z[..., app_i].float())
+            loss_r_i = loss_fn.mse(power_pred[..., app_i], y[..., app_i])
+            loss_c_i = loss_fn.bce(state_prob[..., app_i], z[..., app_i])
             app_logs[f"loss_power_{app}"] = float(loss_r_i.detach())
             app_logs[f"loss_state_{app}"] = float(loss_c_i.detach())
 
