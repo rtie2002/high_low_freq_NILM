@@ -93,6 +93,11 @@ MIN_WINDOWS_PER_SPLIT = 8
 STRIDE_CHOICES_FAST = (32, 64, 96, 120, 128, 192, 240, 256, 320, 480)
 STRIDE_CHOICES_FULL = (16, 32, 64, 96, 120, 128, 192, 240, 256, 320, 384, 480, 512)
 
+
+def _optuna_stride_choices(*, fast_search: bool) -> list[int]:
+    """Fixed stride list for Optuna (same choices every trial; clamped after)."""
+    return list(STRIDE_CHOICES_FAST if fast_search else STRIDE_CHOICES_FULL)
+
 # Full list of parameters that CAN be tuned; default run only tunes training knobs.
 TUNABLE_PARAMETERS = (
     "learning_rate",
@@ -505,31 +510,29 @@ def _suggest_trial_params(
 
     if not (window_length_tuned and require_equal_windows):
         if "output_window_length" in tune_set:
-            output_choices = _output_window_choices(
-                int(params["input_window_length"]),
-                require_equal=require_equal_windows,
-            )
+            # Optuna requires a fixed categorical space across all trials.
             params["output_window_length"] = trial.suggest_categorical(
                 "output_window_length",
-                output_choices,
+                list(OUTPUT_WINDOW_CANDIDATES),
             )
         elif require_equal_windows and "input_window_length" in tune_set:
             params["output_window_length"] = int(params["input_window_length"])
 
-    stride_choices = _stride_choices_for_window(
-        int(params["input_window_length"]),
-        fast_search=fast_search,
-    )
+    optuna_stride_choices = _optuna_stride_choices(fast_search=fast_search)
     tune_stride_together = "input_stride" in tune_set and "eval_stride" in tune_set
     if tune_stride_together:
-        stride_value = trial.suggest_categorical("stride", stride_choices)
+        stride_value = trial.suggest_categorical("stride", optuna_stride_choices)
         params["input_stride"] = int(stride_value)
         params["eval_stride"] = int(stride_value)
     else:
         if "input_stride" in tune_set:
-            params["input_stride"] = trial.suggest_categorical("input_stride", stride_choices)
+            params["input_stride"] = trial.suggest_categorical(
+                "input_stride", optuna_stride_choices
+            )
         if "eval_stride" in tune_set:
-            params["eval_stride"] = trial.suggest_categorical("eval_stride", stride_choices)
+            params["eval_stride"] = trial.suggest_categorical(
+                "eval_stride", optuna_stride_choices
+            )
 
     _normalize_window_params(params, require_equal_windows=require_equal_windows)
     if "channel_schedule" not in tune_set:
