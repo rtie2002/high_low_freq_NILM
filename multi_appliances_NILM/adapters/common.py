@@ -221,10 +221,15 @@ class AdapterDataMixin:
 
     def build_standard_dataloader(self, split: str) -> DataLoader:
         """Build one split DataLoader using the shared DataLoader settings."""
+        train_cfg = self.model_cfg["training"]
+        if split == "train":
+            shuffle = bool(train_cfg.get("train_shuffle", True))
+        else:
+            shuffle = False
         return build_dataloader(
             self.build_dataset(split),
-            self.model_cfg["training"],
-            shuffle=(split == "train"),
+            train_cfg,
+            shuffle=shuffle,
         )
 
 
@@ -299,6 +304,12 @@ class BaseNILMAdapter(AdapterDataMixin):
                 factor=float(train_cfg.get("scheduler_factor", 0.5)),
                 patience=int(train_cfg.get("scheduler_patience", 5)),
                 min_lr=float(train_cfg.get("scheduler_min_lr", 1e-6)),
+            )
+        elif sched_name in {"step", "step_lr"}:
+            scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer,
+                step_size=int(train_cfg.get("scheduler_step_size", train_cfg.get("decay_step", 100))),
+                gamma=float(train_cfg.get("scheduler_gamma", train_cfg.get("gamma", 0.1))),
             )
         return optimizer, scheduler
 

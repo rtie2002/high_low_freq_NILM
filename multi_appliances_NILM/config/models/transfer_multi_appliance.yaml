@@ -1,5 +1,5 @@
 # BERT4NILM transfer-learning baseline (TransferNILM.py)
-# Matches NILM_model/baseline/transfer_learning_multi-appliance windowing.
+# Training hyperparameters aligned with NILM_model/baseline/transfer_learning_multi-appliance.
 model_name: transfer_multi_appliance
 
 data:
@@ -32,24 +32,23 @@ training:
   batch_size: 32
   epochs: 100
   learning_rate: 0.0001
-  weight_decay: 0.0001
+  weight_decay: 0
+  seed: 155
+  tensor_dtype: float64
+  train_shuffle: true
   num_workers: 0
   use_amp: false
   amp_dtype: bf16
   checkpoint_monitor: val_mae_minus_f1
   checkpoint_mae_space: normalized
-  early_stop_patience: 15
-  scheduler: reduce_on_plateau
-  scheduler_monitor: val_mae_minus_f1
-  scheduler_patience: 5
-  scheduler_factor: 0.5
-  scheduler_min_lr: 0.000001
+  early_stop_patience: 60
+  scheduler: none
   gradient_clip: 0.0
   cudnn_benchmark: true
   tf32: true
   plots:
     plot_mode: interval
-    plot_interval: 1
+    plot_interval: 10
     plot_on_periods: 5
     plot_max_batches: 16
     waveform_figsize: 5.5

@@ -14,7 +14,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from adapters.config import appliance_list
+from adapters.config import appliance_list, resolve_tensor_dtype
 
 SplitName = Literal["train", "validation", "test"]
 OutputAlignment = Literal["end", "center"]
@@ -195,10 +195,11 @@ class WindowDataset(Dataset):
         normalization: NormalizationStats | None = None,
         state_threshold_watts: float | np.ndarray | None = None,
         state_label_source: str = "auto",
+        tensor_dtype: np.dtype = np.float32,
     ):
         norm = normalization or NormalizationStats()
-        self.inputs = np.ascontiguousarray(norm.normalize_inputs(inputs), dtype=np.float32)
-        self.targets = np.ascontiguousarray(targets, dtype=np.float32)
+        self.inputs = np.ascontiguousarray(norm.normalize_inputs(inputs), dtype=tensor_dtype)
+        self.targets = np.ascontiguousarray(targets, dtype=tensor_dtype)
         self.states = np.ascontiguousarray(states, dtype=np.int64)
 
         use_threshold_labels = state_label_source == "threshold"
@@ -211,7 +212,7 @@ class WindowDataset(Dataset):
             threshold = np.asarray(state_threshold_watts, dtype=np.float32)
             self.states = (self.targets > threshold).astype(np.int64)
 
-        self.targets = np.ascontiguousarray(norm.normalize_targets(self.targets), dtype=np.float32)
+        self.targets = np.ascontiguousarray(norm.normalize_targets(self.targets), dtype=tensor_dtype)
 
         self.inputs_t = torch.from_numpy(self.inputs)
         self.targets_t = torch.from_numpy(self.targets)
@@ -304,6 +305,7 @@ class NILMDataLoader:
         )
         self.norm = NormalizationStats.from_config(experiment_cfg, model_cfg, self.appliances)
         self.loss_scale = self.norm.loss_scale
+        self.tensor_dtype, _ = resolve_tensor_dtype(model_cfg)
         self._splits: dict[SplitName, tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None
 
     def _resolve_csv_path(self, split: SplitName) -> Path:
@@ -342,6 +344,7 @@ class NILMDataLoader:
             normalization=self.norm,
             state_threshold_watts=self.state_threshold_watts,
             state_label_source=self.state_label_source,
+            tensor_dtype=self.tensor_dtype,
         )
 
     def window_output_timesteps(self, split: str, n_windows: int) -> np.ndarray:

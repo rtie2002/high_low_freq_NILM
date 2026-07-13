@@ -39,16 +39,12 @@ class TransferNILMLoss(nn.Module):
     ) -> TransferNILMLossOutput:
         device_type = power_pred.device.type
         with torch.amp.autocast(device_type=device_type, enabled=False):
-            power_pred_f = power_pred.float()
-            state_prob_f = state_prob.float()
-            power_true_f = power_true.float()
-            state_true_f = state_true.float()
-            loss_power = self.mse(power_pred_f, power_true_f)
-            loss_state = self.bce(state_prob_f, state_true_f)
+            loss_power = self.mse(power_pred, power_true)
+            loss_state = self.bce(state_prob, state_true)
         loss = loss_power + loss_state
 
         scale = self.power_scale.to(device=power_pred.device, dtype=power_pred.dtype)
-        mae = torch.mean(torch.abs((power_pred.float() - power_true.float()) * scale))
+        mae = torch.mean(torch.abs((power_pred - power_true) * scale))
         return TransferNILMLossOutput(
             loss=loss,
             loss_power=loss_power,

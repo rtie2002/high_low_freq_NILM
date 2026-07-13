@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import torch
 import yaml
 
 
@@ -38,6 +40,19 @@ def appliance_list(experiment: dict[str, Any], model_cfg: dict[str, Any] | None 
         if apps := model_cfg.get("data", {}).get("appliances"):
             return list(apps)
     return list(experiment["csv"]["appliances"])
+
+
+def resolve_tensor_dtype(model_cfg: dict[str, Any]) -> tuple[np.dtype, torch.dtype]:
+    """Resolve training tensor dtype from model yaml (baseline transfer uses float64)."""
+    raw = (
+        model_cfg.get("training", {}).get("tensor_dtype")
+        or model_cfg.get("data", {}).get("tensor_dtype")
+        or "float32"
+    )
+    name = str(raw).lower()
+    if name in {"float64", "double", "f64"}:
+        return np.float64, torch.float64
+    return np.float32, torch.float32
 
 
 def merge_configs(experiment: dict[str, Any], model_cfg: dict[str, Any]) -> dict[str, Any]:

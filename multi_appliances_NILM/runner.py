@@ -44,7 +44,7 @@ import torch
 from tqdm import tqdm
 
 from adapters.common import StepOutput
-from adapters.config import appliance_list
+from adapters.config import appliance_list, resolve_tensor_dtype
 from adapters.dataloader import (
     NILMDataLoader,
     _resolve_input_length,
@@ -159,6 +159,15 @@ def _print_training_data_summary(
     _summary_line("Window", f"{in_len} in -> {out_len} out ({alignment})")
     _summary_line("Stride", f"train {train_stride}  |  eval {eval_stride}")
     _summary_line("Batch", f"{batch_size} x {epochs} epochs")
+    _summary_line(
+        "Optimizer",
+        f"Adam lr={train_cfg.get('learning_rate')} wd={train_cfg.get('weight_decay', 0)}",
+    )
+    sched_name = str(train_cfg.get("scheduler", "none")).lower()
+    _summary_line("Scheduler", sched_name if sched_name not in {"", "none", "off", "disabled"} else "off")
+    _summary_line("Early stop", str(train_cfg.get("early_stop_patience", 0)))
+    _summary_line("Train shuffle", str(train_cfg.get("train_shuffle", True)))
+    _summary_line("Tensor dtype", str(train_cfg.get("tensor_dtype", "float32")))
 
     ckpt = train_cfg.get("checkpoint_monitor")
     if ckpt:
@@ -659,7 +668,11 @@ def _run_epoch(
     return logs
 
 
-def _setup_device_amp_scaler(train_cfg: dict) -> tuple[torch.device, bool, torch.dtype, torch.cuda.amp.GradScaler]:
+def _setup_device_amp_scaler(
+    train_cfg: dict,
+    *,
+    tensor_dtype: torch.dtype = torch.float32,
+) -> tuple[torch.device, bool, torch.dtype, torch.cuda.amp.GradScaler]:
     """Resolve device and optional automatic mixed precision settings.
 
     Step by step:
@@ -671,7 +684,11 @@ def _setup_device_amp_scaler(train_cfg: dict) -> tuple[torch.device, bool, torch
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     _configure_cuda(train_cfg)
-    use_amp = bool(train_cfg.get("use_amp", False)) and device.type == "cuda"
+    use_amp = (
+        bool(train_cfg.get("use_amp", False))
+        and device.type == "cuda"
+        and tensor_dtype != torch.float64
+    )
     amp_dtype = _resolve_amp_dtype(train_cfg)
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp and amp_dtype == torch.float16)
     return device, use_amp, amp_dtype, scaler
@@ -682,17 +699,24 @@ def _resolve_seed(adapter, train_cfg: dict, seed: int | None) -> int:
 
     Priority:
         1. Explicit --seed from the command line
-        2. experiment.yaml seed
-        3. model training seed
+        2. model training seed (model-specific baseline parity)
+        3. experiment.yaml seed
     """
     if seed is None:
-        seed = adapter.cfg.get("seed") or train_cfg.get("seed")
+        seed = train_cfg.get("seed") or adapter.cfg.get("seed")
     if seed is None:
         raise ValueError("Set seed in experiment yaml, model training config, or pass --seed")
     return int(seed)
 
 
-def _build_model(adapter, device: torch.device, train_cfg: dict, init_checkpoint: Path | None) -> torch.nn.Module:
+def _build_model(
+    adapter,
+    device: torch.device,
+    train_cfg: dict,
+    init_checkpoint: Path | None,
+    *,
+    tensor_dtype: torch.dtype = torch.float32,
+) -> torch.nn.Module:
     """Build the model and apply optional initialization steps.
 
     Step by step:
@@ -706,16 +730,26 @@ def _build_model(adapter, device: torch.device, train_cfg: dict, init_checkpoint
     resolved_init = init_checkpoint or (Path(configured_init) if configured_init else None)
     if resolved_init is not None:
         _load_init_checkpoint(model, resolved_init, device)
+    if tensor_dtype == torch.float64:
+        model = model.double()
     if bool(train_cfg.get("torch_compile", False)) and hasattr(torch, "compile"):
         model = torch.compile(model)
     return model
 
 
-def _build_loss_and_optimizer(adapter, model: torch.nn.Module, device: torch.device):
+def _build_loss_and_optimizer(
+    adapter,
+    model: torch.nn.Module,
+    device: torch.device,
+    *,
+    tensor_dtype: torch.dtype = torch.float32,
+):
     """Build the loss object, move it to device if needed, and create optimizer."""
     loss_fn = adapter.build_loss()
     if isinstance(loss_fn, torch.nn.Module):
         loss_fn = loss_fn.to(device)
+        if tensor_dtype == torch.float64:
+            loss_fn = loss_fn.double()
     optim, sched = adapter.configure_optimizer(model)
     return loss_fn, optim, sched
 
@@ -831,13 +865,17 @@ def train_model(
     if epochs <= 0:
         raise ValueError("epochs must be greater than 0. Use a one-batch smoke test for pipeline checks.")
 
+    _, tensor_dtype = resolve_tensor_dtype(adapter.model_cfg)
+
     # Step 2:
     # Choose device and optional AMP behavior.
-    device, use_amp, amp_dtype, scaler = _setup_device_amp_scaler(train_cfg)
+    device, use_amp, amp_dtype, scaler = _setup_device_amp_scaler(train_cfg, tensor_dtype=tensor_dtype)
 
     # Step 3:
     # Build model, optional init checkpoint, loss, and optimizer.
-    model = _build_model(adapter, device, train_cfg, init_checkpoint)
+    model = _build_model(
+        adapter, device, train_cfg, init_checkpoint, tensor_dtype=tensor_dtype
+    )
     print("\nModel architecture:", flush=True)
     print(model, flush=True)
     param_stats = count_model_parameters(model)
@@ -846,9 +884,12 @@ def train_model(
         f"({param_stats['parameters_trainable']:,} trainable)",
         flush=True,
     )
-    loss_fn, optim, sched = _build_loss_and_optimizer(adapter, model, device)
+    loss_fn, optim, sched = _build_loss_and_optimizer(
+        adapter, model, device, tensor_dtype=tensor_dtype
+    )
 
     print(f"Device: {device}", flush=True)
+    print(f"Tensor dtype: {tensor_dtype}", flush=True)
     if device.type == "cuda":
         name = torch.cuda.get_device_name(device)
         amp_label = str(train_cfg.get("amp_dtype", "bf16")) if use_amp else "off"
@@ -990,7 +1031,10 @@ def train_model(
             # 6c. Optional scheduler step after validation.
             sched_metric = _epoch_score(scheduler_key, val_logs, train_cfg)
             if sched is not None:
-                sched.step(sched_metric)
+                if isinstance(sched, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                    sched.step(sched_metric)
+                else:
+                    sched.step()
 
             # 6d. Save training history for later plotting/inspection.
             history.append(
