@@ -6,6 +6,22 @@ import numpy as np
 import pandas as pd
 
 from adapters.common import PredictionBundle
+from evaluation.power_postprocess import PowerPostprocessConfig, apply_power_postprocess_pair
+
+
+def _macro_f1_from_states(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Macro mean F1 over appliances (one batch or full epoch)."""
+    f1_vals = per_appliance_f1(y_true.astype(np.int32), y_pred.astype(np.int32))
+    return float(np.mean(f1_vals)) if len(f1_vals) else 0.0
+
+
+def _macro_mae_norm(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Macro mean normalized MAE over appliances."""
+    per_app = [
+        float(np.mean(np.abs(y_pred[:, app_i] - y_true[:, app_i])))
+        for app_i in range(y_true.shape[1])
+    ]
+    return float(np.mean(per_app)) if per_app else float("inf")
 
 
 def _resolve_state_source(
@@ -99,10 +115,14 @@ def evaluate_bundle(
     sae_period: int = 1200,
     on_threshold_watts: float | np.ndarray | None = None,
     state_label_source: str = "auto",
+    power_postprocess: PowerPostprocessConfig | None = None,
 ) -> pd.DataFrame:
     """Per-appliance MAE/SAE/F1 plus one overall summary row."""
-    y_true = bundle.y_true_watts
-    y_pred = np.maximum(bundle.y_pred_watts, 0.0)
+    y_true, y_pred = apply_power_postprocess_pair(
+        bundle.y_true_watts,
+        bundle.y_pred_watts,
+        power_postprocess,
+    )
     z_true, z_pred = _on_off_labels(bundle, y_true, y_pred, on_threshold_watts, state_label_source)
 
     mae_vals = mae(y_true, y_pred)

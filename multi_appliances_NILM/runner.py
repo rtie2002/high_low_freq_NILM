@@ -56,7 +56,8 @@ from adapters.dataloader import (
 )
 from evaluation.live_monitor import LiveTrainingMonitor
 from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
-from evaluation.metrics import evaluate_bundle
+from evaluation.metrics import _macro_mae_norm, evaluate_bundle
+from evaluation.power_postprocess import apply_power_postprocess_pair, resolve_power_postprocess
 from evaluation.plots import dataset_on_labels_for_bundle, save_appliance_on_waveforms
 from evaluation.run_summary import (
     build_hardware_info,
@@ -308,7 +309,61 @@ def _state_f1_logs(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
     }
 
 
+def _flat_batch_array(value) -> np.ndarray:
+    """Flatten one batch of power/state windows to (N, A)."""
+    arr = value.detach().float().cpu().numpy()
+    if arr.ndim > 2:
+        arr = arr.reshape(-1, arr.shape[-1])
+    return arr.astype(np.float64)
+
+
+def _batch_state_arrays(adapter, aux: dict) -> tuple[np.ndarray, np.ndarray]:
+    """ON/OFF labels for one validation batch."""
+    z_pred = _flat_batch_array(aux["pred_state"]).astype(np.int32)
+    source = get_state_label_source(adapter.model_cfg)
+    if source == "threshold":
+        threshold = _state_eval_thresholds(adapter.model_cfg, adapter.experiment, adapter.cfg["appliances"])
+        if threshold is None:
+            raise ValueError("threshold state_label_source requires ON thresholds")
+        y_true = _flat_batch_array(aux["true_power"])
+        y_true_w = adapter._data_loader().denorm_to_watts(y_true)
+        z_true = (y_true_w > np.asarray(threshold, dtype=np.float32)).astype(np.int32)
+        return z_true, z_pred
+
+    z_true = _flat_batch_array(aux["true_state"]).astype(np.int32)
+    return z_true, z_pred
+
+
+def _validation_batch_metrics(adapter, aux: dict) -> dict[str, float]:
+    """Baseline-style validation metrics: compute per batch, mean later at epoch end."""
+    y_pred = _flat_batch_array(aux["pred_power"])
+    y_true = _flat_batch_array(aux["true_power"])
+    mae_norm = _macro_mae_norm(y_true, y_pred)
+
+    loader = adapter._data_loader()
+    y_pred_w = loader.denorm_to_watts(y_pred)
+    y_true_w = loader.denorm_to_watts(y_true)
+    mae_watts = _macro_mae_norm(y_true_w, y_pred_w)
+
+    z_true, z_pred = _batch_state_arrays(adapter, aux)
+    state_logs = _state_f1_logs(z_true, z_pred)
+    return {
+        "mae_norm": mae_norm,
+        "mae_watts_epoch": mae_watts,
+        **state_logs,
+    }
+
+
+def _mean_batch_validation_logs(batch_logs: list[dict[str, float]]) -> dict[str, float]:
+    """Average per-batch validation metrics (transfer-learning baseline aggregation)."""
+    if not batch_logs:
+        return {}
+    keys = batch_logs[0].keys()
+    return {key: float(np.mean([row[key] for row in batch_logs])) for key in keys}
+
+
 def _epoch_state_arrays(adapter, aux_batches: dict[str, list[np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
+    """Legacy epoch-pooled ON/OFF arrays (used by offline tools if needed)."""
     """Build validation ON/OFF arrays from the source selected in model yaml."""
     source = get_state_label_source(adapter.model_cfg)
     if source == "threshold":
@@ -577,6 +632,7 @@ def _run_epoch(
         "pred_power": [],
         "true_power": [],
     }
+    batch_val_metrics: list[dict[str, float]] = []
 
     # Important difference between training and validation:
     #   train mode enables dropout/BatchNorm update behavior.
@@ -656,11 +712,12 @@ def _run_epoch(
             for k in log_keys:
                 totals[k] += step.logs.get(k, 0.0)
 
-            # Validation F1 is computed at epoch end using the configured state source.
+            # Validation F1/MAE: baseline averages per-batch metrics, not one epoch pool.
             if collect_states and step.aux:
                 for key in aux_batches:
                     if key in step.aux:
                         aux_batches[key].append(step.aux[key].detach().float().cpu().numpy())
+                batch_val_metrics.append(_validation_batch_metrics(adapter, step.aux))
 
             n_batches += 1
             if n_batches % 20 == 0 or n_batches == n_total:
@@ -669,12 +726,9 @@ def _run_epoch(
     # Convert accumulated batch values to one average value per epoch.
     logs = _aggregate_logs(log_keys, n_batches, totals)
 
-    # Add val_f1 and epoch-level MAE (normalized + watts) for checkpointing.
-    if collect_states and aux_batches.get("true_power"):
-        if aux_batches["true_state"]:
-            z_true, z_pred = _epoch_state_arrays(adapter, aux_batches)
-            logs.update(_state_f1_logs(z_true, z_pred))
-        logs.update(_epoch_power_mae_logs(adapter, aux_batches))
+    # Per-batch validation metrics averaged across batches (baseline trainer.py style).
+    if collect_states and batch_val_metrics:
+        logs.update(_mean_batch_validation_logs(batch_val_metrics))
         if monitor_key := str(adapter.model_cfg.get("training", {}).get("checkpoint_monitor", "")).lower():
             if monitor_key in {"val_mae_minus_f1", "mae_minus_f1"}:
                 train_cfg = adapter.model_cfg.get("training", {})
@@ -1226,11 +1280,17 @@ def evaluate_model(
 
     # Step 6:
     # Compute the standard metrics from the shared PredictionBundle format.
+    power_postprocess = resolve_power_postprocess(
+        adapter.experiment,
+        bundle.appliances,
+        adapter.model_cfg,
+    )
     metrics = evaluate_bundle(
         bundle,
         sae_period=int(adapter.experiment["evaluation"].get("sae_period", 1200)),
         on_threshold_watts=_state_eval_thresholds(adapter.model_cfg, adapter.experiment, bundle.appliances),
         state_label_source=get_state_label_source(adapter.model_cfg),
+        power_postprocess=power_postprocess,
     )
     metrics_path = run_dir / f"{split}_metrics.csv"
     metrics.to_csv(metrics_path, index=False)
@@ -1252,11 +1312,16 @@ def evaluate_model(
         bundle.csv_timesteps,
     )
 
+    y_true_watts, y_pred_watts = apply_power_postprocess_pair(
+        bundle.y_true_watts,
+        bundle.y_pred_watts,
+        power_postprocess,
+    )
     saved = save_appliance_on_waveforms(
         waveform_dir,
         appliances=bundle.appliances,
-        y_true_watts=bundle.y_true_watts,
-        y_pred_watts=bundle.y_pred_watts,
+        y_true_watts=y_true_watts,
+        y_pred_watts=y_pred_watts,
         y_true_on=waveform_true_on,
         y_pred_on=bundle.y_pred_on,
         csv_timesteps=bundle.csv_timesteps,

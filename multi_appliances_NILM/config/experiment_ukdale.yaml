@@ -32,5 +32,15 @@ evaluation:
     dishwasher: 30
     washingmachine: 30
     microwave: 100
+  # From NILM_model/baseline/transfer_learning_multi-appliance/Arguments.py (ukdale_params_appliance)
+  max_on_power_watts:
+    kettle: 4000
+    fridge: 4000
+    dishwasher: 4000
+    washingmachine: 3999
+    microwave: 4000
+  power_postprocess:
+    enabled: true
+    min_power_watts: 5
   sae_period: 1200
   power_unit: watts
