@@ -11,10 +11,11 @@ evaluation:
 
 windowing:
   input_window_length: 480
-  output_window_length: &output_len 480
+  output_window_length: 480
   output_alignment: end
-  input_stride: 120
-  eval_stride: *output_len
+  # Baseline create_dataset.py uses chunk_size=240 (Arguments window_stride=120 is unused).
+  input_stride: 240
+  eval_stride: 240
   eval_reconstruction: flat
   training_targets: full_input
 
