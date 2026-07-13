@@ -341,7 +341,7 @@ class BaseNILMAdapter(AdapterDataMixin):
         loader = self._data_loader()
         w = self.model_cfg.get("windowing", {})
         recon_mode = resolve_eval_reconstruction(w, split=split_key)
-        yaml_mode = str(w.get("eval_reconstruction", "flat")).lower()
+        yaml_mode = str(w.get("eval_reconstruction", "auto")).lower()
         if yaml_mode == "flat" and recon_mode == "overlap_mean":
             out_len = int(w.get("output_window_length", 1))
             stride = int(w.get("eval_stride", w.get("input_stride", 1)))

@@ -81,18 +81,39 @@ def resolve_eval_reconstruction(windowing: dict[str, Any], *, split: str = "vali
 
     When eval stride is smaller than the output window, windows overlap on the
     CSV timeline. ``flat`` concatenation produces non-monotonic csv_timesteps
-    and zig-zag waveform plots; force ``overlap_mean`` in that case.
+    and zig-zag waveform plots; use ``overlap_mean`` in that case.
+
+    ``eval_reconstruction: auto`` (recommended) picks:
+        overlap_mean  if eval_stride < output_window_length
+        flat          otherwise
     """
-    mode = str(windowing.get("eval_reconstruction", "flat")).lower()
+    mode = str(windowing.get("eval_reconstruction", "auto")).lower()
     out_len = int(windowing.get("output_window_length", 1))
-    split_key = str(split).lower()
-    if split_key in {"validation", "val"}:
-        stride = int(windowing.get("eval_stride", windowing.get("input_stride", 1)))
-    else:
-        stride = int(windowing.get("eval_stride", windowing.get("input_stride", 1)))
+    stride = int(windowing.get("eval_stride", windowing.get("input_stride", 1)))
+    if mode in {"", "auto", "default"}:
+        return "overlap_mean" if stride < out_len else "flat"
     if mode == "flat" and stride < out_len:
         return "overlap_mean"
     return mode
+
+
+def resolve_training_targets(windowing: dict[str, Any]) -> str:
+    """Resolve which timesteps are supervised during training.
+
+    ``training_targets: auto`` (recommended) picks:
+        full_input     when input_window_length == output_window_length
+        output_window  otherwise (end-aligned slice on val/test always)
+    """
+    raw = str(windowing.get("training_targets", "auto")).lower()
+    if raw in {"", "auto", "default"}:
+        input_len = int(windowing.get("input_window_length", 1))
+        output_len = int(windowing.get("output_window_length", input_len))
+        return "full_input" if input_len == output_len else "output_window"
+    if raw not in {"full_input", "output_window"}:
+        raise ValueError(
+            "windowing.training_targets must be one of: auto, full_input, output_window"
+        )
+    return raw
 
 
 def resolve_lr_scheduler_settings(train_cfg: dict[str, Any]) -> dict[str, Any]:

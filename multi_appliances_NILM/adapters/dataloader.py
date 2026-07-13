@@ -14,7 +14,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from adapters.config import appliance_list, resolve_tensor_dtype
+from adapters.config import appliance_list, resolve_tensor_dtype, resolve_training_targets
 
 SplitName = Literal["train", "validation", "test"]
 OutputAlignment = Literal["end", "center"]
@@ -175,7 +175,7 @@ def _count_windows(n_timesteps: int, windowing: dict[str, Any], stride: int) -> 
 
 
 def _target_mode(windowing: dict[str, Any], split: str) -> TargetMode:
-    if split == "train" and windowing.get("training_targets") == "full_input":
+    if split == "train" and resolve_training_targets(windowing) == "full_input":
         return "full_input"
     return "output_window"
 

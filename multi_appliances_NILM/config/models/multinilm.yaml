@@ -15,8 +15,8 @@ windowing:
   output_alignment: end
   input_stride: 240
   eval_stride: 240
-  eval_reconstruction: overlap_mean
-  training_targets: full_input
+  eval_reconstruction: auto   # overlap_mean when eval_stride < output length, else flat
+  training_targets: auto      # full_input when input == output length, else output_window
 
 architecture:
   input_channels: 1
