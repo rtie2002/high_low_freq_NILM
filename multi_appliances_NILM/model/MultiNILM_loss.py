@@ -24,7 +24,9 @@ forward pass and the dataloader batch (x, y, z).
 
 power_pred is already state-gated inside MultiNILM.ApplianceHead:
 
-    power_pred = power_raw * sigmoid(state_logits)
+    soft: power_pred = power_raw * sigmoid(state_logits)
+    hard: power_pred = power_raw * 1{sigmoid(state_logits) >= gate_threshold}
+          (straight-through estimator during training)
 
 Loss still supervises state_logits directly with BCEWithLogits so the
 classification head receives its own gradient path.

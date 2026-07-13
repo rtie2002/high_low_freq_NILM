@@ -27,6 +27,8 @@ architecture:
   num_blocks: 6
   kernel_size: 5
   dropout: 0.12
+  gate_mode: hard
+  gate_threshold: 0.5
 
 loss:
   lambda_state: 1

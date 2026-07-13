@@ -25,6 +25,29 @@ from torch import nn
 from torch.nn import functional as F
 
 
+def state_gate(
+    state_prob: torch.Tensor,
+    *,
+    mode: str = "soft",
+    threshold: float = 0.5,
+) -> torch.Tensor:
+    """Gate power by predicted ON probability (soft) or binary mask (hard).
+
+    Soft:  gate = sigmoid(logit) in (0, 1)
+    Hard:  gate = 1{sigmoid(logit) >= threshold}; straight-through estimator when training
+    """
+    gate_mode = str(mode or "soft").lower()
+    if gate_mode in {"soft", "sigmoid", "prob", "probability"}:
+        return state_prob
+    if gate_mode in {"hard", "binary", "threshold"}:
+        hard = (state_prob >= float(threshold)).to(dtype=state_prob.dtype)
+        if state_prob.requires_grad:
+            # Straight-through: forward hard mask, backward through soft probabilities.
+            return hard - state_prob.detach() + state_prob
+        return hard
+    raise ValueError(f"gate_mode must be soft or hard, got {mode!r}")
+
+
 class ResidualTemporalBlock(nn.Module):
     """One temporal convolution block.
 
@@ -123,8 +146,17 @@ class ApplianceHead(nn.Module):
     power scales and ON/OFF patterns.
     """
 
-    def __init__(self, hidden_channels: int, dropout: float) -> None:
+    def __init__(
+        self,
+        hidden_channels: int,
+        dropout: float,
+        *,
+        gate_mode: str = "soft",
+        gate_threshold: float = 0.5,
+    ) -> None:
         super().__init__()
+        self.gate_mode = str(gate_mode or "soft").lower()
+        self.gate_threshold = float(gate_threshold)
         self.feature_refine = nn.Sequential(
             nn.Conv1d(hidden_channels, hidden_channels, kernel_size=1),
             nn.BatchNorm1d(hidden_channels),
@@ -139,10 +171,14 @@ class ApplianceHead(nn.Module):
         power_raw = self.power_head(features)
         state_logits = self.state_head(features)
 
-        # Match transfer-learning baseline: gate power by predicted ON probability.
         # State logits stay unbounded for BCEWithLogitsLoss.
         state_prob = torch.sigmoid(state_logits)
-        power = power_raw * state_prob
+        gate = state_gate(
+            state_prob,
+            mode=self.gate_mode,
+            threshold=self.gate_threshold,
+        )
+        power = power_raw * gate
         return power, state_logits
 
 
@@ -195,6 +231,8 @@ class MultiNILM(nn.Module):
         num_blocks: int = 5,
         kernel_size: int = 5,
         dropout: float = 0.1,
+        gate_mode: str = "soft",
+        gate_threshold: float = 0.5,
     ) -> None:
         super().__init__()
 
@@ -202,6 +240,8 @@ class MultiNILM(nn.Module):
         self.num_appliances = int(num_appliances)
         self.output_length = int(output_length)
         self.hidden_channels = int(hidden_channels)
+        self.gate_mode = str(gate_mode or "soft").lower()
+        self.gate_threshold = float(gate_threshold)
 
         # Step 1: widen aggregate power into temporal feature maps.
         if channel_schedule:
@@ -248,7 +288,12 @@ class MultiNILM(nn.Module):
         # Step 3: one decoder head per appliance (dynamic count from experiment).
         self.appliance_heads = nn.ModuleList(
             [
-                ApplianceHead(hidden_channels=self.hidden_channels, dropout=dropout)
+                ApplianceHead(
+                    hidden_channels=self.hidden_channels,
+                    dropout=dropout,
+                    gate_mode=self.gate_mode,
+                    gate_threshold=self.gate_threshold,
+                )
                 for _ in range(self.num_appliances)
             ]
         )
@@ -322,7 +367,7 @@ class MultiNILM(nn.Module):
 
         # Step 5:
         # Each appliance head predicts one power channel and one state channel.
-        # Power is gated by sigmoid(state) like the transfer-learning baseline.
+        # Power is gated by state probability (soft or hard; see gate_mode in yaml).
         power_parts: list[torch.Tensor] = []
         state_parts: list[torch.Tensor] = []
         for head in self.appliance_heads:
@@ -354,6 +399,8 @@ class MultiNILMConfig:
     num_blocks: int = 5
     kernel_size: int = 5
     dropout: float = 0.1
+    gate_mode: str = "soft"
+    gate_threshold: float = 0.5
 
 
 def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
@@ -370,4 +417,6 @@ def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
         num_blocks=int(architecture.get("num_blocks", 5)),
         kernel_size=int(architecture.get("kernel_size", 5)),
         dropout=float(architecture.get("dropout", 0.1)),
+        gate_mode=str(architecture.get("gate_mode", "soft")),
+        gate_threshold=float(architecture.get("gate_threshold", 0.5)),
     )

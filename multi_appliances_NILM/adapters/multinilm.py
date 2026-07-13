@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from adapters.common import BaseNILMAdapter, StepOutput
-from model.MultiNILM import MultiNILM
+from model.MultiNILM import MultiNILM, multinilm_config
 from model.MultiNILM_loss import MultiNILMLoss
 
 
@@ -60,38 +60,22 @@ class MultiNILMAdapter(BaseNILMAdapter):
     def build_model(self, device: torch.device) -> torch.nn.Module:
         # Read architecture settings from config/models/multinilm.yaml.
         arch = self.model_cfg["architecture"]
+        cfg = multinilm_config(arch)
 
         # Create the MultiNILM neural network.
         model = MultiNILM(
-            # Number of input channels. For normal aggregate power, this is 1.
-            input_channels=int(arch.get("input_channels", arch.get("input_size", 1))),
-
-            # Number of output appliances comes from the experiment CSV config.
-            # REDD = 4 appliances, UK-DALE = 5 appliances.
+            input_channels=cfg.input_channels,
             num_appliances=len(self.cfg["appliances"]),
-
-            # Number of output timesteps predicted by the model.
-            # Example: 64 for REDD MATNILM-style center output.
             output_length=int(self.model_cfg["windowing"].get("output_window_length", 1)),
-
-            # CNN hidden feature channels (final width for TCN + heads).
-            hidden_channels=int(arch.get("hidden_channels", arch.get("hidden", 64))),
-
-            # Gradual widening before TCN, e.g. [16, 32, 64].
-            channel_schedule=arch.get("channel_schedule"),
-
-            # First staged conv kernel (default 7); later stages use stage_kernel_size.
-            stem_kernel_size=int(arch.get("stem_kernel_size", 7)),
-            stage_kernel_size=int(arch.get("stage_kernel_size", 5)),
-
-            # Number of residual temporal convolution blocks.
-            num_blocks=int(arch.get("num_blocks", 5)),
-
-            # Temporal convolution kernel size.
-            kernel_size=int(arch.get("kernel_size", 5)),
-
-            # Dropout rate inside temporal blocks.
-            dropout=float(arch.get("dropout", 0.1)),
+            hidden_channels=cfg.hidden_channels,
+            channel_schedule=cfg.channel_schedule,
+            stem_kernel_size=cfg.stem_kernel_size,
+            stage_kernel_size=cfg.stage_kernel_size,
+            num_blocks=cfg.num_blocks,
+            kernel_size=cfg.kernel_size,
+            dropout=cfg.dropout,
+            gate_mode=cfg.gate_mode,
+            gate_threshold=cfg.gate_threshold,
         )
 
         # Move model to GPU if available, otherwise CPU.
