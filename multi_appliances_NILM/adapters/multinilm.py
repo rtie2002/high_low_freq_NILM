@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from adapters.common import BaseNILMAdapter, StepOutput
+from adapters.config import appliance_off_norm_normalized
 from model.MultiNILM import MultiNILM, multinilm_config
 from model.MultiNILM_loss import MultiNILMLoss
 
@@ -61,11 +62,13 @@ class MultiNILMAdapter(BaseNILMAdapter):
         # Read architecture settings from config/models/multinilm.yaml.
         arch = self.model_cfg["architecture"]
         cfg = multinilm_config(arch)
+        appliances = self.cfg["appliances"]
+        off_norms = appliance_off_norm_normalized(self.experiment, appliances)
 
         # Create the MultiNILM neural network.
         model = MultiNILM(
             input_channels=cfg.input_channels,
-            num_appliances=len(self.cfg["appliances"]),
+            num_appliances=len(appliances),
             output_length=int(self.model_cfg["windowing"].get("output_window_length", 1)),
             hidden_channels=cfg.hidden_channels,
             channel_schedule=cfg.channel_schedule,
@@ -76,6 +79,7 @@ class MultiNILMAdapter(BaseNILMAdapter):
             dropout=cfg.dropout,
             gate_mode=cfg.gate_mode,
             gate_threshold=cfg.gate_threshold,
+            appliance_off_norm=off_norms,
         )
 
         # Move model to GPU if available, otherwise CPU.

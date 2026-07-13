@@ -153,10 +153,12 @@ class ApplianceHead(nn.Module):
         *,
         gate_mode: str = "soft",
         gate_threshold: float = 0.5,
+        off_norm: float = 0.0,
     ) -> None:
         super().__init__()
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
+        self.register_buffer("off_norm", torch.tensor(float(off_norm), dtype=torch.float32))
         self.feature_refine = nn.Sequential(
             nn.Conv1d(hidden_channels, hidden_channels, kernel_size=1),
             nn.BatchNorm1d(hidden_channels),
@@ -178,7 +180,9 @@ class ApplianceHead(nn.Module):
             mode=self.gate_mode,
             threshold=self.gate_threshold,
         )
-        power = power_raw * gate
+        # Blend ON power with the normalized OFF level (0 W -> -mean/std), not 0.
+        # denorm(0) equals the dataset mean and causes constant watt spikes in plots.
+        power = gate * power_raw + (1.0 - gate) * self.off_norm
         return power, state_logits
 
 
@@ -233,6 +237,7 @@ class MultiNILM(nn.Module):
         dropout: float = 0.1,
         gate_mode: str = "soft",
         gate_threshold: float = 0.5,
+        appliance_off_norm: list[float] | None = None,
     ) -> None:
         super().__init__()
 
@@ -242,6 +247,11 @@ class MultiNILM(nn.Module):
         self.hidden_channels = int(hidden_channels)
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
+        off_norms = list(appliance_off_norm or [0.0] * self.num_appliances)
+        if len(off_norms) != self.num_appliances:
+            raise ValueError(
+                f"appliance_off_norm length {len(off_norms)} != num_appliances {self.num_appliances}"
+            )
 
         # Step 1: widen aggregate power into temporal feature maps.
         if channel_schedule:
@@ -293,8 +303,9 @@ class MultiNILM(nn.Module):
                     dropout=dropout,
                     gate_mode=self.gate_mode,
                     gate_threshold=self.gate_threshold,
+                    off_norm=off_norms[app_i],
                 )
-                for _ in range(self.num_appliances)
+                for app_i in range(self.num_appliances)
             ]
         )
 

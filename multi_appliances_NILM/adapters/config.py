@@ -42,6 +42,27 @@ def appliance_list(experiment: dict[str, Any], model_cfg: dict[str, Any] | None 
     return list(experiment["csv"]["appliances"])
 
 
+def appliance_off_norm_normalized(experiment: dict[str, Any], appliances: list[str]) -> list[float]:
+    """Normalized power target when an appliance is OFF (0 W in raw space).
+
+    With z-score targets (w - mean) / std, 0 W maps to -mean/std per appliance.
+    State gating must blend toward this value when OFF, not toward 0, otherwise
+    denorm(0) = mean and waveforms show a constant watt spike (e.g. fridge 50 W).
+    """
+    norm = experiment.get("normalization", {})
+    app_cfg = norm.get("appliances", {})
+    values: list[float] = []
+    for app in appliances:
+        stats = app_cfg.get(app)
+        if not stats or "mean" not in stats or "std" not in stats:
+            values.append(0.0)
+            continue
+        std = float(stats["std"])
+        mean = float(stats["mean"])
+        values.append(-mean / std if std else 0.0)
+    return values
+
+
 def resolve_tensor_dtype(model_cfg: dict[str, Any]) -> tuple[np.dtype, torch.dtype]:
     """Resolve training tensor dtype from model yaml (baseline transfer uses float64)."""
     raw = (
