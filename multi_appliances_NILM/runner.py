@@ -112,6 +112,18 @@ def _summary_line(label: str, value: str, *, width: int = 14) -> None:
     print(f"  {label:<{width}} {value}", flush=True)
 
 
+def _display_csv_path(csv_path: str) -> str:
+    """Show dataset-relative path when possible, else parent/filename."""
+    p = Path(csv_path)
+    parts = p.parts
+    if "datasets" in parts:
+        idx = parts.index("datasets")
+        return str(Path(*parts[idx:]))
+    if len(parts) >= 2:
+        return f"{p.parent.name}/{p.name}"
+    return p.name
+
+
 def _print_training_data_summary(
     *,
     experiment_id: str,
@@ -176,10 +188,21 @@ def _print_training_data_summary(
     print("DATA SPLITS", flush=True)
     print(rule, flush=True)
 
+    split_infos = {
+        split: data_loader.describe_split(split, batch_size=batch_size)
+        for split in ("train", "validation", "test")
+    }
+
+    print("  CSV files", flush=True)
+    for split in ("train", "validation", "test"):
+        info = split_infos[split]
+        _summary_line(split, _display_csv_path(info["csv_path"]), width=12)
+    print(flush=True)
+
     headers = ("Split", "Timesteps", "Windows", "Batches", "Stride", "Target")
     rows: list[tuple[str, ...]] = []
     for split in ("train", "validation", "test"):
-        info = data_loader.describe_split(split, batch_size=batch_size)
+        info = split_infos[split]
         rows.append(
             (
                 split,
