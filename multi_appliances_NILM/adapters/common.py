@@ -22,6 +22,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+from adapters.config import resolve_lr_scheduler_settings
 from adapters.dataloader import NILMDataLoader, _resolve_input_length, _split_key
 
 
@@ -291,26 +292,26 @@ class BaseNILMAdapter(AdapterDataMixin):
             lr=float(train_cfg["learning_rate"]),
             weight_decay=float(train_cfg.get("weight_decay", 0.0)),
         )
+        sched_cfg = resolve_lr_scheduler_settings(train_cfg)
         scheduler = None
-        sched_name = str(train_cfg.get("scheduler", "")).lower()
-        if sched_name in {"reduce_on_plateau", "plateau"}:
-            monitor = str(
-                train_cfg.get("scheduler_monitor", train_cfg.get("checkpoint_monitor", "val_mae"))
-            ).lower()
-            mode = "max" if monitor in {"val_f1", "val_maf1"} else "min"
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer,
-                mode=mode,
-                factor=float(train_cfg.get("scheduler_factor", 0.5)),
-                patience=int(train_cfg.get("scheduler_patience", 5)),
-                min_lr=float(train_cfg.get("scheduler_min_lr", 1e-6)),
-            )
-        elif sched_name in {"step", "step_lr"}:
-            scheduler = torch.optim.lr_scheduler.StepLR(
-                optimizer,
-                step_size=int(train_cfg.get("scheduler_step_size", train_cfg.get("decay_step", 100))),
-                gamma=float(train_cfg.get("scheduler_gamma", train_cfg.get("gamma", 0.1))),
-            )
+        if sched_cfg["enabled"]:
+            sched_name = sched_cfg["type"]
+            if sched_name in {"reduce_on_plateau", "plateau"}:
+                monitor = sched_cfg["monitor"]
+                mode = "max" if monitor in {"val_f1", "val_maf1"} else "min"
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer,
+                    mode=mode,
+                    factor=sched_cfg["factor"],
+                    patience=sched_cfg["patience"],
+                    min_lr=sched_cfg["min_lr"],
+                )
+            elif sched_name in {"step", "step_lr"}:
+                scheduler = torch.optim.lr_scheduler.StepLR(
+                    optimizer,
+                    step_size=sched_cfg["step_size"],
+                    gamma=sched_cfg["gamma"],
+                )
         return optimizer, scheduler
 
     def _prediction_context(self, split: str) -> tuple[list[str], str]:

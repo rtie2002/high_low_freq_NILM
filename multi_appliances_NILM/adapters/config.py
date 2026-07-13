@@ -55,6 +55,70 @@ def resolve_tensor_dtype(model_cfg: dict[str, Any]) -> tuple[np.dtype, torch.dty
     return np.float32, torch.float32
 
 
+def resolve_lr_scheduler_settings(train_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Resolve LR scheduler switch and parameters from model training yaml.
+
+    Primary switch (on/off + type):
+
+        training.scheduler: none | reduce_on_plateau | step_lr
+        # or
+        training.scheduler:
+          type: reduce_on_plateau
+
+    Secondary preset (used when scheduler is enabled; safe to keep while scheduler=none):
+
+        training.lr_scheduler:
+          monitor: val_mae_minus_f1
+          patience: 5
+          factor: 0.5
+          min_lr: 0.000001
+          step_size: 100
+          gamma: 0.1
+
+    Legacy flat keys (still supported): scheduler_monitor, scheduler_patience, ...
+    """
+    secondary: dict[str, Any] = {}
+    if isinstance(raw_secondary := train_cfg.get("lr_scheduler"), dict):
+        secondary = dict(raw_secondary)
+
+    primary = train_cfg.get("scheduler", "none")
+    if isinstance(primary, dict):
+        sched_type = str(primary.get("type", primary.get("name", "none"))).lower()
+        params = {**secondary, **primary}
+    else:
+        sched_type = str(primary or "none").lower()
+        params = dict(secondary)
+        legacy_map = {
+            "scheduler_monitor": "monitor",
+            "scheduler_patience": "patience",
+            "scheduler_factor": "factor",
+            "scheduler_min_lr": "min_lr",
+            "scheduler_step_size": "step_size",
+            "scheduler_gamma": "gamma",
+            "decay_step": "step_size",
+            "gamma": "gamma",
+        }
+        for legacy_key, param_key in legacy_map.items():
+            if legacy_key in train_cfg and param_key not in params:
+                params[param_key] = train_cfg[legacy_key]
+
+    disabled = sched_type in {"", "none", "off", "disabled", "null", "false"}
+    monitor_default = str(train_cfg.get("checkpoint_monitor", "val_mae")).lower()
+    preset_type = str(params.get("type", sched_type)).lower()
+
+    return {
+        "type": sched_type,
+        "preset_type": preset_type,
+        "enabled": not disabled,
+        "monitor": str(params.get("monitor", monitor_default)).lower(),
+        "patience": int(params.get("patience", 5)),
+        "factor": float(params.get("factor", 0.5)),
+        "min_lr": float(params.get("min_lr", 1e-6)),
+        "step_size": int(params.get("step_size", 100)),
+        "gamma": float(params.get("gamma", 0.1)),
+    }
+
+
 def merge_configs(experiment: dict[str, Any], model_cfg: dict[str, Any]) -> dict[str, Any]:
     """Single runtime config passed to adapters and runner."""
     return {

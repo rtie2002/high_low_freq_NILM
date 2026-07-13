@@ -44,7 +44,7 @@ import torch
 from tqdm import tqdm
 
 from adapters.common import StepOutput
-from adapters.config import appliance_list, resolve_tensor_dtype
+from adapters.config import appliance_list, resolve_lr_scheduler_settings, resolve_tensor_dtype
 from adapters.dataloader import (
     NILMDataLoader,
     _resolve_input_length,
@@ -164,8 +164,20 @@ def _print_training_data_summary(
         "Optimizer",
         f"Adam lr={train_cfg.get('learning_rate')} wd={train_cfg.get('weight_decay', 0)}",
     )
-    sched_name = str(train_cfg.get("scheduler", "none")).lower()
-    _summary_line("Scheduler", sched_name if sched_name not in {"", "none", "off", "disabled"} else "off")
+    sched_cfg = resolve_lr_scheduler_settings(train_cfg)
+    if sched_cfg["enabled"]:
+        sched_text = (
+            f"{sched_cfg['type']} (monitor={sched_cfg['monitor']}, "
+            f"patience={sched_cfg['patience']})"
+        )
+    elif train_cfg.get("lr_scheduler"):
+        sched_text = (
+            f"off — preset {sched_cfg['preset_type']} "
+            f"(monitor={sched_cfg['monitor']}, patience={sched_cfg['patience']})"
+        )
+    else:
+        sched_text = "off"
+    _summary_line("Scheduler", sched_text)
     _summary_line("Early stop", str(train_cfg.get("early_stop_patience", 0)))
     _summary_line("Train shuffle", str(train_cfg.get("train_shuffle", True)))
     _summary_line("Tensor dtype", str(train_cfg.get("tensor_dtype", "float32")))
@@ -840,7 +852,8 @@ def _build_loaders(adapter):
 
 def _compute_scheduler_key(train_cfg: dict, monitor_key: str) -> str:
     """Map scheduler monitor aliases onto actual validation log keys."""
-    scheduler_raw = str(train_cfg.get("scheduler_monitor", monitor_key)).lower()
+    sched_cfg = resolve_lr_scheduler_settings(train_cfg)
+    scheduler_raw = sched_cfg["monitor"]
     scheduler_aliases = {
         "val_f1": "val_f1",
         "val_maf1": "val_f1",
