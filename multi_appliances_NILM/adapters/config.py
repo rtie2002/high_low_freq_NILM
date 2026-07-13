@@ -55,6 +55,25 @@ def resolve_tensor_dtype(model_cfg: dict[str, Any]) -> tuple[np.dtype, torch.dty
     return np.float32, torch.float32
 
 
+def resolve_eval_reconstruction(windowing: dict[str, Any], *, split: str = "validation") -> str:
+    """Resolve timeline reconstruction mode for inference plots and metrics.
+
+    When eval stride is smaller than the output window, windows overlap on the
+    CSV timeline. ``flat`` concatenation produces non-monotonic csv_timesteps
+    and zig-zag waveform plots; force ``overlap_mean`` in that case.
+    """
+    mode = str(windowing.get("eval_reconstruction", "flat")).lower()
+    out_len = int(windowing.get("output_window_length", 1))
+    split_key = str(split).lower()
+    if split_key in {"validation", "val"}:
+        stride = int(windowing.get("eval_stride", windowing.get("input_stride", 1)))
+    else:
+        stride = int(windowing.get("eval_stride", windowing.get("input_stride", 1)))
+    if mode == "flat" and stride < out_len:
+        return "overlap_mean"
+    return mode
+
+
 def resolve_lr_scheduler_settings(train_cfg: dict[str, Any]) -> dict[str, Any]:
     """Resolve LR scheduler switch and parameters from model training yaml.
 

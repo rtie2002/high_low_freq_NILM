@@ -241,6 +241,18 @@ def plot_single_on_period(
         mains_label = "aggregate"
     true_v = np.asarray(y_true_watts, dtype=float)[sl]
     pred_v = np.maximum(np.asarray(y_pred_watts, dtype=float)[sl], 0.0)
+    on_view = np.asarray(y_pred_on)[sl].astype(bool) if y_pred_on is not None else None
+    agg_view = aggregate[sl] if aggregate is not None and len(aggregate) >= end else None
+
+    if len(x) > 1 and np.any(np.diff(x) <= 0):
+        order = np.argsort(x, kind="stable")
+        x = x[order]
+        true_v = true_v[order]
+        pred_v = pred_v[order]
+        if on_view is not None:
+            on_view = on_view[order]
+        if agg_view is not None:
+            agg_view = agg_view[order]
 
     n_pts = max(1, end - start)
     plot_side = figsize
@@ -248,7 +260,6 @@ def plot_single_on_period(
         plot_side = min(figsize * 2.5, figsize * (n_pts / 500) ** 0.45)
     fig, ax = plt.subplots(1, 1, figsize=(plot_side, plot_side))
     ax.set_box_aspect(1)
-    agg_view = aggregate[sl] if aggregate is not None and len(aggregate) >= end else None
     if agg_view is not None:
         ax_mains = ax.twinx()
         ax_mains.plot(x, agg_view, color="#9a9a9a", linewidth=0.9, alpha=0.45, label=mains_label)
@@ -258,8 +269,8 @@ def plot_single_on_period(
         ymax_mains = max(1.0, float(np.nanmax(agg_view)))
         ax_mains.set_ylim(0.0, ymax_mains * 1.08)
 
-    if y_pred_on is not None:
-        on_mask = np.asarray(y_pred_on)[sl].astype(bool)
+    if on_view is not None:
+        on_mask = on_view
         active = np.flatnonzero(on_mask)
         if len(active):
             groups = np.split(active, np.where(np.diff(active) != 1)[0] + 1)

@@ -16,7 +16,7 @@ windowing:
   # Baseline create_dataset.py uses chunk_size=240 (Arguments window_stride=120 is unused).
   input_stride: 240
   eval_stride: 240
-  eval_reconstruction: flat
+  eval_reconstruction: overlap_mean
   training_targets: full_input
 
 architecture:

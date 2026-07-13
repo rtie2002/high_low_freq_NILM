@@ -335,12 +335,14 @@ class LiveTrainingMonitor:
         epoch: int,
         tag: str,
     ) -> list[Path]:
+        # Waveforms need the full split timeline; partial batches break overlap
+        # reconstruction and ON-period selection on later CSV rows.
         bundle = adapter.predict_dataloader(
             model,
             loader,
             device,
             split=split,
-            max_batches=self.plot_max_batches(),
+            max_batches=None,
         )
         aggregate = self._split_mains(adapter, split, bundle)
         output_dir = self._waveform_tag_dir(split, tag)

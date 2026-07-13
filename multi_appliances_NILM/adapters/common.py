@@ -22,7 +22,9 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from adapters.config import resolve_lr_scheduler_settings
+import warnings
+
+from adapters.config import resolve_eval_reconstruction, resolve_lr_scheduler_settings
 from adapters.dataloader import NILMDataLoader, _resolve_input_length, _split_key
 
 
@@ -338,7 +340,18 @@ class BaseNILMAdapter(AdapterDataMixin):
         appliances, split_key = self._prediction_context(split)
         loader = self._data_loader()
         w = self.model_cfg.get("windowing", {})
-        use_overlap = str(w.get("eval_reconstruction", "flat")).lower() == "overlap_mean"
+        recon_mode = resolve_eval_reconstruction(w, split=split_key)
+        yaml_mode = str(w.get("eval_reconstruction", "flat")).lower()
+        if yaml_mode == "flat" and recon_mode == "overlap_mean":
+            out_len = int(w.get("output_window_length", 1))
+            stride = int(w.get("eval_stride", w.get("input_stride", 1)))
+            warnings.warn(
+                f"eval_reconstruction=flat with eval_stride={stride} < "
+                f"output_window_length={out_len} produces invalid waveform x-axes; "
+                "using overlap_mean instead.",
+                stacklevel=2,
+            )
+        use_overlap = recon_mode == "overlap_mean"
 
         power_windows = np.concatenate(pred_power_batches, axis=0)
         state_windows = np.concatenate(pred_state_batches, axis=0)

@@ -239,13 +239,8 @@ class MultiNILMAdapter(BaseNILMAdapter):
 
             pred_power.append(_to_numpy(power_pred))
 
-            pred_state.append(
-                _pred_on_from_config(
-                    self,
-                    _to_numpy(power_pred),
-                    _to_numpy(state_prob),
-                )
-            )
+            # Keep state probabilities for overlap_mean timeline reconstruction.
+            pred_state.append(_to_numpy(state_prob))
 
             # y and z are ground truth from dataloader.
             # They are already on CPU because we did not move them to device.

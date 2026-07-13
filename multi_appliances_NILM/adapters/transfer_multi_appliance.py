@@ -141,11 +141,7 @@ class TransferMultiApplianceAdapter(BaseNILMAdapter):
 
             n_apps = len(self.cfg["appliances"])
             pred_power.append(_to_numpy(power_np).reshape(len(x), -1, n_apps))
-            pred_state.append(
-                _pred_on_from_config(self, _to_numpy(power_np), _to_numpy(state_np)).reshape(
-                    len(x), -1, n_apps
-                )
-            )
+            pred_state.append(_to_numpy(state_np).reshape(len(x), -1, n_apps))
             true_power.append(y_true.reshape(len(x), -1, n_apps))
             true_state.append(z_true.reshape(len(x), -1, n_apps))
             sample_indices.append(self._sample_index(offset, len(x)))
