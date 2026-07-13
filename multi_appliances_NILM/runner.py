@@ -108,6 +108,10 @@ def _data_preprocess_note(
     return lines
 
 
+def _summary_line(label: str, value: str, *, width: int = 14) -> None:
+    print(f"  {label:<{width}} {value}", flush=True)
+
+
 def _print_training_data_summary(
     *,
     experiment_id: str,
@@ -124,60 +128,86 @@ def _print_training_data_summary(
     train_cfg = model_cfg.get("training", {})
     width = 78
     bar = "=" * width
-    thin = "-" * width
+    rule = "-" * width
+
+    in_len = _resolve_input_length(w)
+    out_len = int(w.get("output_window_length", 1))
+    train_stride = int(w["input_stride"])
+    eval_stride = int(w.get("eval_stride", train_stride))
+    alignment = w.get("output_alignment", "end")
 
     print(bar, flush=True)
-    print(f"EXPERIMENT: {experiment_id}  |  MODEL: {model_name}  |  DEVICE: {device}", flush=True)
-    print(bar, flush=True)
-    print(f"Appliances ({len(appliances)}): {', '.join(appliances)}", flush=True)
+    print("TRAINING SETUP", flush=True)
+    print(rule, flush=True)
+    _summary_line("Experiment", experiment_id)
+    _summary_line("Model", model_name)
+    _summary_line("Device", device)
+    _summary_line("Appliances", f"{', '.join(appliances)} ({len(appliances)})")
     print(flush=True)
-    print("Windowing", flush=True)
-    print(f"  input length (effective): {_resolve_input_length(w)}", flush=True)
-    print(f"  output length:            {int(w.get('output_window_length', 1))}", flush=True)
-    print(f"  output alignment:         {w.get('output_alignment', 'end')}", flush=True)
-    print(f"  train stride:             {int(w['input_stride'])}", flush=True)
-    print(f"  eval stride:              {int(w.get('eval_stride', w['input_stride']))}", flush=True)
-    print(f"  train target mode:        {_target_mode(w, 'train')}", flush=True)
-    print(f"  eval target mode:         {_target_mode(w, 'validation')}", flush=True)
-    print(f"  batch size:               {batch_size}", flush=True)
-    print(f"  epochs:                   {epochs}", flush=True)
-    if train_cfg.get("use_amp"):
-        print(f"  mixed precision:          {train_cfg.get('amp_dtype', 'bf16')}", flush=True)
-    print(f"  dataloader workers:       {int(train_cfg.get('num_workers', 0))}", flush=True)
-    if train_cfg.get("checkpoint_monitor"):
-        print(f"  checkpoint monitor:         {train_cfg['checkpoint_monitor']}", flush=True)
-        if str(train_cfg.get("checkpoint_monitor", "")).lower() in {
-            "val_mae_minus_f1",
-            "mae_minus_f1",
-        }:
+    _summary_line("Window", f"{in_len} in -> {out_len} out ({alignment})")
+    _summary_line("Stride", f"train {train_stride}  |  eval {eval_stride}")
+    _summary_line("Batch", f"{batch_size} x {epochs} epochs")
+
+    ckpt = train_cfg.get("checkpoint_monitor")
+    if ckpt:
+        ckpt_text = str(ckpt)
+        if str(ckpt).lower() in {"val_mae_minus_f1", "mae_minus_f1"}:
             space = str(train_cfg.get("checkpoint_mae_space", "normalized")).lower()
-            print(f"  checkpoint MAE space:       {space} (balanced with F1)", flush=True)
-    print(flush=True)
-    print("Data", flush=True)
-    for line in _data_preprocess_note(model_cfg, experiment_cfg):
-        print(f"  {line}", flush=True)
+            ckpt_text += f"  ({space} MAE - F1)"
+        _summary_line("Checkpoint", ckpt_text)
 
+    data_notes = _data_preprocess_note(model_cfg, experiment_cfg)
+    if data_notes:
+        print(flush=True)
+        for note in data_notes:
+            if note.startswith("mains column:"):
+                continue
+            if note.startswith("preprocess:"):
+                _summary_line("Preprocess", note.split(":", 1)[1].strip())
+            elif note.startswith("state labels:"):
+                text = note.split(":", 1)[1].strip()
+                if len(text) > 58:
+                    text = text[:55] + "..."
+                _summary_line("State labels", text)
+            else:
+                _summary_line("Data", note)
+
+    print(flush=True)
+    print("DATA SPLITS", flush=True)
+    print(rule, flush=True)
+
+    headers = ("Split", "Timesteps", "Windows", "Batches", "Stride", "Target")
+    rows: list[tuple[str, ...]] = []
     for split in ("train", "validation", "test"):
         info = data_loader.describe_split(split, batch_size=batch_size)
-        print(flush=True)
-        print(thin, flush=True)
-        print(f"SPLIT: {split.upper()}", flush=True)
-        print(f"  csv file:      {info['csv_path']}", flush=True)
-        print(f"  timesteps:     {info['timesteps']:,}  (rows after dropna)", flush=True)
-        print(f"  input length:  {info['input_length']}", flush=True)
-        print(f"  output length: {info['output_length']}", flush=True)
-        print(f"  stride:        {info['stride']}", flush=True)
-        print(f"  target mode:   {info['target_mode']}", flush=True)
-        print(f"  windows:       {info['windows']:,}", flush=True)
-        print(f"  batches:       {info['batches']:,}  (@ batch_size={batch_size})", flush=True)
-        if split == "train":
-            print(f"  used in:       training ({info['batches']:,} batches/epoch)", flush=True)
-        elif split == "validation":
-            print("  used in:       validation + checkpoint selection", flush=True)
-        else:
-            print("  used in:       final test evaluation (after training)", flush=True)
+        rows.append(
+            (
+                split,
+                f"{info['timesteps']:,}",
+                f"{info['windows']:,}",
+                str(info["batches"]),
+                str(info["stride"]),
+                str(info["target_mode"]),
+            )
+        )
 
-    print(flush=True)
+    col_widths = [
+        max(len(headers[0]), max(len(r[0]) for r in rows)),
+        max(len(headers[1]), max(len(r[1]) for r in rows)),
+        max(len(headers[2]), max(len(r[2]) for r in rows)),
+        max(len(headers[3]), max(len(r[3]) for r in rows)),
+        max(len(headers[4]), max(len(r[4]) for r in rows)),
+        max(len(headers[5]), max(len(r[5]) for r in rows)),
+    ]
+
+    def _row(cells: tuple[str, ...]) -> str:
+        return "  " + "  ".join(c.ljust(col_widths[i]) for i, c in enumerate(cells))
+
+    print(_row(headers), flush=True)
+    print("  " + "  ".join("-" * col_widths[i] for i in range(len(headers))), flush=True)
+    for row in rows:
+        print(_row(row), flush=True)
+
     print(bar, flush=True)
     print(flush=True)
 
