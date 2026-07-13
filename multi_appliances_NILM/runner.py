@@ -146,6 +146,12 @@ def _print_training_data_summary(
     print(f"  dataloader workers:       {int(train_cfg.get('num_workers', 0))}", flush=True)
     if train_cfg.get("checkpoint_monitor"):
         print(f"  checkpoint monitor:         {train_cfg['checkpoint_monitor']}", flush=True)
+        if str(train_cfg.get("checkpoint_monitor", "")).lower() in {
+            "val_mae_minus_f1",
+            "mae_minus_f1",
+        }:
+            space = str(train_cfg.get("checkpoint_mae_space", "normalized")).lower()
+            print(f"  checkpoint MAE space:       {space} (balanced with F1)", flush=True)
     print(flush=True)
     print("Data", flush=True)
     for line in _data_preprocess_note(model_cfg, experiment_cfg):
@@ -267,6 +273,52 @@ def _epoch_state_arrays(adapter, aux_batches: dict[str, list[np.ndarray]]) -> tu
     return z_true.astype(np.int32), z_pred.astype(np.int32)
 
 
+def _epoch_power_mae_logs(
+    adapter,
+    aux_batches: dict[str, list[np.ndarray]],
+) -> dict[str, float]:
+    """Epoch-level MAE in normalized and watt spaces (macro over appliances).
+
+    Normalized MAE matches the transfer-learning baseline scale (~0.05-1.0) so it
+    can be balanced against val_f1 when selecting best.pt.
+    """
+    y_pred = np.concatenate(aux_batches["pred_power"], axis=0).astype(np.float64)
+    y_true = np.concatenate(aux_batches["true_power"], axis=0).astype(np.float64)
+    if y_pred.ndim > 2:
+        y_pred = y_pred.reshape(-1, y_pred.shape[-1])
+        y_true = y_true.reshape(-1, y_true.shape[-1])
+
+    norm_per_app = [
+        float(np.mean(np.abs(y_pred[:, app_i] - y_true[:, app_i])))
+        for app_i in range(y_true.shape[1])
+    ]
+    mae_norm = float(np.mean(norm_per_app)) if norm_per_app else float("inf")
+
+    loader = adapter._data_loader()
+    y_pred_w = loader.denorm_to_watts(y_pred)
+    y_true_w = loader.denorm_to_watts(y_true)
+    watts_per_app = [
+        float(np.mean(np.abs(y_pred_w[:, app_i] - y_true_w[:, app_i])))
+        for app_i in range(y_true.shape[1])
+    ]
+    mae_watts_epoch = float(np.mean(watts_per_app)) if watts_per_app else float("inf")
+
+    return {
+        "mae_norm": mae_norm,
+        "mae_watts_epoch": mae_watts_epoch,
+    }
+
+
+def _checkpoint_mae_for_score(monitor_key: str, train_cfg: dict, logs: dict[str, float]) -> float:
+    """Pick MAE space used by checkpoint/scheduler composite scores."""
+    if monitor_key == "val_mae_minus_f1":
+        space = str(train_cfg.get("checkpoint_mae_space", "normalized")).lower()
+        if space == "watts":
+            return float(logs.get("mae_watts_epoch", logs.get("mae", float("inf"))))
+        return float(logs.get("mae_norm", float("inf")))
+    return float(logs.get("mae", float("inf")))
+
+
 def _batch_to_device(batch, device: torch.device):
     """Move every tensor inside a batch to GPU/CPU.
 
@@ -293,7 +345,8 @@ def _resolve_checkpoint_monitor(train_cfg: dict) -> tuple[str, str, float]:
 
         checkpoint_monitor: val_mae
         checkpoint_monitor: val_f1
-        checkpoint_monitor: val_mae_minus_f1   # transfer-learning baseline: MAE - F1
+        checkpoint_monitor: val_mae_minus_f1   # balanced: normalized MAE - F1
+        checkpoint_mae_space: normalized       # normalized | watts
 
     Return:
 
@@ -316,10 +369,12 @@ def _resolve_checkpoint_monitor(train_cfg: dict) -> tuple[str, str, float]:
     return key, "min", float("inf")
 
 
-def _epoch_score(monitor_key: str, logs: dict[str, float]) -> float:
+def _epoch_score(monitor_key: str, logs: dict[str, float], train_cfg: dict | None = None) -> float:
     """Read the checkpoint metric from one epoch's validation logs."""
+    train_cfg = train_cfg or {}
     if monitor_key == "val_mae_minus_f1":
-        return float(logs.get("mae", float("inf"))) - float(logs.get("val_f1", 0.0))
+        mae = _checkpoint_mae_for_score(monitor_key, train_cfg, logs)
+        return mae - float(logs.get("val_f1", 0.0))
     if monitor_key in logs:
         return float(logs[monitor_key])
     if monitor_key == "val_f1":
@@ -536,10 +591,17 @@ def _run_epoch(
     # Convert accumulated batch values to one average value per epoch.
     logs = _aggregate_logs(log_keys, n_batches, totals)
 
-    # Add val_f1/val_maf1/val_mif1 for validation checkpointing and monitoring.
-    if collect_states and aux_batches["true_state"]:
-        z_true, z_pred = _epoch_state_arrays(adapter, aux_batches)
-        logs.update(_state_f1_logs(z_true, z_pred))
+    # Add val_f1 and epoch-level MAE (normalized + watts) for checkpointing.
+    if collect_states and aux_batches.get("true_power"):
+        if aux_batches["true_state"]:
+            z_true, z_pred = _epoch_state_arrays(adapter, aux_batches)
+            logs.update(_state_f1_logs(z_true, z_pred))
+        logs.update(_epoch_power_mae_logs(adapter, aux_batches))
+        if monitor_key := str(adapter.model_cfg.get("training", {}).get("checkpoint_monitor", "")).lower():
+            if monitor_key in {"val_mae_minus_f1", "mae_minus_f1"}:
+                train_cfg = adapter.model_cfg.get("training", {})
+                mae = _checkpoint_mae_for_score("val_mae_minus_f1", train_cfg, logs)
+                logs["val_mae_minus_f1"] = mae - float(logs.get("val_f1", 0.0))
     logs["elapsed_sec"] = time.perf_counter() - epoch_started
     return logs
 
@@ -779,6 +841,7 @@ def train_model(
             "batch_size": int(train_loader.batch_size),
             "epochs_configured": int(epochs),
             "checkpoint_monitor": str(train_cfg.get("checkpoint_monitor", "val_loss")),
+            "checkpoint_mae_space": str(train_cfg.get("checkpoint_mae_space", "normalized")),
             "windowing": adapter.model_cfg.get("windowing", {}),
             "appliances": adapter.cfg["appliances"],
             **param_stats,
@@ -872,7 +935,7 @@ def train_model(
             cumulative_time_sec = time.perf_counter() - training_started
 
             # 6c. Optional scheduler step after validation.
-            sched_metric = _epoch_score(scheduler_key, val_logs)
+            sched_metric = _epoch_score(scheduler_key, val_logs, train_cfg)
             if sched is not None:
                 sched.step(sched_metric)
 
@@ -883,6 +946,8 @@ def train_model(
                     **{f"train_{k}": v for k, v in train_logs.items() if k != "elapsed_sec"},
                     "val_loss": val_loss,
                     "val_f1": val_f1,
+                    "val_mae_norm": float(val_logs.get("mae_norm", 0.0)),
+                    "val_mae_watts": float(val_logs.get("mae_watts_epoch", val_mae)),
                     "val_acc": val_acc,
                     "val_maf1": float(val_logs.get("val_maf1", val_f1)),
                     "val_mif1": float(val_logs.get("val_mif1", 0.0)),
@@ -897,13 +962,18 @@ def train_model(
 
             # 6e. Check if this epoch should replace best.pt.
             improved = False
-            ckpt_score = _epoch_score(monitor_key, val_logs)
+            ckpt_score = _epoch_score(monitor_key, val_logs, train_cfg)
             if _is_better(ckpt_score, best_score, monitor_mode):
                 improved = True
 
             ckpt_note = ""
             if monitor_key == "val_mae_minus_f1":
-                ckpt_note = f" | ckpt={ckpt_score:.4f} (mae-f1)"
+                mae_ckpt = _checkpoint_mae_for_score(monitor_key, train_cfg, val_logs)
+                space = str(train_cfg.get("checkpoint_mae_space", "normalized")).lower()
+                ckpt_note = (
+                    f" | ckpt={ckpt_score:.4f} ({space}_mae-f1, "
+                    f"mae={mae_ckpt:.4f}, f1={val_f1:.4f})"
+                )
 
             tqdm.write(
                 f"{epoch_tag} | train_loss={train_logs['loss']:.4f} | "
