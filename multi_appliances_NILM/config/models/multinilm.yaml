@@ -52,7 +52,7 @@ training:
   tf32: true
   plots:
     plot_mode: interval
-    plot_interval: 1
+    plot_interval: 10
     plot_on_periods: 5
     plot_max_batches: 16
     waveform_figsize: 5.5
