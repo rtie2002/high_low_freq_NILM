@@ -345,21 +345,24 @@ Run 2 is much faster per epoch because `input_stride: 240` produces far fewer wi
 
 ## 3. Validation metrics (primary focus)
 
+Run 2 validation numbers below are from the **updated model** (480/480 config + OFF-norm gate blend `off_norm = -mean/std`).
+
 | Appliance | Run 1 MAE (W) | Run 2 MAE (W) | Run 1 F1 | Run 2 F1 |
 |-----------|---------------|---------------|----------|----------|
-| kettle | 40.0 | 56.2 | 0.027 | **0.885** |
-| fridge | 17.2 | 23.4 | **0.858** | 0.817 |
-| dishwasher | 59.9 | 105.5 | 0.053 | **0.370** |
-| washingmachine | 55.0 | 89.2 | 0.105 | **0.827** |
-| microwave | 31.5 | 32.1 | **0.668** | 0.591 |
-| **overall** | **40.7** | 61.3 | 0.342 | **0.698** |
+| kettle | 40.0 | **3.2** | 0.027 | **0.899** |
+| fridge | **17.2** | 19.8 | **0.858** | 0.852 |
+| dishwasher | 59.9 | **9.5** | 0.053 | **0.439** |
+| washingmachine | 55.0 | **15.6** | 0.105 | **0.843** |
+| microwave | 31.5 | **29.4** | **0.668** | 0.662 |
+| **overall** | 40.7 | **15.5** | 0.342 | **0.739** |
 
 | Aggregate | Run 1 | Run 2 |
 |-----------|-------|-------|
-| Val micro F1 | 0.314 | **0.778** |
-| Val SAE | 34.8 | 53.6 |
+| Val SAE | 34.8 | **10.6** |
 
-**Validation conclusion:** Run 2 is clearly better on **F1** (0.34 → 0.70 macro; micro 0.78). Run 1 is better on **MAE** (40.7 W vs 61.3 W), which is expected when optimizing `val_mae_minus_f1` instead of MAE alone. Run 2 fixes weak ON/OFF detection on kettle, dishwasher, and washingmachine.
+Per-appliance SAE (Run 2): kettle 2.08, fridge 7.11, dishwasher 7.69, washingmachine 9.13, microwave 26.86.
+
+**Validation conclusion:** Run 2 wins on **both overall MAE** (40.7 → **15.5 W**) and **overall F1** (0.34 → **0.74**). The OFF-norm gate fix removes the mean-watt spike when appliances are OFF and greatly improves power MAE (especially kettle, dishwasher, washingmachine) while keeping strong ON/OFF F1.
 
 ---
 
@@ -385,18 +388,20 @@ Run 2 is much faster per epoch because `input_stride: 240` produces far fewer wi
 
 ## 5. Validation vs test gap (Run 2)
 
+*Test metrics below are from the earlier Run 2 eval before the OFF-norm gate fix; re-run test after retraining to refresh.*
+
 | Appliance | Val F1 | Test F1 | F1 gap |
 |-----------|--------|---------|--------|
-| kettle | 0.885 | 0.099 | −0.785 |
-| fridge | 0.817 | 0.350 | −0.467 |
-| dishwasher | 0.370 | 0.016 | −0.354 |
-| washingmachine | 0.827 | 0.359 | −0.468 |
-| microwave | 0.592 | 0.159 | −0.433 |
-| **overall** | **0.698** | **0.197** | **−0.501** |
+| kettle | 0.899 | 0.099 | −0.800 |
+| fridge | 0.852 | 0.350 | −0.502 |
+| dishwasher | 0.439 | 0.016 | −0.423 |
+| washingmachine | 0.843 | 0.359 | −0.484 |
+| microwave | 0.662 | 0.159 | −0.503 |
+| **overall** | **0.739** | **0.197** | **−0.542** |
 
 | Metric | Val | Test | Gap |
 |--------|-----|------|-----|
-| MAE (W) | 61.3 | 76.1 | +14.8 |
+| MAE (W) | 15.5 | 76.1 | +60.6 |
 
 This pattern matches the intentional **cross-house** test split (H2 vs train/val H1+H5). It is not necessarily a regression from the config change.
 
@@ -407,13 +412,13 @@ This pattern matches the intentional **cross-house** test split (H2 vs train/val
 | Criterion | Better run |
 |-----------|------------|
 | Validation F1 (primary goal) | **Run 2** |
-| Validation MAE | Run 1 |
-| Test F1 | **Run 2** |
-| Test MAE | **Run 2** (slightly) |
+| Validation MAE | **Run 2** |
+| Test F1 | **Run 2** (pending re-eval with OFF-norm fix) |
+| Test MAE | **Run 2** (slightly; pending re-eval) |
 | Training efficiency | **Run 2** |
 | Generalization val→test (F1 gap) | Run 1 (smaller gap, but lower absolute test F1) |
 
-**Recommendation:** Keep **Run 2** (`480/480`, stride 240, `val_mae_minus_f1`, `state_head`, `overlap_mean`) as the MultiNILM UK-DALE baseline. Run 1’s lower val MAE does not compensate for poor ON/OFF F1 on most appliances.
+**Recommendation:** Keep **Run 2** (`480/480`, stride 240, `val_mae_minus_f1`, `state_head`, `overlap_mean`, OFF-norm gate blend) as the MultiNILM UK-DALE baseline. Updated Run 2 beats Run 1 on validation MAE and F1.
 
 ---
 
@@ -472,4 +477,4 @@ This pattern matches the intentional **cross-house** test split (H2 vs train/val
 
 ---
 
-*Last updated: added §1.3 checkpoint monitor mathematics (`mae` vs `val_mae_minus_f1`).*
+*Last updated: Run 2 validation metrics refreshed after OFF-norm gate fix (overall MAE 15.5 W, F1 0.739).*

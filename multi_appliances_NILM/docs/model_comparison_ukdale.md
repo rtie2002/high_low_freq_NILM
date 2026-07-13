@@ -49,7 +49,15 @@ Configs referenced:
 | F1 prediction | `state ≥ 0.5` | `pred_on_source: state_head` |
 | Test MAE/SAE | Denorm + `<5W→0` + `max_on_power` clip | `evaluation/power_postprocess.py` + `experiment_ukdale.yaml` |
 
-**Training-side conclusion:** Model, loss, window length, effective stride (240), hyperparameters, checkpoint rule, and test post-processing are **closely aligned** with the author code.
+**Training-side conclusion:** Encoder, loss, window length, effective stride (240), hyperparameters, checkpoint rule, and test post-processing are **closely aligned** with the author code. The **power-head forward** is intentionally modified (see §2.1.1).
+
+### 2.1.1 Intentionally modified (power head OFF behavior)
+
+| Component | Author baseline | Our implementation |
+|-----------|-----------------|-------------------|
+| Power when state gate is low | `y = linear(tanh(x)) × sigmoid(state)` | `y = g × raw + (1 − g) × off_norm`, with `off_norm = −mean/std` per appliance |
+
+Author multiply-gate at `g → 0` yields normalized **0**, which denorms to the appliance **mean (W)** — visible as OFF spikes on waveforms. OFF-norm blend fixes z-score consistency (same fix as MultiNILM; see `docs/multinilm_off_norm_gate.md`). **Retrain** Transfer after this change; author `best_acc_model.pth` weights remain loadable in principle but predictions will differ at OFF timesteps.
 
 ### 2.2 Still different (experiment / pipeline)
 

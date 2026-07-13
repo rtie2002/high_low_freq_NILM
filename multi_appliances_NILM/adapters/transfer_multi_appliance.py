@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from adapters.common import BaseNILMAdapter, StepOutput, center_output_slice
+from adapters.config import appliance_off_norm_normalized
 from adapters.multinilm import _pred_on_from_config, _to_numpy
 from model.TransferNILM import TransferMultiApplianceModel, transfer_nilm_config
 from model.TransferNILM_loss import TransferNILMLoss
@@ -21,10 +22,13 @@ class TransferMultiApplianceAdapter(BaseNILMAdapter):
         arch = self.model_cfg["architecture"]
         windowing = self.model_cfg["windowing"]
         cfg = transfer_nilm_config(arch, windowing)
+        appliances = self.cfg["appliances"]
+        off_norms = appliance_off_norm_normalized(self.experiment, appliances)
 
         model = TransferMultiApplianceModel(
             cfg=cfg,
-            num_appliances=len(self.cfg["appliances"]),
+            num_appliances=len(appliances),
+            appliance_off_norm=off_norms,
         )
 
         transfer_cfg = self.model_cfg.get("transfer", {})

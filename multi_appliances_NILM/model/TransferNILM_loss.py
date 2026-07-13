@@ -5,6 +5,8 @@ Matches NILM_model/baseline/transfer_learning_multi-appliance/trainer.py:
     loss = MSE(power_pred, power_true) + BCE(state_prob, state_true)
 
 The model outputs sigmoid state probabilities, so BCELoss is used (not BCEWithLogits).
+
+Gated power uses OFF-norm blend in CNNApplianceHead (see docs/multinilm_off_norm_gate.md).
 """
 
 from __future__ import annotations

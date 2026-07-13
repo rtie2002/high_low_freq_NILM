@@ -1,6 +1,9 @@
 """BERT4NILM transfer-learning baseline — shared encoder + per-appliance CNN heads.
 
 Ported from NILM_model/baseline/transfer_learning_multi-appliance/model.py.
+
+Power head uses OFF-norm blending for z-score targets (see docs/multinilm_off_norm_gate.md).
+Author code: power = linear(tanh(x)) * sigmoid(state). Ours when OFF: blend to -mean/std.
 """
 
 from __future__ import annotations
@@ -215,11 +218,12 @@ class BERT4NILM(nn.Module):
 
 
 class CNNApplianceHead(nn.Module):
-    """Per-appliance head with state-gated power: y = linear(tanh(x)) * sigmoid(state)."""
+    """Per-appliance head: state-gated power with OFF-norm blend under z-score targets."""
 
-    def __init__(self, cfg: TransferNILMConfig):
+    def __init__(self, cfg: TransferNILMConfig, *, off_norm: float = 0.0):
         super().__init__()
         self.cfg = cfg
+        self.register_buffer("off_norm", torch.tensor(float(off_norm), dtype=torch.float32))
         self.dropout_rate = cfg.dropout
         self.hidden = cfg.hidden
         self.heads = cfg.attn_heads
@@ -261,21 +265,35 @@ class CNNApplianceHead(nn.Module):
         x = self.dropout2(self.layer_norm2(x))
 
         state = torch.sigmoid(self.fc(x))
-        power = self.linear2(torch.tanh(self.linear1(x))) * state
+        power_raw = self.linear2(torch.tanh(self.linear1(x)))
+        power = state * power_raw + (1.0 - state) * self.off_norm
         return power, state
 
 
 class TransferMultiApplianceModel(nn.Module):
     """BERT4NILM encoder + one CNNApplianceHead per appliance."""
 
-    def __init__(self, cfg: TransferNILMConfig, num_appliances: int):
+    def __init__(
+        self,
+        cfg: TransferNILMConfig,
+        num_appliances: int,
+        *,
+        appliance_off_norm: list[float] | None = None,
+    ):
         super().__init__()
         if num_appliances < 1:
             raise ValueError("num_appliances must be >= 1")
         self.cfg = cfg
         self.num_appliances = num_appliances
+        off_norms = list(appliance_off_norm or [0.0] * num_appliances)
+        if len(off_norms) != num_appliances:
+            raise ValueError(
+                f"appliance_off_norm length {len(off_norms)} != num_appliances {num_appliances}"
+            )
         self.encoder = BERT4NILM(cfg)
-        self.heads = nn.ModuleList(CNNApplianceHead(cfg) for _ in range(num_appliances))
+        self.heads = nn.ModuleList(
+            CNNApplianceHead(cfg, off_norm=off_norms[i]) for i in range(num_appliances)
+        )
 
     def freeze_encoder(self) -> None:
         for param in self.encoder.parameters():
