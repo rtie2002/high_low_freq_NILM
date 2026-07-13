@@ -1276,9 +1276,13 @@ def evaluate_model(
     # Step 1-2:
     # Build the architecture and load the saved weights.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    _, tensor_dtype = resolve_tensor_dtype(adapter.model_cfg)
     model = adapter.build_model(device)
+    if tensor_dtype == torch.float64:
+        model = model.double()
     ckpt = torch.load(checkpoint, map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
+    model.eval()
 
     # Step 3-4:
     # Build the requested split loader and run model inference through the adapter.

@@ -13,7 +13,7 @@ windowing:
   input_window_length: 480
   output_window_length: 480
   output_alignment: end
-  input_stride: 120
+  input_stride: 240
   eval_stride: 240
   eval_reconstruction: overlap_mean
   training_targets: full_input

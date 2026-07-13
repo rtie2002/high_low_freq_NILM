@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 
 import torch
 
-from adapters.config import load_experiment, load_model_config, merge_configs, model_name_from_config
+from adapters.config import load_experiment, load_model_config, merge_configs, model_name_from_config, resolve_tensor_dtype
 from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
 from main import MODELS, get_adapter, _default_model_config, _default_run_dir
 
@@ -54,9 +54,13 @@ def main() -> None:
         raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    _, tensor_dtype = resolve_tensor_dtype(adapter.model_cfg)
     model = adapter.build_model(device)
+    if tensor_dtype == torch.float64:
+        model = model.double()
     payload = torch.load(ckpt, map_location=device)
     model.load_state_dict(payload["model_state_dict"])
+    model.eval()
 
     appliances = adapter.cfg["appliances"]
     if args.appliance:
