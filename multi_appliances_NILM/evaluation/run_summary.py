@@ -80,6 +80,30 @@ def load_run_summary(run_dir: Path) -> dict[str, Any]:
     return summary
 
 
+def _box(title: str, width: int = 78) -> tuple[str, str, str]:
+    """ASCII frame lines for a titled console section."""
+    inner = width - 2
+    title_bit = f" {title} "
+    fill = max(0, inner - len(title_bit))
+    left = fill // 2
+    right = fill - left
+    top = "+" + ("-" * left) + title_bit + ("-" * right) + "+"
+    mid = "|" + (" " * inner) + "|"
+    bot = "+" + ("-" * inner) + "+"
+    return top, mid, bot
+
+
+def _row(width: int, left: str, right: str = "") -> str:
+    inner = width - 2
+    text = f" {left}"
+    if right:
+        pad = max(1, inner - len(text) - len(right) - 1)
+        text = text + (" " * pad) + right + " "
+    if len(text) < inner:
+        text = text + (" " * (inner - len(text)))
+    return "|" + text[:inner] + "|"
+
+
 def print_run_cost_summary(run_dir: Path, *, title: str = "Run summary") -> None:
     """Print model size and training time after metrics evaluation."""
     summary = load_run_summary(run_dir)
@@ -87,14 +111,17 @@ def print_run_cost_summary(run_dir: Path, *, title: str = "Run summary") -> None
         print(f"\n{title}: no run_manifest.json / training_time.json in {run_dir}")
         return
 
-    lines = [f"\n{title}:"]
+    width = 78
+    top, _, bot = _box(title.upper(), width)
+    lines = ["", top]
+
     model_name = summary.get("model_name")
     if model_name:
-        lines.append(f"  model:              {model_name}")
+        lines.append(_row(width, "Model", str(model_name)))
 
     exp_id = summary.get("experiment_id")
     if exp_id:
-        lines.append(f"  experiment:         {exp_id}")
+        lines.append(_row(width, "Experiment", str(exp_id)))
 
     total_params = summary.get("parameters_total")
     trainable_params = summary.get("parameters_trainable")
@@ -102,48 +129,45 @@ def print_run_cost_summary(run_dir: Path, *, title: str = "Run summary") -> None
         trainable_note = ""
         if trainable_params is not None and trainable_params != total_params:
             trainable_note = f" ({_format_params(int(trainable_params))} trainable)"
-        lines.append(f"  parameters:         {_format_params(int(total_params))}{trainable_note}")
+        lines.append(_row(width, "Parameters", f"{_format_params(int(total_params))}{trainable_note}"))
 
     ckpt_mb = summary.get("checkpoint_size_mb")
     ckpt_name = summary.get("checkpoint_file", "best.pt")
     if ckpt_mb is not None:
-        lines.append(f"  checkpoint:         {ckpt_name} ({ckpt_mb:.2f} MB)")
+        lines.append(_row(width, "Checkpoint", f"{ckpt_name} ({ckpt_mb:.2f} MB)"))
 
     total_fmt = summary.get("total_formatted")
     if total_fmt:
         epochs = summary.get("epochs_completed")
         best_epoch = summary.get("best_epoch")
         avg_epoch = summary.get("avg_epoch_formatted")
-        train_line = f"  training time:      {total_fmt}"
+        detail = str(total_fmt)
         if epochs is not None:
-            train_line += f" ({epochs} epochs"
+            detail += f"  |  {epochs} epochs"
             if best_epoch is not None:
-                train_line += f", best epoch {best_epoch}"
-            train_line += ")"
+                detail += f"  (best @{best_epoch})"
         if avg_epoch:
-            train_line += f", avg {avg_epoch}/epoch"
-        lines.append(train_line)
+            detail += f"  |  avg {avg_epoch}/epoch"
+        lines.append(_row(width, "Training", detail))
 
     best_score = summary.get("best_score")
     monitor = summary.get("checkpoint_monitor")
     if best_score is not None and monitor:
-        lines.append(f"  best {monitor}:       {best_score:.4f}")
+        lines.append(_row(width, f"Best {monitor}", f"{float(best_score):.4f}"))
 
     batch_size = summary.get("batch_size")
     if batch_size is not None:
-        lines.append(f"  batch size:         {batch_size}")
+        lines.append(_row(width, "Batch size", str(batch_size)))
 
     device = summary.get("device")
     gpu_name = summary.get("gpu_name")
-    if gpu_name:
-        lines.append(f"  hardware:           {gpu_name}")
-    elif device:
-        lines.append(f"  hardware:           {device}")
+    lines.append(_row(width, "Hardware", str(gpu_name or device or "n/a")))
 
     seed = summary.get("seed")
     if seed is not None:
-        lines.append(f"  seed:               {seed}")
+        lines.append(_row(width, "Seed", str(seed)))
 
+    lines.append(bot)
     print("\n".join(lines), flush=True)
 
 
@@ -158,16 +182,47 @@ def print_evaluation_report(
     per_app = metrics[metrics["appliance"] != "overall"]
     overall = metrics[metrics["appliance"] == "overall"]
 
-    print(f"\n{split.capitalize()} metrics:", flush=True)
+    width = 78
+    top, _, bot = _box(f"{split.upper()} METRICS", width)
+    print(f"\n{top}", flush=True)
+    header = (
+        f"{'appliance':<16}"
+        f"{'MAE':>10}"
+        f"{'SAE':>10}"
+        f"{'F1':>10}"
+    )
+    print(_row(width, header), flush=True)
+    print(_row(width, "-" * 46), flush=True)
+
     if not per_app.empty:
-        print(per_app[["appliance", "mae", "sae", "f1"]].to_string(index=False), flush=True)
+        for _, r in per_app.iterrows():
+            line = (
+                f"{str(r['appliance']):<16}"
+                f"{float(r['mae']):>10.4f}"
+                f"{float(r['sae']):>10.4f}"
+                f"{float(r['f1']):>10.4f}"
+            )
+            print(_row(width, line), flush=True)
+
     if not overall.empty:
         row = overall.iloc[0]
+        print(_row(width, "-" * 46), flush=True)
+        overall_line = (
+            f"{'OVERALL':<16}"
+            f"{float(row['mae']):>10.4f}"
+            f"{float(row['sae']):>10.4f}"
+            f"{float(row['f1']):>10.4f}"
+        )
+        print(_row(width, overall_line), flush=True)
         print(
-            f"overall  mae={row['mae']:.4f}  sae={row['sae']:.4f}  "
-            f"f1={row['f1']:.4f}  micro_f1={row['micro_f1']:.4f}",
+            _row(
+                width,
+                f"micro_f1 = {float(row['micro_f1']):.4f}  (token-level; often higher than macro F1)",
+            ),
             flush=True,
         )
+    print(bot, flush=True)
+
     if show_cost_summary:
         print_run_cost_summary(run_dir, title="Training cost & model size")
 
@@ -212,26 +267,41 @@ def print_val_test_comparison(run_dir: Path) -> None:
     mae_gap = float(test_overall["mae"] - val_overall["mae"])
     f1_gap = float(test_overall["f1"] - val_overall["f1"])
 
-    print("\nValidation vs test comparison:", flush=True)
-    print(
-        compare_df[
-            ["appliance", "val_mae", "test_mae", "mae_gap", "val_f1", "test_f1", "f1_gap"]
-        ].to_string(index=False, float_format=lambda x: f"{x:.4f}"),
-        flush=True,
+    width = 90
+    top, _, bot = _box("VALIDATION vs TEST  (transfer / house gap)", width)
+    print(f"\n{top}", flush=True)
+    hdr = (
+        f"{'appliance':<16}"
+        f"{'val_MAE':>9}{'test_MAE':>10}{'MAE_gap':>10}"
+        f"{'val_F1':>9}{'test_F1':>9}{'F1_gap':>9}"
     )
-    print(
-        f"overall  val_mae={val_overall['mae']:.4f}  test_mae={test_overall['mae']:.4f}  "
-        f"mae_gap={mae_gap:+.4f}  "
-        f"val_f1={val_overall['f1']:.4f}  test_f1={test_overall['f1']:.4f}  "
-        f"f1_gap={f1_gap:+.4f}",
-        flush=True,
+    print(_row(width, hdr), flush=True)
+    print(_row(width, "-" * 72), flush=True)
+
+    for r in rows:
+        line = (
+            f"{r['appliance']:<16}"
+            f"{r['val_mae']:>9.2f}{r['test_mae']:>10.2f}{r['mae_gap']:>+10.2f}"
+            f"{r['val_f1']:>9.4f}{r['test_f1']:>9.4f}{r['f1_gap']:>+9.4f}"
+        )
+        print(_row(width, line), flush=True)
+
+    print(_row(width, "-" * 72), flush=True)
+    overall_line = (
+        f"{'OVERALL':<16}"
+        f"{float(val_overall['mae']):>9.2f}{float(test_overall['mae']):>10.2f}{mae_gap:>+10.2f}"
+        f"{float(val_overall['f1']):>9.4f}{float(test_overall['f1']):>9.4f}{f1_gap:>+9.4f}"
     )
+    print(_row(width, overall_line), flush=True)
+
     if abs(mae_gap) < 5 and abs(f1_gap) < 0.05:
-        print("  transfer note: validation and test are close — similar generalization.", flush=True)
+        note = "Transfer note: val and test are close — similar generalization."
     elif test_overall["mae"] > val_overall["mae"] or test_overall["f1"] < val_overall["f1"]:
-        print("  transfer note: test is worse than validation — possible domain/house gap.", flush=True)
+        note = "Transfer note: test weaker than val on F1 and/or MAE — domain/house gap remains."
     else:
-        print("  transfer note: test is better than validation — check split overlap or leakage.", flush=True)
+        note = "Transfer note: test better than val — check split overlap or leakage."
+    print(_row(width, note), flush=True)
+    print(bot, flush=True)
     print(f"Saved comparison table: {compare_path}", flush=True)
 
 
