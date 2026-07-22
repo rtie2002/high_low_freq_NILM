@@ -270,6 +270,72 @@ def _format_duration(seconds: float) -> str:
     return f"{secs}s"
 
 
+def _format_epoch_summary(
+    *,
+    epoch_no: int,
+    epochs: int,
+    train_logs: dict[str, float],
+    val_loss: float,
+    val_f1: float,
+    val_acc: float,
+    val_mae: float,
+    ckpt_score: float,
+    ckpt_detail: str,
+    train_time_sec: float,
+    val_time_sec: float,
+    improved: bool,
+    da_active: bool = False,
+    lambda_domain: float = 0.0,
+    domain_method: str = "coral",
+) -> str:
+    """Multi-line epoch report for tidy console logging.
+
+    Example (DA on)::
+
+        Epoch   4/200  * best
+          train   loss=4.7512
+          domain  L_dom=0.0732  |  lambda=0.6  |  coral
+          val     loss=4.7835   f1=0.2533   acc=0.7203   mae=56.10
+          meta    ckpt=0.0123 (normalized mae-f1)  |  2s (train 1s, val 0s)
+
+    When DA is off, the ``domain`` line is omitted.
+    """
+    header = f"Epoch {epoch_no:>3}/{epochs}"
+    if improved:
+        header = f"{header}  * best"
+
+    lines = [
+        header,
+        f"  train   loss={float(train_logs['loss']):.4f}",
+    ]
+
+    if da_active and "loss_domain" in train_logs:
+        lines.append(
+            f"  domain  L_dom={float(train_logs['loss_domain']):.4f}"
+            f"  |  lambda={lambda_domain:g}"
+            f"  |  {domain_method}"
+        )
+
+    lines.append(
+        f"  val     loss={val_loss:.4f}"
+        f"   f1={val_f1:.4f}"
+        f"   acc={val_acc:.4f}"
+        f"   mae={val_mae:.2f}"
+    )
+
+    epoch_time_sec = train_time_sec + val_time_sec
+    ckpt_label = f"ckpt={ckpt_score:.4f}"
+    if ckpt_detail:
+        ckpt_label = f"{ckpt_label} ({ckpt_detail})"
+    lines.append(
+        f"  meta    {ckpt_label}"
+        f"  |  {_format_duration(epoch_time_sec)}"
+        f" (train {_format_duration(train_time_sec)},"
+        f" val {_format_duration(val_time_sec)})"
+    )
+    return "\n".join(lines)
+
+
 def _aggregate_logs(log_keys: list[str], n_batches: int, totals: dict[str, float]) -> dict[str, float]:
     """Convert accumulated batch logs into epoch-average logs."""
     return {k: totals.get(k, 0.0) / max(n_batches, 1) for k in log_keys}
@@ -1044,6 +1110,8 @@ def train_model(
     # Optional unlabeled target-domain loader for CORAL/MMD (Lin-style).
     da_active, da_target_split = _resolve_domain_adaptation(adapter)
     target_loader = None
+    da_lambda = float(adapter.model_cfg.get("loss", {}).get("lambda_domain", 0.0))
+    da_method = str(adapter.model_cfg.get("loss", {}).get("domain_method", "coral"))
     if da_active:
         if da_target_split == "train":
             target_loader = train_loader
@@ -1053,15 +1121,25 @@ def train_model(
             target_loader = test_loader
         else:
             target_loader = adapter.build_dataloader(da_target_split)
-        lambda_domain = float(adapter.model_cfg.get("loss", {}).get("lambda_domain", 0.0))
-        domain_method = str(adapter.model_cfg.get("loss", {}).get("domain_method", "coral"))
         print(
-            f"Domain adaptation: ON | target_split={da_target_split} | "
-            f"method={domain_method} | lambda_domain={lambda_domain}",
+            "------------------------------------------------------------------------------\n"
+            "DOMAIN ADAPTATION\n"
+            "------------------------------------------------------------------------------\n"
+            f"  Status         ON\n"
+            f"  Target split   {da_target_split}  (aggregates only; labels unused)\n"
+            f"  Method         {da_method}\n"
+            f"  lambda_domain  {da_lambda:g}\n"
+            f"  Feature layers {adapter.model_cfg.get('architecture', {}).get('domain_feature_layers', ['aligned'])}",
             flush=True,
         )
     else:
-        print("Domain adaptation: OFF", flush=True)
+        print(
+            "------------------------------------------------------------------------------\n"
+            "DOMAIN ADAPTATION\n"
+            "------------------------------------------------------------------------------\n"
+            "  Status         OFF  (supervised source only)",
+            flush=True,
+        )
 
     # Step 5:
     # Resolve the final seed and print the data pipeline summary.
@@ -1237,26 +1315,30 @@ def train_model(
             if _is_better(ckpt_score, best_score, monitor_mode):
                 improved = True
 
-            ckpt_note = ""
+            ckpt_detail = ""
             if monitor_key == "val_mae_minus_f1":
                 mae_ckpt = _checkpoint_mae_for_score(monitor_key, train_cfg, val_logs)
                 space = str(train_cfg.get("checkpoint_mae_space", "normalized")).lower()
-                ckpt_note = (
-                    f" | ckpt={ckpt_score:.4f} ({space}_mae-f1, "
-                    f"mae={mae_ckpt:.4f}, f1={val_f1:.4f})"
-                )
+                ckpt_detail = f"{space} mae-f1, mae={mae_ckpt:.4f}, f1={val_f1:.4f}"
 
-            da_note = ""
-            if da_active and "loss_domain" in train_logs:
-                da_note = f" | train_L_dom={train_logs['loss_domain']:.4f}"
             tqdm.write(
-                f"{epoch_tag} | train_loss={train_logs['loss']:.4f}{da_note} | "
-                f"val_loss={val_loss:.4f} | val_f1={val_f1:.4f} | val_acc={val_acc:.4f} | "
-                f"val_mae={val_mae:.4f}{ckpt_note} | "
-                f"time={_format_duration(epoch_time_sec)} "
-                f"(train {_format_duration(train_time_sec)}, "
-                f"val {_format_duration(val_time_sec)})"
-                + (" | new best" if improved else "")
+                _format_epoch_summary(
+                    epoch_no=epoch_no,
+                    epochs=epochs,
+                    train_logs=train_logs,
+                    val_loss=val_loss,
+                    val_f1=val_f1,
+                    val_acc=val_acc,
+                    val_mae=val_mae,
+                    ckpt_score=ckpt_score,
+                    ckpt_detail=ckpt_detail,
+                    train_time_sec=train_time_sec,
+                    val_time_sec=val_time_sec,
+                    improved=improved,
+                    da_active=da_active,
+                    lambda_domain=da_lambda,
+                    domain_method=da_method,
+                )
             )
 
             # 6f. Save live loss/waveform plots at configured intervals.
@@ -1305,7 +1387,7 @@ def train_model(
             if early_stop_patience > 0 and epochs_without_improvement >= early_stop_patience:
                 monitor_label = str(train_cfg.get("checkpoint_monitor", monitor_key))
                 tqdm.write(
-                    f"{epoch_tag} | early stop â€” no {monitor_label} improvement "
+                    f"{epoch_tag} | early stop — no {monitor_label} improvement "
                     f"for {early_stop_patience} epochs (best epoch {best_epoch})"
                 )
                 break
