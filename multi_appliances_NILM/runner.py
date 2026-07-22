@@ -287,14 +287,15 @@ def _format_epoch_summary(
     da_active: bool = False,
     lambda_domain: float = 0.0,
     domain_method: str = "coral",
+    domain_mu: float = 0.4,
 ) -> str:
     """Multi-line epoch report for tidy console logging.
 
-    Example (DA on)::
+    Example (DA on, paper Eq. 12)::
 
         Epoch   4/200  * best
           train   loss=4.7512
-          domain  L_dom=0.0732  |  lambda=0.6  |  coral
+          domain  loss_domain=0.0732  |  lambda=0.6  |  both (mu=0.4 MMD+CORAL)
           val     loss=4.7835   f1=0.2533   acc=0.7203   mae=56.10
           meta    ckpt=0.0123 (normalized mae-f1)  |  2s (train 1s, val 0s)
 
@@ -310,10 +311,20 @@ def _format_epoch_summary(
     ]
 
     if da_active and "loss_domain" in train_logs:
+        method = str(domain_method).lower()
+        if method == "both":
+            method_label = f"both (mu={domain_mu:g} MMD+CORAL)"
+        elif method == "mmd":
+            method_label = "mmd"
+        else:
+            method_label = "coral"
+        # loss_domain = L_domain from paper Eq.(12); total uses lambda * L_domain
+        l_dom = float(train_logs["loss_domain"])
         lines.append(
-            f"  domain  L_dom={float(train_logs['loss_domain']):.4f}"
+            f"  domain  loss_domain={l_dom:.4f}"
+            f"  |  lambda*L_dom={lambda_domain * l_dom:.4f}"
             f"  |  lambda={lambda_domain:g}"
-            f"  |  {domain_method}"
+            f"  |  {method_label}"
         )
 
     lines.append(
@@ -855,7 +866,7 @@ def _run_epoch(
             if n_batches % 20 == 0 or n_batches == n_total:
                 postfix = {"loss": f"{step.logs.get('loss', 0.0):.4f}"}
                 if "loss_domain" in step.logs and use_target:
-                    postfix["L_dom"] = f"{step.logs['loss_domain']:.4f}"
+                    postfix["loss_domain"] = f"{step.logs['loss_domain']:.4f}"
                 pbar.set_postfix(**postfix)
 
     # Convert accumulated batch values to one average value per epoch.
@@ -1112,6 +1123,7 @@ def train_model(
     target_loader = None
     da_lambda = float(adapter.model_cfg.get("loss", {}).get("lambda_domain", 0.0))
     da_method = str(adapter.model_cfg.get("loss", {}).get("domain_method", "coral"))
+    da_mu = float(adapter.model_cfg.get("loss", {}).get("domain_mu", 0.4))
     if da_active:
         if da_target_split == "train":
             target_loader = train_loader
@@ -1121,13 +1133,16 @@ def train_model(
             target_loader = test_loader
         else:
             target_loader = adapter.build_dataloader(da_target_split)
+        method_note = da_method
+        if da_method.lower() == "both":
+            method_note = f"both (Eq.12: mu={da_mu:g}·MMD² + (1-mu)·CORAL)"
         print(
             "------------------------------------------------------------------------------\n"
             "DOMAIN ADAPTATION\n"
             "------------------------------------------------------------------------------\n"
             f"  Status         ON\n"
             f"  Target split   {da_target_split}  (aggregates only; labels unused)\n"
-            f"  Method         {da_method}\n"
+            f"  Method         {method_note}\n"
             f"  lambda_domain  {da_lambda:g}\n"
             f"  Feature layers {adapter.model_cfg.get('architecture', {}).get('domain_feature_layers', ['aligned'])}",
             flush=True,
@@ -1338,6 +1353,7 @@ def train_model(
                     da_active=da_active,
                     lambda_domain=da_lambda,
                     domain_method=da_method,
+                    domain_mu=da_mu,
                 )
             )
 
