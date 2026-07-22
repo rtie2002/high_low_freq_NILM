@@ -29,10 +29,29 @@ architecture:
   dropout: 0.12
   gate_mode: soft
   gate_threshold: 0.5
+  # Layers to expose for MMD/CORAL (Lin-style select). Default = after temporal+align.
+  # Options: stem | temporal | aligned | temporal_0 .. temporal_{num_blocks-1}
+  # Example multi-layer (paper sums fc6–8): [temporal_3, temporal_5, aligned]
+  domain_feature_layers: [aligned]
 
 loss:
   lambda_state: 1
   pos_weight: auto
+  # Domain adaptation (Lin et al. IEEE TSG 2022).
+  # coral | mmd | both
+  domain_method: coral
+  domain_mu: 0.4          # paper μ=0.4 (MMD vs CORAL mix; only if method: both)
+  # Paper mixes as L=(1-λ)L_R + λ L_domain with best λ=0.6.
+  # We use additive L=L_NILM + lambda_domain * L_domain (0 keeps baseline identical).
+  # Suggested start when enabling DA: 0.6 (paper λ); tune 0.3–1.0 if needed.
+  lambda_domain: 0.0
+  # mmd_sigma: auto       # optional fixed RBF bandwidth; omit/auto = median heuristic
+
+# Lin-style unsupervised DA: source = train (H1+H5), target aggregates only.
+# Requires both enabled: true AND loss.lambda_domain > 0.
+domain_adaptation:
+  enabled: false
+  target_split: test      # unlabeled target house (UK-DALE H2); y/z ignored
 
 training:
   batch_size: 32

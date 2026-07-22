@@ -1,176 +1,323 @@
-"""MultiNILM multitask loss (power regression + ON/OFF classification).
+"""MultiNILM multitask loss (power + state) and optional domain adaptation.
 
-Paper-style objective (equation 16):
+Paper-style multitask objective (equation 16 style):
 
-    L = sum_{i=1}^{A} ( L_power^i + lambda_state * L_state^i )
+    L_NILM = sum_{i=1}^{A} ( L_power^i + lambda_state * L_state^i )
 
-where A is the number of appliances.
+Optional domain adaptation (Lin et al. IEEE TSG 2022):
+
+    Domain features Z come from MultiNILM.forward(..., return_domain_features=True)
+    at hooks selected by architecture.domain_feature_layers (default: aligned).
+
+---------------------------------------------------------------------------
+DOMAIN LOSS FORMULAS (Lin et al., IEEE TSG 2022)
+---------------------------------------------------------------------------
+
+Notation (one selected layer / hook):
+    Z_S in R^{n_s x D}   pooled source features  (batch of house(s) with labels)
+    Z_T in R^{n_t x D}   pooled target features  (unlabeled target-house aggregates)
+    n_s, n_t             batch sizes
+    D                    feature dimension after temporal mean-pool
+    1                    all-ones column vector
+
+(1) Deep CORAL  (paper Eq. 7–9)  — align second-order (covariance) statistics
+
+    C_S = 1/(n_s - 1) * ( Z_S^T Z_S - (Z_S^T 1)(1^T Z_S)/n_s )
+    C_T = 1/(n_t - 1) * ( Z_T^T Z_T - (Z_T^T 1)(1^T Z_T)/n_t )
+
+    L_CORAL(Z_S, Z_T) = (1 / (4 D^2)) * || C_S - C_T ||_F^2
+
+    Intuition: make source/target feature clouds have the same shape / correlations.
+
+(2) Squared RBF-kernel MMD  (paper Eq. 6, kernel form)  — align first-order means
+
+    k(u, v) = exp( - ||u - v||^2 / (2 sigma^2) )
+
+    MMD^2(Z_S, Z_T)
+        = mean_{i,i'} k(z_S^i, z_S^{i'})
+        + mean_{j,j'} k(z_T^j, z_T^{j'})
+        - 2 * mean_{i,j} k(z_S^i, z_T^j)
+
+    If sigma is None: sigma = sqrt( median pairwise squared distance on [Z_S; Z_T] ).
+
+    Intuition: pull source/target feature centers together in RKHS.
+
+(3) Per-layer domain mix  (paper Eq. 12; mu = domain_mu, paper default 0.4)
+
+    L_layer = mu * MMD^2(Z_S, Z_T) + (1 - mu) * L_CORAL(Z_S, Z_T)
+
+    method='coral' -> L_layer = L_CORAL
+    method='mmd'   -> L_layer = MMD^2
+    method='both'  -> L_layer = mu * MMD^2 + (1 - mu) * L_CORAL
+
+(4) Multi-layer sum  (paper sums FC layers l=6..8; we sum selected hook names)
+
+    L_domain = sum_{layer in selected} L_layer
+
+(5) Total training loss
+
+    Paper (convex mix, Eq. 13; paper best lambda = 0.6):
+        L = (1 - lambda) * L_R + lambda * L_domain
+
+    This repo (additive; keeps L_NILM scale unchanged when DA is off):
+        L = L_NILM + lambda_domain * L_domain
+
+    Mapping tip:
+        paper lambda=0.6  <->  domain : task weight ratio  0.6/0.4 = 1.5
+        so additive lambda_domain ≈ 1.5 matches that *ratio* only if L_NILM and
+        L_domain have similar magnitude; in practice start near 0.6 and tune.
+        Keep lambda_domain=0.0 (and domain_adaptation.enabled=false) for the
+        original multitask-only baseline.
+
+When domain tensors are omitted or lambda_domain=0, L_domain is zero and
+training matches the original multitask-only loss.
 
 ---------------------------------------------------------------------------
 TENSOR SHAPES (one training / validation batch)
 ---------------------------------------------------------------------------
-
-All four inputs come from adapters/multinilm.py -> step() after the model
-forward pass and the dataloader batch (x, y, z).
 
     power_pred    : (B, T, A)  model gated power output (normalized watts)
     state_logits  : (B, T, A)  raw ON/OFF logits (sigmoid NOT applied yet)
     power_true    : (B, T, A)  z-score normalized appliance power targets
     state_true    : (B, T, A)  binary ON/OFF targets in {0.0, 1.0}
 
-    B = batch size          (e.g. 32 from multinilm.yaml)
-    T = output timesteps    (e.g. 256 center window for UK-DALE)
-    A = num appliances      (e.g. 5 UK-DALE, 4 REDD)
+Optional domain maps (source / target houses):
 
-power_pred is already state-gated inside MultiNILM.ApplianceHead:
-
-    power = gate * power_raw + (1 - gate) * off_norm
-    off_norm = -mean/std  (0 W in raw space under z-score normalization)
-
-    soft gate: gate = sigmoid(state_logits)
-    hard gate: gate = 1{sigmoid(state_logits) >= threshold} (straight-through in train)
-
-Loss still supervises state_logits directly with BCEWithLogits so the
-classification head receives its own gradient path.
-
----------------------------------------------------------------------------
-HOW ONE BATCH IS SCORED (step by step)
----------------------------------------------------------------------------
-
-1) Per-appliance POWER loss (MSE over batch and time)
-
-   For each appliance i in {0, ..., A-1}:
-
-       L_power^i = mean over (b, t) of ( power_pred[b,t,i] - power_true[b,t,i] )^2
-
-   Implementation: square error tensor (B, T, A), then mean(dim=(0, 1))
-   -> vector of length A.
-
-   Example with B=2, T=3, A=2:
-
-       err[b,t,i] = (pred[b,t,i] - true[b,t,i])^2   # shape (2, 3, 2)
-       L_power^i  = mean of err[:,:,i] over all 6 values (2*3)
-
-2) Per-appliance STATE loss (BCEWithLogits over batch and time)
-
-   For each appliance i:
-
-       L_state^i = mean over (b, t) of BCEWithLogits(
-                       state_logits[b,t,i],
-                       state_true[b,t,i],
-                       pos_weight = pos_weight[i]   # optional
-                   )
-
-   BCEWithLogits internally applies sigmoid to logits, then binary cross
-   entropy. We pass logits (not probabilities) for numerical stability.
-
-   pos_weight[i] up-weights the ON class (target=1) when appliance i is
-   rarely ON in the training set (see adapters/multinilm.py pos_weight:auto).
-
-3) Sum across appliances (NOT a single global mean over all B*T*A terms)
-
-       loss_power = L_power^0 + L_power^1 + ... + L_power^{A-1}
-       loss_state = L_state^0 + L_state^1 + ... + L_state^{A-1}
-
-   Each appliance contributes one scalar regression term and one scalar
-   classification term before the final sum. This matches the paper layout
-   where every appliance has its own multitask pair.
-
-4) Total loss used for backpropagation
-
-       loss = loss_power + lambda_state * loss_state
-
-   lambda_state comes from config/models/multinilm.yaml (default 1.0).
-   runner.py calls loss.backward() on this scalar.
-
-5) MAE (logging only — NOT part of the training loss)
-
-   MAE converts normalized errors back toward watts using per-appliance
-   std from experiment normalization, then averages for console / CSV logs:
-
-       mae_per_app[i] = mean_{b,t} |power_pred - power_true| * scale[i]
-       mae            = mean_i mae_per_app[i]
-
-   power_scale is target_std per appliance from the dataloader.
-
----------------------------------------------------------------------------
-WHY SUM APPLIANCES BUT MEAN BATCH×TIME?
----------------------------------------------------------------------------
-
-    mean_{b,t}  -> every window contributes equally regardless of batch size
-    sum_i       -> each appliance adds its own task; more appliances increase
-                   loss magnitude (same as summing terms in paper eq. 16)
-
-This differs from a single MSE over all (B, T, A) elements at once, which
-would implicitly average over appliances and down-weight each device when A
-is large.
+    domain_feats_S / domain_feats_T : dict[str, Tensor]
+        each value (B, C, T) from encoder hooks, or already pooled (B, C)
 
 ---------------------------------------------------------------------------
 CALL SITE
 ---------------------------------------------------------------------------
 
-    adapter.step() in adapters/multinilm.py
-        -> loss_fn(power_pred, state_logits, y, z)
-        -> StepOutput.loss  -> runner backward / checkpointing
-        -> StepOutput.logs  -> loss_power, loss_state, mae, per-app breakdown
+    adapter.step() -> loss_fn(power_pred, state_logits, y, z)
+
+    DA training step:
+        loss_fn(..., domain_feats_S=..., domain_feats_T=...)
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Mapping
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from model.MultiNILM import pool_domain_feature_map
+
+
+def coral_loss(source: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Deep CORAL loss between source/target feature batches (Lin Eq. 7).
+
+    Formulas
+    --------
+    Unbiased covariances (Eqs. 8–9)::
+
+        C_S = 1/(n_s-1) * ( Z_S^T Z_S - (Z_S^T 1)(1^T Z_S)/n_s )
+        C_T = 1/(n_t-1) * ( Z_T^T Z_T - (Z_T^T 1)(1^T Z_T)/n_t )
+
+    CORAL (Eq. 7)::
+
+        L_CORAL = (1 / (4 D^2)) * ||C_S - C_T||_F^2
+
+    Parameters
+    ----------
+    source, target : (B, D) feature matrices (already pooled if needed)
+
+    Returns
+    -------
+    Scalar
+        (1 / (4 D^2)) * ||C_S - C_T||_F^2
+    """
+    source = source.float()
+    target = target.float()
+    if source.dim() != 2 or target.dim() != 2:
+        raise ValueError(
+            f"CORAL expects (B, D) features, got {tuple(source.shape)} and {tuple(target.shape)}"
+        )
+    if source.shape[1] != target.shape[1]:
+        raise ValueError(
+            f"CORAL feature dim mismatch: source D={source.shape[1]}, target D={target.shape[1]}"
+        )
+
+    n_s = source.shape[0]
+    n_t = target.shape[0]
+    d = source.shape[1]
+    if n_s < 2 or n_t < 2:
+        # Covariance undefined for a single sample; treat as zero contribution.
+        return source.new_zeros(())
+
+    ones_s = source.new_ones(n_s, 1)
+    ones_t = target.new_ones(n_t, 1)
+    # Unbiased sample covariance (Lin Eqs. 8–9).
+    cov_s = (source.T @ source - (source.T @ ones_s) @ (ones_s.T @ source) / n_s) / (n_s - 1)
+    cov_t = (target.T @ target - (target.T @ ones_t) @ (ones_t.T @ target) / n_t) / (n_t - 1)
+    return (cov_s - cov_t).pow(2).sum() / (4.0 * float(d) * float(d))
+
+
+def mmd_rbf_loss(
+    source: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    sigma: float | None = None,
+) -> torch.Tensor:
+    """Squared RBF-kernel MMD between source/target batches (Lin Eq. 6 style).
+
+    Formulas
+    --------
+    Gaussian kernel::
+
+        k(u, v) = exp( -||u - v||^2 / (2 sigma^2) )
+
+    Empirical MMD^2::
+
+        MMD^2 = E[k(z_S, z_S')] + E[k(z_T, z_T')] - 2 E[k(z_S, z_T)]
+
+    If ``sigma`` is None, use median pairwise distance on the concatenated batch
+    (standard heuristic; paper uses a Gaussian kernel without fixing one schedule).
+    """
+    source = source.float()
+    target = target.float()
+    if source.dim() != 2 or target.dim() != 2:
+        raise ValueError(
+            f"MMD expects (B, D) features, got {tuple(source.shape)} and {tuple(target.shape)}"
+        )
+
+    def _pairwise_sq(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return (
+            a.pow(2).sum(dim=1, keepdim=True)
+            + b.pow(2).sum(dim=1).unsqueeze(0)
+            - 2.0 * (a @ b.T)
+        ).clamp_min(0.0)
+
+    with torch.no_grad():
+        if sigma is None:
+            combo = torch.cat([source.detach(), target.detach()], dim=0)
+            dist = _pairwise_sq(combo, combo)
+            n = dist.shape[0]
+            if n > 1:
+                mask = ~torch.eye(n, dtype=torch.bool, device=dist.device)
+                med = dist[mask].median()
+            else:
+                med = dist.new_tensor(1.0)
+            sigma_val = torch.sqrt(med.clamp_min(1e-6))
+        else:
+            sigma_val = source.new_tensor(float(sigma))
+
+    gamma = 1.0 / (2.0 * sigma_val.pow(2).clamp_min(1e-12))
+    k_ss = torch.exp(-gamma * _pairwise_sq(source, source))
+    k_tt = torch.exp(-gamma * _pairwise_sq(target, target))
+    k_st = torch.exp(-gamma * _pairwise_sq(source, target))
+    return k_ss.mean() + k_tt.mean() - 2.0 * k_st.mean()
+
+
+def _as_feature_matrix(feat: torch.Tensor) -> torch.Tensor:
+    """Accept (B, C, T) maps or (B, D) vectors."""
+    if feat.dim() == 3:
+        return pool_domain_feature_map(feat)
+    if feat.dim() == 2:
+        return feat
+    raise ValueError(f"Domain feature must be (B,C,T) or (B,D), got {tuple(feat.shape)}")
+
+
+def domain_adaptation_loss(
+    feats_source: Mapping[str, torch.Tensor],
+    feats_target: Mapping[str, torch.Tensor],
+    *,
+    method: str = "coral",
+    mu: float = 0.4,
+    mmd_sigma: float | None = None,
+) -> torch.Tensor:
+    """Sum domain discrepancy over selected named layers (Lin Eq. 12 style).
+
+    Formulas
+    --------
+    Per selected layer ``l``::
+
+        L_layer^l = mu * MMD^2(Z_S^l, Z_T^l) + (1 - mu) * L_CORAL(Z_S^l, Z_T^l)
+
+    when ``method='both'``. For ``coral`` / ``mmd``, only that term is used.
+
+    Total::
+
+        L_domain = sum_l L_layer^l
+
+    Paper: sum over FC layers l=6..8 with mu=0.4.
+    Here: sum over keys in ``feats_source`` (e.g. ``aligned``).
+
+    Parameters
+    ----------
+    feats_source / feats_target
+        Dicts from MultiNILM ``return_domain_features=True`` (same keys).
+    method
+        ``coral`` | ``mmd`` | ``both`` (both uses mu * MMD^2 + (1-mu) * CORAL).
+    mu
+        Weight on MMD when ``method='both'`` (paper default 0.4).
+    """
+    method = str(method or "coral").lower()
+    if method not in {"coral", "mmd", "both"}:
+        raise ValueError(f"domain method must be coral|mmd|both, got {method!r}")
+    if not feats_source:
+        raise ValueError("feats_source is empty")
+    keys = list(feats_source.keys())
+    missing = [k for k in keys if k not in feats_target]
+    if missing:
+        raise ValueError(f"feats_target missing layers {missing}")
+
+    total: torch.Tensor | None = None
+    for key in keys:
+        zs = _as_feature_matrix(feats_source[key])
+        zt = _as_feature_matrix(feats_target[key])
+        if method == "coral":
+            term = coral_loss(zs, zt)
+        elif method == "mmd":
+            term = mmd_rbf_loss(zs, zt, sigma=mmd_sigma)
+        else:
+            term = float(mu) * mmd_rbf_loss(zs, zt, sigma=mmd_sigma) + (
+                1.0 - float(mu)
+            ) * coral_loss(zs, zt)
+        total = term if total is None else total + term
+
+    assert total is not None
+    return total
+
 
 @dataclass
 class MultiNILMLossOutput:
-    """All tensors returned by MultiNILMLoss.forward for training and logging.
-
-    Fields
-    ------
-    loss : scalar tensor with grad_fn — the value passed to .backward()
-    loss_power : scalar — sum of per-appliance MSE terms (detached from per-app vector sum)
-    loss_state : scalar — sum of per-appliance BCE terms
-    mae : scalar — denormalized mean absolute power error (logging only)
-    loss_power_per_appliance : shape (A,) — detached per-appliance MSE
-    loss_state_per_appliance : shape (A,) — detached per-appliance BCE
-    """
+    """All tensors returned by MultiNILMLoss.forward for training and logging."""
 
     loss: torch.Tensor
     loss_power: torch.Tensor
     loss_state: torch.Tensor
+    loss_domain: torch.Tensor
     mae: torch.Tensor
     loss_power_per_appliance: torch.Tensor
     loss_state_per_appliance: torch.Tensor
 
 
 class MultiNILMLoss(nn.Module):
-    """Per-appliance MSE + per-appliance BCEWithLogits, summed for backprop.
-
-    Hyperparameters (from config/models/multinilm.yaml -> loss:)
-    -----------------------------------------------------------
-    lambda_state : float
-        Multiplier on the total state loss before adding to power loss.
-    pos_weight : Tensor (A,) or None
-        Per-appliance positive-class weight for BCEWithLogits. When set,
-        ON timesteps (target=1) are weighted more heavily than OFF.
-    power_scale : float or Tensor (A,)
-        Per-appliance std used only to report MAE in watts during training.
-        Does not change the MSE loss (computed in normalized space).
-    """
+    """Per-appliance MSE + BCE, plus optional multi-layer domain loss."""
 
     def __init__(
         self,
         lambda_state: float = 0.1,
         pos_weight: torch.Tensor | list[float] | None = None,
         power_scale: float | list[float] | torch.Tensor = 1.0,
+        *,
+        lambda_domain: float = 0.0,
+        domain_method: str = "coral",
+        domain_mu: float = 0.4,
+        mmd_sigma: float | None = None,
     ) -> None:
         super().__init__()
         self.lambda_state = float(lambda_state)
+        self.lambda_domain = float(lambda_domain)
+        self.domain_method = str(domain_method or "coral").lower()
+        self.domain_mu = float(domain_mu)
+        self.mmd_sigma = None if mmd_sigma is None else float(mmd_sigma)
 
-        # target_std per appliance — used for MAE logging, not for MSE.
         self.register_buffer("power_scale", torch.as_tensor(power_scale, dtype=torch.float32))
 
         if pos_weight is not None:
@@ -184,59 +331,18 @@ class MultiNILMLoss(nn.Module):
         power_pred: torch.Tensor,
         power_true: torch.Tensor,
     ) -> torch.Tensor:
-        """Mean squared error per appliance, averaged over batch and time.
-
-        Parameters
-        ----------
-        power_pred, power_true : (B, T, A) float tensors in normalized watts
-
-        Returns
-        -------
-        Tensor of shape (A,) where entry i is:
-
-            L_power^i = (1 / (B*T)) * sum_{b=1..B} sum_{t=1..T}
-                        ( power_pred[b,t,i] - power_true[b,t,i] )^2
-
-        Reduction is over dim 0 (batch) and dim 1 (time). Dim 2 (appliances)
-        is preserved so each device gets its own scalar loss.
-        """
-        squared_error = (power_pred - power_true) ** 2  # (B, T, A)
-        return torch.mean(squared_error, dim=(0, 1))  # (A,)
+        squared_error = (power_pred - power_true) ** 2
+        return torch.mean(squared_error, dim=(0, 1))
 
     def _per_appliance_state_loss(
         self,
         state_logits: torch.Tensor,
         state_true: torch.Tensor,
     ) -> torch.Tensor:
-        """Binary cross-entropy with logits per appliance, mean over batch×time.
-
-        Parameters
-        ----------
-        state_logits : (B, T, A) raw logits from MultiNILM state head
-        state_true   : (B, T, A) float targets in {0.0, 1.0}
-
-        Returns
-        -------
-        Tensor of shape (A,) where entry i is:
-
-            L_state^i = mean_{b,t} BCEWithLogits( logit[b,t,i], target[b,t,i] )
-
-        We loop over appliances because PyTorch pos_weight is per-call scalar
-        or per-element; each appliance can have a different pos_weight[i].
-
-        BCEWithLogits for one element:
-            p = sigmoid(logit)
-            loss = -[ y*log(p) + (1-y)*log(1-p) ]
-        With pos_weight w on the positive class:
-            loss = -[ w*y*log(p) + (1-y)*log(1-p) ]
-
-        The function returns the mean over all B*T elements for appliance i.
-        """
         losses: list[torch.Tensor] = []
         n_apps = state_logits.shape[-1]
 
         for app_i in range(n_apps):
-            # Slice one appliance channel: both become (B, T).
             logits_i = state_logits[..., app_i]
             target_i = state_true[..., app_i]
 
@@ -252,7 +358,7 @@ class MultiNILMLoss(nn.Module):
                 )
             )
 
-        return torch.stack(losses)  # (A,)
+        return torch.stack(losses)
 
     def forward(
         self,
@@ -260,44 +366,58 @@ class MultiNILMLoss(nn.Module):
         state_logits: torch.Tensor,
         power_true: torch.Tensor,
         state_true: torch.Tensor,
+        *,
+        domain_feats_S: Mapping[str, torch.Tensor] | None = None,
+        domain_feats_T: Mapping[str, torch.Tensor] | None = None,
     ) -> MultiNILMLossOutput:
-        """Compute total multitask loss and logging metrics for one batch.
+        """Compute multitask (+ optional domain) loss for one batch.
 
-        Called once per batch from MultiNILMAdapter.step() during train/val.
+        Formulas
+        --------
+        L_NILM = sum_i ( MSE_i + lambda_state * BCE_i )
 
-        Parameters
-        ----------
-        power_pred   : (B, T, A) gated normalized power from model
-        state_logits : (B, T, A) raw state logits from model
-        power_true   : (B, T, A) normalized power from dataloader
-        state_true   : (B, T, A) ON/OFF labels (threshold or CSV per config)
+        If domain features are provided and lambda_domain != 0::
 
-        Returns
-        -------
-        MultiNILMLossOutput — use .loss for backward(), other fields for logs
+            L = L_NILM + lambda_domain * L_domain(Z_S, Z_T)
+
+        else::
+
+            L = L_NILM   (identical to pre-DA training)
+
+        Paper uses L = (1-lambda)*L_R + lambda*L_domain with lambda=0.6;
+        see module docstring for the additive vs convex mapping note.
         """
-        # Force FP32 for loss math (stable BCE / MSE even if model uses AMP).
         power_pred = power_pred.float()
         state_logits = state_logits.float()
         power_true = power_true.float()
         state_true = state_true.float()
 
-        # Step 1: per-appliance vectors of shape (A,).
         loss_power_per_app = self._per_appliance_power_loss(power_pred, power_true)
         loss_state_per_app = self._per_appliance_state_loss(state_logits, state_true)
 
-        # Step 2: paper eq. (16) — sum appliance losses into two scalars.
-        loss_power = loss_power_per_app.sum()  # scalar
-        loss_state = loss_state_per_app.sum()  # scalar
+        loss_power = loss_power_per_app.sum()
+        loss_state = loss_state_per_app.sum()
+        loss_nilm = loss_power + self.lambda_state * loss_state
 
-        # Step 3: scalar used by optimizer; only this tensor needs gradients.
-        loss = loss_power + self.lambda_state * loss_state
+        if (
+            domain_feats_S is not None
+            and domain_feats_T is not None
+            and self.lambda_domain != 0.0
+        ):
+            loss_domain = domain_adaptation_loss(
+                domain_feats_S,
+                domain_feats_T,
+                method=self.domain_method,
+                mu=self.domain_mu,
+                mmd_sigma=self.mmd_sigma,
+            )
+            loss = loss_nilm + self.lambda_domain * loss_domain
+        else:
+            loss_domain = loss_nilm.new_zeros(())
+            loss = loss_nilm
 
-        # Step 4: MAE in approximate watts for human-readable monitoring.
-        # Not differentiated; does not affect training.
         scale = self.power_scale.to(device=power_pred.device, dtype=power_pred.dtype)
         if scale.ndim > 0:
-            # Per-appliance std: (A,) broadcast over (B, T, A).
             mae_per_app = torch.mean(torch.abs(power_pred - power_true), dim=(0, 1)) * scale
             mae = mae_per_app.mean()
         else:
@@ -307,8 +427,8 @@ class MultiNILMLoss(nn.Module):
             loss=loss,
             loss_power=loss_power,
             loss_state=loss_state,
+            loss_domain=loss_domain.detach(),
             mae=mae,
-            # Detach per-appliance breakdowns for logging (no grad needed).
             loss_power_per_appliance=loss_power_per_app.detach(),
             loss_state_per_appliance=loss_state_per_app.detach(),
         )

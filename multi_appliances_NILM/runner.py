@@ -32,6 +32,7 @@ batch is training, validation, or final inference.
 
 from __future__ import annotations
 
+import itertools
 import json
 import shutil
 import time
@@ -585,6 +586,38 @@ def _configure_cuda(train_cfg: dict) -> None:
         torch.backends.cudnn.allow_tf32 = True
 
 
+def _resolve_domain_adaptation(adapter) -> tuple[bool, str]:
+    """Return (active, target_split) for Lin-style unlabeled target-domain DA.
+
+    Active only when both:
+      domain_adaptation.enabled: true
+      loss.lambda_domain > 0
+
+    Target split defaults to ``test`` (e.g. UK-DALE H2 aggregates). Only the
+    aggregate ``x`` is used; appliance labels from that split are ignored.
+    """
+    da_cfg = adapter.model_cfg.get("domain_adaptation") or {}
+    enabled = bool(da_cfg.get("enabled", False))
+    target_split = str(da_cfg.get("target_split", "test"))
+    lambda_domain = float(adapter.model_cfg.get("loss", {}).get("lambda_domain", 0.0))
+
+    if enabled and lambda_domain == 0.0:
+        print(
+            "WARNING: domain_adaptation.enabled=true but loss.lambda_domain=0; "
+            "DA dual-loader path is disabled. Set lambda_domain > 0 to enable.",
+            flush=True,
+        )
+        return False, target_split
+    if (not enabled) and lambda_domain != 0.0:
+        print(
+            "WARNING: loss.lambda_domain>0 but domain_adaptation.enabled=false; "
+            "DA dual-loader path is disabled. Set enabled: true to enable.",
+            flush=True,
+        )
+        return False, target_split
+    return enabled and lambda_domain != 0.0, target_split
+
+
 def _run_epoch(
     adapter,
     model: torch.nn.Module,
@@ -601,6 +634,7 @@ def _run_epoch(
     use_amp: bool = False,
     amp_dtype: torch.dtype = torch.bfloat16,
     scaler: torch.cuda.amp.GradScaler | None = None,
+    target_loader=None,
 ) -> dict[str, float]:
     """Run one epoch for either training or validation.
 
@@ -616,6 +650,14 @@ def _run_epoch(
         - loss.backward()
         - optimizer.step()
 
+    Optional domain adaptation (training only):
+
+        _run_epoch(..., train=True, target_loader=target_loader)
+
+        - each source batch is paired with one target aggregate batch
+        - target_loader cycles if shorter/longer than the source loader
+        - adapter.step(..., target_batch=...) adds CORAL/MMD when supported
+
     Validation call:
 
         _run_epoch(..., train=False, collect_states=True)
@@ -626,6 +668,7 @@ def _run_epoch(
         - no backward
         - no optimizer update
         - collects predicted/true ON/OFF states for F1
+        - target_loader is ignored (no DA on val)
 
     The adapter.step(...) name is intentionally neutral because one batch has
     the same forward/loss logic in both training and validation. The runner is
@@ -662,6 +705,10 @@ def _run_epoch(
     phase = desc or ("train" if train else "val")
     epoch_started = time.perf_counter()
 
+    # Unlabeled target aggregates for domain alignment (train only).
+    use_target = train and target_loader is not None
+    target_iter = itertools.cycle(target_loader) if use_target else None
+
     # Important difference between training and validation:
     #   torch.enable_grad() allows backward() during training.
     #   torch.no_grad() saves memory/time during validation.
@@ -678,11 +725,12 @@ def _run_epoch(
         for batch in pbar:
             # Move x/y/z tensors to the same device (and dtype when model is float64).
             model_dtype = next(model.parameters()).dtype
-            batch = _batch_to_device(
-                batch,
-                device,
-                dtype=model_dtype if model_dtype == torch.float64 else None,
-            )
+            cast_dtype = model_dtype if model_dtype == torch.float64 else None
+            batch = _batch_to_device(batch, device, dtype=cast_dtype)
+
+            target_batch = None
+            if target_iter is not None:
+                target_batch = _batch_to_device(next(target_iter), device, dtype=cast_dtype)
 
             # Clear previous gradients before computing the next training batch.
             if train:
@@ -695,8 +743,14 @@ def _run_epoch(
                 dtype=amp_dtype,
                 enabled=use_amp and device.type == "cuda",
             ):
-                # Model-specific one-batch logic.
-                step: StepOutput = adapter.step(model, loss_fn, batch)
+                # Model-specific one-batch logic. target_batch is only passed
+                # when DA is active so other adapters stay unchanged.
+                if target_batch is not None:
+                    step: StepOutput = adapter.step(
+                        model, loss_fn, batch, target_batch=target_batch
+                    )
+                else:
+                    step = adapter.step(model, loss_fn, batch)
 
             # This block is the only place where model weights are updated.
             # It is skipped completely during validation.
@@ -733,7 +787,10 @@ def _run_epoch(
 
             n_batches += 1
             if n_batches % 20 == 0 or n_batches == n_total:
-                pbar.set_postfix(loss=f"{step.logs.get('loss', 0.0):.4f}")
+                postfix = {"loss": f"{step.logs.get('loss', 0.0):.4f}"}
+                if "loss_domain" in step.logs and use_target:
+                    postfix["L_dom"] = f"{step.logs['loss_domain']:.4f}"
+                pbar.set_postfix(**postfix)
 
     # Convert accumulated batch values to one average value per epoch.
     logs = _aggregate_logs(log_keys, n_batches, totals)
@@ -984,6 +1041,28 @@ def train_model(
     print("Loading CSV splits into memory (train, val, test)...", flush=True)
     train_loader, val_loader, test_loader = _build_loaders(adapter)
 
+    # Optional unlabeled target-domain loader for CORAL/MMD (Lin-style).
+    da_active, da_target_split = _resolve_domain_adaptation(adapter)
+    target_loader = None
+    if da_active:
+        if da_target_split == "train":
+            target_loader = train_loader
+        elif da_target_split in {"validation", "val"}:
+            target_loader = val_loader
+        elif da_target_split == "test":
+            target_loader = test_loader
+        else:
+            target_loader = adapter.build_dataloader(da_target_split)
+        lambda_domain = float(adapter.model_cfg.get("loss", {}).get("lambda_domain", 0.0))
+        domain_method = str(adapter.model_cfg.get("loss", {}).get("domain_method", "coral"))
+        print(
+            f"Domain adaptation: ON | target_split={da_target_split} | "
+            f"method={domain_method} | lambda_domain={lambda_domain}",
+            flush=True,
+        )
+    else:
+        print("Domain adaptation: OFF", flush=True)
+
     # Step 5:
     # Resolve the final seed and print the data pipeline summary.
     seed_int = _resolve_seed(adapter, train_cfg, seed)
@@ -1021,6 +1100,16 @@ def train_model(
             "checkpoint_mae_space": str(train_cfg.get("checkpoint_mae_space", "normalized")),
             "windowing": adapter.model_cfg.get("windowing", {}),
             "appliances": adapter.cfg["appliances"],
+            "domain_adaptation": {
+                "enabled": bool(da_active),
+                "target_split": da_target_split if da_active else None,
+                "lambda_domain": float(
+                    adapter.model_cfg.get("loss", {}).get("lambda_domain", 0.0)
+                ),
+                "domain_method": str(
+                    adapter.model_cfg.get("loss", {}).get("domain_method", "coral")
+                ),
+            },
             **param_stats,
             **build_hardware_info(device),
         },
@@ -1073,6 +1162,7 @@ def train_model(
 
             # 6a. Training epoch
             # This is where model weights are updated.
+            # When DA is on, each source batch is paired with a target aggregate.
             train_logs = _run_epoch(
                 adapter,
                 model,
@@ -1086,6 +1176,7 @@ def train_model(
                 use_amp=use_amp,
                 amp_dtype=amp_dtype,
                 scaler=scaler,
+                target_loader=target_loader,
             )
 
             # 6b. Validation epoch
@@ -1155,8 +1246,11 @@ def train_model(
                     f"mae={mae_ckpt:.4f}, f1={val_f1:.4f})"
                 )
 
+            da_note = ""
+            if da_active and "loss_domain" in train_logs:
+                da_note = f" | train_L_dom={train_logs['loss_domain']:.4f}"
             tqdm.write(
-                f"{epoch_tag} | train_loss={train_logs['loss']:.4f} | "
+                f"{epoch_tag} | train_loss={train_logs['loss']:.4f}{da_note} | "
                 f"val_loss={val_loss:.4f} | val_f1={val_f1:.4f} | val_acc={val_acc:.4f} | "
                 f"val_mae={val_mae:.4f}{ckpt_note} | "
                 f"time={_format_duration(epoch_time_sec)} "

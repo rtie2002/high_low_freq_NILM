@@ -80,6 +80,7 @@ class MultiNILMAdapter(BaseNILMAdapter):
             gate_mode=cfg.gate_mode,
             gate_threshold=cfg.gate_threshold,
             appliance_off_norm=off_norms,
+            domain_feature_layers=cfg.domain_feature_layers,
         )
 
         # Move model to GPU if available, otherwise CPU.
@@ -101,6 +102,17 @@ class MultiNILMAdapter(BaseNILMAdapter):
             # Used only for MAE logging. This comes from dataset normalization
             # stats when available, otherwise from legacy scalar power_scale.
             power_scale=self._data_loader().loss_scale,
+
+            # Domain adaptation (Lin-style). lambda_domain=0 keeps old behavior
+            # until runner/adapter passes domain_feats_S/T.
+            lambda_domain=float(loss_cfg.get("lambda_domain", 0.0)),
+            domain_method=str(loss_cfg.get("domain_method", "coral")),
+            domain_mu=float(loss_cfg.get("domain_mu", 0.4)),
+            mmd_sigma=(
+                None
+                if loss_cfg.get("mmd_sigma", None) in (None, "", "auto")
+                else float(loss_cfg["mmd_sigma"])
+            ),
         )
 
     def step(
@@ -108,50 +120,50 @@ class MultiNILMAdapter(BaseNILMAdapter):
         model: torch.nn.Module,
         loss_fn: MultiNILMLoss,
         batch: Any,
+        target_batch: Any | None = None,
     ) -> StepOutput:
         """Run one batch through MultiNILM and return loss/logs.
 
-        This method is used by runner.py for both:
+        Normal path (validation / DA off):
 
-            training   -> runner enables gradients and calls backward()
-            validation -> runner disables gradients and only records logs
+            power, state = model(x)
+            L = L_NILM(power, state, y, z)
 
-        This method only handles model-specific forward and loss logic.
+        Domain-adaptation path (training + target_batch + lambda_domain > 0):
+
+            power_S, state_S, Z_S = model(x_S, return_domain_features=True)
+            _,       _,       Z_T = model(x_T, return_domain_features=True)
+            L = L_NILM + lambda_domain * L_domain(Z_S, Z_T)
+
+        ``target_batch`` only needs the aggregate ``x_T``; y/z from the target
+        split are ignored (unlabeled target domain, Lin-style).
         """
-        # batch comes from WindowDataset.__getitem__:
-        #   x = aggregate input window
-        #   y = true appliance power
-        #   z = true appliance ON/OFF label
-        #
-        # Shapes:
-        #   x: (B, input_length, 1)
-        #   y: (B, output_length, appliances)
-        #   z: (B, output_length, appliances)
         x, y, z = batch
-
-        # The dataloader now owns normalization and optional state rebuilding,
-        # so adapters receive model-ready tensors and only run model logic.
         z = z.float()
 
-        # Forward pass through MultiNILM.
-        #
-        # power_pred:
-        #   predicted appliance power, shape (B, output_length, appliances)
-        #
-        # state_logits:
-        #   raw ON/OFF logits, shape (B, output_length, appliances)
-        #   sigmoid is NOT applied before BCEWithLogitsLoss.
-        power_pred, state_logits = model(x)
+        use_domain = (
+            target_batch is not None
+            and float(getattr(loss_fn, "lambda_domain", 0.0)) != 0.0
+        )
 
-        # Compute paper-style multitask loss:
-        #   L = sum_i ( L_power^i + lambda_state * L_state^i )
-        out = loss_fn(power_pred, state_logits, y, z)
+        if use_domain:
+            x_t = target_batch[0] if isinstance(target_batch, (tuple, list)) else target_batch
+            power_pred, state_logits, feats_s = model(x, return_domain_features=True)
+            _, _, feats_t = model(x_t, return_domain_features=True)
+            out = loss_fn(
+                power_pred,
+                state_logits,
+                y,
+                z,
+                domain_feats_S=feats_s,
+                domain_feats_T=feats_t,
+            )
+        else:
+            power_pred, state_logits = model(x)
+            out = loss_fn(power_pred, state_logits, y, z)
 
-        # Convert logits to probabilities only for metric/F1 logging.
-        # This is not used in the loss.
         state_prob = torch.sigmoid(state_logits)
 
-        # Binary ON/OFF prediction for metrics (configurable scoring source).
         pred_state = torch.from_numpy(
             _pred_on_from_config(
                 self,
@@ -165,21 +177,16 @@ class MultiNILMAdapter(BaseNILMAdapter):
             app_logs[f"loss_power_{app}"] = float(out.loss_power_per_appliance[app_i].detach())
             app_logs[f"loss_state_{app}"] = float(out.loss_state_per_appliance[app_i].detach())
 
-        # StepOutput is what runner.py expects.
-        # runner.py uses:
-        #   step.loss for backward()
-        #   step.logs for training/validation logs
-        #   step.aux for F1 calculation
         return StepOutput(
             loss=out.loss,
             logs={
                 "loss": float(out.loss.detach()),
                 "loss_power": float(out.loss_power.detach()),
                 "loss_state": float(out.loss_state.detach()),
+                "loss_domain": float(out.loss_domain.detach()),
                 "mae": float(out.mae.detach()),
                 **app_logs,
             },
-            # Move state tensors to CPU because runner.py collects them across batches.
             aux={
                 "pred_state": pred_state.detach().cpu(),
                 "true_state": z.long().detach().cpu(),

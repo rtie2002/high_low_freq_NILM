@@ -17,12 +17,43 @@ Important:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
 from torch import nn
 from torch.nn import functional as F
+
+
+# Named hooks for domain-adaptation feature collection (MMD / CORAL).
+# Analogous to Lin et al. selecting fc6–fc8 by layer index.
+DOMAIN_FEATURE_LAYER_ALIASES = {
+    "shared": "aligned",
+    "encoder": "temporal",
+    "aggregate": "stem",
+}
+
+
+def normalize_domain_feature_layers(layers: list[str] | None) -> list[str]:
+    """Normalize yaml names; default is post-align shared features."""
+    if not layers:
+        return ["aligned"]
+    out: list[str] = []
+    for raw in layers:
+        name = str(raw).strip().lower()
+        name = DOMAIN_FEATURE_LAYER_ALIASES.get(name, name)
+        if name not in out:
+            out.append(name)
+    return out or ["aligned"]
+
+
+def pool_domain_feature_map(features: torch.Tensor) -> torch.Tensor:
+    """Collapse (B, C, T) → (B, C) for CORAL/MMD on vectors (Lin-style)."""
+    if features.dim() != 3:
+        raise ValueError(
+            f"Expected domain features (B, C, T), got shape {tuple(features.shape)}"
+        )
+    return features.mean(dim=-1)
 
 
 def state_gate(
@@ -238,6 +269,7 @@ class MultiNILM(nn.Module):
         gate_mode: str = "soft",
         gate_threshold: float = 0.5,
         appliance_off_norm: list[float] | None = None,
+        domain_feature_layers: list[str] | None = None,
     ) -> None:
         super().__init__()
 
@@ -247,6 +279,7 @@ class MultiNILM(nn.Module):
         self.hidden_channels = int(hidden_channels)
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
+        self.domain_feature_layers = normalize_domain_feature_layers(domain_feature_layers)
         off_norms = list(appliance_off_norm or [0.0] * self.num_appliances)
         if len(off_norms) != self.num_appliances:
             raise ValueError(
@@ -335,50 +368,166 @@ class MultiNILM(nn.Module):
         return x.float()
 
     def _align_output_time(self, features: torch.Tensor) -> torch.Tensor:
-        """Crop or pad features on the time axis to match label alignment."""
+        """Match encoder time length to ``output_length`` for the appliance heads.
+
+        Where this sits in the forward pass::
+
+            aggregate (B, 1, T_in)
+              → aggregate_feature_extractor   # still length T_in
+              → temporal_encoder             # still length T_in  (same-pad convs)
+              → _align_output_time           # → length T_out = self.output_length
+              → appliance_heads
+
+        ``features`` shape: ``(batch, channels, time_len)``.
+        Return shape: ``(batch, channels, output_length)``.
+
+        Why it exists
+        -------------
+        The dataloader can supervise a *shorter* label window than the input
+        (e.g. old setup T_in=864, T_out=256 with center targets). The encoder
+        still runs on the full input, so we must cut (or pad) the time axis so
+        each head output timestep lines up with the CSV / label timestep.
+
+        Important: this is a *slice or pad*, never interpolate. Interpolating
+        the full window into ``output_length`` would warp time and misalign
+        labels (and caused repeating pulse artifacts in earlier experiments).
+
+        Three cases
+        -----------
+        1) ``time_len == output_length`` (current yaml: 480 in / 480 out)
+           Identity. No crop, no pad. Shared features Z have the same length
+           as the labels → domain-adaptation hook can use this tensor as-is.
+
+        2) ``time_len > output_length`` (e.g. 864 → 256)
+           **Center crop**: drop equal context on both sides::
+
+               offset = (time_len - output_length) // 2
+               features[:, :, offset : offset + output_length]
+
+           Example 864 → 256: offset = 304, keep indices [304, 560).
+           That matches dataloader ``output_alignment: center`` targets.
+
+           Note: this implementation always center-crops. It does *not* read
+           yaml ``output_alignment: end``. If you use end-aligned labels with
+           T_in > T_out, either change this crop to a right-end slice or keep
+           center alignment in the experiment config.
+
+        3) ``time_len < output_length`` (rare)
+           Symmetric zero-pad on the left/right so length becomes
+           ``output_length`` (``F.pad`` on the last dim).
+
+        Domain adaptation
+        -----------------
+        The tensor returned here is the recommended shared representation Z
+        for CORAL/MMD (after temporal encoder, before appliance heads).
+        """
         time_len = features.shape[-1]
         if time_len == self.output_length:
+            # Case 1: full_input / equal windows — nothing to do.
             return features
         if time_len > self.output_length:
+            # Case 2: center-crop longer encoder features to label length.
             offset = (time_len - self.output_length) // 2
             return features[:, :, offset : offset + self.output_length]
+        # Case 3: pad shorter features up to label length.
         pad_total = self.output_length - time_len
         pad_left = pad_total // 2
         pad_right = pad_total - pad_left
         return F.pad(features, (pad_left, pad_right))
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run the full MultiNILM architecture.
+    def available_domain_feature_layers(self) -> list[str]:
+        """Layer names you can put in ``domain_feature_layers`` (yaml / ctor).
+
+        Paper analogue: Lin et al. set ``l1=6, l2=8`` on fc layers.
+        Here you select by name, e.g. ``["aligned"]`` or
+        ``["temporal_3", "temporal_5", "aligned"]``.
+        """
+        names = ["stem", "temporal", "aligned"]
+        for i in range(len(self.temporal_encoder)):
+            names.append(f"temporal_{i}")
+        return names
+
+    def _validate_domain_feature_layers(self, layers: list[str]) -> list[str]:
+        layers = normalize_domain_feature_layers(layers)
+        allowed = set(self.available_domain_feature_layers())
+        unknown = [name for name in layers if name not in allowed]
+        if unknown:
+            raise ValueError(
+                f"Unknown domain_feature_layers {unknown}. "
+                f"Choose from {sorted(allowed)}."
+            )
+        return layers
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        *,
+        return_domain_features: bool = False,
+        domain_feature_layers: list[str] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+        """Run MultiNILM; optionally also return selected encoder features for DA.
+
+        Default (training / eval today)::
+
+            power_pred, state_logits = model(x)
+
+        Domain-adaptation collection (like selecting fc6–fc8 in Lin et al.)::
+
+            power, state, feats = model(x, return_domain_features=True)
+            # feats = {"aligned": (B, C, T_out), ...}   # names from yaml
+
+        Or override layers for one call::
+
+            ..., feats = model(
+                x,
+                return_domain_features=True,
+                domain_feature_layers=["temporal_4", "aligned"],
+            )
 
         Flow:
             aggregate input
-            -> aggregate_feature_extractor
-            -> temporal_encoder
-            -> resize to output_length
-            -> resize to output_length
+            -> aggregate_feature_extractor          # hook: stem
+            -> temporal_encoder blocks              # hooks: temporal_i, temporal
+            -> _align_output_time                   # hook: aligned  ★ default DA Z
             -> per-appliance heads
-            -> return (B, output_length, num_appliances)
+            -> (B, output_length, num_appliances)
         """
+        collect_layers: list[str] = []
+        if return_domain_features:
+            collect_layers = self._validate_domain_feature_layers(
+                domain_feature_layers
+                if domain_feature_layers is not None
+                else self.domain_feature_layers
+            )
+        need_block = any(name.startswith("temporal_") for name in collect_layers)
+        want = set(collect_layers)
+        domain_feats: dict[str, torch.Tensor] = {}
 
         x = self._format_input(x)
 
-        # Step 1-2:
-        # Raw aggregate waveform -> hidden temporal representation.
+        # Step 1-2: raw aggregate → hidden maps.
         features = self.aggregate_feature_extractor(x)
+        if "stem" in want:
+            domain_feats["stem"] = features
 
-        # Step 3:
-        # Learn appliance-related temporal patterns from the aggregate signal.
-        features = self.temporal_encoder(features)
+        # Step 3: dilated residual temporal stack.
+        if need_block or "temporal" in want:
+            for block_index, block in enumerate(self.temporal_encoder):
+                features = block(features)
+                key = f"temporal_{block_index}"
+                if key in want:
+                    domain_feats[key] = features
+            if "temporal" in want:
+                domain_feats["temporal"] = features
+        else:
+            features = self.temporal_encoder(features)
 
-        # Step 4:
-        # Keep the same time indices as the dataloader center targets.
-        # Do NOT interpolate the full window into output_length — that misaligns
-        # labels and creates repeating pulse artifacts per window.
+        # Step 4: align time to labels / heads.
         output_features = self._align_output_time(features)
+        if "aligned" in want:
+            domain_feats["aligned"] = output_features
 
-        # Step 5:
-        # Each appliance head predicts one power channel and one state channel.
-        # Power is gated by state probability (soft or hard; see gate_mode in yaml).
+        # Step 5: per-appliance heads.
         power_parts: list[torch.Tensor] = []
         state_parts: list[torch.Tensor] = []
         for head in self.appliance_heads:
@@ -389,12 +538,12 @@ class MultiNILM(nn.Module):
         power_pred = torch.cat(power_parts, dim=1)
         state_logits = torch.cat(state_parts, dim=1)
 
-        # Step 6:
-        # Convert (B, num_appliances, output_length) -> (B, output_length, num_appliances)
-        # so predictions match dataloader target layout.
+        # Step 6: (B, A, T) → (B, T, A).
         power_pred = power_pred.permute(0, 2, 1)
         state_logits = state_logits.permute(0, 2, 1)
 
+        if return_domain_features:
+            return power_pred, state_logits, domain_feats
         return power_pred, state_logits
 
 
@@ -412,6 +561,9 @@ class MultiNILMConfig:
     dropout: float = 0.1
     gate_mode: str = "soft"
     gate_threshold: float = 0.5
+    # Which encoder maps to expose for MMD/CORAL (Lin-style layer select).
+    # Default ["aligned"] = after temporal encoder + time align, before heads.
+    domain_feature_layers: list[str] = field(default_factory=lambda: ["aligned"])
 
 
 def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
@@ -430,4 +582,7 @@ def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
         dropout=float(architecture.get("dropout", 0.1)),
         gate_mode=str(architecture.get("gate_mode", "soft")),
         gate_threshold=float(architecture.get("gate_threshold", 0.5)),
+        domain_feature_layers=normalize_domain_feature_layers(
+            architecture.get("domain_feature_layers")
+        ),
     )
