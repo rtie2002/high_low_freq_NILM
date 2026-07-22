@@ -50,7 +50,7 @@ loss:
 # Lin-style unsupervised DA: source = train (H1+H5), target aggregates only.
 # Requires both enabled: true AND loss.lambda_domain > 0.
 domain_adaptation:
-  enabled: false
+  enabled: true
   target_split: test      # unlabeled target house (UK-DALE H2); y/z ignored
 
 training:
