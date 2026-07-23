@@ -81,6 +81,9 @@ class MultiNILMAdapter(BaseNILMAdapter):
             gate_threshold=cfg.gate_threshold,
             appliance_off_norm=off_norms,
             domain_feature_layers=cfg.domain_feature_layers,
+            use_multiscale_stem=cfg.use_multiscale_stem,
+            detail_kernels=cfg.detail_kernels,
+            detail_branch_channels=cfg.detail_branch_channels,
         )
 
         # Move model to GPU if available, otherwise CPU.
@@ -96,6 +99,8 @@ class MultiNILMAdapter(BaseNILMAdapter):
             # Preference on state vs power after optional equal-balance (1 = equal).
             lambda_state=float(loss_cfg.get("lambda_state", 0.1)),
             task_balance=str(loss_cfg.get("task_balance", "none")),
+            # Waveform slope/shape MSE (0 = off). With equal balance, 0.5 ≈ half of power.
+            lambda_shape=float(loss_cfg.get("lambda_shape", 0.0)),
 
             # Auto-balance rare ON timesteps when pos_weight is null/auto.
             pos_weight=_resolve_pos_weight(self, loss_cfg),
@@ -185,6 +190,8 @@ class MultiNILMAdapter(BaseNILMAdapter):
                 "loss_power": float(out.loss_power.detach()),
                 "loss_state": float(out.loss_state.detach()),
                 "loss_state_term": float(out.loss_state_term.detach()),
+                "loss_shape": float(out.loss_shape.detach()),
+                "loss_shape_term": float(out.loss_shape_term.detach()),
                 "loss_domain": float(out.loss_domain.detach()),
                 "mae": float(out.mae.detach()),
                 **app_logs,

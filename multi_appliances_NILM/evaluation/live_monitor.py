@@ -134,6 +134,8 @@ class LiveTrainingMonitor:
             "train_loss_power": train_logs.get("loss_power", float("nan")),
             "val_loss_power": val_logs.get("loss_power", float("nan")),
             "train_loss_state_term": train_logs.get("loss_state_term", float("nan")),
+            "train_loss_shape": train_logs.get("loss_shape", float("nan")),
+            "train_loss_shape_term": train_logs.get("loss_shape_term", float("nan")),
             "train_loss_domain": train_logs.get("loss_domain", float("nan")),
         }
         for key, value in train_logs.items():
@@ -141,6 +143,8 @@ class LiveTrainingMonitor:
                 "loss_state",
                 "loss_power",
                 "loss_state_term",
+                "loss_shape",
+                "loss_shape_term",
                 "loss_domain",
             ):
                 loss_row[f"train_{key}"] = value

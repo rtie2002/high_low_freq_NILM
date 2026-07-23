@@ -27,6 +27,10 @@ architecture:
   num_blocks: 6
   kernel_size: 5
   dropout: 0.12
+  # Multi-scale stem (~+1K params): k=3/5/9/15 see fine edges + wider shapes.
+  use_multiscale_stem: true
+  detail_kernels: [3, 5, 9, 15]
+  detail_branch_channels: 12
   gate_mode: soft
   gate_threshold: 0.5
   # Layers to expose for MMD/CORAL (Lin-style select). Default = after temporal+align.
@@ -35,10 +39,13 @@ architecture:
   domain_feature_layers: [aligned]
 
 loss:
-  # equal = auto-match power/state magnitudes so lambda_state=1 means equal weight.
+  # equal = auto-match power/state/shape magnitudes so λ=1 means equal weight.
   # none  = old behavior: L = L_power + lambda_state * L_state (must tune lambda).
   task_balance: equal
   lambda_state: 1          # with task_balance=equal, 1 = equal power ↔ state
+  # Slope MSE on Δpower — helps small waveform shape changes (0 = off).
+  # With equal balance, 0.5 ≈ half as strong as level MSE.
+  lambda_shape: 0.5
   pos_weight: auto
   # Domain adaptation (Lin et al. IEEE TSG 2022).
   # coral | mmd | both  — paper Eq.(12) uses both with μ=0.4

@@ -8,12 +8,11 @@ Supervised part (see docs/multinilm_task_loss_balance.md)::
 
     L_power = sum_i MSE_i
     L_state = sum_i BCE_i
-    L_NILM  = L_power + state_term
+    L_shape = sum_i MSE(Δŷ_i, Δy_i)     # first-difference = waveform slope/shape
+    L_NILM  = L_power + state_term + shape_term
 
-    task_balance=none :  state_term = lambda_state * L_state
-    task_balance=equal:  state_term = lambda_state * L_state
-                                       * (L_power / L_state).detach()
-                         → lambda_state=1 means equal power ↔ state weight
+    task_balance=equal → each *_term matched to L_power scale; λ=1 means equal weight.
+    lambda_shape=0 disables shape term.
 
 Domain part (Lin et al., IEEE TSG 2022)::
 
@@ -211,6 +210,8 @@ class MultiNILMLossOutput:
     loss_power: torch.Tensor           # Σ_i MSE_i  (raw)
     loss_state: torch.Tensor           # Σ_i BCE_i  (raw)
     loss_state_term: torch.Tensor      # balanced state contribution into L_NILM
+    loss_shape: torch.Tensor           # Σ_i slope-MSE_i (raw)
+    loss_shape_term: torch.Tensor      # balanced shape contribution into L_NILM
     loss_domain: torch.Tensor          # L_domain (0 if DA off)
     mae: torch.Tensor                  # logging only (often denorm scale)
     loss_power_per_appliance: torch.Tensor
@@ -226,26 +227,26 @@ class MultiNILMLoss(nn.Module):
         pos_weight: torch.Tensor | list[float] | None = None,
         power_scale: float | list[float] | torch.Tensor = 1.0,
         *,
-        task_balance: str = "equal",
+        task_balance: str = 'equal',
+        lambda_shape: float = 0.0,
         lambda_domain: float = 0.0,
-        domain_method: str = "coral",
+        domain_method: str = 'coral',
         domain_mu: float = 0.4,
         mmd_sigma: float | None = None,
     ) -> None:
         super().__init__()
         self.lambda_state = float(lambda_state)
-        self.task_balance = str(task_balance or "none").lower()
+        self.lambda_shape = float(lambda_shape)
+        self.task_balance = str(task_balance or 'none').lower()
         self.lambda_domain = float(lambda_domain)
-        self.domain_method = str(domain_method or "coral").lower()
+        self.domain_method = str(domain_method or 'coral').lower()
         self.domain_mu = float(domain_mu)
         self.mmd_sigma = None if mmd_sigma is None else float(mmd_sigma)
 
-        # MAE logging scale (watts / std); not used in the training objective.
-        self.register_buffer("power_scale", torch.as_tensor(power_scale, dtype=torch.float32))
+        self.register_buffer('power_scale', torch.as_tensor(power_scale, dtype=torch.float32))
 
-        # BCE ON-class weight: pos_weight_i = (1−p_i)/p_i from train ON rate.
         if pos_weight is not None:
-            self.register_buffer("pos_weight", torch.as_tensor(pos_weight, dtype=torch.float32))
+            self.register_buffer('pos_weight', torch.as_tensor(pos_weight, dtype=torch.float32))
         else:
             self.pos_weight = None
 
@@ -256,6 +257,24 @@ class MultiNILMLoss(nn.Module):
     ) -> torch.Tensor:
         """MSE_i = mean_{b,t} (ŷ − y)²  → vector length A."""
         return torch.mean((power_pred - power_true) ** 2, dim=(0, 1))
+
+    def _per_appliance_shape_loss(
+        self,
+        power_pred: torch.Tensor,
+        power_true: torch.Tensor,
+    ) -> torch.Tensor:
+        """Slope / local-shape MSE via first differences (small waveform wiggles).
+
+        Pointwise MSE can match mean level while missing edges. Penalize::
+
+            Δŷ_t = ŷ_{t+1} − ŷ_t ,  Δy_t = y_{t+1} − y_t
+            L_shape^i = mean (Δŷ − Δy)²
+        """
+        if power_pred.shape[1] < 2:
+            return power_pred.new_zeros(power_pred.shape[-1])
+        d_pred = power_pred[:, 1:, :] - power_pred[:, :-1, :]
+        d_true = power_true[:, 1:, :] - power_true[:, :-1, :]
+        return torch.mean((d_pred - d_true) ** 2, dim=(0, 1))
 
     def _per_appliance_state_loss(
         self,
@@ -279,38 +298,21 @@ class MultiNILMLoss(nn.Module):
             )
         return torch.stack(losses)
 
-    def _balanced_state_term(
+    def _balanced_term(
         self,
         loss_power: torch.Tensor,
-        loss_state: torch.Tensor,
+        loss_raw: torch.Tensor,
+        lambda_pref: float,
     ) -> torch.Tensor:
-        """Build state_term that enters L_NILM = L_power + state_term.
-
-        Why balance?
-            MSE and BCE live on different numeric scales. Fixed
-            L_power + λ L_state with λ=1 is NOT equal importance.
-
-        task_balance=none
-            state_term = λ_state · L_state
-            (legacy; you must hand-tune λ_state for scale)
-
-        task_balance=equal
-            Rescale state magnitude to match power, then apply λ_state as preference:
-
-                state_term = λ_state · L_state · (L_power / L_state)_stop-grad
-
-            With λ_state=1:  state_term = L_power  → equal weights.
-            Example: L_power=2, L_state=8 → ratio=0.25 → state_term=2.
-
-            stop-grad on the ratio: only a magnitude ruler; gradients still
-            flow through L_state (and L_power via the other term).
-        """
-        if self.task_balance == "none":
-            return self.lambda_state * loss_state
-        if self.task_balance == "equal":
-            scale = loss_power.detach() / loss_state.detach().clamp_min(1e-8)
-            return self.lambda_state * loss_state * scale
-        raise ValueError(f"task_balance must be none|equal, got {self.task_balance!r}")
+        """Scale loss_raw vs loss_power; λ=1 → equal magnitude when task_balance=equal."""
+        if lambda_pref == 0.0:
+            return loss_power.new_zeros(())
+        if self.task_balance == 'none':
+            return float(lambda_pref) * loss_raw
+        if self.task_balance == 'equal':
+            scale = loss_power.detach() / loss_raw.detach().clamp_min(1e-8)
+            return float(lambda_pref) * loss_raw * scale
+        raise ValueError(f'task_balance must be none|equal, got {self.task_balance!r}')
 
     def forward(
         self,
@@ -322,33 +324,24 @@ class MultiNILMLoss(nn.Module):
         domain_feats_S: Mapping[str, torch.Tensor] | None = None,
         domain_feats_T: Mapping[str, torch.Tensor] | None = None,
     ) -> MultiNILMLossOutput:
-        """One batch: L_NILM (+ optional L_domain).
-
-        Math
-        ----
-        L_power = Σ_i MSE_i
-        L_state = Σ_i BCE_i
-        L_NILM  = L_power + state_term          # see _balanced_state_term
-
-        if DA active (feats given and λ_domain ≠ 0):
-            L = L_NILM + λ_domain · L_domain(Z_S, Z_T)   # additive (not paper convex)
-        else:
-            L = L_NILM
-        """
+        """L_NILM = L_power + state_term + shape_term  (+ optional DA)."""
         power_pred = power_pred.float()
         state_logits = state_logits.float()
         power_true = power_true.float()
         state_true = state_true.float()
 
-        # --- supervised NILM ---
         loss_power_per_app = self._per_appliance_power_loss(power_pred, power_true)
         loss_state_per_app = self._per_appliance_state_loss(state_logits, state_true)
+        loss_shape_per_app = self._per_appliance_shape_loss(power_pred, power_true)
+
         loss_power = loss_power_per_app.sum()
         loss_state = loss_state_per_app.sum()
-        loss_state_term = self._balanced_state_term(loss_power, loss_state)
-        loss_nilm = loss_power + loss_state_term
+        loss_shape = loss_shape_per_app.sum()
 
-        # --- optional domain adaptation ---
+        loss_state_term = self._balanced_term(loss_power, loss_state, self.lambda_state)
+        loss_shape_term = self._balanced_term(loss_power, loss_shape, self.lambda_shape)
+        loss_nilm = loss_power + loss_state_term + loss_shape_term
+
         use_da = (
             domain_feats_S is not None
             and domain_feats_T is not None
@@ -362,13 +355,11 @@ class MultiNILMLoss(nn.Module):
                 mu=self.domain_mu,
                 mmd_sigma=self.mmd_sigma,
             )
-            # Additive mix: keeps L_NILM scale when λ_domain=0 / DA off.
             loss = loss_nilm + self.lambda_domain * loss_domain
         else:
             loss_domain = loss_nilm.new_zeros(())
             loss = loss_nilm
 
-        # --- MAE for logs only (not in L) ---
         scale = self.power_scale.to(device=power_pred.device, dtype=power_pred.dtype)
         if scale.ndim > 0:
             mae = (torch.mean(torch.abs(power_pred - power_true), dim=(0, 1)) * scale).mean()
@@ -380,6 +371,8 @@ class MultiNILMLoss(nn.Module):
             loss_power=loss_power,
             loss_state=loss_state,
             loss_state_term=loss_state_term.detach(),
+            loss_shape=loss_shape.detach(),
+            loss_shape_term=loss_shape_term.detach(),
             loss_domain=loss_domain.detach(),
             mae=mae,
             loss_power_per_appliance=loss_power_per_app.detach(),

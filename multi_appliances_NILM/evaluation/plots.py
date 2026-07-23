@@ -464,7 +464,14 @@ def plot_loss_components(
 
     panels: list[tuple[str, list[tuple[str, str]]]] = [
         ("Total loss", [("train_loss", "train"), ("val_loss", "val")]),
-        ("Power (MSE)", [("train_loss_power", "train"), ("val_loss_power", "val")]),
+        (
+            "Power + shape",
+            [
+                ("train_loss_power", "train MSE"),
+                ("train_loss_shape_term", "train shape term"),
+                ("val_loss_power", "val MSE"),
+            ],
+        ),
         (
             "State (BCE)",
             [
