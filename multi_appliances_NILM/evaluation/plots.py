@@ -448,34 +448,72 @@ def plot_loss_components(
     figsize: float = 5.5,
     dpi: int = 150,
 ) -> Path:
-    """Train/val total loss plus state and power branches (single square figure)."""
+    """One 2×2 figure (same panel size as the old single square plot).
+
+    Layout::
+
+        [ total  ] [ power  ]
+        [ state  ] [ domain ]
+
+    Domain panel shows a note when DA / L_domain is absent.
+    """
     if not isinstance(loss_detail, pd.DataFrame):
         loss_detail = pd.read_csv(loss_detail)
 
     x = loss_detail[epoch_col] if epoch_col in loss_detail else np.arange(len(loss_detail))
-    fig, ax = plt.subplots(1, 1, figsize=(figsize, figsize))
-    ax.set_box_aspect(1)
 
-    series = [
-        ("train_loss", "train"),
-        ("val_loss", "val"),
-        ("train_loss_state", "train state"),
-        ("val_loss_state", "val state"),
-        ("train_loss_power", "train power"),
-        ("val_loss_power", "val power"),
+    panels: list[tuple[str, list[tuple[str, str]]]] = [
+        ("Total loss", [("train_loss", "train"), ("val_loss", "val")]),
+        ("Power (MSE)", [("train_loss_power", "train"), ("val_loss_power", "val")]),
+        (
+            "State (BCE)",
+            [
+                ("train_loss_state", "train raw"),
+                ("train_loss_state_term", "train term"),
+                ("val_loss_state", "val raw"),
+            ],
+        ),
+        ("Domain", [("train_loss_domain", "train L_domain")]),
     ]
-    for col, label in series:
-        if col in loss_detail.columns:
-            ax.plot(x, loss_detail[col], marker="o", markersize=3, linewidth=1.5, label=label)
 
-    ax.set_title(title)
-    ax.set_ylabel("Loss")
-    ax.set_xlabel("Epoch")
-    ax.grid(True, alpha=0.25)
-    ax.legend(fontsize=7, loc="best")
-    _set_epoch_axis(ax, x)
+    # 2×2 grid; each cell ≈ old single-figure size (figsize × figsize).
+    fig, axes = plt.subplots(2, 2, figsize=(figsize * 2, figsize * 2))
+    axes_flat = axes.ravel()
 
-    fig.tight_layout()
+    for ax, (panel_title, cols) in zip(axes_flat, panels):
+        ax.set_box_aspect(1)
+        plotted = False
+        for col, label in cols:
+            if col not in loss_detail.columns:
+                continue
+            y = loss_detail[col]
+            if y.isna().all():
+                continue
+            ax.plot(x, y, marker="o", markersize=3, linewidth=1.5, label=label)
+            plotted = True
+
+        ax.set_title(panel_title, fontsize=11)
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Loss")
+        ax.grid(True, alpha=0.25)
+        _set_epoch_axis(ax, x)
+
+        if plotted:
+            ax.legend(fontsize=7, loc="best")
+        else:
+            ax.text(
+                0.5,
+                0.5,
+                "no data\n(DA off)" if panel_title == "Domain" else "no data",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=10,
+                color="#666666",
+            )
+
+    fig.suptitle(title, fontsize=12, y=0.995)
+    fig.tight_layout(rect=(0, 0, 1, 0.98))
     output_path = _ensure_parent(output_path)
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
