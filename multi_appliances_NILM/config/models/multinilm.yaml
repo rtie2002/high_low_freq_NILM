@@ -20,15 +20,15 @@ windowing:
 
 architecture:
   input_channels: 1
-  # Capacity: wide [32,64,128] + deeper TCN (dilations cycle 1..max_dilation).
+  # Capacity: wide [32,64,128] + 8 TCN blocks (12 blocks hurt F1; keep this).
   channel_schedule: [32, 64, 128]
   hidden_channels: 128
   stem_kernel_size: 7
   stage_kernel_size: 5
-  num_blocks: 12
+  num_blocks: 8
   kernel_size: 5
   max_dilation: 64
-  dropout: 0.18
+  dropout: 0.15
   # soft | hard | soft_train_hard_eval
   # hard: binary 0/1 gate always (STE in train so gradients still flow). soft: smooth σ.
   # soft_train_hard_eval: soft in train, hard in val/test/plots.
