@@ -55,7 +55,7 @@ loss:
   task_balance: equal
   lambda_state: 1          # with task_balance=equal, 1 = equal power ↔ state
   pos_weight: auto
-  # Domain adaptation (Lin et al. IEEE TSG 2022).
+  # Domain adaptation OFF for clean big-model / more-data baselines.
   # coral | mmd | both  — paper Eq.(12) uses both with μ=0.4
   domain_method: both
   domain_mu: 0.4          # paper μ=0.4 → L_domain = μ·MMD² + (1-μ)·CORAL
@@ -64,13 +64,13 @@ loss:
   domain_mix: convex
   # none = use raw L_domain (often << L_NILM). equal = rescale to L_NILM so λ is meaningful.
   domain_scale: equal
-  lambda_domain: 0.6
+  lambda_domain: 0
   # mmd_sigma: auto       # optional fixed RBF bandwidth; omit/auto = median heuristic
 
 # Lin-style unsupervised DA: source = train (H1+H5), target aggregates only.
 # Requires both enabled: true AND loss.lambda_domain > 0.
 domain_adaptation:
-  enabled: true
+  enabled: false
   target_split: test      # unlabeled target house (UK-DALE H2); y/z ignored
 
 training:

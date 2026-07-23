@@ -1,6 +1,6 @@
 # UK-DALE (5 appliances) — normalization follows
 # NILM_model/baseline/transfer_learning_multi-appliance/Arguments.py
-experiment_id: ukdale(10wk source, with DA)
+experiment_id: ukdale(10wk source, no DA)
 seed: 2026
 data_root: datasets/ukdale
 
