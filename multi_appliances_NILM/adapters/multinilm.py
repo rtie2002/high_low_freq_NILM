@@ -77,6 +77,7 @@ class MultiNILMAdapter(BaseNILMAdapter):
             num_blocks=cfg.num_blocks,
             kernel_size=cfg.kernel_size,
             dropout=cfg.dropout,
+            max_dilation=cfg.max_dilation,
             gate_mode=cfg.gate_mode,
             gate_threshold=cfg.gate_threshold,
             appliance_off_norm=off_norms,

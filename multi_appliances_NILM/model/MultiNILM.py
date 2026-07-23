@@ -376,6 +376,7 @@ class MultiNILM(nn.Module):
         num_blocks: int = 5,
         kernel_size: int = 5,
         dropout: float = 0.1,
+        max_dilation: int = 128,
         gate_mode: str = "soft_train_hard_eval",
         gate_threshold: float = 0.5,
         appliance_off_norm: list[float] | None = None,
@@ -460,12 +461,13 @@ class MultiNILM(nn.Module):
                 nn.GELU(),
             )
 
-        # Step 2: process temporal features with dilated convolution blocks.
-        # Dilation values 1, 2, 4, 8, ... let the model see short and longer
-        # appliance patterns without making the network very deep.
+        # Step 2: residual TCN. Dilations cycle 1,2,4,...,max_dilation so deeper
+        # stacks keep local scales instead of exploding past the window length.
+        max_dil = max(1, int(max_dilation))
+        cycle = int(max_dil).bit_length()  # e.g. 128 → 8 steps: 1..128
         temporal_blocks = []
         for block_index in range(num_blocks):
-            dilation = 2 ** block_index
+            dilation = 2 ** (block_index % cycle)
             temporal_blocks.append(
                 ResidualTemporalBlock(
                     channels=self.hidden_channels,
@@ -710,6 +712,7 @@ class MultiNILMConfig:
     num_blocks: int = 5
     kernel_size: int = 5
     dropout: float = 0.1
+    max_dilation: int = 128
     # soft | hard | soft_train_hard_eval (train soft, val/test/plots hard)
     gate_mode: str = "soft_train_hard_eval"
     gate_threshold: float = 0.5
@@ -741,6 +744,7 @@ def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
         num_blocks=int(architecture.get("num_blocks", 5)),
         kernel_size=int(architecture.get("kernel_size", 5)),
         dropout=float(architecture.get("dropout", 0.1)),
+        max_dilation=int(architecture.get("max_dilation", 128)),
         gate_mode=str(architecture.get("gate_mode", "soft_train_hard_eval")),
         gate_threshold=float(architecture.get("gate_threshold", 0.5)),
         head_local_layers=int(architecture.get("head_local_layers", 2)),
