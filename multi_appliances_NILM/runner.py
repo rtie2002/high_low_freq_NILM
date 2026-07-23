@@ -303,26 +303,22 @@ def _format_epoch_summary(
     if improved:
         header = f"{header}  * best"
 
-    def _parts(logs: dict[str, float]) -> tuple[float, float, float, float, float, float]:
+    def _parts(logs: dict[str, float]) -> tuple[float, float, float, float]:
         power = float(logs.get("loss_power", float("nan")))
         state_raw = float(logs.get("loss_state", float("nan")))
         state_term = float(logs.get("loss_state_term", state_raw))
-        shape_raw = float(logs.get("loss_shape", 0.0))
-        shape_term = float(logs.get("loss_shape_term", 0.0))
-        nilm = power + state_term + shape_term
+        nilm = power + state_term
         if power != power:
             nilm = float("nan")
-        return power, state_raw, state_term, shape_raw, shape_term, nilm
+        return power, state_raw, state_term, nilm
 
     l_total = float(train_logs.get("loss", float("nan")))
-    l_power, l_state_raw, l_state_term, l_shape_raw, l_shape_term, l_nilm = _parts(train_logs)
+    l_power, l_state_raw, l_state_term, l_nilm = _parts(train_logs)
     l_dom_raw = float(train_logs.get("loss_domain", 0.0))
     l_dom_term = float(lambda_domain) * l_dom_raw if da_active else 0.0
 
     val_logs = val_logs or {}
-    val_power, val_state_raw, val_state_term, val_shape_raw, val_shape_term, val_nilm = _parts(
-        val_logs
-    )
+    val_power, val_state_raw, val_state_term, val_nilm = _parts(val_logs)
     if val_nilm != val_nilm:
         val_nilm = float(val_loss)
 
@@ -330,8 +326,7 @@ def _format_epoch_summary(
         header,
         "  -- train objective (used for backprop) --",
         f"  L_total     {l_total:.4f}   = L_NILM + lambda*L_domain",
-        f"  L_NILM      {l_nilm:.4f}   = power + state_term"
-        + (" + shape_term" if l_shape_term > 0 or l_shape_raw > 0 else ""),
+        f"  L_NILM      {l_nilm:.4f}   = power + state_term",
     ]
 
     lines.append("  -- train components (raw -> into L) --")
@@ -342,10 +337,6 @@ def _format_epoch_summary(
     if "loss_state" in train_logs:
         lines.append(
             f"  state       raw={l_state_raw:.4f}   -> {l_state_term:.4f}   (BCE, balanced)"
-        )
-    if "loss_shape" in train_logs and (l_shape_term > 0 or l_shape_raw > 0):
-        lines.append(
-            f"  shape       raw={l_shape_raw:.4f}   -> {l_shape_term:.4f}   (slope MSE, balanced)"
         )
 
     if da_active and "loss_domain" in train_logs:
@@ -364,10 +355,7 @@ def _format_epoch_summary(
         lines.append("  domain      (off)")
 
     lines.append("  -- validation (same L_NILM scale, no DA) --")
-    lines.append(
-        f"  L_NILM      {val_nilm:.4f}   = power + state_term"
-        + (" + shape_term" if val_shape_term > 0 or val_shape_raw > 0 else "")
-    )
+    lines.append(f"  L_NILM      {val_nilm:.4f}   = power + state_term")
     if val_power == val_power:
         lines.append(
             f"  power       raw={val_power:.4f}   -> {val_power:.4f}   (level MSE)"
@@ -375,10 +363,6 @@ def _format_epoch_summary(
     if val_state_raw == val_state_raw:
         lines.append(
             f"  state       raw={val_state_raw:.4f}   -> {val_state_term:.4f}   (BCE, balanced)"
-        )
-    if val_shape_term > 0 or val_shape_raw > 0:
-        lines.append(
-            f"  shape       raw={val_shape_raw:.4f}   -> {val_shape_term:.4f}   (slope MSE, balanced)"
         )
     lines.append(
         f"  metrics     F1={val_f1:.4f}   Acc={val_acc:.4f}   MAE={val_mae:.2f} W"

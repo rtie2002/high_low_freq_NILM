@@ -487,12 +487,10 @@ def plot_loss_components(
             ],
         ),
         (
-            "Power + shape",
+            "Power (MSE)",
             [
                 ("train_loss_power", "train MSE"),
                 ("val_loss_power", "val MSE"),
-                ("train_loss_shape_term", "train shape term"),
-                ("val_loss_shape_term", "val shape term"),
             ],
         ),
         (
