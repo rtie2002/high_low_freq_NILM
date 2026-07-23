@@ -84,6 +84,9 @@ class MultiNILMAdapter(BaseNILMAdapter):
             head_local_layers=cfg.head_local_layers,
             head_kernel_size=cfg.head_kernel_size,
             head_use_residual=cfg.head_use_residual,
+            use_multiscale_stem=cfg.use_multiscale_stem,
+            detail_kernels=cfg.detail_kernels,
+            detail_branch_channels=cfg.detail_branch_channels,
         )
 
         # Move model to GPU if available, otherwise CPU.

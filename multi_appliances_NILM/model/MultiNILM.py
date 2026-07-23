@@ -152,6 +152,53 @@ class ResidualTemporalBlock(nn.Module):
         return residual + y
 
 
+class MultiScaleWaveformStem(nn.Module):
+    """Parallel multi-kernel Conv1d for fine + coarse local waveform shape.
+
+    k=3  → sharp edges / small bumps
+    k=5–9 → wider ON/OFF shoulders
+    Fuse with 1x1 + residual. Adds ~1K params (keeps model small).
+    """
+
+    def __init__(
+        self,
+        input_channels: int,
+        out_channels: int,
+        kernels: list[int] | tuple[int, ...] = (3, 5, 9),
+        branch_channels: int = 12,
+    ) -> None:
+        super().__init__()
+        if not kernels:
+            raise ValueError("detail_kernels must be non-empty")
+        in_ch, out_ch, branch_ch = int(input_channels), int(out_channels), int(branch_channels)
+        branches: list[nn.Module] = []
+        for kernel_size in kernels:
+            k = int(kernel_size)
+            if k < 1 or k % 2 == 0:
+                raise ValueError(f"detail kernels must be odd positive ints, got {k}")
+            branches.append(
+                nn.Sequential(
+                    nn.Conv1d(in_ch, branch_ch, kernel_size=k, padding=k // 2),
+                    nn.BatchNorm1d(branch_ch),
+                    nn.GELU(),
+                )
+            )
+        self.branches = nn.ModuleList(branches)
+        self.fuse = nn.Sequential(
+            nn.Conv1d(branch_ch * len(branches), out_ch, kernel_size=1),
+            nn.BatchNorm1d(out_ch),
+            nn.GELU(),
+        )
+        self.skip = (
+            nn.Identity()
+            if in_ch == out_ch
+            else nn.Sequential(nn.Conv1d(in_ch, out_ch, 1), nn.BatchNorm1d(out_ch))
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fuse(torch.cat([b(x) for b in self.branches], dim=1)) + self.skip(x)
+
+
 class StagedFeatureExtractor(nn.Module):
     """Gradually widen channel depth before the shared TCN (seq2point-style).
 
@@ -292,7 +339,8 @@ class MultiNILM(nn.Module):
             Output: (B, 1, T)
 
         2. aggregate_feature_extractor
-            Either staged Conv1d widening (channel_schedule) or one Conv1d jump.
+            Optional multi-scale stem (k=3/5/9) then staged Conv1d widening
+            (channel_schedule), or one Conv1d jump.
             Output: (B, hidden_channels, T)
 
         3. temporal_encoder
@@ -335,6 +383,9 @@ class MultiNILM(nn.Module):
         head_local_layers: int = 2,
         head_kernel_size: int = 3,
         head_use_residual: bool = True,
+        use_multiscale_stem: bool = False,
+        detail_kernels: list[int] | None = None,
+        detail_branch_channels: int = 12,
     ) -> None:
         super().__init__()
 
@@ -351,7 +402,10 @@ class MultiNILM(nn.Module):
                 f"appliance_off_norm length {len(off_norms)} != num_appliances {self.num_appliances}"
             )
 
+        detail_ks = [int(k) for k in (detail_kernels or [3, 5, 9])]
+
         # Step 1: widen aggregate power into temporal feature maps.
+        # Multi-scale stem (optional) replaces the first coarse k=7 layer.
         if channel_schedule:
             schedule = [int(width) for width in channel_schedule]
             if schedule[-1] != self.hidden_channels:
@@ -359,11 +413,40 @@ class MultiNILM(nn.Module):
                     "hidden_channels must match the last entry in channel_schedule; "
                     f"got hidden_channels={self.hidden_channels}, schedule={schedule}."
                 )
-            self.aggregate_feature_extractor = StagedFeatureExtractor(
+            if use_multiscale_stem:
+                stem_out = schedule[0]
+                stages: list[nn.Module] = [
+                    MultiScaleWaveformStem(
+                        input_channels=self.input_channels,
+                        out_channels=stem_out,
+                        kernels=detail_ks,
+                        branch_channels=int(detail_branch_channels),
+                    )
+                ]
+                rest = schedule[1:]
+                if rest:
+                    stages.append(
+                        StagedFeatureExtractor(
+                            input_channels=stem_out,
+                            channel_schedule=rest,
+                            stem_kernel_size=int(stage_kernel_size),
+                            stage_kernel_size=int(stage_kernel_size),
+                        )
+                    )
+                self.aggregate_feature_extractor = nn.Sequential(*stages)
+            else:
+                self.aggregate_feature_extractor = StagedFeatureExtractor(
+                    input_channels=self.input_channels,
+                    channel_schedule=schedule,
+                    stem_kernel_size=int(stem_kernel_size),
+                    stage_kernel_size=int(stage_kernel_size),
+                )
+        elif use_multiscale_stem:
+            self.aggregate_feature_extractor = MultiScaleWaveformStem(
                 input_channels=self.input_channels,
-                channel_schedule=schedule,
-                stem_kernel_size=int(stem_kernel_size),
-                stage_kernel_size=int(stage_kernel_size),
+                out_channels=self.hidden_channels,
+                kernels=detail_ks,
+                branch_channels=int(detail_branch_channels),
             )
         else:
             self.aggregate_feature_extractor = nn.Sequential(
@@ -634,6 +717,10 @@ class MultiNILMConfig:
     head_local_layers: int = 2
     head_kernel_size: int = 3
     head_use_residual: bool = True
+    # Multi-scale front-end (shape-oriented); no shape loss required.
+    use_multiscale_stem: bool = False
+    detail_kernels: list[int] = field(default_factory=lambda: [3, 5, 9])
+    detail_branch_channels: int = 12
     # Which encoder maps to expose for MMD/CORAL (Lin-style layer select).
     # Default ["aligned"] = after temporal encoder + time align, before heads.
     domain_feature_layers: list[str] = field(default_factory=lambda: ["aligned"])
@@ -642,6 +729,7 @@ class MultiNILMConfig:
 def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
     """Read MultiNILM settings from the model YAML architecture section."""
 
+    detail_kernels = architecture.get("detail_kernels", [3, 5, 9])
     return MultiNILMConfig(
         input_channels=int(architecture.get("input_channels", architecture.get("input_size", 1))),
         num_appliances=int(architecture.get("num_appliances", 5)),
@@ -658,6 +746,9 @@ def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
         head_local_layers=int(architecture.get("head_local_layers", 2)),
         head_kernel_size=int(architecture.get("head_kernel_size", 3)),
         head_use_residual=bool(architecture.get("head_use_residual", True)),
+        use_multiscale_stem=bool(architecture.get("use_multiscale_stem", False)),
+        detail_kernels=[int(k) for k in detail_kernels],
+        detail_branch_channels=int(architecture.get("detail_branch_channels", 12)),
         domain_feature_layers=normalize_domain_feature_layers(
             architecture.get("domain_feature_layers")
         ),
