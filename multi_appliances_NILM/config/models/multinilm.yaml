@@ -44,10 +44,10 @@ architecture:
   detail_kernels: [3, 5, 9]
   detail_branch_channels: 16
 
-  # Layers to expose for MMD/CORAL (Lin-style select). Default = after temporal+align.
+  # Lin-style multi-layer DA (paper: fc6–fc8 near the head).
+  # With num_blocks=8: late TCN hooks + pre-head aligned ≈ paper's three late layers.
   # Options: stem | temporal | aligned | temporal_0 .. temporal_{num_blocks-1}
-  # Example multi-layer (paper sums fc6–8): [temporal_3, temporal_5, aligned]
-  domain_feature_layers: [aligned]
+  domain_feature_layers: [temporal_4, temporal_6, aligned]
 
 loss:
   # equal = auto-match power/state magnitudes so lambda_state=1 means equal weight.

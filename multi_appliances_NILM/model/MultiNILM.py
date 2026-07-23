@@ -724,10 +724,10 @@ class MultiNILMConfig:
     use_multiscale_stem: bool = False
     detail_kernels: list[int] = field(default_factory=lambda: [3, 5, 9])
     detail_branch_channels: int = 12
-    # Which encoder maps to expose for MMD/CORAL (Lin-style layer select).
-    # Default ["aligned"] = after temporal encoder + time align, before heads.
-    domain_feature_layers: list[str] = field(default_factory=lambda: ["aligned"])
-
+    # Lin-style multi-layer DA hooks (late TCN + pre-head), analogous to fc6–fc8.
+    domain_feature_layers: list[str] = field(
+        default_factory=lambda: ["temporal_4", "temporal_6", "aligned"]
+    )
 
 def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
     """Read MultiNILM settings from the model YAML architecture section."""
