@@ -289,6 +289,7 @@ def _format_epoch_summary(
     lambda_domain: float = 0.0,
     domain_method: str = "coral",
     domain_mu: float = 0.4,
+    domain_mix: str = "convex",
 ) -> str:
     """Professional multi-line epoch report.
 
@@ -315,7 +316,38 @@ def _format_epoch_summary(
     l_total = float(train_logs.get("loss", float("nan")))
     l_power, l_state_raw, l_state_term, l_nilm = _parts(train_logs)
     l_dom_raw = float(train_logs.get("loss_domain", 0.0))
-    l_dom_term = float(lambda_domain) * l_dom_raw if da_active else 0.0
+    # Scaled domain term (domain_scale=equal) else same as raw.
+    l_dom_scaled = float(train_logs.get("loss_domain_term", l_dom_raw))
+    mix = str(domain_mix or "convex").lower()
+    if da_active:
+        if mix == "additive":
+            l_nilm_term = l_nilm
+            l_dom_term = float(lambda_domain) * l_dom_scaled
+            total_formula = "L_NILM + lambda*domain_term"
+            nilm_arrow = f"raw={l_nilm:.4f}   -> {l_nilm_term:.4f}"
+            dom_arrow = (
+                f"raw={l_dom_raw:.4f}   scaled={l_dom_scaled:.4f}   "
+                f"-> {l_dom_term:.4f}   (lambda={lambda_domain:g} * scaled"
+            )
+        else:
+            # Lin convex: (1-λ) L_NILM + λ · domain_term
+            l_nilm_term = (1.0 - float(lambda_domain)) * l_nilm
+            l_dom_term = float(lambda_domain) * l_dom_scaled
+            total_formula = "(1-lambda)*L_NILM + lambda*domain_term"
+            nilm_arrow = (
+                f"raw={l_nilm:.4f}   -> {l_nilm_term:.4f}   "
+                f"((1-lambda)={1.0 - float(lambda_domain):g} * raw)"
+            )
+            dom_arrow = (
+                f"raw={l_dom_raw:.4f}   scaled={l_dom_scaled:.4f}   "
+                f"-> {l_dom_term:.4f}   (lambda={lambda_domain:g} * scaled"
+            )
+    else:
+        l_nilm_term = l_nilm
+        l_dom_term = 0.0
+        total_formula = "L_NILM"
+        nilm_arrow = f"{l_nilm:.4f}   = power + state_term"
+        dom_arrow = ""
 
     val_logs = val_logs or {}
     val_power, val_state_raw, val_state_term, val_nilm = _parts(val_logs)
@@ -325,8 +357,8 @@ def _format_epoch_summary(
     lines = [
         header,
         "  -- train objective (used for backprop) --",
-        f"  L_total     {l_total:.4f}   = L_NILM + lambda*L_domain",
-        f"  L_NILM      {l_nilm:.4f}   = power + state_term",
+        f"  L_total     {l_total:.4f}   = {total_formula}",
+        f"  L_NILM      {nilm_arrow}",
     ]
 
     lines.append("  -- train components (raw -> into L) --")
@@ -347,10 +379,7 @@ def _format_epoch_summary(
             method_label = "MMD"
         else:
             method_label = "CORAL"
-        lines.append(
-            f"  domain      raw={l_dom_raw:.4f}   -> {l_dom_term:.4f}   "
-            f"(lambda={lambda_domain:g} * raw, {method_label})"
-        )
+        lines.append(f"  domain      {dom_arrow}, {method_label})")
     else:
         lines.append("  domain      (off)")
 
@@ -904,6 +933,8 @@ def _run_epoch(
                 postfix = {"loss": f"{step.logs.get('loss', 0.0):.4f}"}
                 if "loss_domain" in step.logs and use_target:
                     postfix["loss_domain"] = f"{step.logs['loss_domain']:.4f}"
+                    if "loss_domain_term" in step.logs:
+                        postfix["dom_term"] = f"{step.logs['loss_domain_term']:.4f}"
                 pbar.set_postfix(**postfix)
 
     # Convert accumulated batch values to one average value per epoch.
@@ -1181,6 +1212,7 @@ def train_model(
             f"  Target split   {da_target_split}  (aggregates only; labels unused)\n"
             f"  Method         {method_note}\n"
             f"  lambda_domain  {da_lambda:g}\n"
+            f"  domain_mix     {str(adapter.model_cfg.get('loss', {}).get('domain_mix', 'convex'))}\n"
             f"  Feature layers {adapter.model_cfg.get('architecture', {}).get('domain_feature_layers', ['aligned'])}",
             flush=True,
         )
@@ -1392,6 +1424,9 @@ def train_model(
                     lambda_domain=da_lambda,
                     domain_method=da_method,
                     domain_mu=da_mu,
+                    domain_mix=str(
+                        adapter.model_cfg.get("loss", {}).get("domain_mix", "convex")
+                    ),
                 )
             )
 

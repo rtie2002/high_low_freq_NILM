@@ -111,11 +111,12 @@ class MultiNILMAdapter(BaseNILMAdapter):
             # stats when available, otherwise from legacy scalar power_scale.
             power_scale=self._data_loader().loss_scale,
 
-            # Domain adaptation (Lin-style). lambda_domain=0 keeps old behavior
-            # until runner/adapter passes domain_feats_S/T.
+            # Domain adaptation (Lin-style).
             lambda_domain=float(loss_cfg.get("lambda_domain", 0.0)),
             domain_method=str(loss_cfg.get("domain_method", "coral")),
             domain_mu=float(loss_cfg.get("domain_mu", 0.4)),
+            domain_mix=str(loss_cfg.get("domain_mix", "convex")),
+            domain_scale=str(loss_cfg.get("domain_scale", "none")),
             mmd_sigma=(
                 None
                 if loss_cfg.get("mmd_sigma", None) in (None, "", "auto")
@@ -141,7 +142,8 @@ class MultiNILMAdapter(BaseNILMAdapter):
 
             power_S, state_S, Z_S = model(x_S, return_domain_features=True)
             _,       _,       Z_T = model(x_T, return_domain_features=True)
-            L = L_NILM + lambda_domain * L_domain(Z_S, Z_T)
+            L = (1-?) L_NILM + ? L_domain(Z_S, Z_T)   # domain_mix=convex (Lin)
+              or L_NILM + ? L_domain                 # domain_mix=additive
 
         ``target_batch`` only needs the aggregate ``x_T``; y/z from the target
         split are ignored (unlabeled target domain, Lin-style).
@@ -193,6 +195,7 @@ class MultiNILMAdapter(BaseNILMAdapter):
                 "loss_state": float(out.loss_state.detach()),
                 "loss_state_term": float(out.loss_state_term.detach()),
                 "loss_domain": float(out.loss_domain.detach()),
+                "loss_domain_term": float(out.loss_domain_term.detach()),
                 "mae": float(out.mae.detach()),
                 **app_logs,
             },

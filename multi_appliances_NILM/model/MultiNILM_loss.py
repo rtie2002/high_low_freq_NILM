@@ -1,6 +1,10 @@
 """MultiNILM multitask loss + optional Lin-style domain adaptation.
 
-Pipeline total loss (additive DA)::
+Pipeline total loss (Lin convex mix when DA on)::
+
+    L = (1 - lambda_domain) * L_NILM + lambda_domain * L_domain
+
+Legacy additive (domain_mix=additive)::
 
     L = L_NILM + lambda_domain * L_domain
 
@@ -18,7 +22,7 @@ Supervised part (see docs/multinilm_task_loss_balance.md)::
 Domain part (Lin et al., IEEE TSG 2022)::
 
     L_domain = sum_layer [ mu * MMD^2 + (1-mu) * CORAL ]   # method=both
-    Paper convex mix L=(1-λ)L_R + λ L_domain is NOT used here.
+    Paper: L = (1-λ) L_R + λ L_domain  with best λ=0.6  → domain_mix=convex
 
 Call site: adapters/multinilm.py → MultiNILMLoss(...)
 Shapes: power/state (B,T,A); domain hooks dict[str, (B,C,T)|(B,D)]
@@ -211,14 +215,15 @@ class MultiNILMLossOutput:
     loss_power: torch.Tensor           # Σ_i MSE_i  (raw)
     loss_state: torch.Tensor           # Σ_i BCE_i  (raw)
     loss_state_term: torch.Tensor      # balanced state contribution into L_NILM
-    loss_domain: torch.Tensor          # L_domain (0 if DA off)
+    loss_domain: torch.Tensor          # raw L_domain (0 if DA off)
+    loss_domain_term: torch.Tensor     # domain contribution before mix weights
     mae: torch.Tensor                  # logging only (often denorm scale)
     loss_power_per_appliance: torch.Tensor
     loss_state_per_appliance: torch.Tensor
 
 
 class MultiNILMLoss(nn.Module):
-    """L = L_NILM + λ_domain · L_domain  (DA optional)."""
+    """Optional DA: Lin convex mix or legacy additive mix."""
 
     def __init__(
         self,
@@ -231,6 +236,8 @@ class MultiNILMLoss(nn.Module):
         domain_method: str = "coral",
         domain_mu: float = 0.4,
         mmd_sigma: float | None = None,
+        domain_mix: str = "convex",
+        domain_scale: str = "none",
     ) -> None:
         super().__init__()
         self.lambda_state = float(lambda_state)
@@ -239,6 +246,12 @@ class MultiNILMLoss(nn.Module):
         self.domain_method = str(domain_method or "coral").lower()
         self.domain_mu = float(domain_mu)
         self.mmd_sigma = None if mmd_sigma is None else float(mmd_sigma)
+        self.domain_mix = str(domain_mix or "convex").lower()
+        if self.domain_mix not in {"convex", "additive"}:
+            raise ValueError(f"domain_mix must be convex|additive, got {domain_mix!r}")
+        self.domain_scale = str(domain_scale or "none").lower()
+        if self.domain_scale not in {"none", "equal"}:
+            raise ValueError(f"domain_scale must be none|equal, got {domain_scale!r}")
 
         # MAE logging scale (watts / std); not used in the training objective.
         self.register_buffer("power_scale", torch.as_tensor(power_scale, dtype=torch.float32))
@@ -331,7 +344,11 @@ class MultiNILMLoss(nn.Module):
         L_NILM  = L_power + state_term          # see _balanced_state_term
 
         if DA active (feats given and λ_domain ≠ 0):
-            L = L_NILM + λ_domain · L_domain(Z_S, Z_T)   # additive (not paper convex)
+            optionally scale L_domain to L_NILM magnitude (domain_scale=equal)
+            domain_mix=convex (Lin):
+                L = (1-λ) · L_NILM + λ · domain_term
+            domain_mix=additive (legacy):
+                L = L_NILM + λ · domain_term
         else:
             L = L_NILM
         """
@@ -362,10 +379,22 @@ class MultiNILMLoss(nn.Module):
                 mu=self.domain_mu,
                 mmd_sigma=self.mmd_sigma,
             )
-            # Additive mix: keeps L_NILM scale when λ_domain=0 / DA off.
-            loss = loss_nilm + self.lambda_domain * loss_domain
+            # Match magnitudes so λ meaningfully trades off NILM vs DA.
+            if self.domain_scale == "equal":
+                domain_term = loss_domain * (
+                    loss_nilm.detach() / loss_domain.detach().clamp_min(1e-8)
+                )
+            else:
+                domain_term = loss_domain
+            lam = self.lambda_domain
+            if self.domain_mix == "convex":
+                # Lin et al.: L = (1-λ) L_R + λ L_domain
+                loss = (1.0 - lam) * loss_nilm + lam * domain_term
+            else:
+                loss = loss_nilm + lam * domain_term
         else:
             loss_domain = loss_nilm.new_zeros(())
+            domain_term = loss_domain
             loss = loss_nilm
 
         # --- MAE for logs only (not in L) ---
@@ -381,6 +410,7 @@ class MultiNILMLoss(nn.Module):
             loss_state=loss_state,
             loss_state_term=loss_state_term.detach(),
             loss_domain=loss_domain.detach(),
+            loss_domain_term=domain_term.detach(),
             mae=mae,
             loss_power_per_appliance=loss_power_per_app.detach(),
             loss_state_per_appliance=loss_state_per_app.detach(),
