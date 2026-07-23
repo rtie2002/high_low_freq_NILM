@@ -202,6 +202,9 @@ class ApplianceHead(nn.Module):
     Each appliance gets its own small head instead of sharing one multi-channel
     Conv1d. This reduces competition between appliances with very different
     power scales and ON/OFF patterns.
+
+    With ``head_local_layers > 0``, a short temporal stack (k=3 by default)
+    redraws local waveform shape before the 1x1 power/state readouts.
     """
 
     def __init__(
@@ -212,22 +215,53 @@ class ApplianceHead(nn.Module):
         gate_mode: str = "soft_train_hard_eval",
         gate_threshold: float = 0.5,
         off_norm: float = 0.0,
+        head_local_layers: int = 2,
+        head_kernel_size: int = 3,
+        head_use_residual: bool = True,
     ) -> None:
         super().__init__()
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
         self.register_buffer("off_norm", torch.tensor(float(off_norm), dtype=torch.float32))
-        self.feature_refine = nn.Sequential(
-            nn.Conv1d(hidden_channels, hidden_channels, kernel_size=1),
-            nn.BatchNorm1d(hidden_channels),
-            nn.GELU(),
-            nn.Dropout(dropout),
-        )
+
+        n_local = int(head_local_layers)
+        self.head_use_residual = bool(head_use_residual) and n_local > 0
+        if n_local <= 0:
+            # Legacy pointwise refine (no local temporal context).
+            self.local_decoder = nn.Sequential(
+                nn.Conv1d(hidden_channels, hidden_channels, kernel_size=1),
+                nn.BatchNorm1d(hidden_channels),
+                nn.GELU(),
+            )
+        else:
+            k = int(head_kernel_size)
+            if k < 1 or k % 2 == 0:
+                raise ValueError(f"head_kernel_size must be odd positive, got {k}")
+            blocks: list[nn.Module] = []
+            for _ in range(n_local):
+                blocks.extend(
+                    [
+                        nn.Conv1d(
+                            hidden_channels,
+                            hidden_channels,
+                            kernel_size=k,
+                            padding=k // 2,
+                        ),
+                        nn.BatchNorm1d(hidden_channels),
+                        nn.GELU(),
+                    ]
+                )
+            self.local_decoder = nn.Sequential(*blocks)
+
+        self.dropout = nn.Dropout(dropout)
         self.power_head = nn.Conv1d(hidden_channels, 1, kernel_size=1)
         self.state_head = nn.Conv1d(hidden_channels, 1, kernel_size=1)
 
     def forward(self, shared_features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        features = self.feature_refine(shared_features)
+        features = self.local_decoder(shared_features)
+        if self.head_use_residual:
+            features = features + shared_features
+        features = self.dropout(features)
         power_raw = self.power_head(features)
         state_logits = self.state_head(features)
 
@@ -272,9 +306,9 @@ class MultiNILM(nn.Module):
             Output: (B, hidden_channels, output_length)
 
         5. appliance_heads (one per appliance)
-            Each head has its own power + state 1x1 conv decoders.
-            Outputs are concatenated back to:
-            (B, output_length, num_appliances)
+            Optional local temporal decoder (k=3 x N) + residual, then
+            1x1 power/state heads with state-gated power.
+            Outputs: (B, output_length, num_appliances)
 
     Notes:
         - Shared TCN learns aggregate patterns once.
@@ -298,6 +332,9 @@ class MultiNILM(nn.Module):
         gate_threshold: float = 0.5,
         appliance_off_norm: list[float] | None = None,
         domain_feature_layers: list[str] | None = None,
+        head_local_layers: int = 2,
+        head_kernel_size: int = 3,
+        head_use_residual: bool = True,
     ) -> None:
         super().__init__()
 
@@ -365,6 +402,9 @@ class MultiNILM(nn.Module):
                     gate_mode=self.gate_mode,
                     gate_threshold=self.gate_threshold,
                     off_norm=off_norms[app_i],
+                    head_local_layers=int(head_local_layers),
+                    head_kernel_size=int(head_kernel_size),
+                    head_use_residual=bool(head_use_residual),
                 )
                 for app_i in range(self.num_appliances)
             ]
@@ -590,6 +630,10 @@ class MultiNILMConfig:
     # soft | hard | soft_train_hard_eval (train soft, val/test/plots hard)
     gate_mode: str = "soft_train_hard_eval"
     gate_threshold: float = 0.5
+    # Per-appliance local temporal decoder (0 = legacy 1x1 refine only).
+    head_local_layers: int = 2
+    head_kernel_size: int = 3
+    head_use_residual: bool = True
     # Which encoder maps to expose for MMD/CORAL (Lin-style layer select).
     # Default ["aligned"] = after temporal encoder + time align, before heads.
     domain_feature_layers: list[str] = field(default_factory=lambda: ["aligned"])
@@ -611,6 +655,9 @@ def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
         dropout=float(architecture.get("dropout", 0.1)),
         gate_mode=str(architecture.get("gate_mode", "soft_train_hard_eval")),
         gate_threshold=float(architecture.get("gate_threshold", 0.5)),
+        head_local_layers=int(architecture.get("head_local_layers", 2)),
+        head_kernel_size=int(architecture.get("head_kernel_size", 3)),
+        head_use_residual=bool(architecture.get("head_use_residual", True)),
         domain_feature_layers=normalize_domain_feature_layers(
             architecture.get("domain_feature_layers")
         ),

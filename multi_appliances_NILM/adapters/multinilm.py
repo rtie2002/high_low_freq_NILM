@@ -81,6 +81,9 @@ class MultiNILMAdapter(BaseNILMAdapter):
             gate_threshold=cfg.gate_threshold,
             appliance_off_norm=off_norms,
             domain_feature_layers=cfg.domain_feature_layers,
+            head_local_layers=cfg.head_local_layers,
+            head_kernel_size=cfg.head_kernel_size,
+            head_use_residual=cfg.head_use_residual,
         )
 
         # Move model to GPU if available, otherwise CPU.

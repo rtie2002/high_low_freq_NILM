@@ -32,6 +32,11 @@ architecture:
   # soft_train_hard_eval: soft in train, hard in val/test/plots.
   gate_mode: hard
   gate_threshold: 0.5
+  # Per-appliance local temporal decoder (redraw short spikes/edges before 1x1 heads).
+  # 0 = old 1x1-only refine. 2 x k=3 + residual is the recommended start.
+  head_local_layers: 2
+  head_kernel_size: 3
+  head_use_residual: true
 
   # Layers to expose for MMD/CORAL (Lin-style select). Default = after temporal+align.
   # Options: stem | temporal | aligned | temporal_0 .. temporal_{num_blocks-1}
