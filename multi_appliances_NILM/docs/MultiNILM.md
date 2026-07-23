@@ -172,6 +172,8 @@ flowchart TB
 
 Defined in `model/MultiNILM_loss.py` (paper-style multitask loss, equation 16).
 
+**Power ↔ state equal weighting:** see [`multinilm_task_loss_balance.md`](multinilm_task_loss_balance.md).
+
 ### Per-appliance terms
 
 For each appliance \(i\):
@@ -190,17 +192,41 @@ L_{\text{state}}^{i} = \text{BCEWithLogits}\!\left(\hat{o}_{b,t}^{i},\; z_{b,t}^
 
 with optional per-appliance `pos_weight` for imbalanced ON/OFF labels.
 
-### Total loss
+### Total supervised loss (\(L_{\text{NILM}}\))
+
+Raw sums:
 
 \[
-L = \sum_{i=1}^{A} L_{\text{power}}^{i} + \lambda_{\text{state}} \sum_{i=1}^{A} L_{\text{state}}^{i}
+L_{\text{power}} = \sum_{i=1}^{A} L_{\text{power}}^{i},\qquad
+L_{\text{state}} = \sum_{i=1}^{A} L_{\text{state}}^{i}
+\]
+
+**Default (`task_balance: equal`)** — magnitudes matched so `lambda_state: 1` means equal weight:
+
+\[
+L_{\text{NILM}}
+=
+L_{\text{power}}
++
+\lambda_{\text{state}}
+\cdot
+L_{\text{state}}
+\cdot
+\left(\frac{L_{\text{power}}}{L_{\text{state}}}\right)_{\text{stop-grad}}
+\]
+
+**Legacy (`task_balance: none`)**:
+
+\[
+L_{\text{NILM}} = L_{\text{power}} + \lambda_{\text{state}} \cdot L_{\text{state}}
 \]
 
 Default from `multinilm.yaml`:
 
 | Setting | Value |
 |---------|-------|
-| `lambda_state` | 1.0 |
+| `task_balance` | `equal` |
+| `lambda_state` | 1.0 (equal power ↔ state when `task_balance: equal`) |
 | `pos_weight` | `auto` (computed from training ON rates: \((1-p)/p\) per appliance) |
 
 Power and state targets are **z-score normalized** appliance power and threshold-based ON/OFF labels from the experiment YAML (`state_label_source: threshold`).

@@ -309,6 +309,13 @@ def _format_epoch_summary(
         header,
         f"  train   loss={float(train_logs['loss']):.4f}",
     ]
+    if "loss_power" in train_logs and "loss_state" in train_logs:
+        state_term = float(train_logs.get("loss_state_term", train_logs["loss_state"]))
+        lines.append(
+            f"  nilm    power={float(train_logs['loss_power']):.4f}"
+            f"  |  state_raw={float(train_logs['loss_state']):.4f}"
+            f"  |  state_term={state_term:.4f}"
+        )
 
     if da_active and "loss_domain" in train_logs:
         method = str(domain_method).lower()

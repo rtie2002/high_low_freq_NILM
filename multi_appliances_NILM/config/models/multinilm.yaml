@@ -35,7 +35,10 @@ architecture:
   domain_feature_layers: [aligned]
 
 loss:
-  lambda_state: 1
+  # equal = auto-match power/state magnitudes so lambda_state=1 means equal weight.
+  # none  = old behavior: L = L_power + lambda_state * L_state (must tune lambda).
+  task_balance: equal
+  lambda_state: 1          # with task_balance=equal, 1 = equal power ↔ state
   pos_weight: auto
   # Domain adaptation (Lin et al. IEEE TSG 2022).
   # coral | mmd | both  — paper Eq.(12) uses both with μ=0.4

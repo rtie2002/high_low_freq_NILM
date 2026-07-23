@@ -91,10 +91,11 @@ class MultiNILMAdapter(BaseNILMAdapter):
         loss_cfg = self.model_cfg.get("loss", {})
 
         # Create loss:
-        #   total_loss = MSE(power) + lambda_state * BCEWithLogits(state)
+        #   L_NILM = L_power + balanced(L_state); see task_balance in yaml
         return MultiNILMLoss(
-            # Weight of ON/OFF classification loss.
+            # Preference on state vs power after optional equal-balance (1 = equal).
             lambda_state=float(loss_cfg.get("lambda_state", 0.1)),
+            task_balance=str(loss_cfg.get("task_balance", "none")),
 
             # Auto-balance rare ON timesteps when pos_weight is null/auto.
             pos_weight=_resolve_pos_weight(self, loss_cfg),
@@ -183,6 +184,7 @@ class MultiNILMAdapter(BaseNILMAdapter):
                 "loss": float(out.loss.detach()),
                 "loss_power": float(out.loss_power.detach()),
                 "loss_state": float(out.loss_state.detach()),
+                "loss_state_term": float(out.loss_state_term.detach()),
                 "loss_domain": float(out.loss_domain.detach()),
                 "mae": float(out.mae.detach()),
                 **app_logs,
