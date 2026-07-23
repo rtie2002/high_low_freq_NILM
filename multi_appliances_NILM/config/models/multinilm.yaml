@@ -60,12 +60,11 @@ loss:
   domain_method: both
   domain_mu: 0.4          # paper μ=0.4 → L_domain = μ·MMD² + (1-μ)·CORAL
   # Paper mixes as L=(1-λ)L_R + λ L_domain with best λ=0.6 → domain_mix: convex
-  # With domain_scale=equal, λ=0.6 overweighted DA (val F1 dropped); use 0.4 as balance.
   # additive = legacy L=L_NILM + λ L_domain (DA often too weak if L_domain << L_NILM).
   domain_mix: convex
   # none = use raw L_domain (often << L_NILM). equal = rescale to L_NILM so λ is meaningful.
   domain_scale: equal
-  lambda_domain: 0.4
+  lambda_domain: 0.6
   # mmd_sigma: auto       # optional fixed RBF bandwidth; omit/auto = median heuristic
 
 # Lin-style unsupervised DA: source = train (H1+H5), target aggregates only.
