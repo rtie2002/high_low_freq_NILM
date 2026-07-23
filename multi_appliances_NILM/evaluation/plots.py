@@ -396,8 +396,8 @@ def plot_training_history(
     output_path: str | Path,
     *,
     epoch_col: str = "epoch",
-    loss_cols: Iterable[str] = ("train_loss", "val_loss"),
-    component_cols: Iterable[str] = ("val_loss_state", "val_loss_power"),
+    loss_cols: Iterable[str] = ("train_loss_nilm", "val_loss_nilm", "train_loss", "val_loss"),
+    component_cols: Iterable[str] = (),
     title: str = "Training Loss",
     best_epoch: int | None = None,
     figsize: float = 5.5,
@@ -407,14 +407,29 @@ def plot_training_history(
         history = pd.read_csv(history)
 
     x = history[epoch_col] if epoch_col in history else np.arange(len(history))
-    loss_cols = [c for c in loss_cols if c in history.columns]
+    # Prefer same-scale NILM curves; fall back to total train/val if older CSV.
+    preferred = [c for c in ("train_loss_nilm", "val_loss_nilm") if c in history.columns]
+    if len(preferred) >= 2:
+        loss_cols = list(preferred)
+        if "train_loss" in history.columns and not history["train_loss"].isna().all():
+            # Optional: show DA-inflated train total as dashed reference later via label.
+            loss_cols = preferred + ["train_loss"]
+    else:
+        loss_cols = [c for c in ("train_loss", "val_loss") if c in history.columns]
     component_cols = [c for c in component_cols if c in history.columns and not history[c].isna().all()]
 
     fig, ax = plt.subplots(1, 1, figsize=(figsize, figsize))
     ax.set_box_aspect(1)
 
+    style = {
+        "train_loss_nilm": ("-", 1.8, "train L_NILM"),
+        "val_loss_nilm": ("-", 1.8, "val L_NILM"),
+        "train_loss": ("--", 1.2, "train L_total (+DA)"),
+        "val_loss": ("-", 1.6, "val loss"),
+    }
     for col in loss_cols:
-        ax.plot(x, history[col], marker="o", markersize=3, linewidth=1.6, label=col)
+        ls, lw, label = style.get(col, ("-", 1.6, col))
+        ax.plot(x, history[col], marker="o", markersize=3, linewidth=lw, linestyle=ls, label=label)
     for col in component_cols:
         ax.plot(x, history[col], marker="s", markersize=2, linewidth=1.2, linestyle="--", label=col)
     if best_epoch is not None and best_epoch > 0:
@@ -463,24 +478,33 @@ def plot_loss_components(
     x = loss_detail[epoch_col] if epoch_col in loss_detail else np.arange(len(loss_detail))
 
     panels: list[tuple[str, list[tuple[str, str]]]] = [
-        ("Total loss", [("train_loss", "train"), ("val_loss", "val")]),
+        (
+            "L_NILM (same scale, no DA)",
+            [
+                ("train_loss_nilm", "train L_NILM"),
+                ("val_loss_nilm", "val L_NILM"),
+                ("train_loss", "train L_total (+DA)"),
+            ],
+        ),
         (
             "Power + shape",
             [
                 ("train_loss_power", "train MSE"),
-                ("train_loss_shape_term", "train shape term"),
                 ("val_loss_power", "val MSE"),
+                ("train_loss_shape_term", "train shape term"),
+                ("val_loss_shape_term", "val shape term"),
             ],
         ),
         (
             "State (BCE)",
             [
-                ("train_loss_state", "train raw"),
                 ("train_loss_state_term", "train term"),
+                ("val_loss_state_term", "val term"),
+                ("train_loss_state", "train raw"),
                 ("val_loss_state", "val raw"),
             ],
         ),
-        ("Domain", [("train_loss_domain", "train L_domain")]),
+        ("Domain (train only)", [("train_loss_domain", "train L_domain")]),
     ]
 
     # 2×2 grid; each cell ≈ old single-figure size (figsize × figsize).

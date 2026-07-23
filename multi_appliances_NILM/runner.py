@@ -275,6 +275,7 @@ def _format_epoch_summary(
     epoch_no: int,
     epochs: int,
     train_logs: dict[str, float],
+    val_logs: dict[str, float] | None = None,
     val_loss: float,
     val_f1: float,
     val_acc: float,
@@ -289,67 +290,112 @@ def _format_epoch_summary(
     domain_method: str = "coral",
     domain_mu: float = 0.4,
 ) -> str:
-    """Multi-line epoch report for tidy console logging.
+    """Professional multi-line epoch report.
 
-    Example (DA on, paper Eq. 12)::
-
-        Epoch   4/200  * best
-          train   loss=4.7512
-          domain  loss_domain=0.0732  |  lambda=0.6  |  both (mu=0.4 MMD+CORAL)
-          val     loss=4.7835   f1=0.2533   acc=0.7203   mae=56.10
-          meta    ckpt=0.0123 (normalized mae-f1)  |  2s (train 1s, val 0s)
-
-    When DA is off, the ``domain`` line is omitted.
+    Sections
+    --------
+    1) Train objective — scalars that enter backprop (L_total)
+    2) Train breakdown — raw components vs terms after balance / lambda
+    3) Validation — same L_NILM balance as train, no domain; plus F1/Acc/MAE
+    4) Checkpoint / timing
     """
     header = f"Epoch {epoch_no:>3}/{epochs}"
     if improved:
         header = f"{header}  * best"
 
+    def _parts(logs: dict[str, float]) -> tuple[float, float, float, float, float, float]:
+        power = float(logs.get("loss_power", float("nan")))
+        state_raw = float(logs.get("loss_state", float("nan")))
+        state_term = float(logs.get("loss_state_term", state_raw))
+        shape_raw = float(logs.get("loss_shape", 0.0))
+        shape_term = float(logs.get("loss_shape_term", 0.0))
+        nilm = power + state_term + shape_term
+        if power != power:
+            nilm = float("nan")
+        return power, state_raw, state_term, shape_raw, shape_term, nilm
+
+    l_total = float(train_logs.get("loss", float("nan")))
+    l_power, l_state_raw, l_state_term, l_shape_raw, l_shape_term, l_nilm = _parts(train_logs)
+    l_dom_raw = float(train_logs.get("loss_domain", 0.0))
+    l_dom_term = float(lambda_domain) * l_dom_raw if da_active else 0.0
+
+    val_logs = val_logs or {}
+    val_power, val_state_raw, val_state_term, val_shape_raw, val_shape_term, val_nilm = _parts(
+        val_logs
+    )
+    if val_nilm != val_nilm:
+        val_nilm = float(val_loss)
+
     lines = [
         header,
-        f"  train   loss={float(train_logs['loss']):.4f}",
+        "  -- train objective (used for backprop) --",
+        f"  L_total     {l_total:.4f}   = L_NILM + lambda*L_domain",
+        f"  L_NILM      {l_nilm:.4f}   = power + state_term"
+        + (" + shape_term" if l_shape_term > 0 or l_shape_raw > 0 else ""),
     ]
-    if "loss_power" in train_logs and "loss_state" in train_logs:
-        state_term = float(train_logs.get("loss_state_term", train_logs["loss_state"]))
+
+    lines.append("  -- train components (raw -> into L) --")
+    if "loss_power" in train_logs:
         lines.append(
-            f"  nilm    power={float(train_logs['loss_power']):.4f}"
-            f"  |  state_raw={float(train_logs['loss_state']):.4f}"
-            f"  |  state_term={state_term:.4f}"
+            f"  power       raw={l_power:.4f}   -> {l_power:.4f}   (level MSE)"
+        )
+    if "loss_state" in train_logs:
+        lines.append(
+            f"  state       raw={l_state_raw:.4f}   -> {l_state_term:.4f}   (BCE, balanced)"
+        )
+    if "loss_shape" in train_logs and (l_shape_term > 0 or l_shape_raw > 0):
+        lines.append(
+            f"  shape       raw={l_shape_raw:.4f}   -> {l_shape_term:.4f}   (slope MSE, balanced)"
         )
 
     if da_active and "loss_domain" in train_logs:
         method = str(domain_method).lower()
         if method == "both":
-            method_label = f"both (mu={domain_mu:g} MMD+CORAL)"
+            method_label = f"MMD+CORAL mu={domain_mu:g}"
         elif method == "mmd":
-            method_label = "mmd"
+            method_label = "MMD"
         else:
-            method_label = "coral"
-        # loss_domain = L_domain from paper Eq.(12); total uses lambda * L_domain
-        l_dom = float(train_logs["loss_domain"])
+            method_label = "CORAL"
         lines.append(
-            f"  domain  loss_domain={l_dom:.4f}"
-            f"  |  lambda*L_dom={lambda_domain * l_dom:.4f}"
-            f"  |  lambda={lambda_domain:g}"
-            f"  |  {method_label}"
+            f"  domain      raw={l_dom_raw:.4f}   -> {l_dom_term:.4f}   "
+            f"(lambda={lambda_domain:g} * raw, {method_label})"
         )
+    else:
+        lines.append("  domain      (off)")
 
+    lines.append("  -- validation (same L_NILM scale, no DA) --")
     lines.append(
-        f"  val     loss={val_loss:.4f}"
-        f"   f1={val_f1:.4f}"
-        f"   acc={val_acc:.4f}"
-        f"   mae={val_mae:.2f}"
+        f"  L_NILM      {val_nilm:.4f}   = power + state_term"
+        + (" + shape_term" if val_shape_term > 0 or val_shape_raw > 0 else "")
+    )
+    if val_power == val_power:
+        lines.append(
+            f"  power       raw={val_power:.4f}   -> {val_power:.4f}   (level MSE)"
+        )
+    if val_state_raw == val_state_raw:
+        lines.append(
+            f"  state       raw={val_state_raw:.4f}   -> {val_state_term:.4f}   (BCE, balanced)"
+        )
+    if val_shape_term > 0 or val_shape_raw > 0:
+        lines.append(
+            f"  shape       raw={val_shape_raw:.4f}   -> {val_shape_term:.4f}   (slope MSE, balanced)"
+        )
+    lines.append(
+        f"  metrics     F1={val_f1:.4f}   Acc={val_acc:.4f}   MAE={val_mae:.2f} W"
     )
 
     epoch_time_sec = train_time_sec + val_time_sec
-    ckpt_label = f"ckpt={ckpt_score:.4f}"
+    ckpt_bits = f"score={ckpt_score:.4f}"
     if ckpt_detail:
-        ckpt_label = f"{ckpt_label} ({ckpt_detail})"
-    lines.append(
-        f"  meta    {ckpt_label}"
-        f"  |  {_format_duration(epoch_time_sec)}"
-        f" (train {_format_duration(train_time_sec)},"
-        f" val {_format_duration(val_time_sec)})"
+        ckpt_bits = f"{ckpt_bits}  ({ckpt_detail})"
+    lines.extend(
+        [
+            "  -- checkpoint / time --",
+            f"  {ckpt_bits}",
+            f"  time={_format_duration(epoch_time_sec)}"
+            f"  (train {_format_duration(train_time_sec)},"
+            f" val {_format_duration(val_time_sec)})",
+        ]
     )
     return "\n".join(lines)
 
@@ -1348,6 +1394,7 @@ def train_model(
                     epoch_no=epoch_no,
                     epochs=epochs,
                     train_logs=train_logs,
+                    val_logs=val_logs,
                     val_loss=val_loss,
                     val_f1=val_f1,
                     val_acc=val_acc,

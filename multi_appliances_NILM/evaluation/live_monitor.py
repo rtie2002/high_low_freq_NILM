@@ -125,17 +125,37 @@ class LiveTrainingMonitor:
             "val_time_sec": val_time_sec,
             "epoch_time_sec": epoch_time_sec,
         }
+
+        # Same-scale NILM objective: power + balanced state (+ shape). No domain.
+        def _nilm_objective(logs: dict[str, float]) -> float:
+            p = float(logs.get("loss_power", float("nan")))
+            s = float(logs.get("loss_state_term", logs.get("loss_state", float("nan"))))
+            sh = float(logs.get("loss_shape_term", 0.0))
+            if p != p or s != s:
+                return float("nan")
+            return p + s + (sh if sh == sh else 0.0)
+
+        train_nilm = _nilm_objective(train_logs)
+        val_nilm = _nilm_objective(val_logs)
+        history_row["train_loss_nilm"] = train_nilm
+        history_row["val_loss_nilm"] = val_nilm
+
         loss_row = {
             "epoch": epoch,
             "train_loss": train_logs.get("loss", float("nan")),
             "val_loss": val_logs.get("loss", float("nan")),
+            "train_loss_nilm": train_nilm,
+            "val_loss_nilm": val_nilm,
             "train_loss_state": train_logs.get("loss_state", float("nan")),
             "val_loss_state": val_logs.get("loss_state", float("nan")),
             "train_loss_power": train_logs.get("loss_power", float("nan")),
             "val_loss_power": val_logs.get("loss_power", float("nan")),
             "train_loss_state_term": train_logs.get("loss_state_term", float("nan")),
+            "val_loss_state_term": val_logs.get("loss_state_term", float("nan")),
             "train_loss_shape": train_logs.get("loss_shape", float("nan")),
+            "val_loss_shape": val_logs.get("loss_shape", float("nan")),
             "train_loss_shape_term": train_logs.get("loss_shape_term", float("nan")),
+            "val_loss_shape_term": val_logs.get("loss_shape_term", float("nan")),
             "train_loss_domain": train_logs.get("loss_domain", float("nan")),
         }
         for key, value in train_logs.items():
@@ -149,7 +169,13 @@ class LiveTrainingMonitor:
             ):
                 loss_row[f"train_{key}"] = value
         for key, value in val_logs.items():
-            if key.startswith("loss_") and key not in ("loss_state", "loss_power"):
+            if key.startswith("loss_") and key not in (
+                "loss_state",
+                "loss_power",
+                "loss_state_term",
+                "loss_shape",
+                "loss_shape_term",
+            ):
                 loss_row[f"val_{key}"] = value
         self._write_csv_row(history_row, self.history_path, "_history_file", "_history_writer")
         self._write_csv_row(loss_row, self.loss_detail_path, "_loss_file", "_loss_writer")
