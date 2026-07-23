@@ -27,8 +27,12 @@ architecture:
   num_blocks: 6
   kernel_size: 5
   dropout: 0.12
-  gate_mode: soft
+  # soft | hard | soft_train_hard_eval
+  # hard: binary 0/1 gate always (STE in train so gradients still flow). soft: smooth σ.
+  # soft_train_hard_eval: soft in train, hard in val/test/plots.
+  gate_mode: hard
   gate_threshold: 0.5
+
   # Layers to expose for MMD/CORAL (Lin-style select). Default = after temporal+align.
   # Options: stem | temporal | aligned | temporal_0 .. temporal_{num_blocks-1}
   # Example multi-layer (paper sums fc6–8): [temporal_3, temporal_5, aligned]

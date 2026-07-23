@@ -61,22 +61,49 @@ def state_gate(
     *,
     mode: str = "soft",
     threshold: float = 0.5,
+    training: bool = False,
 ) -> torch.Tensor:
     """Gate power by predicted ON probability (soft) or binary mask (hard).
 
-    Soft:  gate = sigmoid(logit) in (0, 1)
-    Hard:  gate = 1{sigmoid(logit) >= threshold}; straight-through estimator when training
+    Modes:
+      soft:
+        Always use σ(state) in (0, 1). Smooth edges (can blunt waveforms).
+      hard:
+        Binary 1{σ >= thr}. During training uses STE so gradients still flow
+        through soft probabilities; eval is pure hard.
+      soft_train_hard_eval (aliases: train_soft_eval_hard, soft_hard):
+        Soft while ``training=True`` (stable BCE+power gradients);
+        hard threshold while ``training=False`` (sharper val/test/plots).
     """
     gate_mode = str(mode or "soft").lower()
+    thr = float(threshold)
+
+    def _hard_mask() -> torch.Tensor:
+        return (state_prob >= thr).to(dtype=state_prob.dtype)
+
     if gate_mode in {"soft", "sigmoid", "prob", "probability"}:
         return state_prob
+
+    if gate_mode in {
+        "soft_train_hard_eval",
+        "train_soft_eval_hard",
+        "soft_hard",
+    }:
+        if training:
+            return state_prob
+        return _hard_mask()
+
     if gate_mode in {"hard", "binary", "threshold"}:
-        hard = (state_prob >= float(threshold)).to(dtype=state_prob.dtype)
-        if state_prob.requires_grad:
-            # Straight-through: forward hard mask, backward through soft probabilities.
+        hard = _hard_mask()
+        if training and state_prob.requires_grad:
+            # Straight-through: forward hard, backward through soft probs.
             return hard - state_prob.detach() + state_prob
         return hard
-    raise ValueError(f"gate_mode must be soft or hard, got {mode!r}")
+
+    raise ValueError(
+        "gate_mode must be soft | hard | soft_train_hard_eval, "
+        f"got {mode!r}"
+    )
 
 
 class ResidualTemporalBlock(nn.Module):
@@ -182,7 +209,7 @@ class ApplianceHead(nn.Module):
         hidden_channels: int,
         dropout: float,
         *,
-        gate_mode: str = "soft",
+        gate_mode: str = "soft_train_hard_eval",
         gate_threshold: float = 0.5,
         off_norm: float = 0.0,
     ) -> None:
@@ -210,6 +237,7 @@ class ApplianceHead(nn.Module):
             state_prob,
             mode=self.gate_mode,
             threshold=self.gate_threshold,
+            training=self.training,
         )
         # Blend ON power with the normalized OFF level (0 W -> -mean/std), not 0.
         # denorm(0) equals the dataset mean and causes constant watt spikes in plots.
@@ -266,7 +294,7 @@ class MultiNILM(nn.Module):
         num_blocks: int = 5,
         kernel_size: int = 5,
         dropout: float = 0.1,
-        gate_mode: str = "soft",
+        gate_mode: str = "soft_train_hard_eval",
         gate_threshold: float = 0.5,
         appliance_off_norm: list[float] | None = None,
         domain_feature_layers: list[str] | None = None,
@@ -559,7 +587,8 @@ class MultiNILMConfig:
     num_blocks: int = 5
     kernel_size: int = 5
     dropout: float = 0.1
-    gate_mode: str = "soft"
+    # soft | hard | soft_train_hard_eval (train soft, val/test/plots hard)
+    gate_mode: str = "soft_train_hard_eval"
     gate_threshold: float = 0.5
     # Which encoder maps to expose for MMD/CORAL (Lin-style layer select).
     # Default ["aligned"] = after temporal encoder + time align, before heads.
@@ -580,7 +609,7 @@ def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
         num_blocks=int(architecture.get("num_blocks", 5)),
         kernel_size=int(architecture.get("kernel_size", 5)),
         dropout=float(architecture.get("dropout", 0.1)),
-        gate_mode=str(architecture.get("gate_mode", "soft")),
+        gate_mode=str(architecture.get("gate_mode", "soft_train_hard_eval")),
         gate_threshold=float(architecture.get("gate_threshold", 0.5)),
         domain_feature_layers=normalize_domain_feature_layers(
             architecture.get("domain_feature_layers")

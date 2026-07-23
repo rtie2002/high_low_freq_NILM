@@ -82,7 +82,7 @@ CHANNEL_SCHEDULE_PRESETS: dict[str, list[int]] = {
     "16_32_64": [16, 32, 64],
     "32_64_128": [32, 64, 128],
 }
-GATE_MODE_CHOICES = ("soft", "hard")
+GATE_MODE_CHOICES = ("soft", "hard", "soft_train_hard_eval")
 # Small → large window sizes (timesteps).
 # With training_targets: full_input (multinilm.yaml), input and output MUST match.
 WINDOW_LENGTH_CHOICES = (128, 256, 480, 512, 864)
