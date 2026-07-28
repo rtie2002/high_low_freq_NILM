@@ -39,6 +39,7 @@ loss:
   # Lin: DA on from epoch 1 (no source-only warmup / no Hur PL)
   da_warmup_epochs: 0
   da_ramp_epochs: 0
+  da_freeze_patience: 0
   pl_weight: 0.0
   da_mode: egc
   domain_mu: 0.4

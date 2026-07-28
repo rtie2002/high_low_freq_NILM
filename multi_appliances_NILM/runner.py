@@ -1433,8 +1433,7 @@ def train_model(
                     da_freeze = True
                     tqdm.write(
                         f"  DA FREEZE: val state BCE rising for {patience} epochs "
-                        f"(now {vs:.4f}); lambda/pl set to 0 for remaining epochs.",
-                        flush=True,
+                        f"(now {vs:.4f}); lambda/pl set to 0 for remaining epochs."
                     )
 
             # 6c. Optional scheduler step after validation.
