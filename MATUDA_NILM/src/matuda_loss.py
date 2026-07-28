@@ -79,6 +79,23 @@ def prediction_entropy_weights(state_logits: torch.Tensor) -> torch.Tensor:
     return (1.0 - h_norm).clamp(0.05, 1.0)
 
 
+def _apply_sample_weights(
+    z: torch.Tensor, weights: Optional[torch.Tensor]
+) -> torch.Tensor:
+    """Scale L2-normalized rows by √w. Do **not** re-normalize afterward.
+
+    Weighting before L2-norm is a no-op (direction unchanged → unit vector again).
+    Weighting after L2-norm changes each sample's contribution to CORAL/MMD.
+    """
+    if weights is None:
+        return z
+    if weights.dim() != 1 or weights.size(0) != z.size(0):
+        raise ValueError(
+            f"sample weights must be (B,), got {tuple(weights.shape)} for Z {tuple(z.shape)}"
+        )
+    return z * weights.sqrt().unsqueeze(1)
+
+
 def multilayer_domain_loss(
     feats_s: Sequence[torch.Tensor],
     feats_t: Sequence[torch.Tensor],
@@ -87,17 +104,14 @@ def multilayer_domain_loss(
     weights_t: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
-    Mean hybrid MMD+CORAL over FC layers.
-    Optional sample weights: reweight by sqrt(w) before L2-norm (EGC-DA).
+    Hybrid MMD+CORAL summed over FC layers (Lin Eq. 12).
+    Optional EGC sample weights: L2-normalize first, then scale by √w (no re-norm).
     """
     assert len(feats_s) == len(feats_t) and len(feats_s) > 0
     total = feats_s[0].new_zeros(())
     for zs, zt in zip(feats_s, feats_t):
-        if weights_s is not None:
-            zs = zs * weights_s.sqrt().unsqueeze(1)
-        if weights_t is not None:
-            zt = zt * weights_t.sqrt().unsqueeze(1)
-        zs_n, zt_n = _l2_normalize(zs), _l2_normalize(zt)
+        zs_n = _apply_sample_weights(_l2_normalize(zs), weights_s)
+        zt_n = _apply_sample_weights(_l2_normalize(zt), weights_t)
         total = total + mu * mmd_rbf(zs_n, zt_n) + (1.0 - mu) * coral_loss(zs_n, zt_n)
     # Lin Eq. 12: sum over layers (not mean).
     return total
@@ -120,6 +134,9 @@ def conditional_appliance_domain_loss(
     z_t = _l2_normalize(feats_t[-1])
     p_s = torch.sigmoid(state_logits_s).detach()
     p_t = torch.sigmoid(state_logits_t).detach()
+    if p_s.dim() == 3:
+        p_s = p_s.mean(dim=1)
+        p_t = p_t.mean(dim=1)
     k = p_s.size(1)
     total = z_s.new_zeros(())
     used = 0
@@ -127,8 +144,8 @@ def conditional_appliance_domain_loss(
         ws, wt = p_s[:, a], p_t[:, a]
         if float(ws.sum()) < min_mass or float(wt.sum()) < min_mass:
             continue
-        zs = _l2_normalize(z_s * ws.sqrt().unsqueeze(1))
-        zt = _l2_normalize(z_t * wt.sqrt().unsqueeze(1))
+        zs = _apply_sample_weights(z_s, ws)
+        zt = _apply_sample_weights(z_t, wt)
         total = total + mu * mmd_rbf(zs, zt) + (1.0 - mu) * coral_loss(zs, zt)
         used += 1
     if used == 0:
