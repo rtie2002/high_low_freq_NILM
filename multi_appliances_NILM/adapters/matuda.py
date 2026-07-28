@@ -83,6 +83,8 @@ class MATUDAAdapter(BaseNILMAdapter):
             domain_scale=str(loss_cfg.get("domain_scale", "equal")),
             conditional_weight=float(loss_cfg.get("conditional_weight", 0.5)),
             on_masked_power=bool(loss_cfg.get("on_masked_power", True)),
+            pl_weight=float(loss_cfg.get("pl_weight", 0.0)),
+            pl_confidence=float(loss_cfg.get("pl_confidence", 0.9)),
         )
 
     def step(
@@ -97,15 +99,17 @@ class MATUDAAdapter(BaseNILMAdapter):
         y = y.float()
         x = _batch_x_to_matuda(x)
 
-        use_domain = (
-            target_batch is not None
-            and float(getattr(loss_fn, "lambda_domain", 0.0)) != 0.0
-            and str(getattr(loss_fn, "da_mode", "none")) != "none"
+        need_target = target_batch is not None and (
+            (
+                float(getattr(loss_fn, "lambda_domain", 0.0)) != 0.0
+                and str(getattr(loss_fn, "da_mode", "none")) != "none"
+            )
+            or float(getattr(loss_fn, "pl_weight", 0.0)) > 0.0
         )
 
         out_s = model(x)
         out_t = None
-        if use_domain:
+        if need_target:
             x_t = target_batch[0] if isinstance(target_batch, (tuple, list)) else target_batch
             x_t = _batch_x_to_matuda(x_t)
             out_t = model(x_t)
@@ -129,6 +133,7 @@ class MATUDAAdapter(BaseNILMAdapter):
                 "loss_domain": float(losses["loss_domain"].detach()),
                 "loss_domain_term": float(losses["loss_domain"].detach())
                 * float(losses.get("lambda", 0.0) or 0.0),
+                "loss_pl": float(losses.get("loss_pl", losses["loss"].new_zeros(())).detach()),
                 "mae": float(mae.detach()),
             },
             aux={
@@ -163,9 +168,10 @@ class MATUDAAdapter(BaseNILMAdapter):
             out = model(x)
             power_pred = out["powers"]
             state_prob = torch.sigmoid(out["state_logits"])
+            state_bin = (state_prob >= 0.5).float()
             # Shapes (B, A) -> (B, 1, A) so finalize reshape matches out_len=1.
             pred_power.append(_to_numpy(power_pred)[:, None, :])
-            pred_state.append(_to_numpy(state_prob)[:, None, :])
+            pred_state.append(_to_numpy(state_bin)[:, None, :])
             true_power.append(y.numpy()[:, None, :] if y.dim() == 2 else y.numpy())
             true_state.append(z.numpy()[:, None, :] if z.dim() == 2 else z.numpy())
             sample_indices.append(self._sample_index(offset, len(x)))

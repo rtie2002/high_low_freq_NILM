@@ -1318,9 +1318,31 @@ def train_model(
         #   7f. live plots
         #   7g. best checkpoint save
         #   7h. optional early stopping
+        # Hur-style 2-stage: source-only warmup, then DA (+ optional PL).
+        da_warmup_epochs = int(
+            adapter.model_cfg.get("loss", {}).get("da_warmup_epochs", 0)
+        )
+        pl_weight_cfg = float(adapter.model_cfg.get("loss", {}).get("pl_weight", 0.0))
+        if da_warmup_epochs > 0 and da_active:
+            print(
+                f"DA warmup: first {da_warmup_epochs} epochs are source-only "
+                f"(lambda=0, pl=0); then lambda={da_lambda:g}, pl={pl_weight_cfg:g}.",
+                flush=True,
+            )
+
         for epoch in range(epochs):
             epoch_no = epoch + 1
             epoch_tag = f"Epoch {epoch_no}/{epochs}"
+
+            if hasattr(loss_fn, "lambda_domain"):
+                if da_warmup_epochs > 0 and epoch < da_warmup_epochs:
+                    loss_fn.lambda_domain = 0.0
+                    if hasattr(loss_fn, "pl_weight"):
+                        loss_fn.pl_weight = 0.0
+                else:
+                    loss_fn.lambda_domain = float(da_lambda)
+                    if hasattr(loss_fn, "pl_weight"):
+                        loss_fn.pl_weight = float(pl_weight_cfg)
 
             # 6a. Training epoch
             # This is where model weights are updated.

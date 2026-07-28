@@ -163,6 +163,8 @@ class MATUDACriterion(nn.Module):
         domain_scale: str = "equal",
         conditional_weight: float = 0.5,
         on_masked_power: bool = True,
+        pl_weight: float = 0.0,
+        pl_confidence: float = 0.9,
     ):
         super().__init__()
         self.lambda_domain = lambda_domain
@@ -174,6 +176,8 @@ class MATUDACriterion(nn.Module):
         self.domain_scale = domain_scale
         self.conditional_weight = conditional_weight
         self.on_masked_power = bool(on_masked_power)
+        self.pl_weight = float(pl_weight)
+        self.pl_confidence = float(pl_confidence)
         if pos_weight is not None:
             self.register_buffer("pos_weight", pos_weight.float())
         else:
@@ -255,6 +259,19 @@ class MATUDACriterion(nn.Module):
         alpha = self.conditional_weight
         return (1.0 - alpha) * l_global + alpha * l_cond
 
+    def _pseudo_label_state(self, out_t: dict) -> torch.Tensor:
+        """Hur et al. (Sensors 2022): confident target multi-label pseudo-labels."""
+        logits = out_t["state_logits"]
+        p = torch.sigmoid(logits).clamp(1e-6, 1 - 1e-6)
+        conf = torch.maximum(p, 1.0 - p)
+        mask = conf >= self.pl_confidence
+        if not bool(mask.any()):
+            return logits.new_zeros(())
+        pl = (p >= 0.5).float()
+        # stop-grad on hard labels
+        loss = F.binary_cross_entropy_with_logits(logits, pl.detach(), reduction="none")
+        return (loss * mask.float()).sum() / mask.float().sum().clamp_min(1.0)
+
     def forward(
         self,
         out_s: dict,
@@ -268,11 +285,17 @@ class MATUDACriterion(nn.Module):
         )
         lam = self.lambda_domain if lambda_override is None else float(lambda_override)
 
+        l_pl = l_sup.new_zeros(())
+        if out_t is not None and self.pl_weight > 0:
+            l_pl = self._pseudo_label_state(out_t)
+
         if out_t is None or lam <= 0 or self.da_mode == "none":
+            total = l_sup + self.pl_weight * l_pl
             return {
-                "loss": l_sup,
+                "loss": total,
                 "loss_sup": l_sup.detach(),
                 "loss_domain": l_sup.new_zeros(()),
+                "loss_pl": l_pl.detach(),
                 "lambda": 0.0,
             }
 
@@ -288,10 +311,12 @@ class MATUDACriterion(nn.Module):
             total = (1.0 - lam) * l_sup + lam * l_dom_term
         else:
             total = l_sup + lam * l_dom_term
+        total = total + self.pl_weight * l_pl
 
         return {
             "loss": total,
             "loss_sup": l_sup.detach(),
             "loss_domain": l_dom.detach(),
+            "loss_pl": l_pl.detach(),
             "lambda": lam,
         }

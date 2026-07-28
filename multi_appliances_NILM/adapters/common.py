@@ -368,8 +368,18 @@ class BaseNILMAdapter(AdapterDataMixin):
         else:
             y_pred = power_windows.reshape(-1, len(appliances))
             y_true = true_power_windows.reshape(-1, len(appliances))
-            z_pred = state_windows.reshape(-1, len(appliances))
-            z_true = true_state_windows.reshape(-1, len(appliances))
+            # State windows may be probabilities (MultiNILM/MATUDA) or already binary.
+            # Casting floats in (0,1) to int32 truncates to 0 and destroys F1 — threshold first.
+            z_pred_raw = state_windows.reshape(-1, len(appliances))
+            z_true_raw = true_state_windows.reshape(-1, len(appliances))
+            if np.issubdtype(z_pred_raw.dtype, np.floating) and float(np.nanmax(z_pred_raw)) <= 1.0 + 1e-6:
+                z_pred = (z_pred_raw >= 0.5).astype(np.int32)
+            else:
+                z_pred = z_pred_raw.astype(np.int32)
+            if np.issubdtype(z_true_raw.dtype, np.floating) and float(np.nanmax(np.abs(z_true_raw))) <= 1.0 + 1e-6:
+                z_true = (z_true_raw >= 0.5).astype(np.int32)
+            else:
+                z_true = z_true_raw.astype(np.int32)
             csv_timesteps = loader.window_output_timesteps(split_key, len(y_true))
 
         y_pred = loader.denorm_to_watts(y_pred)

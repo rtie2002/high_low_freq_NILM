@@ -11,19 +11,19 @@
   3. Per-app P/R/F1/MAE/SAE reported; dishwasher failure analyzed if F1=0
   4. Then: 3 seeds mean±std, then MultiNILM-DA / transfer baselines, then cross-dataset
 
-## Run order (auto loop)
-1. Current v1 EGC (already running) — finish for reference
-2. **v2 EGC** (`matuda_v2.yaml`): OFF-norm gate + ON-masked MSE + stronger state weight
-3. Source-Only (same backbone)
-4. Global FC-UDA (same backbone)
-5. Scoreboard → keep or redesign
+## Critical eval bug (fixed)
+Pipeline `eval_reconstruction: flat` cast state probabilities with `astype(int32)` → all zeros → reported H2 F1=0 while training `val_f1` looked OK. Fixed in `adapters/common.py` (threshold before cast) and MATUDA `predict_dataloader` (binary ON).
 
-## Model improvements already applied for v2
-- Power gate blends to z-score OFF-norm (fixes constant mean-W when OFF)
-- ON-masked power MSE (align regression with events)
-- `state_weight: 1.5` for better detection under imbalance
+## Run order
+1. Re-eval v1 `best.pt` with fixed metrics
+2. **v3** (`matuda_v3.yaml`): Hur 2-stage (30-ep source-only warmup) + confident target PL + EGC-DA
+3. Source-Only / Global FC-UDA baselines
+4. Scoreboard → keep or redesign
 
-## Current status (live)
-- **v1 EGC** running in pipeline (~epoch 43/120); auto-loop waits then runs v2+baselines
-- Source val F1 ~0.34 mid-run is a watch item (standalone MATUDA_NILM reached ~0.8); final H2 metrics decide keep vs redesign
-- Scoreboard: `runs/_auto_loop/SCOREBOARD.md` after jobs finish
+## Literature levers in v3
+- Hur et al. Sensors 2022: confident multi-label pseudo-labels + domain stabilization after source training
+- AHDA / Lin: conditional MMD+CORAL on FC layers (EGC)
+- D’Incecco: learn a usable classifier before transfer (warmup)
+
+## Current status
+- Fix + v3 launching on training PC; judge only **fixed** H2 F1/SAE
