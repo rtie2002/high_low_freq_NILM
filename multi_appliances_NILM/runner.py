@@ -1326,27 +1326,50 @@ def train_model(
         da_warmup_epochs = int(
             adapter.model_cfg.get("loss", {}).get("da_warmup_epochs", 0)
         )
+        da_ramp_epochs = int(
+            adapter.model_cfg.get("loss", {}).get("da_ramp_epochs", 0)
+        )
         pl_weight_cfg = float(adapter.model_cfg.get("loss", {}).get("pl_weight", 0.0))
         if da_warmup_epochs > 0 and da_active:
             print(
-                f"DA warmup: first {da_warmup_epochs} epochs are source-only "
-                f"(lambda=0, pl=0); then lambda={da_lambda:g}, pl={pl_weight_cfg:g}.",
+                f"DA schedule: warmup {da_warmup_epochs} ep (lambda=0, pl=0); "
+                f"then ramp {da_ramp_epochs} ep to lambda={da_lambda:g}, "
+                f"pl={pl_weight_cfg:g} (AHDA-style soft start).",
                 flush=True,
             )
+
+        # Freeze DA if source-val state BCE rises after DA starts (negative transfer).
+        da_freeze = False
+        best_val_state_raw = float("inf")
+        val_state_bad_epochs = 0
 
         for epoch in range(epochs):
             epoch_no = epoch + 1
             epoch_tag = f"Epoch {epoch_no}/{epochs}"
 
             if hasattr(loss_fn, "lambda_domain"):
-                if da_warmup_epochs > 0 and epoch < da_warmup_epochs:
+                if da_freeze:
+                    loss_fn.lambda_domain = 0.0
+                    if hasattr(loss_fn, "pl_weight"):
+                        loss_fn.pl_weight = 0.0
+                elif da_warmup_epochs > 0 and epoch < da_warmup_epochs:
                     loss_fn.lambda_domain = 0.0
                     if hasattr(loss_fn, "pl_weight"):
                         loss_fn.pl_weight = 0.0
                 else:
-                    loss_fn.lambda_domain = float(da_lambda)
-                    if hasattr(loss_fn, "pl_weight"):
-                        loss_fn.pl_weight = float(pl_weight_cfg)
+                    # Soft ramp after warmup (linear); ramp=0 → hard switch (legacy).
+                    if da_ramp_epochs > 0:
+                        t = min(
+                            1.0,
+                            float(epoch - da_warmup_epochs + 1) / float(da_ramp_epochs),
+                        )
+                        loss_fn.lambda_domain = float(da_lambda) * t
+                        if hasattr(loss_fn, "pl_weight"):
+                            loss_fn.pl_weight = float(pl_weight_cfg) * t
+                    else:
+                        loss_fn.lambda_domain = float(da_lambda)
+                        if hasattr(loss_fn, "pl_weight"):
+                            loss_fn.pl_weight = float(pl_weight_cfg)
 
             # 6a. Training epoch
             # This is where model weights are updated.
@@ -1389,6 +1412,30 @@ def train_model(
             val_time_sec = float(val_logs.get("elapsed_sec", 0.0))
             epoch_time_sec = train_time_sec + val_time_sec
             cumulative_time_sec = time.perf_counter() - training_started
+
+            # If DA is on and source-val raw BCE keeps rising, freeze DA (negative transfer).
+            if (
+                da_active
+                and (not da_freeze)
+                and epoch >= da_warmup_epochs
+                and "loss_state" in val_logs
+            ):
+                vs = float(val_logs["loss_state"])
+                if vs < best_val_state_raw - 1e-4:
+                    best_val_state_raw = vs
+                    val_state_bad_epochs = 0
+                else:
+                    val_state_bad_epochs += 1
+                patience = int(
+                    adapter.model_cfg.get("loss", {}).get("da_freeze_patience", 8)
+                )
+                if patience > 0 and val_state_bad_epochs >= patience:
+                    da_freeze = True
+                    tqdm.write(
+                        f"  DA FREEZE: val state BCE rising for {patience} epochs "
+                        f"(now {vs:.4f}); lambda/pl set to 0 for remaining epochs.",
+                        flush=True,
+                    )
 
             # 6c. Optional scheduler step after validation.
             sched_metric = _epoch_score(scheduler_key, val_logs, train_cfg)

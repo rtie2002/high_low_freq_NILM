@@ -81,7 +81,7 @@ def multilayer_domain_loss(
     weights_s: Optional[torch.Tensor] = None,
     weights_t: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Mean hybrid MMD+CORAL over FC layers (optional EGC sample weights)."""
+    """Hybrid MMD+CORAL summed over FC layers (Lin Eq. 12), optional EGC weights."""
     assert len(feats_s) == len(feats_t) and len(feats_s) > 0
     total = feats_s[0].new_zeros(())
     for zs, zt in zip(feats_s, feats_t):
@@ -91,7 +91,8 @@ def multilayer_domain_loss(
             zt = zt * weights_t.sqrt().unsqueeze(1)
         zs_n, zt_n = _l2_normalize(zs), _l2_normalize(zt)
         total = total + mu * mmd_rbf(zs_n, zt_n) + (1.0 - mu) * coral_loss(zs_n, zt_n)
-    return total / float(len(feats_s))
+    # Lin Eq. 12: L_domain = Σ_ℓ [...], not mean over layers.
+    return total
 
 
 def conditional_appliance_domain_loss(
@@ -144,6 +145,7 @@ class MATUDACriterion(nn.Module):
         pl_confidence: float = 0.9,
         task_balance: str = "equal",
         power_scale: float | list[float] | torch.Tensor = 1.0,
+        focal_gamma: float = 0.0,
         # Legacy aliases (map onto MultiNILM lambda_state)
         power_weight: float | None = None,
         state_weight: float | None = None,
@@ -163,6 +165,7 @@ class MATUDACriterion(nn.Module):
         self.on_masked_power = bool(on_masked_power)
         self.pl_weight = float(pl_weight)
         self.pl_confidence = float(pl_confidence)
+        self.focal_gamma = float(focal_gamma)
 
         # Same supervised criterion as MultiNILM (DA handled here for EGC).
         self.nilm = MultiNILMLoss(
@@ -196,11 +199,9 @@ class MATUDACriterion(nn.Module):
         states_gt: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         """L_NILM via MultiNILMLoss (optional ON-masked power override)."""
-        if self.on_masked_power:
+        if self.on_masked_power or self.focal_gamma > 0.0:
             loss_power = self._on_masked_power_loss(powers_hat, powers_gt, states_gt)
-            loss_state = self.nilm._per_appliance_state_loss(
-                state_logits, states_gt.float()
-            ).sum()
+            loss_state = self._state_loss(state_logits, states_gt.float())
             loss_state_term = self.nilm._balanced_state_term(loss_power, loss_state)
             loss_sup = loss_power + loss_state_term
             return {
@@ -217,6 +218,33 @@ class MATUDACriterion(nn.Module):
             "loss_state": out.loss_state,
             "loss_state_term": out.loss_state_term,
         }
+
+    def _state_loss(
+        self, state_logits: torch.Tensor, states_gt: torch.Tensor
+    ) -> torch.Tensor:
+        """Per-app BCE (+ optional focal) summed over appliances."""
+        if self.focal_gamma <= 0.0:
+            return self.nilm._per_appliance_state_loss(state_logits, states_gt).sum()
+        # Focal BCE: down-weight easy OFF timesteps (helps rare ON events).
+        losses: list[torch.Tensor] = []
+        for app_i in range(state_logits.shape[-1]):
+            weight_i = None
+            if self.nilm.pos_weight is not None:
+                weight_i = (
+                    self.nilm.pos_weight[app_i]
+                    if self.nilm.pos_weight.ndim > 0
+                    else self.nilm.pos_weight
+                )
+            logits = state_logits[..., app_i]
+            target = states_gt[..., app_i]
+            bce = F.binary_cross_entropy_with_logits(
+                logits, target, pos_weight=weight_i, reduction="none"
+            )
+            p = torch.sigmoid(logits).detach()
+            p_t = p * target + (1.0 - p) * (1.0 - target)
+            focal = (1.0 - p_t).clamp_min(0.0).pow(self.focal_gamma)
+            losses.append((focal * bce).mean())
+        return torch.stack(losses).sum()
 
     def _domain(self, out_s: dict, out_t: dict) -> torch.Tensor:
         feats_s, feats_t = out_s["da_features"], out_t["da_features"]

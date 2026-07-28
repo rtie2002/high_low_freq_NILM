@@ -61,6 +61,7 @@ class MATUDAAdapter(BaseNILMAdapter):
             gate_mode=str(arch.get("gate_mode", "soft")),
             head_hidden=int(arch.get("head_hidden", 64)),
             head_kernel_size=int(arch.get("head_kernel_size", 3)),
+            use_instance_norm=bool(arch.get("use_instance_norm", False)),
         )
         return model.to(device)
 
@@ -90,6 +91,7 @@ class MATUDAAdapter(BaseNILMAdapter):
             pl_weight=float(loss_cfg.get("pl_weight", 0.0)),
             pl_confidence=float(loss_cfg.get("pl_confidence", 0.9)),
             task_balance=str(loss_cfg.get("task_balance", "equal")),
+            focal_gamma=float(loss_cfg.get("focal_gamma", 0.0)),
         )
 
     def step(

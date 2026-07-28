@@ -131,6 +131,7 @@ class MATUDANet(nn.Module):
         gate_mode: str = "soft",
         head_hidden: int = 64,
         head_kernel_size: int = 3,
+        use_instance_norm: bool = False,
     ):
         super().__init__()
         self.num_appliances = num_appliances
@@ -138,6 +139,7 @@ class MATUDANet(nn.Module):
         self.use_gate = use_gate
         self.fc_dims = fc_dims
         self.gate_mode = str(gate_mode or "soft").lower()
+        self.use_instance_norm = bool(use_instance_norm)
 
         off = list(appliance_off_norm or [0.0] * num_appliances)
         if len(off) != num_appliances:
@@ -157,6 +159,12 @@ class MATUDANet(nn.Module):
         self.stem_proj = nn.Sequential(
             nn.Conv1d(stem_out, conv_channels, kernel_size=1),
             nn.ReLU(inplace=True),
+        )
+        # InstanceNorm reduces house-level scale shift (AHDA / transfer practice).
+        self.stem_norm = (
+            nn.InstanceNorm1d(conv_channels, affine=True)
+            if self.use_instance_norm
+            else nn.Identity()
         )
 
         blocks = []
@@ -206,6 +214,7 @@ class MATUDANet(nn.Module):
         t_min = min(p.size(-1) for p in parts)
         parts = [p[..., :t_min] for p in parts]
         h = self.stem_proj(torch.cat(parts, dim=1))
+        h = self.stem_norm(h)
         h = self.tcn(h)
 
         da_feats: List[torch.Tensor] = []

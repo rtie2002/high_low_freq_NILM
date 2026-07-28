@@ -1,5 +1,4 @@
-# UK-DALE cross-house for MATUDA UDA (H1+H5 → H2). Never H3/H4.
-experiment_id: ukdale_matuda_egc_h1h5_to_h2
+experiment_id: ukdale_matuda
 seed: 2026
 data_root: datasets/ukdale
 

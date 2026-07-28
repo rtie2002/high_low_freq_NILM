@@ -99,7 +99,8 @@ def multilayer_domain_loss(
             zt = zt * weights_t.sqrt().unsqueeze(1)
         zs_n, zt_n = _l2_normalize(zs), _l2_normalize(zt)
         total = total + mu * mmd_rbf(zs_n, zt_n) + (1.0 - mu) * coral_loss(zs_n, zt_n)
-    return total / float(len(feats_s))
+    # Lin Eq. 12: sum over layers (not mean).
+    return total
 
 
 def conditional_appliance_domain_loss(
