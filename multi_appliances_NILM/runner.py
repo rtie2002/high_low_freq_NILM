@@ -1568,7 +1568,12 @@ def evaluate_model(
     if tensor_dtype == torch.float64:
         model = model.double()
     ckpt = torch.load(checkpoint, map_location=device)
-    model.load_state_dict(ckpt["model_state_dict"])
+    missing, unexpected = model.load_state_dict(ckpt["model_state_dict"], strict=False)
+    if missing or unexpected:
+        print(
+            f"Checkpoint load (strict=False): missing={list(missing)} unexpected={list(unexpected)}",
+            flush=True,
+        )
     model.eval()
 
     # Step 3-4:
