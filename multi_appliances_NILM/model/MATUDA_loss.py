@@ -1,21 +1,20 @@
 """
-Domain losses on fully-connected embeddings (Lin / Deep CORAL / DAN / CDAN+E).
+MATUDA criterion: MultiNILM supervised loss + optional EGC domain / PL.
 
-All functions expect features Z of shape (B, D) — after FC layers — NOT (B,C,T).
-
-MATUDA novelty (M0): Entropy-Gated Conditional CORAL/MMD (EGC-DA)
-  - Condition alignment on multi-label state predictions (CDAN-style).
-  - Down-weight uncertain target windows via prediction entropy (CDAN+E).
-  - Mitigates negative transfer observed under uniform FC alignment.
+Supervised L_NILM is exactly ``MultiNILMLoss`` (per-app MSE + BCE, task_balance,
+pos_weight). Domain adaptation uses MATUDA EGC (or global MMD+CORAL) on FC
+embeddings; mix/scale match MultiNILM (convex + equal).
 """
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence
+from typing import Optional, Sequence
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from model.MultiNILM_loss import MultiNILMLoss
 
 
 def coral_loss(zs: torch.Tensor, zt: torch.Tensor) -> torch.Tensor:
@@ -67,16 +66,11 @@ def _l2_normalize(z: torch.Tensor) -> torch.Tensor:
 
 
 def prediction_entropy_weights(state_logits: torch.Tensor) -> torch.Tensor:
-    """
-    Per-sample transferability weight in (0,1], CDAN+E-inspired.
-    Low entropy (confident multi-label preds) -> higher weight.
-    state_logits: (B, K) or (B, T, K)
-    """
+    """Per-sample transferability weight in (0,1], CDAN+E-inspired."""
     p = torch.sigmoid(state_logits).clamp(1e-6, 1 - 1e-6)
-    # Binary entropy averaged over appliance (and time if seq2seq).
     reduce_dims = tuple(range(1, p.dim()))
-    h = -(p * p.log() + (1 - p) * (1 - p).log()).mean(dim=reduce_dims)  # (B,)
-    h_norm = h / 0.693147  # ln(2)
+    h = -(p * p.log() + (1 - p) * (1 - p).log()).mean(dim=reduce_dims)
+    h_norm = h / 0.693147
     return (1.0 - h_norm).clamp(0.05, 1.0)
 
 
@@ -87,10 +81,7 @@ def multilayer_domain_loss(
     weights_s: Optional[torch.Tensor] = None,
     weights_t: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """
-    Mean hybrid MMD+CORAL over FC layers.
-    Optional sample weights: reweight by sqrt(w) before L2-norm (EGC-DA).
-    """
+    """Mean hybrid MMD+CORAL over FC layers (optional EGC sample weights)."""
     assert len(feats_s) == len(feats_t) and len(feats_s) > 0
     total = feats_s[0].new_zeros(())
     for zs, zt in zip(feats_s, feats_t):
@@ -111,16 +102,11 @@ def conditional_appliance_domain_loss(
     mu: float = 0.5,
     min_mass: float = 2.0,
 ) -> torch.Tensor:
-    """
-    Appliance-conditional alignment on the *last* FC embedding:
-    soft-weight rows by predicted ON probability per appliance, then MMD+CORAL.
-    Averages over appliances with enough predicted ON mass on both domains.
-    """
+    """Appliance-conditional alignment on the last FC embedding."""
     z_s = _l2_normalize(feats_s[-1])
     z_t = _l2_normalize(feats_t[-1])
     p_s = torch.sigmoid(state_logits_s).detach()
     p_t = torch.sigmoid(state_logits_t).detach()
-    # Seq2seq (B, T, K): time-average ON probs → (B, K) for sample weighting.
     if p_s.dim() == 3:
         p_s = p_s.mean(dim=1)
         p_t = p_t.mean(dim=1)
@@ -141,56 +127,66 @@ def conditional_appliance_domain_loss(
 
 
 class MATUDACriterion(nn.Module):
-    """
-    Supervised multi-task + unsupervised FC domain adaptation.
-
-    Modes:
-      none      — L = L_sup
-      global    — uniform multilayer MMD+CORAL (B1)
-      egc       — entropy-gated + appliance-conditional (M0 / MATUDA)
-
-    Mix:
-      additive  — L = L_sup + λ L_domain
-      convex    — L = (1-λ) L_sup + λ L_domain   (Lin)
-    Scale:
-      none | equal (match |L_domain| to |L_sup| with stop-grad)
-    """
+    """MultiNILM L_NILM + MATUDA EGC domain (+ optional target PL)."""
 
     def __init__(
         self,
         lambda_domain: float = 0.5,
         mu_mmd: float = 0.4,
-        power_weight: float = 1.0,
-        state_weight: float = 1.0,
+        lambda_state: float = 1.0,
         pos_weight: Optional[torch.Tensor] = None,
-        da_mode: str = "global",
+        da_mode: str = "egc",
         domain_mix: str = "convex",
         domain_scale: str = "equal",
         conditional_weight: float = 0.5,
-        on_masked_power: bool = True,
+        on_masked_power: bool = False,
         pl_weight: float = 0.0,
         pl_confidence: float = 0.9,
         task_balance: str = "equal",
+        power_scale: float | list[float] | torch.Tensor = 1.0,
+        # Legacy aliases (map onto MultiNILM lambda_state)
+        power_weight: float | None = None,
+        state_weight: float | None = None,
     ):
         super().__init__()
-        self.lambda_domain = lambda_domain
-        self.mu_mmd = mu_mmd
-        self.power_weight = power_weight
-        self.state_weight = state_weight
-        self.da_mode = da_mode
-        self.domain_mix = domain_mix
-        self.domain_scale = domain_scale
-        self.conditional_weight = conditional_weight
+        # Prefer MultiNILM names; fall back to old MATUDA state_weight.
+        if state_weight is not None and lambda_state == 1.0:
+            lambda_state = float(state_weight)
+        _ = power_weight  # unused: MultiNILM does not scale power separately
+
+        self.lambda_domain = float(lambda_domain)
+        self.mu_mmd = float(mu_mmd)
+        self.da_mode = str(da_mode or "none").lower()
+        self.domain_mix = str(domain_mix or "convex").lower()
+        self.domain_scale = str(domain_scale or "equal").lower()
+        self.conditional_weight = float(conditional_weight)
         self.on_masked_power = bool(on_masked_power)
         self.pl_weight = float(pl_weight)
         self.pl_confidence = float(pl_confidence)
-        self.task_balance = str(task_balance or "none").lower()
-        if self.task_balance not in {"none", "equal"}:
-            raise ValueError(f"task_balance must be none|equal, got {self.task_balance!r}")
-        if pos_weight is not None:
-            self.register_buffer("pos_weight", pos_weight.float())
-        else:
-            self.pos_weight = None
+
+        # Same supervised criterion as MultiNILM (DA handled here for EGC).
+        self.nilm = MultiNILMLoss(
+            lambda_state=float(lambda_state),
+            pos_weight=pos_weight,
+            power_scale=power_scale,
+            task_balance=str(task_balance or "equal"),
+            lambda_domain=0.0,
+            domain_mix=self.domain_mix,
+            domain_scale=self.domain_scale,
+        )
+
+    def _on_masked_power_loss(
+        self,
+        power_pred: torch.Tensor,
+        power_true: torch.Tensor,
+        state_true: torch.Tensor,
+    ) -> torch.Tensor:
+        """Optional ON-only MSE (sum over appliances), else MultiNILM MSE."""
+        if not self.on_masked_power:
+            return self.nilm._per_appliance_power_loss(power_pred, power_true).sum()
+        mask = state_true.float()
+        denom = mask.sum().clamp_min(1.0)
+        return ((power_pred - power_true).pow(2) * mask).sum() / denom
 
     def supervised(
         self,
@@ -199,52 +195,30 @@ class MATUDACriterion(nn.Module):
         state_logits: torch.Tensor,
         states_gt: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
-        """Return power / state terms (MultiNILM-style logging + optional equal balance)."""
-        # Sparse ON events: optional pos_weight (MATNILM / MultiNILM practice).
-        # Flatten time for seq2seq so pos_weight (K,) broadcasts like multilabel BCE.
-        if state_logits.dim() == 3:
-            b, t, k = state_logits.shape
-            logits_flat = state_logits.reshape(b * t, k)
-            states_flat = states_gt.float().reshape(b * t, k)
-        else:
-            logits_flat = state_logits
-            states_flat = states_gt.float()
-
-        if self.pos_weight is not None:
-            loss_state = F.binary_cross_entropy_with_logits(
-                logits_flat, states_flat, pos_weight=self.pos_weight
-            )
-        else:
-            loss_state = F.binary_cross_entropy_with_logits(logits_flat, states_flat)
-
-        # ON-masked MSE focuses regression on active events (helps SAE/F1 coupling).
+        """L_NILM via MultiNILMLoss (optional ON-masked power override)."""
         if self.on_masked_power:
-            mask = states_gt.float()
-            denom = mask.sum().clamp_min(1.0)
-            loss_power = ((powers_hat - powers_gt.float()).pow(2) * mask).sum() / denom
-        else:
-            loss_power = F.mse_loss(powers_hat, powers_gt.float())
+            loss_power = self._on_masked_power_loss(powers_hat, powers_gt, states_gt)
+            loss_state = self.nilm._per_appliance_state_loss(
+                state_logits, states_gt.float()
+            ).sum()
+            loss_state_term = self.nilm._balanced_state_term(loss_power, loss_state)
+            loss_sup = loss_power + loss_state_term
+            return {
+                "loss_sup": loss_sup,
+                "loss_power": loss_power,
+                "loss_state": loss_state,
+                "loss_state_term": loss_state_term,
+            }
 
-        loss_power = self.power_weight * loss_power
-        # MultiNILM equal: rescale state magnitude to match power, then apply state_weight.
-        if self.task_balance == "equal":
-            scale = loss_power.detach() / loss_state.detach().clamp_min(1e-8)
-            loss_state_term = self.state_weight * loss_state * scale
-        else:
-            loss_state_term = self.state_weight * loss_state
-
+        out = self.nilm(powers_hat, state_logits, powers_gt, states_gt)
         return {
-            "loss_sup": loss_power + loss_state_term,
-            "loss_power": loss_power,
-            "loss_state": loss_state,
-            "loss_state_term": loss_state_term,
+            "loss_sup": out.loss,
+            "loss_power": out.loss_power,
+            "loss_state": out.loss_state,
+            "loss_state_term": out.loss_state_term,
         }
 
-    def _domain(
-        self,
-        out_s: dict,
-        out_t: dict,
-    ) -> torch.Tensor:
+    def _domain(self, out_s: dict, out_t: dict) -> torch.Tensor:
         feats_s, feats_t = out_s["da_features"], out_t["da_features"]
         if self.da_mode == "none":
             return feats_s[0].new_zeros(())
@@ -252,7 +226,6 @@ class MATUDACriterion(nn.Module):
         if self.da_mode == "global":
             return multilayer_domain_loss(feats_s, feats_t, mu=self.mu_mmd)
 
-        # Ablation: entropy-gated global only (no appliance-conditional term).
         if self.da_mode == "egc_no_cond":
             w_s = prediction_entropy_weights(out_s["state_logits"])
             w_t = prediction_entropy_weights(out_t["state_logits"])
@@ -260,7 +233,6 @@ class MATUDACriterion(nn.Module):
                 feats_s, feats_t, mu=self.mu_mmd, weights_s=w_s, weights_t=w_t
             )
 
-        # Ablation: conditional only (no entropy reweighting on global path).
         if self.da_mode == "egc_no_entropy":
             l_global = multilayer_domain_loss(feats_s, feats_t, mu=self.mu_mmd)
             l_cond = conditional_appliance_domain_loss(
@@ -269,12 +241,11 @@ class MATUDACriterion(nn.Module):
                 out_s["state_logits"],
                 out_t["state_logits"],
                 mu=self.mu_mmd,
-                min_mass=2.0,
             )
             alpha = self.conditional_weight
             return (1.0 - alpha) * l_global + alpha * l_cond
 
-        # Full EGC-DA: entropy gate + conditional appliance alignment.
+        # Full EGC-DA
         w_s = prediction_entropy_weights(out_s["state_logits"])
         w_t = prediction_entropy_weights(out_t["state_logits"])
         l_global = multilayer_domain_loss(
@@ -286,13 +257,11 @@ class MATUDACriterion(nn.Module):
             out_s["state_logits"],
             out_t["state_logits"],
             mu=self.mu_mmd,
-            min_mass=2.0,
         )
         alpha = self.conditional_weight
         return (1.0 - alpha) * l_global + alpha * l_cond
 
     def _pseudo_label_state(self, out_t: dict) -> torch.Tensor:
-        """Hur et al. (Sensors 2022): confident target multi-label pseudo-labels."""
         logits = out_t["state_logits"]
         p = torch.sigmoid(logits).clamp(1e-6, 1 - 1e-6)
         conf = torch.maximum(p, 1.0 - p)
@@ -321,27 +290,28 @@ class MATUDACriterion(nn.Module):
         if out_t is not None and self.pl_weight > 0:
             l_pl = self._pseudo_label_state(out_t)
 
+        # Live tensors for logs (adapter .detach()s) — matches MultiNILM fields.
         base = {
-            "loss_sup": l_sup.detach(),
-            "loss_power": parts["loss_power"].detach(),
-            "loss_state": parts["loss_state"].detach(),
-            "loss_state_term": parts["loss_state_term"].detach(),
-            "loss_pl": l_pl.detach(),
+            "loss_sup": l_sup,
+            "loss_power": parts["loss_power"],
+            "loss_state": parts["loss_state"],
+            "loss_state_term": parts["loss_state_term"],
+            "loss_pl": l_pl,
         }
 
         if out_t is None or lam <= 0 or self.da_mode == "none":
             total = l_sup + self.pl_weight * l_pl
+            zero = l_sup.new_zeros(())
             return {
                 "loss": total,
-                "loss_domain": l_sup.new_zeros(()),
-                "loss_domain_term": l_sup.new_zeros(()),
+                "loss_domain": zero,
+                "loss_domain_term": zero,
                 "lambda": 0.0,
                 **base,
             }
 
         l_dom = self._domain(out_s, out_t)
         if self.domain_scale == "equal":
-            # Match magnitude to L_sup so λ is interpretable (MultiNILM practice).
             scale = (l_sup.detach() / (l_dom.detach().abs() + 1e-8)).clamp(0.1, 10.0)
             l_dom_term = l_dom * scale
         else:
@@ -355,8 +325,8 @@ class MATUDACriterion(nn.Module):
 
         return {
             "loss": total,
-            "loss_domain": l_dom.detach(),
-            "loss_domain_term": l_dom_term.detach(),
+            "loss_domain": l_dom,
+            "loss_domain_term": l_dom_term,
             "lambda": lam,
             **base,
         }

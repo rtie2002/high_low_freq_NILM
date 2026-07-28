@@ -34,13 +34,12 @@ architecture:
   head_kernel_size: 3
 
 loss:
-  power_weight: 1.0
-  state_weight: 2.0
+  # Identical to MultiNILM supervised: per-app MSE + BCE + equal balance.
+  task_balance: equal
+  lambda_state: 1          # with equal balance → power ↔ state same weight
   pos_weight: auto
   pos_weight_cap: 50
-  on_masked_power: true
-  # MultiNILM-style: equalize state term magnitude to power (state_weight=1 → equal)
-  task_balance: equal
+  on_masked_power: false   # true = ON-only MSE (MATUDA extra); false = MultiNILM MSE
   # Hur Sensors 2022: source-only then DA + confident target PL
   da_warmup_epochs: 30
   pl_weight: 0.3

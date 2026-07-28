@@ -73,17 +73,20 @@ class MATUDAAdapter(BaseNILMAdapter):
         if (not enabled) or lam <= 0:
             da_mode = "none"
             lam = 0.0
+        # MultiNILM naming: lambda_state (+ optional legacy state_weight).
+        lambda_state = loss_cfg.get("lambda_state", loss_cfg.get("state_weight", 1.0))
         return MATUDACriterion(
             lambda_domain=lam,
             mu_mmd=float(loss_cfg.get("domain_mu", 0.4)),
-            power_weight=float(loss_cfg.get("power_weight", 2.0)),
-            state_weight=float(loss_cfg.get("state_weight", 1.0)),
+            lambda_state=float(lambda_state),
             pos_weight=_resolve_pos_weight(self, loss_cfg),
+            power_scale=self._data_loader().loss_scale,
             da_mode=da_mode,
             domain_mix=str(loss_cfg.get("domain_mix", "convex")),
             domain_scale=str(loss_cfg.get("domain_scale", "equal")),
             conditional_weight=float(loss_cfg.get("conditional_weight", 0.5)),
-            on_masked_power=bool(loss_cfg.get("on_masked_power", True)),
+            # Default False = identical to MultiNILM MSE; set true for ON-only MSE.
+            on_masked_power=bool(loss_cfg.get("on_masked_power", False)),
             pl_weight=float(loss_cfg.get("pl_weight", 0.0)),
             pl_confidence=float(loss_cfg.get("pl_confidence", 0.9)),
             task_balance=str(loss_cfg.get("task_balance", "equal")),
