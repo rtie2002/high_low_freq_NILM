@@ -86,6 +86,7 @@ class MATUDAAdapter(BaseNILMAdapter):
             on_masked_power=bool(loss_cfg.get("on_masked_power", True)),
             pl_weight=float(loss_cfg.get("pl_weight", 0.0)),
             pl_confidence=float(loss_cfg.get("pl_confidence", 0.9)),
+            task_balance=str(loss_cfg.get("task_balance", "equal")),
         )
 
     def step(
@@ -128,13 +129,15 @@ class MATUDAAdapter(BaseNILMAdapter):
             loss=losses["loss"],
             logs={
                 "loss": float(losses["loss"].detach()),
-                "loss_power": float(losses["loss_sup"].detach()),
-                "loss_state": 0.0,
-                "loss_state_term": 0.0,
+                "loss_power": float(losses["loss_power"].detach()),
+                "loss_state": float(losses["loss_state"].detach()),
+                "loss_state_term": float(losses["loss_state_term"].detach()),
                 "loss_domain": float(losses["loss_domain"].detach()),
-                "loss_domain_term": float(losses["loss_domain"].detach())
-                * float(losses.get("lambda", 0.0) or 0.0),
+                "loss_domain_term": float(
+                    losses.get("loss_domain_term", losses["loss_domain"]).detach()
+                ),
                 "loss_pl": float(losses.get("loss_pl", losses["loss"].new_zeros(())).detach()),
+                "lambda_domain": float(losses.get("lambda", 0.0) or 0.0),
                 "mae": float(mae.detach()),
             },
             aux={

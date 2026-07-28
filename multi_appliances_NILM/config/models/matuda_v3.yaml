@@ -39,6 +39,8 @@ loss:
   pos_weight: auto
   pos_weight_cap: 50
   on_masked_power: true
+  # MultiNILM-style: equalize state term magnitude to power (state_weight=1 → equal)
+  task_balance: equal
   # Hur Sensors 2022: source-only then DA + confident target PL
   da_warmup_epochs: 30
   pl_weight: 0.3

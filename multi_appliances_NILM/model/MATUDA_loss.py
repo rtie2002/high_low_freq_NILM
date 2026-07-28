@@ -170,6 +170,7 @@ class MATUDACriterion(nn.Module):
         on_masked_power: bool = True,
         pl_weight: float = 0.0,
         pl_confidence: float = 0.9,
+        task_balance: str = "equal",
     ):
         super().__init__()
         self.lambda_domain = lambda_domain
@@ -183,6 +184,9 @@ class MATUDACriterion(nn.Module):
         self.on_masked_power = bool(on_masked_power)
         self.pl_weight = float(pl_weight)
         self.pl_confidence = float(pl_confidence)
+        self.task_balance = str(task_balance or "none").lower()
+        if self.task_balance not in {"none", "equal"}:
+            raise ValueError(f"task_balance must be none|equal, got {self.task_balance!r}")
         if pos_weight is not None:
             self.register_buffer("pos_weight", pos_weight.float())
         else:
@@ -194,7 +198,8 @@ class MATUDACriterion(nn.Module):
         powers_gt: torch.Tensor,
         state_logits: torch.Tensor,
         states_gt: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> dict[str, torch.Tensor]:
+        """Return power / state terms (MultiNILM-style logging + optional equal balance)."""
         # Sparse ON events: optional pos_weight (MATNILM / MultiNILM practice).
         # Flatten time for seq2seq so pos_weight (K,) broadcasts like multilabel BCE.
         if state_logits.dim() == 3:
@@ -206,19 +211,34 @@ class MATUDACriterion(nn.Module):
             states_flat = states_gt.float()
 
         if self.pos_weight is not None:
-            loss_cls = F.binary_cross_entropy_with_logits(
+            loss_state = F.binary_cross_entropy_with_logits(
                 logits_flat, states_flat, pos_weight=self.pos_weight
             )
         else:
-            loss_cls = F.binary_cross_entropy_with_logits(logits_flat, states_flat)
+            loss_state = F.binary_cross_entropy_with_logits(logits_flat, states_flat)
+
         # ON-masked MSE focuses regression on active events (helps SAE/F1 coupling).
         if self.on_masked_power:
             mask = states_gt.float()
             denom = mask.sum().clamp_min(1.0)
-            loss_reg = ((powers_hat - powers_gt.float()).pow(2) * mask).sum() / denom
+            loss_power = ((powers_hat - powers_gt.float()).pow(2) * mask).sum() / denom
         else:
-            loss_reg = F.mse_loss(powers_hat, powers_gt.float())
-        return self.state_weight * loss_cls + self.power_weight * loss_reg
+            loss_power = F.mse_loss(powers_hat, powers_gt.float())
+
+        loss_power = self.power_weight * loss_power
+        # MultiNILM equal: rescale state magnitude to match power, then apply state_weight.
+        if self.task_balance == "equal":
+            scale = loss_power.detach() / loss_state.detach().clamp_min(1e-8)
+            loss_state_term = self.state_weight * loss_state * scale
+        else:
+            loss_state_term = self.state_weight * loss_state
+
+        return {
+            "loss_sup": loss_power + loss_state_term,
+            "loss_power": loss_power,
+            "loss_state": loss_state,
+            "loss_state_term": loss_state_term,
+        }
 
     def _domain(
         self,
@@ -291,23 +311,32 @@ class MATUDACriterion(nn.Module):
         states_gt: torch.Tensor,
         lambda_override: Optional[float] = None,
     ) -> dict:
-        l_sup = self.supervised(
+        parts = self.supervised(
             out_s["powers"], powers_gt, out_s["state_logits"], states_gt
         )
+        l_sup = parts["loss_sup"]
         lam = self.lambda_domain if lambda_override is None else float(lambda_override)
 
         l_pl = l_sup.new_zeros(())
         if out_t is not None and self.pl_weight > 0:
             l_pl = self._pseudo_label_state(out_t)
 
+        base = {
+            "loss_sup": l_sup.detach(),
+            "loss_power": parts["loss_power"].detach(),
+            "loss_state": parts["loss_state"].detach(),
+            "loss_state_term": parts["loss_state_term"].detach(),
+            "loss_pl": l_pl.detach(),
+        }
+
         if out_t is None or lam <= 0 or self.da_mode == "none":
             total = l_sup + self.pl_weight * l_pl
             return {
                 "loss": total,
-                "loss_sup": l_sup.detach(),
                 "loss_domain": l_sup.new_zeros(()),
-                "loss_pl": l_pl.detach(),
+                "loss_domain_term": l_sup.new_zeros(()),
                 "lambda": 0.0,
+                **base,
             }
 
         l_dom = self._domain(out_s, out_t)
@@ -326,8 +355,8 @@ class MATUDACriterion(nn.Module):
 
         return {
             "loss": total,
-            "loss_sup": l_sup.detach(),
             "loss_domain": l_dom.detach(),
-            "loss_pl": l_pl.detach(),
+            "loss_domain_term": l_dom_term.detach(),
             "lambda": lam,
+            **base,
         }

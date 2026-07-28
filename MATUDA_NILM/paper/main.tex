@@ -59,13 +59,13 @@ Kirkuk, Iraq}
 Deploying non-intrusive load monitoring (NILM) in a new building requires recognizing multiple appliances simultaneously---both on/off states and power---while typically only the aggregate meter is available at the target site.
 Existing unsupervised domain adaptation (UDA) methods for NILM are dominated by single-appliance models; multi-appliance networks are usually transferred with labeled target fine-tuning.
 This paper studies unsupervised cross-building transfer of a joint multi-label classification and multi-appliance regression model.
-We propose MATUDA, a sequence-to-point CNN--temporal convolutional network (TCN) with a shared fully connected (FC) adaptation tower.
-Domain discrepancy is measured on FC activations by a hybrid MMD+CORAL loss, following Deep CORAL, DAN, and late-layer NILM adaptation practice~\cite{sun2016deepcoral,long2015dan,lin2022dda}, and refined by entropy-gated conditional domain alignment (EGC-DA) inspired by conditional adaptation in computer vision~\cite{long2018cdan}.
+We propose MATUDA, a sequence-to-sequence CNN--temporal convolutional network (TCN) with a shared pointwise fully connected (FC) adaptation tower and $K$ appliance-specific heads.
+Domain discrepancy is measured on time-pooled FC activations by a hybrid MMD+CORAL loss, following Deep CORAL, DAN, and late-layer NILM adaptation practice~\cite{sun2016deepcoral,long2015dan,lin2022dda}, and refined by entropy-gated conditional domain alignment (EGC-DA) inspired by conditional adaptation in computer vision~\cite{long2018cdan}.
 On UK-DALE (labeled Houses~1+5 $\rightarrow$ unlabeled House~2 aggregates $\rightarrow$ held-out House~2 test), preliminary results show that MATUDA raises target macro-F1 substantially over source-only and global FC-UDA, while relative energy error (SAE) can worsen---a trade-off we report explicitly.
 \end{abstract}
 
 \begin{IEEEkeywords}
-NILM, multi-appliance, multi-label learning, unsupervised domain adaptation, sequence-to-point, TCN, transfer learning
+NILM, multi-appliance, multi-label learning, unsupervised domain adaptation, sequence-to-sequence, TCN, transfer learning
 \end{IEEEkeywords}
 
 %======================================================================
@@ -107,7 +107,7 @@ Multi-label classification only & \cite{tanoni2023weak} & SSDA~\cite{hur2022ssda
 \textbf{Contributions.}
 \begin{enumerate}
 \item We formulate unsupervised cross-building transfer for joint multi-label classification and multi-appliance regression.
-\item We design MATUDA: a sequence-to-point CNN--TCN, an FC adaptation tower with multi-layer MMD+CORAL, and EGC-DA (entropy gate + appliance-conditional alignment).
+\item We design MATUDA: a sequence-to-sequence CNN--TCN, a shared pointwise FC adaptation tower with multi-layer MMD+CORAL, $K$ appliance-specific heads, and EGC-DA (entropy gate + appliance-conditional alignment).
 \item We specify a reproducible UK-DALE protocol (Houses~1+5 labeled $\rightarrow$ House~2 unlabeled adaptation $\rightarrow$ chronologically held-out House~2 test; Houses~3/4 excluded for this appliance set) and compare Source-Only and Global FC-UDA under the same backbone.
 \end{enumerate}
 
@@ -130,10 +130,10 @@ Our work keeps the multi-task head design and adds unsupervised FC-layer adaptat
 \section{Problem Formulation}
 %======================================================================
 Let an aggregate active-power window be $x\in\mathbb{R}^{T}$.
-For $K$ appliances, let $y^{(k)}\in\mathbb{R}$ and $z^{(k)}\in\{0,1\}$ denote the power and on/off state at the supervised time index (window center).
+For $K$ appliances, let $y\in\mathbb{R}^{T\times K}$ and $z\in\{0,1\}^{T\times K}$ denote the power and on/off trajectories over the same window (sequence-to-sequence supervision).
 The \textbf{source domain} $\mathcal{S}$ provides labeled windows $\{(x_S,y_S,z_S)\}$.
 The \textbf{target domain} $\mathcal{T}$ provides unlabeled aggregates $\{x_T\}$ during adaptation.
-A shared network $f_\Theta$ maps $x$ to predictions $(\hat{y},\hat{z})\in\mathbb{R}^{K}\times\mathbb{R}^{K}$.
+A shared network $f_\Theta$ maps $x$ to predictions $(\hat{y},\hat{z})\in\mathbb{R}^{T\times K}\times\mathbb{R}^{T\times K}$.
 
 \textbf{Transfer scenario (cross-building, unsupervised).}
 Train on labeled UK-DALE Houses~1 and~5; adapt using House~2 aggregates without appliance labels; evaluate on House~2 with labels used only for metrics.
@@ -163,39 +163,64 @@ Fig.~\ref{fig:scenario} summarizes the data flow.
 \section{Proposed Method: MATUDA}
 %======================================================================
 \subsection{Overall framework}
-MATUDA consists of (i)~a temporal encoder, (ii)~a shared FC adaptation tower, (iii)~multi-label state and multi-target power heads, and (iv)~an unsupervised domain loss on FC embeddings.
-Fig.~\ref{fig:arch} shows the forward path for a source and a target window sharing $\Theta$.
+MATUDA addresses a \emph{compound} learning problem that most NILM transfer papers treat only in pieces:
+\begin{enumerate}
+\item \textbf{Multi-appliance:} $K$ loads share one aggregate input but have very different power scales and duty cycles.
+\item \textbf{Multi-label / multi-task:} each appliance needs both an on/off state and a power trajectory over the window.
+\item \textbf{Unsupervised domain adaptation:} the target house provides aggregates $x_T$ only---no $y_T$ or $z_T$---so a domain term must be defined without target submeter labels.
+\end{enumerate}
+The network therefore has (i)~a shared length-preserving temporal encoder, (ii)~a shared pointwise FC tower whose \emph{pooled} activations carry the domain loss, and (iii)~$K$ appliance-specific heads that emit $(\hat{y}^{(k)},\hat{z}^{(k)})$.
+Fig.~\ref{fig:arch} shows the architecture; Fig.~\ref{fig:loss} and Section~\ref{sec:loss} detail how the losses compose.
 
-\begin{figure}[!t]
+\begin{figure*}[!t]
 \centering
 \begin{tikzpicture}[
   font=\scriptsize\sffamily,
-  node distance=0.35cm and 0.45cm,
-  blk/.style={draw, align=center, rounded corners=2pt, inner sep=3pt, minimum width=2.35cm},
-  arr/.style={-{Latex}, thick}
+  node distance=0.28cm and 0.35cm,
+  blk/.style={draw, align=center, rounded corners=2pt, inner sep=2.5pt},
+  arr/.style={-{Latex}, thick},
+  head/.style={blk, fill=green!14, minimum width=1.55cm, minimum height=0.95cm}
 ]
-\node[blk, fill=blue!10] (in) {Aggregate window\\$x\in\mathbb{R}^{1\times T}$\\$T{=}599$ (seq2point)};
-\node[blk, fill=blue!6, below=of in] (stem) {Multi-scale stem\\$k\in\{3,5,9\}\rightarrow C{=}96$};
-\node[blk, fill=blue!6, below=of stem] (tcn) {TCN: 8 residual blocks\\dilation $2^{0},\ldots,2^{7}$};
-\node[blk, fill=yellow!25, below=of tcn] (gap) {Global average pool\\$\rightarrow h\in\mathbb{R}^{C}$};
-\node[blk, fill=orange!20, below=of gap] (fc) {FC tower\\$512\rightarrow 256\rightarrow 128$\\(DA features $Z^{(1{:}3)}$)};
-\node[blk, fill=green!12, below left=0.55cm and 0.05cm of fc] (st) {State head\\$\hat{z}\in\mathbb{R}^{K}$};
-\node[blk, fill=green!12, below right=0.55cm and 0.05cm of fc] (pw) {Power head\\$\hat{y}\in\mathbb{R}^{K}$};
-\node[blk, fill=red!12, right=1.0cm of fc] (da) {Domain loss\\MMD+CORAL\\(+ EGC-DA)};
-\draw[arr] (in)--(stem)--(tcn)--(gap)--(fc);
-\draw[arr] (fc)--(st);
-\draw[arr] (fc)--(pw);
-\draw[arr] (fc)--(da);
-\node[anchor=west, align=left, font=\scriptsize] at ($(pw.east)+(0.15,0)$) {optional gate\\$\hat{y}\leftarrow\hat{y}\odot\sigma(\hat{z})$};
-\end{tikzpicture}
-\caption{MATUDA architecture. Domain adaptation is computed on FC activations (Lin fc6--fc8 analogue), not on raw $(B,C,T)$ maps alone.}
-\label{fig:arch}
-\end{figure}
+% Encoder column
+\node[blk, fill=blue!12, minimum width=3.1cm] (in) {Aggregate $x\in\mathbb{R}^{1\times T}$\\$T{=}480$ (seq2seq)};
+\node[blk, fill=blue!8, minimum width=3.1cm, below=of in] (stem) {Multi-scale stem\\$k\in\{3,5,9\}\!\rightarrow\!C{=}96$};
+\node[blk, fill=blue!8, minimum width=3.1cm, below=of stem] (tcn) {Shared TCN (8 blocks)\\dilation $2^{0}{:}2^{7}$\\length preserved};
+\node[blk, fill=orange!22, minimum width=3.1cm, below=of tcn] (fc) {Shared FC tower ($1{\times}1$)\\$512\!\rightarrow\!256\!\rightarrow\!128$\\$H^{(\ell)}\!\in\!\mathbb{R}^{B\times D_\ell\times T}$};
+\draw[arr] (in)--(stem)--(tcn)--(fc);
 
-\subsection{Sequence-to-point prediction}
-Following Zhang \emph{et al.}~\cite{zhang2018seq2point}, the network observes $T{=}599$ samples (odd length) and predicts the \emph{center} sample's appliance powers and states.
-This differs from sequence-to-sequence decoding of an output sub-window~\cite{xiong2023matnilm}.
-Sliding-window strides are $30$ (train) and $60$ (evaluation).
+% DA branch
+\node[blk, fill=yellow!30, right=0.7cm of fc] (pool) {Time pool\\$Z^{(\ell)}{=}\mathrm{mean}_t H^{(\ell)}$};
+\node[blk, fill=red!15, right=0.55cm of pool] (da) {EGC-DA\\$\mathcal{L}_{\mathrm{domain}}$\\MMD+CORAL};
+\draw[arr] (fc)--(pool)--(da);
+\node[font=\scriptsize\itshape, above=0.05cm of da] {unlabeled $x_T$ too};
+
+% Multi heads
+\node[font=\small\bfseries, below=0.55cm of fc] (htag) {$K$ appliance-specific heads (shared $H$, private parameters)};
+\node[head, below=0.35cm of htag] (h1) {Head 1\\kettle\\$\hat{z}_1,\hat{y}_1$};
+\node[head, right=0.22cm of h1] (h2) {Head 2\\fridge\\$\hat{z}_2,\hat{y}_2$};
+\node[head, right=0.22cm of h2] (h3) {Head 3\\dishwasher\\$\hat{z}_3,\hat{y}_3$};
+\node[head, right=0.22cm of h3] (h4) {Head 4\\WM\\$\hat{z}_4,\hat{y}_4$};
+\node[head, right=0.22cm of h4] (h5) {Head 5\\microwave\\$\hat{z}_5,\hat{y}_5$};
+\draw[arr] (fc.south) -- ++(0,-0.22) -| (h1.north);
+\draw[arr] (fc.south) -- ++(0,-0.22) -| (h2.north);
+\draw[arr] (fc.south) -- ++(0,-0.22) -| (h3.north);
+\draw[arr] (fc.south) -- ++(0,-0.22) -| (h4.north);
+\draw[arr] (fc.south) -- ++(0,-0.22) -| (h5.north);
+
+\node[blk, fill=green!8, below=0.45cm of h3, minimum width=9.2cm] (out)
+  {Stack $\hat{z},\hat{y}\in\mathbb{R}^{T\times K}$;
+   OFF-norm gate $\hat{y}_k\!\leftarrow\!g_k\hat{y}^{\mathrm{raw}}_k+(1-g_k)y_k^{\mathrm{off}}$,\ $g_k{=}\sigma(\hat{z}_k)$};
+\draw[arr] (h1)--(out); \draw[arr] (h2)--(out); \draw[arr] (h3)--(out);
+\draw[arr] (h4)--(out); \draw[arr] (h5)--(out);
+\end{tikzpicture}
+\caption{MATUDA architecture. A shared stem--TCN--FC encoder produces temporal features for domain alignment (after pooling) and for $K{=}5$ private appliance heads (multi-label state + power). Domain adaptation never requires target appliance labels.}
+\label{fig:arch}
+\end{figure*}
+
+\subsection{Sequence-to-sequence prediction}
+Following length-preserving TCN practice in deep domain adaptation for NILM~\cite{lin2022dda} and multi-appliance full-window decoding~\cite{xiong2023matnilm}, the network observes $T{=}480$ samples and predicts appliance powers and states for \emph{every} timestep in the window.
+This differs from sequence-to-point decoding of only the window center~\cite{zhang2018seq2point}.
+Sliding-window strides are $240$ for both training and evaluation; overlapping windows are reconstructed by mean aggregation when needed.
 Table~\ref{tab:window} lists the windowing contract.
 
 \begin{table}[!t]
@@ -207,10 +232,10 @@ Table~\ref{tab:window} lists the windowing contract.
 \toprule
 Item & Setting \\
 \midrule
-Prediction mode & Sequence-to-point (center of window) \\
-Input length $T$ & 599 samples ($\approx$59.9\,min at 6\,s) \\
-Outputs & $K$ power scalars + $K$ state logits \\
-Train stride / eval stride & 30 / 60 \\
+Prediction mode & Sequence-to-sequence (full window) \\
+Input / output length $T$ & 480 / 480 samples ($\approx$48\,min at 6\,s) \\
+Outputs & $K$ power trajectories + $K$ state-logit trajectories \\
+Train / eval stride & 240 / 240 \\
 Mains column & \texttt{aggregate} \\
 \bottomrule
 \end{tabular}
@@ -218,29 +243,169 @@ Mains column & \texttt{aggregate} \\
 
 \subsection{Temporal encoder}
 A multi-scale 1-D stem with kernels $\{3,5,9\}$ captures short waveform edges; channel outputs are concatenated and projected to $C{=}96$ channels.
-Eight dilated causal residual TCN blocks with dilations $2^{0},\ldots,2^{7}$ expand the receptive field, following the late-layer temporal backbone used in deep domain adaptation for NILM~\cite{lin2022dda}.
+Eight dilated causal residual TCN blocks with dilations $2^{0},\ldots,2^{7}$ expand the receptive field while \emph{preserving} length $T$, following Lin \emph{et al.}~\cite{lin2022dda}.
 Dropout $0.15$ is applied inside residual blocks.
-Global average pooling over time yields $h\in\mathbb{R}^{C}$.
 
-\subsection{FC adaptation tower and multi-task heads}
-Three fully connected layers map $h$ through $512\rightarrow 256\rightarrow 128$ with ReLU and dropout.
-Their post-activation tensors $Z^{(\ell)}\in\mathbb{R}^{B\times D_\ell}$, $\ell=1,2,3$, are the \textbf{domain-adaptation features}.
-Two linear heads produce state logits $\hat{z}$ and powers $\hat{y}$.
-In all reported experiments the soft gate $\hat{y}\leftarrow\hat{y}\odot\sigma(\hat{z})$ is enabled (\texttt{use\_gate=true}), coupling classification and regression.
-The full model has approximately $0.67$\,M trainable parameters.
-
-\subsection{Supervised multi-task loss (source only)}
+\subsection{FC adaptation tower and per-appliance heads}
+A pointwise ($1{\times}1$) FC tower maps channels through $512\rightarrow 256\rightarrow 128$ with ReLU and dropout, yielding temporal feature maps $H^{(\ell)}\in\mathbb{R}^{B\times D_\ell\times T}$.
+For domain adaptation we form
 \begin{equation}
-\mathcal{L}_{\mathrm{sup}}
+Z^{(\ell)}=\mathrm{mean}_{t}\,H^{(\ell)}\in\mathbb{R}^{B\times D_\ell},
+\quad \ell=1,2,3,
+\label{eq:pool}
+\end{equation}
+i.e., Lin fc6--fc8 analogues after temporal pooling~\cite{lin2022dda}.
+Each of the $K$ appliances then has its own small Conv1d head (local refine $\rightarrow$ state logit + power), reducing competition across loads with very different scales and ON rates.
+With soft gating, predicted power is blended toward the appliance OFF level in normalized space,
+\begin{equation}
+\hat{y}_{k}=g_{k}\,\hat{y}^{\mathrm{raw}}_{k}+(1-g_{k})\,y_{k}^{\mathrm{off}},
+\quad
+g_{k}=\sigma(\hat{z}_{k}),
+\label{eq:gate}
+\end{equation}
+where $y_{k}^{\mathrm{off}}$ is the z-score of $0$\,W for appliance $k$.
+The full model has approximately $0.85$\,M trainable parameters.
+
+%----------------------------------------------------------------------
+\subsection{Loss design for multi-appliance multi-label UDA}
+\label{sec:loss}
+%----------------------------------------------------------------------
+Fig.~\ref{fig:loss} summarizes the objective.
+Only the source batch contributes supervised multi-task terms; the target batch contributes domain (and optional pseudo-label) terms that do not need $y_T$ or $z_T$.
+
+\begin{figure}[!t]
+\centering
+\begin{tikzpicture}[
+  font=\scriptsize\sffamily,
+  node distance=0.35cm and 0.45cm,
+  blk/.style={draw, rounded corners=2pt, align=center, inner sep=3pt},
+  arr/.style={-{Latex}, thick}
+]
+\node[blk, fill=blue!10] (S) {Source batch\\$(x_S,y_S,z_S)$};
+\node[blk, fill=orange!12, right=1.6cm of S] (T) {Target batch\\$x_T$ only};
+\node[blk, fill=gray!12, below=0.7cm of $(S)!0.5!(T)$] (F) {Shared $f_\Theta$};
+\draw[arr] (S)--(F); \draw[arr] (T)--(F);
+
+\node[blk, fill=green!12, below left=0.7cm and 0.1cm of F] (sup)
+  {$\mathcal{L}_{\mathrm{sup}}=\mathcal{L}_{\mathrm{pow}}+\mathcal{L}_{\mathrm{st}}$\\
+   ON-masked MSE + BCE($w^+$)\\
+   (+ equal task balance)};
+\node[blk, fill=red!12, below right=0.7cm and 0.1cm of F] (dom)
+  {$\mathcal{L}_{\mathrm{domain}}$\\
+   EGC: entropy gate\\
+   + appliance-conditional\\
+   MMD+CORAL on $\{Z^{(\ell)}\}$};
+\node[blk, fill=purple!10, below=0.55cm of dom] (pl)
+  {$\mathcal{L}_{\mathrm{PL}}$ (optional)\\
+   confident $\hat{z}_T$ pseudo-labels};
+\draw[arr] (F)--(sup);
+\draw[arr] (F)--(dom);
+\draw[arr] (dom)--(pl);
+
+\node[blk, fill=yellow!20, below=1.15cm of $(sup)!0.5!(dom)$] (tot)
+  {$\mathcal{L}=(1-\lambda)\mathcal{L}_{\mathrm{sup}}+\lambda\widetilde{\mathcal{L}}_{\mathrm{domain}}+\gamma_{\mathrm{pl}}\mathcal{L}_{\mathrm{PL}}$};
+\draw[arr] (sup)--(tot);
+\draw[arr] (dom)--(tot);
+\draw[arr] (pl)--(tot);
+\end{tikzpicture}
+\caption{Loss composition. Supervised multi-appliance multi-label terms use source labels only; domain and pseudo-label terms use unlabeled target aggregates.}
+\label{fig:loss}
+\end{figure}
+
+\paragraph{Why the design is layered.}
+A single MSE or BCE on a shared head is insufficient here.
+Power regression is dominated by high-duty appliances (e.g., fridge), while rare spikes (kettle, microwave) need strong classification gradients.
+Domain alignment on raw temporal maps can hurt sparse heads~\cite{muaz2024when}; aligning pooled FC embeddings, then conditioning on predicted multi-label states, is our remedy.
+Optional confident target pseudo-labels~\cite{hur2022ssda} further stabilize the multi-label decision boundary after a source-only warmup.
+
+\paragraph{Supervised power term (source).}
+Let $m_S=z_S\in\{0,1\}^{T\times K}$ be the multi-label ON mask.
+We use ON-masked MSE so OFF timesteps do not dominate the regression:
+\begin{equation}
+\mathcal{L}_{\mathrm{pow}}
 =
-\lambda_{y}\,\mathrm{MSE}(\hat{y}_S,y_S)
-+
-\lambda_{z}\,\mathrm{BCE}_{\mathrm{logits}}(\hat{z}_S,z_S;w^{+}),
+\lambda_{y}\,
+\frac{\big\|m_S\odot(\hat{y}_S-y_S)\big\|_2^{2}}{\|m_S\|_1+\varepsilon}.
+\label{eq:pow}
+\end{equation}
+
+\paragraph{Supervised multi-label state term (source).}
+States are treated as $K$ simultaneous binary labels over time.
+With per-appliance positive weights $w^{+}_{k}=\min(50,\,n_{\mathrm{neg},k}/n_{\mathrm{pos},k})$ estimated on source training only,
+\begin{equation}
+\mathcal{L}_{\mathrm{st}}^{\mathrm{raw}}
+=
+\mathrm{BCE}_{\mathrm{logits}}(\hat{z}_S,z_S;w^{+}).
+\label{eq:st}
+\end{equation}
+Because MSE and BCE live on different numeric scales, we apply MultiNILM-style \emph{equal task balance}:
+\begin{equation}
+\mathcal{L}_{\mathrm{st}}
+=
+\lambda_{z}\,
+\mathcal{L}_{\mathrm{st}}^{\mathrm{raw}}
+\cdot
+\frac{\mathcal{L}_{\mathrm{pow}}}{\mathcal{L}_{\mathrm{st}}^{\mathrm{raw}}}\Big|_{\mathrm{sg}},
+\label{eq:balance}
+\end{equation}
+so $\lambda_{z}{=}1$ means equal magnitude of power and state contributions.
+Then
+\begin{equation}
+\mathcal{L}_{\mathrm{sup}}=\mathcal{L}_{\mathrm{pow}}+\mathcal{L}_{\mathrm{st}}.
 \label{eq:sup}
 \end{equation}
-with $\lambda_{y}{=}2$, $\lambda_{z}{=}1$, and per-appliance positive weights
-$w^{+}_{k}=\min\!\big(50,\,n_{\mathrm{neg},k}/n_{\mathrm{pos},k}\big)$ estimated on the source training set only (cap $50$) to handle sparse kettle/microwave events.
-Aggregates and powers are z-score normalized with fixed hand-set UK-DALE constants (Table~\ref{tab:norm}), taken from a common multi-appliance NILM preprocessing convention and \emph{not} recomputed on House~2 or on the held-out test segment; reported metrics use denormalized watts.
+
+\paragraph{Domain term without target labels.}
+Source and target windows are passed through the same encoder.
+Layer-wise hybrid alignment on pooled FC features~\cite{lin2022dda,sun2016deepcoral} is
+\begin{equation}
+\mathcal{L}^{(\ell)}
+=
+\mu\,\mathrm{MMD}^{2}\!\big(Z_S^{(\ell)},Z_T^{(\ell)}\big)
++
+(1-\mu)\,\mathcal{L}_{\mathrm{CORAL}}\!\big(Z_S^{(\ell)},Z_T^{(\ell)}\big),
+\label{eq:hyb}
+\end{equation}
+with $\mu{=}0.4$.
+Global FC-UDA averages~\eqref{eq:hyb} over $\ell=1,2,3$.
+
+\paragraph{EGC-DA for multi-label transfer.}
+Uniform alignment can still induce negative transfer among sparse and dense appliances~\cite{muaz2024when}.
+EGC-DA (inspired by CDAN+E~\cite{long2018cdan}) adds:
+\begin{enumerate}
+\item \textbf{Entropy gate.} Sample weight
+$w=1-\bar{H}(\sigma(\hat{z}))/\ln 2$ (mean binary entropy over time and the $K$ labels) down-weights uncertain windows before global MMD+CORAL.
+\item \textbf{Appliance-conditional alignment.} On the last FC layer, soft-weight embeddings by the time-averaged ON probability of each appliance and average hybrid losses over appliances with sufficient predicted ON mass ($\ge 2.0$) on both domains.
+\end{enumerate}
+We blend gated-global and conditional terms with equal weight $0.5$ to form $\mathcal{L}_{\mathrm{domain}}$.
+
+\paragraph{Optional target pseudo-labels.}
+After source-only warmup, confident target multi-label predictions
+($\max(\sigma(\hat{z}_T),1-\sigma(\hat{z}_T))\ge\tau$, default $\tau{=}0.9$)
+provide hard pseudo-labels for a BCE term $\mathcal{L}_{\mathrm{PL}}$ with weight $\gamma_{\mathrm{pl}}$ (default $0.3$)~\cite{hur2022ssda}.
+
+\paragraph{Total objective.}
+Convex mixing~\cite{lin2022dda} with stop-grad magnitude matching of the domain term yields
+\begin{equation}
+\begin{aligned}
+\mathcal{L}
+&=
+(1-\lambda)\mathcal{L}_{\mathrm{sup}}
++
+\lambda\,\widetilde{\mathcal{L}}_{\mathrm{domain}}
++
+\gamma_{\mathrm{pl}}\,\mathcal{L}_{\mathrm{PL}},
+\\
+\widetilde{\mathcal{L}}_{\mathrm{domain}}
+&=
+\mathcal{L}_{\mathrm{domain}}\cdot
+\frac{\mathcal{L}_{\mathrm{sup}}}{|\mathcal{L}_{\mathrm{domain}}|}\Big|_{\mathrm{sg}}.
+\end{aligned}
+\label{eq:total}
+\end{equation}
+Default $\lambda\in\{0.5,0.6\}$.
+For the first $N_{\mathrm{warm}}$ epochs (default $30$) we set $\lambda{=}0$ and $\gamma_{\mathrm{pl}}{=}0$ (source-only), then enable DA and pseudo-labeling.
+Algorithm~\ref{alg:train} summarizes one post-warmup step.
 
 \begin{table}[!t]
 \caption{Fixed z-score normalization constants (hand-set UK-DALE convention; not target/test statistics).}
@@ -261,65 +426,21 @@ Microwave & 60 & 300 \\
 \end{tabular}
 \end{table}
 
-\subsection{Domain alignment on FC layers}
-\paragraph{Hybrid MMD+CORAL (layer-wise).}
-For L2-normalized FC features of a mini-batch,
-\begin{equation}
-\mathcal{L}^{(\ell)}
-=
-\mu\,\mathrm{MMD}^{2}\!\big(Z_S^{(\ell)},Z_T^{(\ell)}\big)
-+
-(1-\mu)\,\mathcal{L}_{\mathrm{CORAL}}\!\big(Z_S^{(\ell)},Z_T^{(\ell)}\big),
-\label{eq:hyb}
-\end{equation}
-with $\mu{=}0.4$~\cite{lin2022dda}.
-CORAL is the Frobenius distance between source/target covariances~\cite{sun2016deepcoral}.
-MMD uses an RBF kernel with median-heuristic bandwidth.
-The global domain loss averages~\eqref{eq:hyb} over $\ell=1,2,3$.
-
-\paragraph{Global FC-UDA baseline.}
-Uses~\eqref{eq:hyb} uniformly on all FC layers (no entropy / appliance conditioning).
-
-\paragraph{EGC-DA (proposed MATUDA adaptation).}
-Uniform alignment of one shared embedding can induce negative transfer among sparse and dense appliances~\cite{muaz2024when}.
-Borrowing from CDAN+E~\cite{long2018cdan}, EGC-DA:
-\begin{enumerate}
-\item \textbf{Entropy gate.} Softmax-free multi-label confidence
-$w=1-H(\sigma(\hat{z}))/\ln 2$ reweights source/target samples before global MMD+CORAL.
-\item \textbf{Appliance-conditional alignment.} On the last FC layer, soft-weight rows by $\sigma(\hat{z}^{(k)})$ and average hybrid losses over appliances whose predicted ON mass $\sum_b \sigma(\hat{z}_b^{(k)})$ is at least $2.0$ on both source and target mini-batches.
-\end{enumerate}
-The final domain term blends gated-global and conditional losses with equal weight $0.5$.
-
-\subsection{Total objective and training}
-With convex mixing of supervised and domain terms~\cite{lin2022dda} and stop-grad magnitude matching of the domain term,
-\begin{equation}
-\mathcal{L}
-=
-(1-\lambda)\mathcal{L}_{\mathrm{sup}}
-+
-\lambda\,\widetilde{\mathcal{L}}_{\mathrm{domain}},
-\quad
-\widetilde{\mathcal{L}}_{\mathrm{domain}}
-=
-\mathcal{L}_{\mathrm{domain}}\cdot
-\frac{\mathcal{L}_{\mathrm{sup}}}{|\mathcal{L}_{\mathrm{domain}}|}\Big|_{\mathrm{sg}}.
-\label{eq:total}
-\end{equation}
-We use $\lambda{=}0.6$ and warm $\lambda$ up over the first 10 epochs.
-Algorithm~\ref{alg:train} summarizes one training step.
-
 \begin{algorithm}[!t]
-\caption{One MATUDA training step (unsupervised DA)}
+\caption{One MATUDA training step (unsupervised DA; after warmup)}
 \label{alg:train}
 \begin{algorithmic}[1]
-\REQUIRE Source batch $(x_S,y_S,z_S)$, target batch $x_T$, weights $\Theta$, $\lambda$
+\REQUIRE Source batch $(x_S,y_S,z_S)$, target batch $x_T$, weights $\Theta$, $\lambda$, $\gamma_{\mathrm{pl}}$
 \STATE $(\hat{y}_S,\hat{z}_S,\{Z_S^{(\ell)}\})\leftarrow f_\Theta(x_S)$
 \STATE $(\hat{y}_T,\hat{z}_T,\{Z_T^{(\ell)}\})\leftarrow f_\Theta(x_T)$ \COMMENT{labels unused}
-\STATE Compute $\mathcal{L}_{\mathrm{sup}}$ on source only using~\eqref{eq:sup}
+\STATE Compute $\mathcal{L}_{\mathrm{pow}}$, $\mathcal{L}_{\mathrm{st}}$, $\mathcal{L}_{\mathrm{sup}}$ on source using~\eqref{eq:pow}--\eqref{eq:sup}
 \STATE Compute $\mathcal{L}_{\mathrm{domain}}$ on $\{Z_S^{(\ell)},Z_T^{(\ell)}\}$ (Global FC-UDA or EGC-DA)
+\STATE Optionally compute confident-target $\mathcal{L}_{\mathrm{PL}}$ from $\hat{z}_T$
 \STATE Form $\mathcal{L}$ by~\eqref{eq:total}; update $\Theta$ by AdamW
 \end{algorithmic}
 \end{algorithm}
+
+Aggregates and powers are z-score normalized with fixed hand-set UK-DALE constants (Table~\ref{tab:norm}), taken from a common multi-appliance NILM preprocessing convention and \emph{not} recomputed on House~2 or on the held-out test segment; reported metrics use denormalized watts.
 
 %======================================================================
 \section{Experimental Setup}
@@ -336,7 +457,7 @@ Missing samples are excluded during CSV construction; windows require a complete
 \textbf{Train/val:} Houses~1+5 labeled windows.
 \textbf{Target adaptation:} House~2 aggregates only, using the first $70\%$ of the House~2 timeline (unlabeled).
 \textbf{Target test:} the remaining $30\%$ of House~2 (labels used solely for metrics).
-Adaptation and evaluation windows therefore do not share timesteps; overlapping sliding windows within each segment use strides $30$ (train/adapt) and $60$ (eval).
+Adaptation and evaluation windows therefore do not share timesteps; overlapping sliding windows within each segment use stride $240$.
 Aggregate mean power differs strongly across domains (source $\approx$1089\,W vs.\ House~2 $\approx$311\,W), confirming a non-trivial shift.
 
 \subsection{Compared methods (same backbone)}
@@ -363,10 +484,11 @@ Training runs on an NVIDIA RTX~4090 (PyTorch 2.6, CUDA 12.4).
 Item & Value \\
 \midrule
 Optimizer & AdamW, lr $10^{-3}$, weight decay $10^{-4}$ \\
-Schedule & Cosine annealing, 80 epochs \\
-Batch size / steps per epoch & 64 / 600 \\
-$\lambda$ (DA) / warmup & 0.6 / 10 epochs \\
+Schedule & ReduceLROnPlateau on source val MAE$-$F1 \\
+Batch size & 32 \\
+$\lambda$ (DA) / source-only warmup & $0.5$--$0.6$ / $30$ epochs (EGC+PL) \\
 $\mu$ (MMD vs.\ CORAL) & 0.4 \\
+Pseudo-label weight / confidence & $0.3$ / $0.9$ (optional) \\
 Conditional ON-mass threshold & $2.0$ \\
 Positive-weight cap & $50$ \\
 Gradient clip & 5.0 \\
@@ -484,7 +606,7 @@ The present manuscript remains below top-tier journal evidence standards until t
 %======================================================================
 \section{Conclusion}
 %======================================================================
-This paper presented MATUDA for unsupervised transfer of joint multi-label and multi-appliance NILM.
+This paper presented MATUDA for unsupervised transfer of joint multi-label and multi-appliance NILM: a sequence-to-sequence TCN with a shared pointwise FC adaptation tower, $K$ appliance-specific heads, and EGC-DA (optionally with confident target pseudo-labels).
 Under a UK-DALE cross-building scenario, preliminary results show large macro-F1 gains from EGC-DA relative to Source-Only and Global FC-UDA, together with a clear SAE degradation that must be reported honestly.
 Ongoing work replaces the pilot tables with multi-seed chronological-split evaluation, ablations, multi-house and cross-dataset protocols, and deeper analysis of sparse loads such as the dishwasher.
 
@@ -496,7 +618,7 @@ Ongoing work replaces the pilot tables with multi-seed chronological-split evalu
 \bibitem{faustine2020unet} A.~Faustine, L.~Pereira, and C.~Klemenjak, ``UNet-NILM: A deep neural network for multi-appliance NILM,'' in \emph{Proc. NILM Workshop}, 2020.
 \bibitem{xiong2023matnilm} Z.~Xiong \emph{et al.}, ``MATNilm: Multi-appliance-task non-intrusive load monitoring with limited labeled data,'' \emph{IEEE Trans. Ind. Informat.}, 2023.
 \bibitem{liu2022uda} Y.~Liu, J.~Wang, and J.~Deng, ``Unsupervised domain adaptation for non-intrusive load monitoring,'' \emph{IEEE Trans. Ind. Informat.}, 2022.
-\bibitem{lin2022dda} J.~Lin, J.~Ma, and J.~Zhu, ``Deep domain adaptation for non-intrusive load monitoring based on a knowledge mapping strategy,'' \emph{IEEE Trans. Smart Grid}, 2022.
+\bibitem{lin2022dda} J.~Lin, J.~Ma, J.~Zhu, and H.~Liang, ``Deep domain adaptation for non-intrusive load monitoring based on a knowledge transfer learning network,'' \emph{IEEE Trans. Smart Grid}, vol.~13, no.~1, pp.~280--292, Jan.~2022.
 \bibitem{xiong2026ahda} Hierarchical distribution alignment for NILM transfer, \emph{Electronics}, 2026.
 \bibitem{lu2026edge} T.~Lu \emph{et al.}, ``Unsupervised lightweight transfer learning for NILM,'' \emph{IEEE Trans. Smart Grid}, 2026.
 \bibitem{dincecco2020transfer} M.~D'Incecco, S.~Squartini, and M.~Zhong, ``Transfer learning for non-intrusive load monitoring,'' \emph{IEEE Trans. Smart Grid}, vol.~11, no.~2, pp.~1419--1429, 2020.

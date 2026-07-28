@@ -1,4 +1,4 @@
-﻿"""Shared training/evaluation/inference loops for multi-appliance NILM.
+"""Shared training/evaluation/inference loops for multi-appliance NILM.
 
 This file is the common experiment engine used by every model adapter.
 
@@ -1442,8 +1442,9 @@ def train_model(
                     train_time_sec=train_time_sec,
                     val_time_sec=val_time_sec,
                     improved=improved,
-                    da_active=da_active,
-                    lambda_domain=da_lambda,
+                    da_active=da_active
+                    and float(getattr(loss_fn, "lambda_domain", 0.0)) != 0.0,
+                    lambda_domain=float(getattr(loss_fn, "lambda_domain", da_lambda)),
                     domain_method=da_method,
                     domain_mu=da_mu,
                     domain_mix=str(
