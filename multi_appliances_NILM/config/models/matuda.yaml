@@ -1,4 +1,5 @@
-# MATUDA — single config (hard gate + EGC-DA)
+# MATUDA — hard gate + Lin-style DA from epoch 1
+# Lin TSG 2022: L = (1-λ) L_R + λ L_domain every batch, best λ=0.6 (no warmup)
 # Train: python main.py --mode train_evaluate --model matuda
 model_name: matuda
 
@@ -35,15 +36,16 @@ loss:
   pos_weight: auto
   pos_weight_cap: 50
   on_masked_power: false
-  da_warmup_epochs: 30
-  pl_weight: 0.3
-  pl_confidence: 0.9
+  # Lin: DA on from epoch 1 (no source-only warmup / no Hur PL)
+  da_warmup_epochs: 0
+  da_ramp_epochs: 0
+  pl_weight: 0.0
   da_mode: egc
   domain_mu: 0.4
   domain_mix: convex
   domain_scale: equal
   conditional_weight: 0.5
-  lambda_domain: 0.5
+  lambda_domain: 0.6
 
 domain_adaptation:
   enabled: true
