@@ -931,6 +931,10 @@ def _run_epoch(
             n_batches += 1
             if n_batches % 20 == 0 or n_batches == n_total:
                 postfix = {"loss": f"{step.logs.get('loss', 0.0):.4f}"}
+                if "loss_state" in step.logs:
+                    postfix["state"] = f"{step.logs['loss_state']:.4f}"
+                if "loss_power" in step.logs:
+                    postfix["power"] = f"{step.logs['loss_power']:.4f}"
                 if "loss_domain" in step.logs and use_target:
                     postfix["loss_domain"] = f"{step.logs['loss_domain']:.4f}"
                     if "loss_domain_term" in step.logs:
@@ -1427,6 +1431,13 @@ def train_model(
                 space = str(train_cfg.get("checkpoint_mae_space", "normalized")).lower()
                 ckpt_detail = f"{space} mae-f1, mae={mae_ckpt:.4f}, f1={val_f1:.4f}"
 
+            # Prefer live lambda logged by the adapter (warmup-safe).
+            live_lambda = float(
+                train_logs.get(
+                    "lambda_domain",
+                    getattr(loss_fn, "lambda_domain", da_lambda),
+                )
+            )
             tqdm.write(
                 _format_epoch_summary(
                     epoch_no=epoch_no,
@@ -1442,9 +1453,8 @@ def train_model(
                     train_time_sec=train_time_sec,
                     val_time_sec=val_time_sec,
                     improved=improved,
-                    da_active=da_active
-                    and float(getattr(loss_fn, "lambda_domain", 0.0)) != 0.0,
-                    lambda_domain=float(getattr(loss_fn, "lambda_domain", da_lambda)),
+                    da_active=da_active and live_lambda != 0.0,
+                    lambda_domain=live_lambda,
                     domain_method=da_method,
                     domain_mu=da_mu,
                     domain_mix=str(

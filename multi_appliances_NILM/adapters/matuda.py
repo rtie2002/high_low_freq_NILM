@@ -125,23 +125,42 @@ class MATUDAAdapter(BaseNILMAdapter):
         state_prob = torch.sigmoid(state_logits)
         pred_state = (state_prob >= 0.5).long()
 
+        # Log exactly like MultiNILM (same MultiNILMLoss fields).
+        loss_power = float(losses["loss_power"].detach())
+        loss_state = float(losses["loss_state"].detach())
+        loss_state_term = float(losses["loss_state_term"].detach())
+        if not hasattr(self, "_logged_loss_once"):
+            self._logged_loss_once = True
+            print(
+                f"[matuda] first-batch MultiNILM logs: "
+                f"power={loss_power:.4f} state={loss_state:.4f} "
+                f"state_term={loss_state_term:.4f} "
+                f"lambda={float(losses.get('lambda', 0.0) or 0.0):g}",
+                flush=True,
+            )
+            if loss_state <= 0.0:
+                raise RuntimeError(
+                    "MATUDA loss_state is 0 — MultiNILM BCE path is broken. "
+                    "Stop training and sync model/MATUDA_loss.py + adapters/matuda.py."
+                )
+
         with torch.no_grad():
-            mae = (power_pred - y).abs().mean()
+            mae = float((power_pred - y).abs().mean().detach())
 
         return StepOutput(
             loss=losses["loss"],
             logs={
                 "loss": float(losses["loss"].detach()),
-                "loss_power": float(losses["loss_power"].detach()),
-                "loss_state": float(losses["loss_state"].detach()),
-                "loss_state_term": float(losses["loss_state_term"].detach()),
+                "loss_power": loss_power,
+                "loss_state": loss_state,
+                "loss_state_term": loss_state_term,
                 "loss_domain": float(losses["loss_domain"].detach()),
                 "loss_domain_term": float(
                     losses.get("loss_domain_term", losses["loss_domain"]).detach()
                 ),
                 "loss_pl": float(losses.get("loss_pl", losses["loss"].new_zeros(())).detach()),
                 "lambda_domain": float(losses.get("lambda", 0.0) or 0.0),
-                "mae": float(mae.detach()),
+                "mae": mae,
             },
             aux={
                 "pred_state": pred_state.detach().cpu(),
