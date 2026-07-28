@@ -19,15 +19,24 @@ windowing:
   training_targets: auto
 
 architecture:
-  conv_channels: 96
+  # Matched to MultiNILM backbone dims; compact FC kept for Lin-style DA
+  channel_schedule: [32, 64, 128]
+  hidden_channels: 128
+  detail_branch_channels: 16
+  stem_kernels: [3, 5, 9]
+  stage_kernel_size: 5
   tcn_blocks: 8
-  fc_dims: [512, 256, 128]
+  tcn_kernel_size: 5
+  max_dilation: 64
+  # Smaller than old 96→512→256→128 so FC fits the C=128 MultiNILM trunk
+  fc_dims: [256, 192, 128]
   dropout: 0.15
   use_gate: true
   gate_mode: hard
-  stem_kernels: [3, 5, 9]
-  head_hidden: 64
+  gate_threshold: 0.5
+  head_local_layers: 2
   head_kernel_size: 3
+  head_use_residual: true
 
 loss:
   task_balance: equal

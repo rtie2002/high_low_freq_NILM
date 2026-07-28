@@ -48,19 +48,33 @@ class MATUDAAdapter(BaseNILMAdapter):
         appliances = self.cfg["appliances"]
         seq_len = int(self.model_cfg["windowing"]["input_window_length"])
         off_norms = appliance_off_norm_normalized(self.experiment, appliances)
+        schedule = arch.get("channel_schedule", [32, 64, 128])
+        hidden = int(arch.get("hidden_channels", schedule[-1] if schedule else 128))
         model = MATUDANet(
             num_appliances=len(appliances),
             seq_len=seq_len,
-            conv_channels=int(arch.get("conv_channels", 96)),
-            tcn_blocks=int(arch.get("tcn_blocks", 8)),
-            fc_dims=tuple(arch.get("fc_dims", [512, 256, 128])),
+            channel_schedule=tuple(schedule),
+            hidden_channels=hidden,
+            tcn_blocks=int(arch.get("tcn_blocks", arch.get("num_blocks", 8))),
+            tcn_kernel_size=int(arch.get("tcn_kernel_size", arch.get("kernel_size", 5))),
+            max_dilation=int(arch.get("max_dilation", 64)),
+            fc_dims=tuple(arch.get("fc_dims", [256, 192, 128])),
             dropout=float(arch.get("dropout", 0.15)),
             use_gate=bool(arch.get("use_gate", True)),
-            stem_kernels=tuple(arch.get("stem_kernels", [3, 5, 9])),
+            stem_kernels=tuple(
+                arch.get("stem_kernels", arch.get("detail_kernels", [3, 5, 9]))
+            ),
+            detail_branch_channels=int(arch.get("detail_branch_channels", 16)),
+            stage_kernel_size=int(arch.get("stage_kernel_size", 5)),
             appliance_off_norm=off_norms,
-            gate_mode=str(arch.get("gate_mode", "soft")),
-            head_hidden=int(arch.get("head_hidden", 64)),
+            gate_mode=str(arch.get("gate_mode", "hard")),
+            gate_threshold=float(arch.get("gate_threshold", 0.5)),
+            head_local_layers=int(arch.get("head_local_layers", 2)),
             head_kernel_size=int(arch.get("head_kernel_size", 3)),
+            head_use_residual=bool(arch.get("head_use_residual", True)),
+            # Legacy keys still accepted
+            conv_channels=arch.get("conv_channels"),
+            head_hidden=arch.get("head_hidden"),
             use_instance_norm=bool(arch.get("use_instance_norm", False)),
         )
         return model.to(device)
