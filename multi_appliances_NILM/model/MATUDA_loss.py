@@ -338,9 +338,9 @@ class MATUDACriterion(nn.Module):
                 **base,
             }
 
-        l_dom = self._domain(out_s, out_t)
+        l_dom = self._domain(out_s, out_t).clamp_min(0.0)
         if self.domain_scale == "equal":
-            scale = (l_sup.detach() / (l_dom.detach().abs() + 1e-8)).clamp(0.1, 10.0)
+            scale = (l_sup.detach() / (l_dom.detach() + 1e-8)).clamp(0.1, 10.0)
             l_dom_term = l_dom * scale
         else:
             l_dom_term = l_dom
