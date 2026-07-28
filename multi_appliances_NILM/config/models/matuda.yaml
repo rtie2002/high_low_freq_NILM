@@ -44,17 +44,17 @@ loss:
   pos_weight: auto
   pos_weight_cap: 50
   on_masked_power: false
-  # MultiNILM-style DA: global MMD+CORAL (not EGC), Lin mix/scale
+  # Lin TSG 2022: L=(1-λ)L_R + λ L_domain every epoch; best λ=0.6
+  # No source-only warmup, no mid-train DA freeze, no pseudo-labels
   da_warmup_epochs: 0
   da_ramp_epochs: 0
-  da_freeze_patience: 8
+  da_freeze_patience: 0
   pl_weight: 0.0
   da_mode: global
   domain_mu: 0.4
   domain_mix: convex
   domain_scale: equal
   conditional_weight: 0.5
-  # MultiNILM baseline has lambda_domain: 0; Lin best when DA on = 0.6
   lambda_domain: 0.6
 
 domain_adaptation:
