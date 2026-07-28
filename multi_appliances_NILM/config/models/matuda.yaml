@@ -1,0 +1,77 @@
+# MATUDA — multi-appliance multi-task UDA (seq2point + FC EGC-DA)
+# Registered as --model matuda in multi_appliances_NILM/main.py
+model_name: matuda
+
+data:
+  mains_column: aggregate
+  state_label_source: threshold
+
+evaluation:
+  pred_on_source: state_head
+
+windowing:
+  # Zhang seq2point: predict center of a long aggregate window.
+  input_window_length: 599
+  output_window_length: 1
+  output_alignment: center
+  input_stride: 30
+  eval_stride: 60
+  eval_reconstruction: flat
+  training_targets: output_window
+  force_even_input_length: false
+
+architecture:
+  conv_channels: 96
+  tcn_blocks: 8
+  fc_dims: [512, 256, 128]
+  dropout: 0.15
+  use_gate: true
+  stem_kernels: [3, 5, 9]
+
+loss:
+  power_weight: 2.0
+  state_weight: 1.0
+  pos_weight: auto
+  pos_weight_cap: 50
+  # EGC-DA: egc | global | egc_no_cond | egc_no_entropy | none
+  da_mode: egc
+  domain_method: both
+  domain_mu: 0.4
+  domain_mix: convex
+  domain_scale: equal
+  conditional_weight: 0.5
+  lambda_domain: 0.6
+
+domain_adaptation:
+  enabled: true
+  mode: egc
+  # Unlabeled House-2 aggregates (y/z ignored by runner).
+  target_split: test
+
+training:
+  batch_size: 64
+  epochs: 120
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  num_workers: 0
+  use_amp: false
+  checkpoint_monitor: val_mae_minus_f1
+  checkpoint_mae_space: normalized
+  early_stop_patience: 40
+  scheduler: reduce_on_plateau
+  lr_scheduler:
+    type: reduce_on_plateau
+    monitor: val_mae_minus_f1
+    patience: 8
+    factor: 0.5
+    min_lr: 0.00001
+  gradient_clip: 5.0
+  train_shuffle: true
+  cudnn_benchmark: true
+  tf32: true
+  plots:
+    plot_mode: interval
+    plot_interval: 20
+    n_waveform_periods: 3
+    feature_maps:
+      enabled: false

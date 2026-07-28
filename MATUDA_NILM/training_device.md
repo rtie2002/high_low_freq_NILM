@@ -40,7 +40,7 @@ ssh raymond@100.110.55.5
 Password:
 
 ```text
-Enter the training-device password when prompted.
+(see gitignored `training_device.secrets.md` or env `MATUDA_SSH_PASSWORD`)
 ```
 
 Go to the training workspace:
@@ -70,7 +70,7 @@ for training. SSH user is `raymond`, but the working GPU env is under user `PC`:
 ```text
 Env name:   nilm
 Python:     C:\Users\PC\anaconda3\envs\nilm\python.exe
-Activate:   & "C:\Users\PC\anaconda3\Scripts\activate.bat" nilm
+Activate:   C:\Users\PC\anaconda3\Scripts\activate.bat  (then: conda activate nilm)
 Verified:   torch 2.6.0+cu124, cuda=True, device=NVIDIA GeForce RTX 4090
 ```
 
@@ -89,10 +89,10 @@ python -c "import torch; print(torch.__version__, torch.cuda.is_available(), tor
 & "C:\Users\PC\anaconda3\envs\nilm\python.exe" your_script.py
 ```
 
-For plink / AI automation, **always** use that full python path (never bare `python`).
+For plink / AI automation, **always** prefix remote Python with that full path
+(never rely on `python` alone).
 
-Copy for MATUDA work: `MATUDA_NILM/training_device.md` and
-`MATUDA_NILM/training_device.secrets.md`.
+Extra secrets / hostkey: see `training_device.secrets.md` (gitignored).
 
 ## 4. Run Code On Training Device
 
@@ -121,7 +121,7 @@ To let the AI automate the training-device command while you watch the output,
 run this from the local project:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\run_training_device_visible.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_training_device_visible.ps1
 ```
 
 This opens a visible PowerShell window, logs into the training device with
@@ -131,7 +131,7 @@ keeps the window open after finishing.
 To run a different command:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\run_training_device_visible.ps1 -RemoteCommand "git pull; nvidia-smi"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_training_device_visible.ps1 -RemoteCommand "git pull; nvidia-smi"
 ```
 
 ## Notes For Future AI
@@ -147,7 +147,7 @@ Always follow this order unless the user says otherwise:
 3. Commit the local changes.
 4. Push if the training device pulls from the remote repository.
 5. SSH / plink into the training device.
-6. Enter the password when prompted (or use secrets file if present).
+6. Enter the password (see this file / `training_device.secrets.md`).
 7. `Set-Location D:\Raymond\high_low_freq_NILM`
 8. `git pull`
 9. Run the requested command with **`C:\Users\PC\anaconda3\envs\nilm\python.exe`**.

@@ -1,0 +1,44 @@
+# UK-DALE cross-house for MATUDA UDA (H1+H5 → H2). Never H3/H4.
+experiment_id: ukdale_matuda_egc_h1h5_to_h2
+seed: 2026
+data_root: datasets/ukdale
+
+csv:
+  train_file: training/multi_appliance_training.csv
+  validation_file: validating/multi_appliance_validating.csv
+  test_file: testing/multi_appliance_testing.csv
+  mains_column: aggregate
+  appliances:
+    kettle:         {power: kettle_power,         state: kettle_on}
+    fridge:         {power: fridge_power,         state: fridge_on}
+    dishwasher:     {power: dishwasher_power,     state: dishwasher_on}
+    washingmachine: {power: washingmachine_power, state: washingmachine_on}
+    microwave:      {power: microwave_power,      state: microwave_on}
+
+normalization:
+  aggregate: {mean: 400, std: 500}
+  appliances:
+    kettle:         {mean: 100, std: 500}
+    fridge:         {mean: 50,  std: 50}
+    dishwasher:     {mean: 700, std: 1000}
+    washingmachine: {mean: 400, std: 700}
+    microwave:      {mean: 60,  std: 300}
+
+evaluation:
+  on_thresholds_watts:
+    kettle: 40
+    fridge: 50
+    dishwasher: 30
+    washingmachine: 30
+    microwave: 100
+  max_on_power_watts:
+    kettle: 4000
+    fridge: 4000
+    dishwasher: 4000
+    washingmachine: 3999
+    microwave: 4000
+  power_postprocess:
+    enabled: true
+    min_power_watts: 5
+  sae_period: 1200
+  power_unit: watts

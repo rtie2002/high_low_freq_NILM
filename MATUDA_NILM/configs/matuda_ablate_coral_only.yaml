@@ -1,0 +1,32 @@
+# Ablation: Global FC-UDA with CORAL only (mu=0)
+experiment_id: matuda_ablate_coral_only
+seed: 2026
+data_root: D:/Raymond/high_low_freq_NILM/multi_appliances_NILM/datasets/ukdale
+output_dir: D:/Raymond/high_low_freq_NILM/MATUDA_NILM/results/matuda_ablate_coral_only
+prediction_mode: seq2point
+seq_len: 599
+stride_train: 30
+stride_eval: 60
+batch_size: 64
+num_workers: 0
+target_adapt_frac: 0.7
+appliances: [kettle, fridge, dishwasher, washingmachine, microwave]
+conv_channels: 96
+tcn_blocks: 8
+fc_dims: [512, 256, 128]
+dropout: 0.15
+use_gate: true
+lr: 0.001
+weight_decay: 0.0001
+epochs: 80
+steps_per_epoch: 600
+power_weight: 2.0
+state_weight: 1.0
+domain_adaptation:
+  enabled: true
+  mode: global
+  lambda_domain: 0.6
+  mu_mmd: 0.0
+  domain_mix: convex
+  domain_scale: equal
+  warmup_epochs: 10

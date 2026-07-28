@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 
 from adapters.config import load_experiment, load_model_config, merge_configs, model_name_from_config
 from adapters.mat_nilm import MATNILMAdapter
+from adapters.matuda import MATUDAAdapter
 from adapters.multinilm import MultiNILMAdapter
 from adapters.transfer_multi_appliance import TransferMultiApplianceAdapter
 from evaluation.compare import compare_experiment
@@ -22,6 +23,7 @@ from runner import evaluate_model, train_model
 # Register new models here: name -> adapter class
 MODELS = {
     "mat_nilm": MATNILMAdapter,
+    "matuda": MATUDAAdapter,
     "multinilm": MultiNILMAdapter,
     "transfer_multi_appliance": TransferMultiApplianceAdapter,
 }

@@ -1,0 +1,513 @@
+\documentclass[journal]{IEEEtran}
+% MATUDA --- Multi-Appliance multi-Task Unsupervised Domain Adaptation for NILM
+% Journal draft: protocol and method specified for reproducibility; tables marked
+% preliminary until multi-seed chronological-split runs complete.
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage{multirow}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,calc}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{MATUDA: Multi-Appliance Multi-Task Unsupervised Domain Adaptation for Non-Intrusive Load Monitoring}
+
+\author{\IEEEauthorblockN{Raymond Tie Siou Hin}
+\IEEEauthorblockA{\textit{Department of Electrical and Robotics} \\
+\textit{Centre for Net-Zero Technology} \\
+\textit{Monash University Malaysia} \\
+Bandar Sunway, Malaysia}
+\and
+\IEEEauthorblockN{Tan Wen Shan}
+\IEEEauthorblockA{\textit{Department of Electrical and Robotics} \\
+\textit{Centre for Net-Zero Technology} \\
+\textit{Monash University Malaysia} \\
+Bandar Sunway, Malaysia \\
+tan.wenshan@monash.edu}
+\and
+\IEEEauthorblockN{Ding Ze Yang}
+\IEEEauthorblockA{\textit{Department of Electrical and Robotics} \\
+\textit{Centre for Net-Zero Technology} \\
+\textit{Monash University Malaysia} \\
+Bandar Sunway, Malaysia}
+\and
+\IEEEauthorblockN{Mirza Rayana Sanzana}
+\IEEEauthorblockA{\textit{School of Information Technology} \\
+\textit{Monash University Malaysia} \\
+Bandar Sunway, Malaysia}
+\and
+\IEEEauthorblockN{Haval Kamil}
+\IEEEauthorblockA{\textit{Department of Air Conditioning and Refrigeration} \\
+\textit{College of Engineering Technology} \\
+\textit{Al-Kitab University} \\
+Kirkuk, Iraq}
+}
+
+\maketitle
+
+\begin{abstract}
+Deploying non-intrusive load monitoring (NILM) in a new building requires recognizing multiple appliances simultaneously---both on/off states and power---while typically only the aggregate meter is available at the target site.
+Existing unsupervised domain adaptation (UDA) methods for NILM are dominated by single-appliance models; multi-appliance networks are usually transferred with labeled target fine-tuning.
+This paper studies unsupervised cross-building transfer of a joint multi-label classification and multi-appliance regression model.
+We propose MATUDA, a sequence-to-point CNN--temporal convolutional network (TCN) with a shared fully connected (FC) adaptation tower.
+Domain discrepancy is measured on FC activations by a hybrid MMD+CORAL loss, following Deep CORAL, DAN, and late-layer NILM adaptation practice~\cite{sun2016deepcoral,long2015dan,lin2022dda}, and refined by entropy-gated conditional domain alignment (EGC-DA) inspired by conditional adaptation in computer vision~\cite{long2018cdan}.
+On UK-DALE (labeled Houses~1+5 $\rightarrow$ unlabeled House~2 aggregates $\rightarrow$ held-out House~2 test), preliminary results show that MATUDA raises target macro-F1 substantially over source-only and global FC-UDA, while relative energy error (SAE) can worsen---a trade-off we report explicitly.
+\end{abstract}
+
+\begin{IEEEkeywords}
+NILM, multi-appliance, multi-label learning, unsupervised domain adaptation, sequence-to-point, TCN, transfer learning
+\end{IEEEkeywords}
+
+%======================================================================
+\section{Introduction}
+%======================================================================
+Non-intrusive load monitoring (NILM) estimates appliance-level consumption from a single aggregate meter~\cite{hart1992nilm,kelly2015ukdale}.
+Deep sequence models have advanced both power estimation and on/off recognition~\cite{kelly2015neural,zhang2018seq2point}, and multi-appliance architectures jointly decode several loads~\cite{faustine2020unet,xiong2023matnilm}.
+In practice, however, a newly instrumented house rarely provides submeter labels.
+A model trained on labeled houses must therefore transfer under domain shift induced by occupancy, wiring, and appliance mixes.
+
+Two research lines address only part of this problem.
+\textbf{Unsupervised domain adaptation (UDA)} for NILM---MMD/CORAL, adversarial alignment, Sinkhorn hybrids---is mature for \emph{single}-appliance disaggregation~\cite{liu2022uda,lin2022dda,xiong2026ahda,lu2026edge}.
+\textbf{Multi-appliance / multi-label} models are usually trained in-domain or transferred by fine-tuning with target labels~\cite{li2023multiobjective,sun2025transfer}.
+Semi-supervised multi-label domain adaptation exists for usage recognition without joint power regression under fully unlabeled aggregates~\cite{hur2022ssda}.
+Consequently, it remains unclear whether UDA designed for one appliance head still helps a shared multi-head system when the target house provides aggregates only~\cite{muaz2024when}.
+
+\textbf{Research question.}
+Can one shared network jointly perform multi-label state detection and multi-appliance power estimation, and transfer to an unlabeled target house by aligning fully connected embeddings---without target submeter labels?
+
+We answer affirmatively under a UK-DALE cross-building protocol in which domain losses are attached to an FC tower (rather than only raw temporal maps) and alignment is entropy-gated and appliance-conditional to limit negative transfer across sparse heads.
+Table~\ref{tab:gap} situates the contribution.
+
+\begin{table}[!t]
+\caption{Position of this work relative to prior NILM transfer.}
+\label{tab:gap}
+\centering
+\scriptsize
+\begin{tabular}{@{}lll@{}}
+\toprule
+Setting & Supervised / fine-tune & Unsupervised DA \\
+\midrule
+Single-appliance & \cite{dincecco2020transfer} & \cite{liu2022uda,lin2022dda,lu2026edge} \\
+Multi-app.\ (state+power) & \cite{sun2025transfer,li2023multiobjective} & \textbf{this work} \\
+Multi-label classification only & \cite{tanoni2023weak} & SSDA~\cite{hur2022ssda} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Contributions.}
+\begin{enumerate}
+\item We formulate unsupervised cross-building transfer for joint multi-label classification and multi-appliance regression.
+\item We design MATUDA: a sequence-to-point CNN--TCN, an FC adaptation tower with multi-layer MMD+CORAL, and EGC-DA (entropy gate + appliance-conditional alignment).
+\item We specify a reproducible UK-DALE protocol (Houses~1+5 labeled $\rightarrow$ House~2 unlabeled adaptation $\rightarrow$ chronologically held-out House~2 test; Houses~3/4 excluded for this appliance set) and compare Source-Only and Global FC-UDA under the same backbone.
+\end{enumerate}
+
+%======================================================================
+\section{Related Work}
+%======================================================================
+\subsection{Single-appliance transfer and UDA}
+Cross-domain NILM often freezes convolutional layers and retunes dense layers with target labels~\cite{dincecco2020transfer}.
+UDA methods align source and target features with MMD/CORAL on late layers~\cite{lin2022dda}, adversarial joint adaptation~\cite{liu2022uda}, hierarchical CORAL+MK-MMD~\cite{xiong2026ahda}, and Sinkhorn+CORAL~\cite{lu2026edge}.
+Deep CORAL and DAN establish aligning FC activations in vision~\cite{sun2016deepcoral,long2015dan}; CDAN conditions adversarial alignment on classifier predictions and entropy~\cite{long2018cdan}.
+These works motivate FC-layer alignment and conditional / entropy-aware transfer, but assume a single appliance head.
+
+\subsection{Multi-appliance and multi-label NILM}
+Multi-task U-Nets and hierarchical multi-appliance networks jointly predict several loads~\cite{faustine2020unet,xiong2023matnilm}.
+Cross-house multi-appliance transfer with target labels appears in~\cite{li2023multiobjective,sun2025transfer}.
+Hur \emph{et al.} study semi-supervised domain adaptation for multi-label usage recognition~\cite{hur2022ssda}, without unsupervised joint power regression.
+Our work keeps the multi-task head design and adds unsupervised FC-layer adaptation with EGC-DA.
+
+%======================================================================
+\section{Problem Formulation}
+%======================================================================
+Let an aggregate active-power window be $x\in\mathbb{R}^{T}$.
+For $K$ appliances, let $y^{(k)}\in\mathbb{R}$ and $z^{(k)}\in\{0,1\}$ denote the power and on/off state at the supervised time index (window center).
+The \textbf{source domain} $\mathcal{S}$ provides labeled windows $\{(x_S,y_S,z_S)\}$.
+The \textbf{target domain} $\mathcal{T}$ provides unlabeled aggregates $\{x_T\}$ during adaptation.
+A shared network $f_\Theta$ maps $x$ to predictions $(\hat{y},\hat{z})\in\mathbb{R}^{K}\times\mathbb{R}^{K}$.
+
+\textbf{Transfer scenario (cross-building, unsupervised).}
+Train on labeled UK-DALE Houses~1 and~5; adapt using House~2 aggregates without appliance labels; evaluate on House~2 with labels used only for metrics.
+This matches a realistic deployment where the new building has a smart meter but no submeters.
+Fig.~\ref{fig:scenario} summarizes the data flow.
+
+\begin{figure}[!t]
+\centering
+\begin{tikzpicture}[
+  font=\scriptsize,
+  box/.style={draw, rounded corners=2pt, align=center, inner sep=4pt, minimum height=1.05cm},
+  arr/.style={-{Latex}, thick}
+]
+\node[box, fill=blue!8] (S) {Source\\Houses 1+5\\labeled $x,y,z$};
+\node[box, fill=orange!15, right=1.1cm of S] (T) {Target\\House 2\\aggregates $x$ only};
+\node[box, fill=green!10, right=1.1cm of T] (E) {Eval\\House 2\\metrics on $y,z$};
+\node[box, fill=gray!12, below=0.85cm of $(S)!0.5!(T)$] (M) {Shared MATUDA $f_\Theta$\\$\mathcal{L}_{\mathrm{sup}}(S)+\mathcal{L}_{\mathrm{domain}}(S,T)$};
+\draw[arr] (S) -- (M);
+\draw[arr] (T) -- (M);
+\draw[arr] (M) |- (E);
+\end{tikzpicture}
+\caption{Unsupervised cross-building scenario used in this paper.}
+\label{fig:scenario}
+\end{figure}
+
+%======================================================================
+\section{Proposed Method: MATUDA}
+%======================================================================
+\subsection{Overall framework}
+MATUDA consists of (i)~a temporal encoder, (ii)~a shared FC adaptation tower, (iii)~multi-label state and multi-target power heads, and (iv)~an unsupervised domain loss on FC embeddings.
+Fig.~\ref{fig:arch} shows the forward path for a source and a target window sharing $\Theta$.
+
+\begin{figure}[!t]
+\centering
+\begin{tikzpicture}[
+  font=\scriptsize\sffamily,
+  node distance=0.35cm and 0.45cm,
+  blk/.style={draw, align=center, rounded corners=2pt, inner sep=3pt, minimum width=2.35cm},
+  arr/.style={-{Latex}, thick}
+]
+\node[blk, fill=blue!10] (in) {Aggregate window\\$x\in\mathbb{R}^{1\times T}$\\$T{=}599$ (seq2point)};
+\node[blk, fill=blue!6, below=of in] (stem) {Multi-scale stem\\$k\in\{3,5,9\}\rightarrow C{=}96$};
+\node[blk, fill=blue!6, below=of stem] (tcn) {TCN: 8 residual blocks\\dilation $2^{0},\ldots,2^{7}$};
+\node[blk, fill=yellow!25, below=of tcn] (gap) {Global average pool\\$\rightarrow h\in\mathbb{R}^{C}$};
+\node[blk, fill=orange!20, below=of gap] (fc) {FC tower\\$512\rightarrow 256\rightarrow 128$\\(DA features $Z^{(1{:}3)}$)};
+\node[blk, fill=green!12, below left=0.55cm and 0.05cm of fc] (st) {State head\\$\hat{z}\in\mathbb{R}^{K}$};
+\node[blk, fill=green!12, below right=0.55cm and 0.05cm of fc] (pw) {Power head\\$\hat{y}\in\mathbb{R}^{K}$};
+\node[blk, fill=red!12, right=1.0cm of fc] (da) {Domain loss\\MMD+CORAL\\(+ EGC-DA)};
+\draw[arr] (in)--(stem)--(tcn)--(gap)--(fc);
+\draw[arr] (fc)--(st);
+\draw[arr] (fc)--(pw);
+\draw[arr] (fc)--(da);
+\node[anchor=west, align=left, font=\scriptsize] at ($(pw.east)+(0.15,0)$) {optional gate\\$\hat{y}\leftarrow\hat{y}\odot\sigma(\hat{z})$};
+\end{tikzpicture}
+\caption{MATUDA architecture. Domain adaptation is computed on FC activations (Lin fc6--fc8 analogue), not on raw $(B,C,T)$ maps alone.}
+\label{fig:arch}
+\end{figure}
+
+\subsection{Sequence-to-point prediction}
+Following Zhang \emph{et al.}~\cite{zhang2018seq2point}, the network observes $T{=}599$ samples (odd length) and predicts the \emph{center} sample's appliance powers and states.
+This differs from sequence-to-sequence decoding of an output sub-window~\cite{xiong2023matnilm}.
+Sliding-window strides are $30$ (train) and $60$ (evaluation).
+Table~\ref{tab:window} lists the windowing contract.
+
+\begin{table}[!t]
+\caption{Windowing and supervision.}
+\label{tab:window}
+\centering
+\scriptsize
+\begin{tabular}{@{}ll@{}}
+\toprule
+Item & Setting \\
+\midrule
+Prediction mode & Sequence-to-point (center of window) \\
+Input length $T$ & 599 samples ($\approx$59.9\,min at 6\,s) \\
+Outputs & $K$ power scalars + $K$ state logits \\
+Train stride / eval stride & 30 / 60 \\
+Mains column & \texttt{aggregate} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Temporal encoder}
+A multi-scale 1-D stem with kernels $\{3,5,9\}$ captures short waveform edges; channel outputs are concatenated and projected to $C{=}96$ channels.
+Eight dilated causal residual TCN blocks with dilations $2^{0},\ldots,2^{7}$ expand the receptive field, following the late-layer temporal backbone used in deep domain adaptation for NILM~\cite{lin2022dda}.
+Dropout $0.15$ is applied inside residual blocks.
+Global average pooling over time yields $h\in\mathbb{R}^{C}$.
+
+\subsection{FC adaptation tower and multi-task heads}
+Three fully connected layers map $h$ through $512\rightarrow 256\rightarrow 128$ with ReLU and dropout.
+Their post-activation tensors $Z^{(\ell)}\in\mathbb{R}^{B\times D_\ell}$, $\ell=1,2,3$, are the \textbf{domain-adaptation features}.
+Two linear heads produce state logits $\hat{z}$ and powers $\hat{y}$.
+In all reported experiments the soft gate $\hat{y}\leftarrow\hat{y}\odot\sigma(\hat{z})$ is enabled (\texttt{use\_gate=true}), coupling classification and regression.
+The full model has approximately $0.67$\,M trainable parameters.
+
+\subsection{Supervised multi-task loss (source only)}
+\begin{equation}
+\mathcal{L}_{\mathrm{sup}}
+=
+\lambda_{y}\,\mathrm{MSE}(\hat{y}_S,y_S)
++
+\lambda_{z}\,\mathrm{BCE}_{\mathrm{logits}}(\hat{z}_S,z_S;w^{+}),
+\label{eq:sup}
+\end{equation}
+with $\lambda_{y}{=}2$, $\lambda_{z}{=}1$, and per-appliance positive weights
+$w^{+}_{k}=\min\!\big(50,\,n_{\mathrm{neg},k}/n_{\mathrm{pos},k}\big)$ estimated on the source training set only (cap $50$) to handle sparse kettle/microwave events.
+Aggregates and powers are z-score normalized with fixed hand-set UK-DALE constants (Table~\ref{tab:norm}), taken from a common multi-appliance NILM preprocessing convention and \emph{not} recomputed on House~2 or on the held-out test segment; reported metrics use denormalized watts.
+
+\begin{table}[!t]
+\caption{Fixed z-score normalization constants (hand-set UK-DALE convention; not target/test statistics).}
+\label{tab:norm}
+\centering
+\scriptsize
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Signal & Mean & Std \\
+\midrule
+Aggregate & 400 & 500 \\
+Kettle & 100 & 500 \\
+Fridge & 50 & 50 \\
+Dishwasher & 700 & 1000 \\
+Washing machine & 400 & 700 \\
+Microwave & 60 & 300 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Domain alignment on FC layers}
+\paragraph{Hybrid MMD+CORAL (layer-wise).}
+For L2-normalized FC features of a mini-batch,
+\begin{equation}
+\mathcal{L}^{(\ell)}
+=
+\mu\,\mathrm{MMD}^{2}\!\big(Z_S^{(\ell)},Z_T^{(\ell)}\big)
++
+(1-\mu)\,\mathcal{L}_{\mathrm{CORAL}}\!\big(Z_S^{(\ell)},Z_T^{(\ell)}\big),
+\label{eq:hyb}
+\end{equation}
+with $\mu{=}0.4$~\cite{lin2022dda}.
+CORAL is the Frobenius distance between source/target covariances~\cite{sun2016deepcoral}.
+MMD uses an RBF kernel with median-heuristic bandwidth.
+The global domain loss averages~\eqref{eq:hyb} over $\ell=1,2,3$.
+
+\paragraph{Global FC-UDA baseline.}
+Uses~\eqref{eq:hyb} uniformly on all FC layers (no entropy / appliance conditioning).
+
+\paragraph{EGC-DA (proposed MATUDA adaptation).}
+Uniform alignment of one shared embedding can induce negative transfer among sparse and dense appliances~\cite{muaz2024when}.
+Borrowing from CDAN+E~\cite{long2018cdan}, EGC-DA:
+\begin{enumerate}
+\item \textbf{Entropy gate.} Softmax-free multi-label confidence
+$w=1-H(\sigma(\hat{z}))/\ln 2$ reweights source/target samples before global MMD+CORAL.
+\item \textbf{Appliance-conditional alignment.} On the last FC layer, soft-weight rows by $\sigma(\hat{z}^{(k)})$ and average hybrid losses over appliances whose predicted ON mass $\sum_b \sigma(\hat{z}_b^{(k)})$ is at least $2.0$ on both source and target mini-batches.
+\end{enumerate}
+The final domain term blends gated-global and conditional losses with equal weight $0.5$.
+
+\subsection{Total objective and training}
+With convex mixing of supervised and domain terms~\cite{lin2022dda} and stop-grad magnitude matching of the domain term,
+\begin{equation}
+\mathcal{L}
+=
+(1-\lambda)\mathcal{L}_{\mathrm{sup}}
++
+\lambda\,\widetilde{\mathcal{L}}_{\mathrm{domain}},
+\quad
+\widetilde{\mathcal{L}}_{\mathrm{domain}}
+=
+\mathcal{L}_{\mathrm{domain}}\cdot
+\frac{\mathcal{L}_{\mathrm{sup}}}{|\mathcal{L}_{\mathrm{domain}}|}\Big|_{\mathrm{sg}}.
+\label{eq:total}
+\end{equation}
+We use $\lambda{=}0.6$ and warm $\lambda$ up over the first 10 epochs.
+Algorithm~\ref{alg:train} summarizes one training step.
+
+\begin{algorithm}[!t]
+\caption{One MATUDA training step (unsupervised DA)}
+\label{alg:train}
+\begin{algorithmic}[1]
+\REQUIRE Source batch $(x_S,y_S,z_S)$, target batch $x_T$, weights $\Theta$, $\lambda$
+\STATE $(\hat{y}_S,\hat{z}_S,\{Z_S^{(\ell)}\})\leftarrow f_\Theta(x_S)$
+\STATE $(\hat{y}_T,\hat{z}_T,\{Z_T^{(\ell)}\})\leftarrow f_\Theta(x_T)$ \COMMENT{labels unused}
+\STATE Compute $\mathcal{L}_{\mathrm{sup}}$ on source only using~\eqref{eq:sup}
+\STATE Compute $\mathcal{L}_{\mathrm{domain}}$ on $\{Z_S^{(\ell)},Z_T^{(\ell)}\}$ (Global FC-UDA or EGC-DA)
+\STATE Form $\mathcal{L}$ by~\eqref{eq:total}; update $\Theta$ by AdamW
+\end{algorithmic}
+\end{algorithm}
+
+%======================================================================
+\section{Experimental Setup}
+%======================================================================
+\subsection{Dataset and transfer scenario}
+We use low-frequency UK-DALE active power~\cite{kelly2015ukdale}.
+Appliances ($K{=}5$): kettle, fridge, dishwasher, washing machine, microwave---the intersection on Houses~1, 2, and~5.
+Houses~3 and~4 lack several of these submeters and are not used as labeled sources for this set.
+
+Processed CSVs provide aligned aggregate, appliance power, and on/off columns with a house index.
+On/off labels in the CSV follow fixed power thresholds (W): kettle~$40$, fridge~$50$, dishwasher~$30$, washing machine~$30$, microwave~$100$.
+Missing samples are excluded during CSV construction; windows require a complete contiguous length-$T$ aggregate segment.
+
+\textbf{Train/val:} Houses~1+5 labeled windows.
+\textbf{Target adaptation:} House~2 aggregates only, using the first $70\%$ of the House~2 timeline (unlabeled).
+\textbf{Target test:} the remaining $30\%$ of House~2 (labels used solely for metrics).
+Adaptation and evaluation windows therefore do not share timesteps; overlapping sliding windows within each segment use strides $30$ (train/adapt) and $60$ (eval).
+Aggregate mean power differs strongly across domains (source $\approx$1089\,W vs.\ House~2 $\approx$311\,W), confirming a non-trivial shift.
+
+\subsection{Compared methods (same backbone)}
+All methods share the MATUDA encoder and heads; only the domain term changes.
+\begin{itemize}
+\item \textbf{Source-Only:} $\lambda{=}0$ (no target adaptation).
+\item \textbf{Global FC-UDA:} multi-layer FC MMD+CORAL~\eqref{eq:hyb}.
+\item \textbf{MATUDA:} EGC-DA on top of the same FC hybrid loss.
+\end{itemize}
+Ablations (MMD-only, CORAL-only, EGC without entropy, EGC without conditional alignment) and additional house splits are part of the journal evaluation plan; Tables~\ref{tab:main}--\ref{tab:perapp} currently report a single-seed pilot under an earlier protocol and will be replaced by mean$\pm$std results on the chronological split.
+
+\subsection{Implementation details}
+Table~\ref{tab:impl} lists hyperparameters.
+Model selection uses source validation MAE; House~2 is never used for checkpoint choice.
+Training runs on an NVIDIA RTX~4090 (PyTorch 2.6, CUDA 12.4).
+
+\begin{table}[!t]
+\caption{Implementation details (paper configuration).}
+\label{tab:impl}
+\centering
+\scriptsize
+\begin{tabular}{@{}ll@{}}
+\toprule
+Item & Value \\
+\midrule
+Optimizer & AdamW, lr $10^{-3}$, weight decay $10^{-4}$ \\
+Schedule & Cosine annealing, 80 epochs \\
+Batch size / steps per epoch & 64 / 600 \\
+$\lambda$ (DA) / warmup & 0.6 / 10 epochs \\
+$\mu$ (MMD vs.\ CORAL) & 0.4 \\
+Conditional ON-mass threshold & $2.0$ \\
+Positive-weight cap & $50$ \\
+Gradient clip & 5.0 \\
+Seeds (journal runs) & $\{2024,2025,2026\}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Metrics}
+\textbf{State detection:} per-appliance precision, recall, and F1 (threshold $0.5$ on $\sigma(\hat{z})$), plus macro-F1.
+\textbf{Power estimation:} MAE and relative energy error SAE after denormalization to watts.
+We also report $\Delta$F1 versus Source-Only.
+
+%======================================================================
+\section{Results and Discussion}
+%======================================================================
+\subsection{Cross-building performance (preliminary)}
+Table~\ref{tab:main} reports House~2 metrics for checkpoints selected by source validation MAE.
+These numbers are from a single-seed pilot in which House~2 aggregates were used for both adaptation and evaluation; they are retained only to illustrate the qualitative pattern and will be superseded by multi-seed results on the chronological $70\%$/$30\%$ split described above.
+
+All three methods fit the source domain well (validation macro-F1 $\approx 0.82$--$0.84$).
+On House~2, Source-Only macro-F1 collapses to $0.087$: multi-appliance multi-label decoding does not transfer automatically.
+Global FC-UDA raises F1 only to $0.143$ while increasing MAE from $29.3$\,W to $49.6$\,W---evidence of negative transfer on regression heads under uniform alignment~\cite{muaz2024when}.
+MATUDA reaches macro-F1 $0.469$ ($+0.382$ absolute vs.\ Source-Only) with MAE $32.2$\,W, close to Source-Only.
+However, SAE rises from $1.21$ (Source-Only) to $2.32$ (MATUDA): energy estimation is worse even when detection F1 improves.
+We therefore do not claim that adaptation preserves energy accuracy; the practical trade-off is F1 gains versus SAE degradation.
+
+\begin{table}[!t]
+\caption{UK-DALE Houses 1+5 $\rightarrow$ House 2 (unsupervised). Preliminary single-seed pilot (overlapping adapt/eval protocol; to be replaced). Selection by source validation MAE.}
+\label{tab:main}
+\centering
+\scriptsize
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Method & Macro-F1 $\uparrow$ & MAE (W) $\downarrow$ & SAE $\downarrow$ & $\Delta$F1 \\
+\midrule
+Source-Only & 0.087 & \textbf{29.3} & \textbf{1.21} & --- \\
+Global FC-UDA & 0.143 & 49.6 & 2.91 & $+0.056$ \\
+\textbf{MATUDA (EGC-DA)} & \textbf{0.469} & 32.2 & 2.32 & $\mathbf{+0.382}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:perapp} breaks down House~2 F1.
+MATUDA improves kettle, fridge, washing machine, and microwave substantially.
+Dishwasher remains at zero F1 for all methods.
+House~2 dishwasher ON events are extremely sparse relative to fridge cycling; under severe class imbalance, both source-only and adapted models suppress the rare head.
+We treat dishwasher as an open failure mode and plan event-count, duration, and confusion analysis in the journal revision.
+
+\begin{table}[!t]
+\caption{Per-appliance House~2 F1 (same preliminary checkpoints as Table~\ref{tab:main}).}
+\label{tab:perapp}
+\centering
+\scriptsize
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Method & Kettle & Fridge & DW & WM & MW \\
+\midrule
+Source-Only & 0.12 & 0.27 & 0.00 & 0.00 & 0.04 \\
+Global FC-UDA & 0.17 & 0.45 & 0.00 & 0.00 & 0.10 \\
+\textbf{MATUDA} & \textbf{0.78} & \textbf{0.76} & 0.00 & \textbf{0.52} & \textbf{0.28} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Training dynamics and qualitative power traces}
+Figure~\ref{fig:train_compare} plots House~2 macro-F1 and MAE over epochs for the three methods under the same backbone.
+Source-Only and Global FC-UDA remain weak on House~2 F1 throughout training, whereas MATUDA shows a late rise in F1 together with a reduction in MAE.
+This confirms that the tabulated gains are not a single-checkpoint artifact, but also that target performance is unstable early in training.
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/train_compare_h2_f1_mae.png}
+\caption{House~2 macro-F1 and MAE during training for Source-Only, Global FC-UDA, and MATUDA (same backbone; preliminary pilot).}
+\label{fig:train_compare}
+\end{figure*}
+
+Figure~\ref{fig:power_grid} compares House~2 appliance power predictions for Source-Only versus MATUDA on a contiguous test segment.
+Source-Only largely collapses to near-zero predictions for kettle, dishwasher, and washing machine.
+MATUDA recovers some event structure, but still misses dishwasher activations and frequently assigns dishwasher energy to washing-machine / microwave heads---a qualitative explanation for dishwasher F1~$=$~$0$ and elevated SAE.
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.48\textwidth]{figures/h2_power_grid_source_only.png}
+\hfill
+\includegraphics[width=0.48\textwidth]{figures/h2_power_grid_matuda.png}
+\caption{House~2 power traces (true vs.\ predicted). Left: Source-Only collapse. Right: MATUDA recovers some events but confuses dishwasher with other high-power loads.}
+\label{fig:power_grid}
+\end{figure*}
+
+Figure~\ref{fig:train_matuda} shows MATUDA supervised/domain losses and source-validation versus House~2 metrics; source validation F1 remains high while House~2 F1 is much lower, confirming domain shift rather than source underfitting.
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\columnwidth]{figures/train_curves_matuda_s2_m0_egc.png}
+\caption{MATUDA training curves: train loss, source-validation F1/MAE, and House~2 F1/MAE (green dashed line: checkpoint selected by source validation MAE).}
+\label{fig:train_matuda}
+\end{figure}
+
+\subsection{Discussion}
+\paragraph{Why Source-Only can have low MAE but poor F1.}
+For sparse appliances, predicting near-zero power most of the time yields moderate MAE while missing ON events (F1$\approx 0$).
+MATUDA recovers ON detection; per-appliance MAE can improve for kettle/fridge but may increase for event-driven loads when activations are imperfect, so mean MAE stays near Source-Only while SAE may rise.
+
+\paragraph{Why Global FC-UDA is insufficient.}
+Forcing one shared embedding to match target aggregates helps states only slightly and harms power---exactly the multi-task negative-transfer regime that motivates EGC-DA.
+
+\paragraph{Scope of claims.}
+We claim that unsupervised multi-appliance multi-label cross-building transfer is a well-posed problem and that FC-layer EGC-DA is a promising adaptation mechanism on UK-DALE H1+H5$\rightarrow$H2.
+We do not claim dishwasher is solved, that SAE is preserved, that one house split generalizes to all UK-DALE transfers, or that cross-dataset transfer is complete.
+
+\subsection{Limitations and revision plan}
+The present manuscript remains below top-tier journal evidence standards until the following are completed: (i)~multi-seed mean$\pm$std on the chronological House~2 split; (ii)~component ablations of EGC-DA; (iii)~additional UK-DALE house directions; (iv)~stronger baselines (MMD/CORAL-only, adversarial DA, supervised target fine-tuning upper bound); (v)~cross-dataset UK-DALE$\leftrightarrow$REDD/REFIT; and (vi)~per-appliance precision/recall/MAE/SAE with dishwasher event analysis.
+
+%======================================================================
+\section{Conclusion}
+%======================================================================
+This paper presented MATUDA for unsupervised transfer of joint multi-label and multi-appliance NILM.
+Under a UK-DALE cross-building scenario, preliminary results show large macro-F1 gains from EGC-DA relative to Source-Only and Global FC-UDA, together with a clear SAE degradation that must be reported honestly.
+Ongoing work replaces the pilot tables with multi-seed chronological-split evaluation, ablations, multi-house and cross-dataset protocols, and deeper analysis of sparse loads such as the dishwasher.
+
+\begin{thebibliography}{00}
+\bibitem{hart1992nilm} G.~W. Hart, ``Nonintrusive appliance load monitoring,'' \emph{Proc. IEEE}, vol.~80, no.~12, pp.~1870--1891, 1992.
+\bibitem{kelly2015ukdale} J.~Kelly and W.~Knottenbelt, ``The UK-DALE dataset, domestic appliance-level electricity demand and whole-house demand from five UK homes,'' \emph{Sci. Data}, vol.~2, Art.~150007, 2015.
+\bibitem{kelly2015neural} J.~Kelly and W.~Knottenbelt, ``Neural NILM: Deep neural networks applied to energy disaggregation,'' in \emph{Proc. BuildSys}, 2015, pp.~55--64.
+\bibitem{zhang2018seq2point} C.~Zhang, M.~Zhong, Z.~Wang, N.~Goddard, and C.~Sutton, ``Sequence-to-point learning for non-intrusive load monitoring,'' in \emph{Proc. AAAI}, 2018.
+\bibitem{faustine2020unet} A.~Faustine, L.~Pereira, and C.~Klemenjak, ``UNet-NILM: A deep neural network for multi-appliance NILM,'' in \emph{Proc. NILM Workshop}, 2020.
+\bibitem{xiong2023matnilm} Z.~Xiong \emph{et al.}, ``MATNilm: Multi-appliance-task non-intrusive load monitoring with limited labeled data,'' \emph{IEEE Trans. Ind. Informat.}, 2023.
+\bibitem{liu2022uda} Y.~Liu, J.~Wang, and J.~Deng, ``Unsupervised domain adaptation for non-intrusive load monitoring,'' \emph{IEEE Trans. Ind. Informat.}, 2022.
+\bibitem{lin2022dda} J.~Lin, J.~Ma, and J.~Zhu, ``Deep domain adaptation for non-intrusive load monitoring based on a knowledge mapping strategy,'' \emph{IEEE Trans. Smart Grid}, 2022.
+\bibitem{xiong2026ahda} Hierarchical distribution alignment for NILM transfer, \emph{Electronics}, 2026.
+\bibitem{lu2026edge} T.~Lu \emph{et al.}, ``Unsupervised lightweight transfer learning for NILM,'' \emph{IEEE Trans. Smart Grid}, 2026.
+\bibitem{dincecco2020transfer} M.~D'Incecco, S.~Squartini, and M.~Zhong, ``Transfer learning for non-intrusive load monitoring,'' \emph{IEEE Trans. Smart Grid}, vol.~11, no.~2, pp.~1419--1429, 2020.
+\bibitem{sun2025transfer} Y.~Sun \emph{et al.}, ``Transfer learning for multi-appliance-task NILM,'' \emph{IEEE Trans. Instrum. Meas.}, 2025.
+\bibitem{li2023multiobjective} D.~Li \emph{et al.}, ``Transfer learning for multi-objective non-intrusive load monitoring in smart grid,'' \emph{Appl. Energy}, 2023.
+\bibitem{hur2022ssda} C.~Hur \emph{et al.}, ``Semi-supervised domain adaptation for multi-label NILM,'' \emph{Sensors}, 2022.
+\bibitem{tanoni2023weak} G.~Tanoni, E.~Principi, and S.~Squartini, ``Multilabel appliance classification with weakly labeled data for non-intrusive load monitoring,'' \emph{IEEE Trans. Smart Grid}, 2023.
+\bibitem{muaz2024when} M.~Muaz \emph{et al.}, ``NILM domain adaptation: When does it work?'' in \emph{Proc. ICSCC}, 2024.
+\bibitem{sun2016deepcoral} B.~Sun and K.~Saenko, ``Deep CORAL: Correlation alignment for deep domain adaptation,'' in \emph{ECCV Workshops}, 2016.
+\bibitem{long2015dan} M.~Long, Y.~Cao, J.~Wang, and M.~Jordan, ``Learning transferable features with deep adaptation networks,'' in \emph{Proc. ICML}, 2015.
+\bibitem{long2018cdan} M.~Long, Z.~Cao, J.~Wang, and M.~I. Jordan, ``Conditional adversarial domain adaptation,'' in \emph{Proc. NeurIPS}, 2018.
+\end{thebibliography}
+
+\end{document}

@@ -47,6 +47,41 @@ dataset_preprocess/created_data/
 *.log
 *.cfg
 
+# Local secrets (training device passwords, etc.)
+**/training_device.secrets.md
+**/*.secrets.md
+
+# Agent / Cursor local state
+.cursor/
+
+# MATUDA / multi_appliances run artifacts (regenerable)
+MATUDA_NILM/results/
+MATUDA_NILM/paper/figures/
+multi_appliances_NILM/runs/
+**/_auto_loop/
+**/_journal_p0_logs/
+**/_matuda_queue_logs/
+
+# LaTeX build products (keep main.tex / IEEEtran.cls)
+MATUDA_NILM/paper/*.aux
+MATUDA_NILM/paper/*.log
+MATUDA_NILM/paper/*.fls
+MATUDA_NILM/paper/*.fdb_latexmk
+MATUDA_NILM/paper/*.synctex.gz
+MATUDA_NILM/paper/*.out
+MATUDA_NILM/paper/main.pdf
+
+# Agent / scratch dumps (never commit)
+**/_lit_extract/
+**/_remote*
+**/_tmp*
+**/_plink*
+**/docs/_tmp_*
+**/docs/_lin_pdf_extract.txt
+*.tmp.ps1
+matuda_visible_*.ps1
+matuda_test_*.ps1
+
 # 5. Literature and papers
 /frequency domain/
 
