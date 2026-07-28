@@ -70,11 +70,12 @@ def prediction_entropy_weights(state_logits: torch.Tensor) -> torch.Tensor:
     """
     Per-sample transferability weight in (0,1], CDAN+E-inspired.
     Low entropy (confident multi-label preds) -> higher weight.
-    state_logits: (B, K)
+    state_logits: (B, K) or (B, T, K)
     """
     p = torch.sigmoid(state_logits).clamp(1e-6, 1 - 1e-6)
-    # Binary entropy averaged over K heads, normalized to [0,1].
-    h = -(p * p.log() + (1 - p) * (1 - p).log()).mean(dim=1)  # (B,)
+    # Binary entropy averaged over appliance (and time if seq2seq).
+    reduce_dims = tuple(range(1, p.dim()))
+    h = -(p * p.log() + (1 - p) * (1 - p).log()).mean(dim=reduce_dims)  # (B,)
     h_norm = h / 0.693147  # ln(2)
     return (1.0 - h_norm).clamp(0.05, 1.0)
 
@@ -119,6 +120,10 @@ def conditional_appliance_domain_loss(
     z_t = _l2_normalize(feats_t[-1])
     p_s = torch.sigmoid(state_logits_s).detach()
     p_t = torch.sigmoid(state_logits_t).detach()
+    # Seq2seq (B, T, K): time-average ON probs → (B, K) for sample weighting.
+    if p_s.dim() == 3:
+        p_s = p_s.mean(dim=1)
+        p_t = p_t.mean(dim=1)
     k = p_s.size(1)
     total = z_s.new_zeros(())
     used = 0
@@ -191,14 +196,21 @@ class MATUDACriterion(nn.Module):
         states_gt: torch.Tensor,
     ) -> torch.Tensor:
         # Sparse ON events: optional pos_weight (MATNILM / MultiNILM practice).
+        # Flatten time for seq2seq so pos_weight (K,) broadcasts like multilabel BCE.
+        if state_logits.dim() == 3:
+            b, t, k = state_logits.shape
+            logits_flat = state_logits.reshape(b * t, k)
+            states_flat = states_gt.float().reshape(b * t, k)
+        else:
+            logits_flat = state_logits
+            states_flat = states_gt.float()
+
         if self.pos_weight is not None:
             loss_cls = F.binary_cross_entropy_with_logits(
-                state_logits, states_gt.float(), pos_weight=self.pos_weight
+                logits_flat, states_flat, pos_weight=self.pos_weight
             )
         else:
-            loss_cls = F.binary_cross_entropy_with_logits(
-                state_logits, states_gt.float()
-            )
+            loss_cls = F.binary_cross_entropy_with_logits(logits_flat, states_flat)
         # ON-masked MSE focuses regression on active events (helps SAE/F1 coupling).
         if self.on_masked_power:
             mask = states_gt.float()
@@ -268,7 +280,6 @@ class MATUDACriterion(nn.Module):
         if not bool(mask.any()):
             return logits.new_zeros(())
         pl = (p >= 0.5).float()
-        # stop-grad on hard labels
         loss = F.binary_cross_entropy_with_logits(logits, pl.detach(), reduction="none")
         return (loss * mask.float()).sum() / mask.float().sum().clamp_min(1.0)
 

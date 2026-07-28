@@ -13,13 +13,14 @@ evaluation:
   pred_on_source: state_head
 
 windowing:
-  input_window_length: 599
-  output_window_length: 1
-  output_alignment: center
-  input_stride: 30
-  eval_stride: 60
-  eval_reconstruction: flat
-  training_targets: output_window
+  # Seq2seq (Lin / MultiNILM style): full-window targets
+  input_window_length: 480
+  output_window_length: 480
+  output_alignment: end
+  input_stride: 240
+  eval_stride: 240
+  eval_reconstruction: auto
+  training_targets: auto
 
 architecture:
   conv_channels: 96
@@ -29,6 +30,8 @@ architecture:
   use_gate: true
   gate_mode: soft
   stem_kernels: [3, 5, 9]
+  head_hidden: 64
+  head_kernel_size: 3
 
 loss:
   power_weight: 1.0
@@ -53,7 +56,7 @@ domain_adaptation:
   target_split: test
 
 training:
-  batch_size: 64
+  batch_size: 32
   epochs: 150
   learning_rate: 0.001
   weight_decay: 0.0001

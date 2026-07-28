@@ -1,7 +1,7 @@
 """MATUDA adapter for the shared multi_appliances_NILM train/eval pipeline.
 
-Model/loss live under model/MATUDA*.py (ported from MATUDA_NILM).
-Uses seq2point (center label) + FC-layer EGC-DA on unlabeled target aggregates.
+Model/loss live under model/MATUDA*.py.
+Seq2seq (full-window) + FC-layer EGC-DA on unlabeled target aggregates.
 """
 
 from __future__ import annotations
@@ -59,6 +59,8 @@ class MATUDAAdapter(BaseNILMAdapter):
             stem_kernels=tuple(arch.get("stem_kernels", [3, 5, 9])),
             appliance_off_norm=off_norms,
             gate_mode=str(arch.get("gate_mode", "soft")),
+            head_hidden=int(arch.get("head_hidden", 64)),
+            head_kernel_size=int(arch.get("head_kernel_size", 3)),
         )
         return model.to(device)
 
@@ -66,7 +68,6 @@ class MATUDAAdapter(BaseNILMAdapter):
         loss_cfg = self.model_cfg.get("loss", {})
         da_cfg = self.model_cfg.get("domain_adaptation") or {}
         da_mode = str(loss_cfg.get("da_mode", da_cfg.get("mode", "egc")))
-        # Runner gates DA via enabled + lambda_domain; force none if DA off.
         enabled = bool(da_cfg.get("enabled", False))
         lam = float(loss_cfg.get("lambda_domain", 0.0))
         if (not enabled) or lam <= 0:
@@ -166,14 +167,13 @@ class MATUDAAdapter(BaseNILMAdapter):
             x, y, z = batch
             x = _batch_x_to_matuda(x).to(device)
             out = model(x)
-            power_pred = out["powers"]
+            power_pred = out["powers"]  # (B, T, A)
             state_prob = torch.sigmoid(out["state_logits"])
-            state_bin = (state_prob >= 0.5).float()
-            # Shapes (B, A) -> (B, 1, A) so finalize reshape matches out_len=1.
-            pred_power.append(_to_numpy(power_pred)[:, None, :])
-            pred_state.append(_to_numpy(state_bin)[:, None, :])
-            true_power.append(y.numpy()[:, None, :] if y.dim() == 2 else y.numpy())
-            true_state.append(z.numpy()[:, None, :] if z.dim() == 2 else z.numpy())
+            pred_power.append(_to_numpy(power_pred))
+            # Keep probs for overlap_mean reconstruction (same as MultiNILM).
+            pred_state.append(_to_numpy(state_prob))
+            true_power.append(y.numpy())
+            true_state.append(z.numpy())
             sample_indices.append(self._sample_index(offset, len(x)))
             offset += len(x)
 

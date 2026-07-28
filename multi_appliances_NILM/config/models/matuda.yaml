@@ -1,4 +1,4 @@
-# MATUDA — multi-appliance multi-task UDA (seq2point + FC EGC-DA)
+# MATUDA — multi-appliance multi-task UDA (seq2seq + FC EGC-DA)
 # Registered as --model matuda in multi_appliances_NILM/main.py
 model_name: matuda
 
@@ -10,15 +10,14 @@ evaluation:
   pred_on_source: state_head
 
 windowing:
-  # Zhang seq2point: predict center of a long aggregate window.
-  input_window_length: 599
-  output_window_length: 1
-  output_alignment: center
-  input_stride: 30
-  eval_stride: 60
-  eval_reconstruction: flat
-  training_targets: output_window
-  force_even_input_length: false
+  # Seq2seq (Lin / MultiNILM style): full-window targets
+  input_window_length: 480
+  output_window_length: 480
+  output_alignment: end
+  input_stride: 240
+  eval_stride: 240
+  eval_reconstruction: auto
+  training_targets: auto
 
 architecture:
   conv_channels: 96
@@ -27,6 +26,8 @@ architecture:
   dropout: 0.15
   use_gate: true
   stem_kernels: [3, 5, 9]
+  head_hidden: 64
+  head_kernel_size: 3
 
 loss:
   power_weight: 2.0
@@ -49,7 +50,7 @@ domain_adaptation:
   target_split: test
 
 training:
-  batch_size: 64
+  batch_size: 32
   epochs: 120
   learning_rate: 0.001
   weight_decay: 0.0001
