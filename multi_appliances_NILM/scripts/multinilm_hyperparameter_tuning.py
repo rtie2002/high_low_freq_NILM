@@ -1,42 +1,28 @@
 #!/usr/bin/env python
 """Bayesian-style hyperparameter tuning for MultiNILM (Optuna TPE).
 
+Tunes knobs from ``config/models/multinilm.yaml`` (windows, architecture, DA loss,
+training). Every trial forces ``domain_adaptation.enabled: true``.
+
 Run from repo root or multi_appliances_NILM:
 
     python scripts/multinilm_hyperparameter_tuning.py
-    python scripts/multinilm_hyperparameter_tuning.py --n-trials 30 --epochs 80 --fast
+    python scripts/multinilm_hyperparameter_tuning.py --n-trials 30 --fast
+    # Optional: override fixed epoch count (default 150; epochs are never tuned)
+    python scripts/multinilm_hyperparameter_tuning.py --epochs 150
 
-    # Tune only selected hyperparameters (others stay at config/models/multinilm.yaml)
-    python scripts/multinilm_hyperparameter_tuning.py --tune learning_rate,lambda_state,dropout
-
-    # Architecture + windowing (slower trials when window/stride change)
-    python scripts/multinilm_hyperparameter_tuning.py --fast --tune gate_mode,channel_schedule,input_window_length,output_window_length,stride
+    # Subset of knobs (others stay at values from --model-config)
+    python scripts/multinilm_hyperparameter_tuning.py --tune learning_rate,lambda_domain,dropout
 
     # List available names for --tune
     python scripts/multinilm_hyperparameter_tuning.py --list-tune-params
 
-Each trial trains MultiNILM on the UK-DALE (or chosen) experiment split and
-minimizes the same checkpoint score used during normal training
-(``val_mae_minus_f1`` by default). Results and Optuna diagnostic plots are
-saved under ``results/multinilm_hyperparameter_tuning_<experiment_id>/``.
+Each trial trains MultiNILM and minimizes the same checkpoint score used during
+normal training (``val_mae_minus_f1`` by default). Results are saved under
+``results/multinilm_hyperparameter_tuning_<experiment_id>/``.
 
-After tuning, see ``hyperparameter_trends.json`` and ``hyperparameter_trend_plots.png``
-for whether increasing each tuned parameter tends to improve or hurt validation score.
-
-**What metric decides the "best" model?**
-
-Optuna minimizes the same score used to save ``best.pt`` during training
-(``training.checkpoint_monitor`` in ``multinilm.yaml``, default ``val_mae_minus_f1``):
-
-    checkpoint_score = normalized_val_MAE - macro_val_F1    (lower is better)
-
-So a good trial has **low power error** and **high ON/OFF F1** on the **validation**
-split (H1+H5 last week). Per-trial logs also record ``val_mae_watts``, ``val_f1``,
-``val_mae_norm``, and ``val_loss`` for plots — but only ``checkpoint_score`` picks
-the winner. **Test (H2 cross-house) is not used for tuning**; run a final
-``train_evaluate`` after applying the best yaml patch.
-
-Pattern follows ``feature_selection/extratrees_nilm/extratrees_hyperparameter_tuning.py``.
+**Objective:** minimize ``normalized_val_MAE - macro_val_F1`` on validation
+(H1+H5). Test (H2) is not used for tuning.
 """
 
 from __future__ import annotations
@@ -73,66 +59,111 @@ DEFAULT_EXPERIMENT = ROOT / "config" / "experiment_ukdale.yaml"
 DEFAULT_MODEL_CONFIG = ROOT / "config" / "models" / "multinilm.yaml"
 DEFAULT_SEED = 2026
 DEFAULT_N_TRIALS = 30
-DEFAULT_EPOCHS_FAST = 80
-DEFAULT_EPOCHS_FULL = 200
+# Fixed training length for every trial (not tuned).
+DEFAULT_EPOCHS = 150
 
-# Categorical presets for architecture / windowing search.
-CHANNEL_SCHEDULE_PRESETS: dict[str, list[int]] = {
-    "8_16_32": [8, 16, 32],
-    "16_32_64": [16, 32, 64],
-    "32_64_128": [32, 64, 128],
-}
+# Channel schedule = start_width * 2^{0..depth-1}.
+# Two axes: scale (÷2 / base / ×2 vs yaml start=32) and depth (add/remove stages).
+CHANNEL_START_CHOICES = (16, 32, 64)
+CHANNEL_DEPTH_CHOICES_FAST = (2, 3, 4)
+CHANNEL_DEPTH_CHOICES_FULL = (2, 3, 4, 5)
+
+
+def _make_channel_schedule(start: int, depth: int) -> list[int]:
+    return [int(start) * (2**i) for i in range(int(depth))]
+
+
+def _channel_schedule_presets(*, fast_search: bool) -> dict[str, list[int]]:
+    depths = CHANNEL_DEPTH_CHOICES_FAST if fast_search else CHANNEL_DEPTH_CHOICES_FULL
+    return {
+        f"start{start}_depth{depth}": _make_channel_schedule(start, depth)
+        for start in CHANNEL_START_CHOICES
+        for depth in depths
+    }
+
+
+# Static full grid (used for key lookup / study_config).
+CHANNEL_SCHEDULE_PRESETS: dict[str, list[int]] = _channel_schedule_presets(fast_search=False)
+
 GATE_MODE_CHOICES = ("soft", "hard", "soft_train_hard_eval")
-# Small → large window sizes (timesteps).
-# With training_targets: full_input (multinilm.yaml), input and output MUST match.
-WINDOW_LENGTH_CHOICES = (128, 256, 480, 512, 864)
+DETAIL_KERNEL_PRESETS: dict[str, list[int]] = {
+    "3_5_9": [3, 5, 9],
+    "3_5": [3, 5],
+    "5_9": [5, 9],
+    "3_7_11": [3, 7, 11],
+}
+DOMAIN_SCALE_CHOICES = ("none", "equal")
+# With training_targets: full_input, input and output MUST match.
+# Powers of 2 so stride = window // {2,4,8,...} stays exact.
+WINDOW_LENGTH_CHOICES = (64, 128, 256, 512, 1024, 2048)
 INPUT_WINDOW_CHOICES = WINDOW_LENGTH_CHOICES
 OUTPUT_WINDOW_CANDIDATES = WINDOW_LENGTH_CHOICES
 MIN_WINDOWS_PER_SPLIT = 8
-# Small → large strides (timesteps between sliding windows).
-STRIDE_CHOICES_FAST = (32, 64, 96, 120, 128, 192, 240, 256, 320, 480)
-STRIDE_CHOICES_FULL = (16, 32, 64, 96, 120, 128, 192, 240, 256, 320, 384, 480, 512)
+# Stride = window // divisor (÷2 pattern). Fixed Optuna space; absolute stride follows window.
+STRIDE_DIVISOR_CHOICES_FAST = (2, 4, 8)  # 50% / 25% / 12.5% of window
+STRIDE_DIVISOR_CHOICES_FULL = (2, 4, 8, 16)
 
 
-def _optuna_stride_choices(*, fast_search: bool) -> list[int]:
-    """Fixed stride list for Optuna (same choices every trial; clamped after)."""
-    return list(STRIDE_CHOICES_FAST if fast_search else STRIDE_CHOICES_FULL)
+def _stride_divisor_choices(*, fast_search: bool) -> list[int]:
+    return list(STRIDE_DIVISOR_CHOICES_FAST if fast_search else STRIDE_DIVISOR_CHOICES_FULL)
 
-# Full list of parameters that CAN be tuned; default run only tunes training knobs.
+
+def _stride_from_window(window_length: int, divisor: int) -> int:
+    """stride = window // divisor (e.g. 600//2=300). Always >= 1."""
+    return max(1, int(window_length) // max(1, int(divisor)))
+
+
+def _nearest_stride_divisor(window_length: int, stride: int) -> int:
+    """Map a yaml stride back onto the closest ÷2 divisor."""
+    window = max(1, int(window_length))
+    target = max(1, int(stride))
+    candidates = list(STRIDE_DIVISOR_CHOICES_FULL) + [32]
+    return min(candidates, key=lambda d: abs(_stride_from_window(window, d) - target))
+
+
+def _stride_choices_for_window(input_length: int, *, fast_search: bool) -> list[int]:
+    """Absolute strides implied by window // {2,4,8,...}."""
+    return [
+        _stride_from_window(input_length, d)
+        for d in _stride_divisor_choices(fast_search=fast_search)
+    ]
+
+
+# Tunable knobs from config/models/multinilm.yaml (domain_adaptation.enabled always forced true).
+# epochs is fixed at DEFAULT_EPOCHS (not tuned).
 TUNABLE_PARAMETERS = (
-    "learning_rate",
-    "lambda_state",
-    "dropout",
-    "weight_decay",
-    "early_stop_patience",
-    "gradient_clip",
-    "gate_mode",
-    "channel_schedule",
     "input_window_length",
     "output_window_length",
     "input_stride",
     "eval_stride",
-)
-DEFAULT_TUNE_PARAMETERS = (
-    "learning_rate",
-    "lambda_state",
+    "channel_schedule",
+    "stem_kernel_size",
+    "stage_kernel_size",
+    "num_blocks",
+    "kernel_size",
+    "max_dilation",
     "dropout",
+    "gate_mode",
+    "gate_threshold",
+    "head_local_layers",
+    "head_kernel_size",
+    "head_use_residual",
+    "use_multiscale_stem",
+    "detail_kernels",
+    "detail_branch_channels",
+    "domain_mu",
+    "domain_scale",
+    "lambda_domain",
+    "batch_size",
+    "learning_rate",
     "weight_decay",
-    "early_stop_patience",
-    "gradient_clip",
 )
+DEFAULT_TUNE_PARAMETERS = TUNABLE_PARAMETERS
 TUNE_ALIASES = {
     "lr": "learning_rate",
     "learning-rate": "learning_rate",
-    "lambda": "lambda_state",
-    "lambda-state": "lambda_state",
     "wd": "weight_decay",
     "weight-decay": "weight_decay",
-    "early-stop": "early_stop_patience",
-    "early_stop": "early_stop_patience",
-    "patience": "early_stop_patience",
-    "grad-clip": "gradient_clip",
-    "gradient-clip": "gradient_clip",
     "gate": "gate_mode",
     "channels": "channel_schedule",
     "channel-schedule": "channel_schedule",
@@ -146,6 +177,11 @@ TUNE_ALIASES = {
     "train_stride": "input_stride",
     "eval-stride": "eval_stride",
     "stride": "stride",
+    "lambda_da": "lambda_domain",
+    "lambda-domain": "lambda_domain",
+    "domain-mu": "domain_mu",
+    "domain-scale": "domain_scale",
+    "batch": "batch_size",
 }
 
 
@@ -173,12 +209,12 @@ def parse_args() -> argparse.Namespace:
         "--epochs",
         type=int,
         default=None,
-        help="Training epochs per trial (default: 80 with --fast, else 200)",
+        help=f"Fixed epochs per trial (default: {DEFAULT_EPOCHS}; not tuned)",
     )
     parser.add_argument(
         "--fast",
         action="store_true",
-        help="Use the compact search space and fewer default epochs",
+        help="Use the compact search space",
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument(
@@ -250,29 +286,77 @@ def _channel_schedule_key(schedule: list[int]) -> str:
     for key, value in CHANNEL_SCHEDULE_PRESETS.items():
         if value == [int(v) for v in schedule]:
             return key
-    return "_".join(str(int(v)) for v in schedule)
+    if not schedule:
+        return "empty"
+    start = int(schedule[0])
+    depth = len(schedule)
+    return f"start{start}_depth{depth}"
+
+
+def _infer_channel_start_depth(schedule: list[int]) -> tuple[int, int]:
+    """Recover (start, depth) from a schedule; fall back to nearest start choice."""
+    depth = max(1, len(schedule))
+    start = int(schedule[0]) if schedule else 32
+    if start not in CHANNEL_START_CHOICES:
+        start = min(CHANNEL_START_CHOICES, key=lambda s: abs(s - start))
+    return start, depth
+
+
+def _detail_kernels_key(kernels: list[int]) -> str:
+    for key, value in DETAIL_KERNEL_PRESETS.items():
+        if value == [int(v) for v in kernels]:
+            return key
+    return "_".join(str(int(v)) for v in kernels)
 
 
 def _baseline_param_values(model_cfg: dict) -> dict[str, Any]:
     train_cfg = model_cfg.get("training", {})
     arch_cfg = model_cfg.get("architecture", {})
     window_cfg = model_cfg.get("windowing", {})
-    schedule = [int(v) for v in arch_cfg.get("channel_schedule", [16, 32, 64])]
+    loss_cfg = model_cfg.get("loss", {})
+    schedule = [int(v) for v in arch_cfg.get("channel_schedule", [32, 64, 128])]
+    channel_start, channel_depth = _infer_channel_start_depth(schedule)
+    detail_kernels = [int(v) for v in arch_cfg.get("detail_kernels", [3, 5, 9])]
+    input_window = int(window_cfg.get("input_window_length", 600))
+    output_window = int(window_cfg.get("output_window_length", 600))
+    input_stride = int(window_cfg.get("input_stride", 300))
+    eval_stride = int(window_cfg.get("eval_stride", 300))
+    input_stride_divisor = _nearest_stride_divisor(input_window, input_stride)
+    eval_stride_divisor = _nearest_stride_divisor(input_window, eval_stride)
     return {
-        "learning_rate": float(train_cfg.get("learning_rate", 1e-4)),
-        "lambda_state": float(model_cfg.get("loss", {}).get("lambda_state", 1.0)),
-        "dropout": float(arch_cfg.get("dropout", 0.12)),
-        "weight_decay": float(train_cfg.get("weight_decay", 0.0)),
-        "early_stop_patience": int(train_cfg.get("early_stop_patience", 60)),
-        "gradient_clip": float(train_cfg.get("gradient_clip", 1.0)),
-        "gate_mode": str(arch_cfg.get("gate_mode", "soft")).lower(),
-        "channel_schedule": schedule,
-        "channel_schedule_key": _channel_schedule_key(schedule),
+        "input_window_length": input_window,
+        "output_window_length": output_window,
+        "input_stride_divisor": input_stride_divisor,
+        "eval_stride_divisor": eval_stride_divisor,
+        "input_stride": _stride_from_window(input_window, input_stride_divisor),
+        "eval_stride": _stride_from_window(input_window, eval_stride_divisor),
+        "channel_start": channel_start,
+        "channel_depth": channel_depth,
+        "channel_schedule": _make_channel_schedule(channel_start, channel_depth),
+        "channel_schedule_key": f"start{channel_start}_depth{channel_depth}",
         "hidden_channels": int(arch_cfg.get("hidden_channels", schedule[-1])),
-        "input_window_length": int(window_cfg.get("input_window_length", 480)),
-        "output_window_length": int(window_cfg.get("output_window_length", 480)),
-        "input_stride": int(window_cfg.get("input_stride", 240)),
-        "eval_stride": int(window_cfg.get("eval_stride", 240)),
+        "stem_kernel_size": int(arch_cfg.get("stem_kernel_size", 7)),
+        "stage_kernel_size": int(arch_cfg.get("stage_kernel_size", 5)),
+        "num_blocks": int(arch_cfg.get("num_blocks", 8)),
+        "kernel_size": int(arch_cfg.get("kernel_size", 5)),
+        "max_dilation": int(arch_cfg.get("max_dilation", 64)),
+        "dropout": float(arch_cfg.get("dropout", 0.15)),
+        "gate_mode": str(arch_cfg.get("gate_mode", "hard")).lower(),
+        "gate_threshold": float(arch_cfg.get("gate_threshold", 0.5)),
+        "head_local_layers": int(arch_cfg.get("head_local_layers", 2)),
+        "head_kernel_size": int(arch_cfg.get("head_kernel_size", 3)),
+        "head_use_residual": bool(arch_cfg.get("head_use_residual", True)),
+        "use_multiscale_stem": bool(arch_cfg.get("use_multiscale_stem", True)),
+        "detail_kernels": detail_kernels,
+        "detail_kernels_key": _detail_kernels_key(detail_kernels),
+        "detail_branch_channels": int(arch_cfg.get("detail_branch_channels", 16)),
+        "domain_mu": float(loss_cfg.get("domain_mu", 0.4)),
+        "domain_scale": str(loss_cfg.get("domain_scale", "equal")).lower(),
+        "lambda_domain": float(loss_cfg.get("lambda_domain", 0.0)),
+        "batch_size": int(train_cfg.get("batch_size", 32)),
+        "epochs": DEFAULT_EPOCHS,
+        "learning_rate": float(train_cfg.get("learning_rate", 1e-4)),
+        "weight_decay": float(train_cfg.get("weight_decay", 0.0)),
     }
 
 
@@ -293,21 +377,62 @@ def _deep_copy_merged(experiment: dict, model_cfg: dict) -> dict:
     return merged
 
 
+def _domain_feature_layers_for_blocks(num_blocks: int) -> list[str]:
+    """Late TCN hooks scaled to ``num_blocks`` (yaml uses temporal_4/6 for n=8)."""
+    n = max(1, int(num_blocks))
+    if n == 1:
+        return ["temporal_0", "aligned"]
+    # Same fractions as yaml defaults for n=8 → indices 4 and 6.
+    a = min(n - 1, max(0, (n * 4) // 8))
+    b = min(n - 1, max(0, (n * 6) // 8))
+    if a == b:
+        a = max(0, b - 1)
+    return [f"temporal_{a}", f"temporal_{b}", "aligned"]
+
+
 def _apply_tuning_overrides(model_cfg: dict, trial_params: dict, *, epochs: int) -> None:
-    """Mutate model_cfg in place for one Optuna trial."""
+    """Mutate model_cfg in place for one Optuna trial.
+
+    Always forces ``domain_adaptation.enabled: true`` (required for DA loss).
+    """
     arch_cfg = model_cfg.setdefault("architecture", {})
+    schedule = [int(v) for v in trial_params["channel_schedule"]]
+    # MultiNILM requires hidden_channels == channel_schedule[-1].
+    hidden = int(schedule[-1])
+    trial_params["hidden_channels"] = hidden
+    num_blocks = int(trial_params["num_blocks"])
+
+    arch_cfg["channel_schedule"] = schedule
+    arch_cfg["hidden_channels"] = hidden
+    arch_cfg["stem_kernel_size"] = int(trial_params["stem_kernel_size"])
+    arch_cfg["stage_kernel_size"] = int(trial_params["stage_kernel_size"])
+    arch_cfg["num_blocks"] = num_blocks
+    arch_cfg["kernel_size"] = int(trial_params["kernel_size"])
+    arch_cfg["max_dilation"] = int(trial_params["max_dilation"])
     arch_cfg["dropout"] = float(trial_params["dropout"])
     arch_cfg["gate_mode"] = str(trial_params["gate_mode"]).lower()
-    schedule = [int(v) for v in trial_params["channel_schedule"]]
-    arch_cfg["channel_schedule"] = schedule
-    arch_cfg["hidden_channels"] = int(trial_params["hidden_channels"])
+    arch_cfg["gate_threshold"] = float(trial_params["gate_threshold"])
+    arch_cfg["head_local_layers"] = int(trial_params["head_local_layers"])
+    arch_cfg["head_kernel_size"] = int(trial_params["head_kernel_size"])
+    arch_cfg["head_use_residual"] = bool(trial_params["head_use_residual"])
+    arch_cfg["use_multiscale_stem"] = bool(trial_params["use_multiscale_stem"])
+    arch_cfg["detail_kernels"] = [int(v) for v in trial_params["detail_kernels"]]
+    arch_cfg["detail_branch_channels"] = int(trial_params["detail_branch_channels"])
+    # Keep DA hooks valid when num_blocks changes (temporal_6 invalid if n<7).
+    arch_cfg["domain_feature_layers"] = _domain_feature_layers_for_blocks(num_blocks)
 
-    model_cfg.setdefault("loss", {})["lambda_state"] = float(trial_params["lambda_state"])
+    loss_cfg = model_cfg.setdefault("loss", {})
+    loss_cfg["domain_mu"] = float(trial_params["domain_mu"])
+    loss_cfg["domain_scale"] = str(trial_params["domain_scale"]).lower()
+    loss_cfg["lambda_domain"] = float(trial_params["lambda_domain"])
+
+    # Always on during tuning (yaml may have enabled: false).
+    model_cfg.setdefault("domain_adaptation", {})["enabled"] = True
+
     train_cfg = model_cfg.setdefault("training", {})
+    train_cfg["batch_size"] = int(trial_params["batch_size"])
     train_cfg["learning_rate"] = float(trial_params["learning_rate"])
     train_cfg["weight_decay"] = float(trial_params["weight_decay"])
-    train_cfg["early_stop_patience"] = int(trial_params["early_stop_patience"])
-    train_cfg["gradient_clip"] = float(trial_params["gradient_clip"])
     train_cfg["epochs"] = int(epochs)
     train_cfg["scheduler"] = "none"
 
@@ -334,12 +459,13 @@ def _output_window_choices(input_length: int, *, require_equal: bool) -> list[in
     return [value for value in OUTPUT_WINDOW_CANDIDATES if value <= input_len]
 
 
-def _stride_choices_for_window(input_length: int, *, fast_search: bool) -> list[int]:
-    """Stride options from small to large, capped by input window length."""
-    input_len = max(1, int(input_length))
-    base = STRIDE_CHOICES_FAST if fast_search else STRIDE_CHOICES_FULL
-    choices = [value for value in base if value <= input_len]
-    return choices or [min(input_len, base[0])]
+def _apply_strides_from_divisors(params: dict[str, Any]) -> None:
+    """Recompute absolute strides from window // divisor (auto when window changes)."""
+    window = int(params["input_window_length"])
+    in_div = int(params.get("input_stride_divisor", 2))
+    ev_div = int(params.get("eval_stride_divisor", in_div))
+    params["input_stride"] = _stride_from_window(window, in_div)
+    params["eval_stride"] = _stride_from_window(window, ev_div)
 
 
 def _normalize_window_params(params: dict[str, Any], *, require_equal_windows: bool) -> None:
@@ -349,9 +475,7 @@ def _normalize_window_params(params: dict[str, Any], *, require_equal_windows: b
         params["output_window_length"] = input_len
     elif output_len > input_len:
         params["output_window_length"] = input_len
-    max_stride = max(1, input_len)
-    for key in ("input_stride", "eval_stride"):
-        params[key] = max(1, min(int(params[key]), max_stride))
+    _apply_strides_from_divisors(params)
 
 
 def _csv_row_count(csv_path: Path) -> int:
@@ -452,56 +576,6 @@ def _suggest_trial_params(
             )
             params["output_window_length"] = int(params["input_window_length"])
 
-    if "learning_rate" in tune_set:
-        if fast_search:
-            params["learning_rate"] = trial.suggest_float("learning_rate", 3e-5, 3e-4, log=True)
-        else:
-            params["learning_rate"] = trial.suggest_float("learning_rate", 1e-5, 5e-4, log=True)
-
-    if "lambda_state" in tune_set:
-        if fast_search:
-            params["lambda_state"] = trial.suggest_float("lambda_state", 0.3, 1.0)
-        else:
-            params["lambda_state"] = trial.suggest_float("lambda_state", 0.2, 1.2)
-
-    if "dropout" in tune_set:
-        if fast_search:
-            params["dropout"] = trial.suggest_float("dropout", 0.08, 0.20)
-        else:
-            params["dropout"] = trial.suggest_float("dropout", 0.05, 0.25)
-
-    if "early_stop_patience" in tune_set:
-        if fast_search:
-            params["early_stop_patience"] = trial.suggest_categorical(
-                "early_stop_patience", [30, 40, 60]
-            )
-        else:
-            params["early_stop_patience"] = trial.suggest_int("early_stop_patience", 25, 80, step=5)
-
-    if "gradient_clip" in tune_set:
-        if fast_search:
-            params["gradient_clip"] = trial.suggest_categorical("gradient_clip", [0.5, 1.0, 2.0])
-        else:
-            params["gradient_clip"] = trial.suggest_float("gradient_clip", 0.25, 3.0)
-
-    if "weight_decay" in tune_set:
-        if trial.suggest_categorical("use_weight_decay", [False, True]):
-            params["weight_decay"] = trial.suggest_float("weight_decay", 1e-6, 1e-4, log=True)
-        else:
-            params["weight_decay"] = 0.0
-
-    if "gate_mode" in tune_set:
-        params["gate_mode"] = trial.suggest_categorical("gate_mode", list(GATE_MODE_CHOICES))
-
-    if "channel_schedule" in tune_set:
-        schedule_key = trial.suggest_categorical(
-            "channel_schedule",
-            list(CHANNEL_SCHEDULE_PRESETS.keys()),
-        )
-        params["channel_schedule_key"] = schedule_key
-        params["channel_schedule"] = list(CHANNEL_SCHEDULE_PRESETS[schedule_key])
-        params["hidden_channels"] = int(params["channel_schedule"][-1])
-
     if not (window_length_tuned and require_equal_windows) and "input_window_length" in tune_set:
         params["input_window_length"] = trial.suggest_categorical(
             "input_window_length",
@@ -510,7 +584,6 @@ def _suggest_trial_params(
 
     if not (window_length_tuned and require_equal_windows):
         if "output_window_length" in tune_set:
-            # Optuna requires a fixed categorical space across all trials.
             params["output_window_length"] = trial.suggest_categorical(
                 "output_window_length",
                 list(OUTPUT_WINDOW_CANDIDATES),
@@ -518,25 +591,148 @@ def _suggest_trial_params(
         elif require_equal_windows and "input_window_length" in tune_set:
             params["output_window_length"] = int(params["input_window_length"])
 
-    optuna_stride_choices = _optuna_stride_choices(fast_search=fast_search)
+    # Stride search = divisor (÷2 pattern); absolute stride = window // divisor.
+    divisor_choices = _stride_divisor_choices(fast_search=fast_search)
     tune_stride_together = "input_stride" in tune_set and "eval_stride" in tune_set
     if tune_stride_together:
-        stride_value = trial.suggest_categorical("stride", optuna_stride_choices)
-        params["input_stride"] = int(stride_value)
-        params["eval_stride"] = int(stride_value)
+        stride_divisor = trial.suggest_categorical("stride_divisor", divisor_choices)
+        params["input_stride_divisor"] = int(stride_divisor)
+        params["eval_stride_divisor"] = int(stride_divisor)
     else:
         if "input_stride" in tune_set:
-            params["input_stride"] = trial.suggest_categorical(
-                "input_stride", optuna_stride_choices
+            params["input_stride_divisor"] = trial.suggest_categorical(
+                "input_stride_divisor", divisor_choices
             )
         if "eval_stride" in tune_set:
-            params["eval_stride"] = trial.suggest_categorical(
-                "eval_stride", optuna_stride_choices
+            params["eval_stride_divisor"] = trial.suggest_categorical(
+                "eval_stride_divisor", divisor_choices
             )
 
-    _normalize_window_params(params, require_equal_windows=require_equal_windows)
-    if "channel_schedule" not in tune_set:
+    if "channel_schedule" in tune_set:
+        # Two axes: scale start (÷2/base/×2) and depth (add/remove ×2 stages).
+        channel_start = trial.suggest_categorical(
+            "channel_start", list(CHANNEL_START_CHOICES)
+        )
+        depth_choices = (
+            list(CHANNEL_DEPTH_CHOICES_FAST)
+            if fast_search
+            else list(CHANNEL_DEPTH_CHOICES_FULL)
+        )
+        channel_depth = trial.suggest_categorical("channel_depth", depth_choices)
+        params["channel_start"] = int(channel_start)
+        params["channel_depth"] = int(channel_depth)
+        params["channel_schedule"] = _make_channel_schedule(channel_start, channel_depth)
+        params["channel_schedule_key"] = f"start{channel_start}_depth{channel_depth}"
         params["hidden_channels"] = int(params["channel_schedule"][-1])
+
+    if "stem_kernel_size" in tune_set:
+        params["stem_kernel_size"] = trial.suggest_categorical(
+            "stem_kernel_size", [3, 5, 7, 9]
+        )
+
+    if "stage_kernel_size" in tune_set:
+        params["stage_kernel_size"] = trial.suggest_categorical(
+            "stage_kernel_size", [3, 5, 7]
+        )
+
+    if "num_blocks" in tune_set:
+        if fast_search:
+            params["num_blocks"] = trial.suggest_categorical("num_blocks", [4, 6, 8])
+        else:
+            params["num_blocks"] = trial.suggest_int("num_blocks", 4, 12, step=2)
+
+    if "kernel_size" in tune_set:
+        params["kernel_size"] = trial.suggest_categorical("kernel_size", [3, 5, 7])
+
+    if "max_dilation" in tune_set:
+        params["max_dilation"] = trial.suggest_categorical(
+            "max_dilation", [16, 32, 64, 128]
+        )
+
+    if "dropout" in tune_set:
+        if fast_search:
+            params["dropout"] = trial.suggest_float("dropout", 0.08, 0.20)
+        else:
+            params["dropout"] = trial.suggest_float("dropout", 0.05, 0.25)
+
+    if "gate_mode" in tune_set:
+        params["gate_mode"] = trial.suggest_categorical("gate_mode", list(GATE_MODE_CHOICES))
+
+    if "gate_threshold" in tune_set:
+        if fast_search:
+            params["gate_threshold"] = trial.suggest_categorical(
+                "gate_threshold", [0.4, 0.5, 0.6]
+            )
+        else:
+            params["gate_threshold"] = trial.suggest_float("gate_threshold", 0.3, 0.7)
+
+    if "head_local_layers" in tune_set:
+        params["head_local_layers"] = trial.suggest_int("head_local_layers", 0, 4)
+
+    if "head_kernel_size" in tune_set:
+        params["head_kernel_size"] = trial.suggest_categorical(
+            "head_kernel_size", [3, 5]
+        )
+
+    if "head_use_residual" in tune_set:
+        params["head_use_residual"] = trial.suggest_categorical(
+            "head_use_residual", [True, False]
+        )
+
+    if "use_multiscale_stem" in tune_set:
+        params["use_multiscale_stem"] = trial.suggest_categorical(
+            "use_multiscale_stem", [True, False]
+        )
+
+    if "detail_kernels" in tune_set:
+        detail_key = trial.suggest_categorical(
+            "detail_kernels",
+            list(DETAIL_KERNEL_PRESETS.keys()),
+        )
+        params["detail_kernels_key"] = detail_key
+        params["detail_kernels"] = list(DETAIL_KERNEL_PRESETS[detail_key])
+
+    if "detail_branch_channels" in tune_set:
+        params["detail_branch_channels"] = trial.suggest_categorical(
+            "detail_branch_channels", [8, 16, 24, 32]
+        )
+
+    if "domain_mu" in tune_set:
+        if fast_search:
+            params["domain_mu"] = trial.suggest_float("domain_mu", 0.2, 0.6)
+        else:
+            params["domain_mu"] = trial.suggest_float("domain_mu", 0.1, 0.8)
+
+    if "domain_scale" in tune_set:
+        params["domain_scale"] = trial.suggest_categorical(
+            "domain_scale", list(DOMAIN_SCALE_CHOICES)
+        )
+
+    if "lambda_domain" in tune_set:
+        # Keep > 0 so enabled DA actually contributes (yaml comment: needs lambda_domain > 0).
+        if fast_search:
+            params["lambda_domain"] = trial.suggest_float("lambda_domain", 0.2, 0.8)
+        else:
+            params["lambda_domain"] = trial.suggest_float("lambda_domain", 0.1, 0.9)
+
+    if "batch_size" in tune_set:
+        params["batch_size"] = trial.suggest_categorical("batch_size", [16, 32, 64])
+
+    if "learning_rate" in tune_set:
+        if fast_search:
+            params["learning_rate"] = trial.suggest_float("learning_rate", 3e-5, 3e-4, log=True)
+        else:
+            params["learning_rate"] = trial.suggest_float("learning_rate", 1e-5, 5e-4, log=True)
+
+    if "weight_decay" in tune_set:
+        if trial.suggest_categorical("use_weight_decay", [False, True]):
+            params["weight_decay"] = trial.suggest_float("weight_decay", 1e-6, 1e-4, log=True)
+        else:
+            params["weight_decay"] = 0.0
+
+    # MultiNILM constraint: hidden_channels must equal channel_schedule[-1].
+    params["hidden_channels"] = int(params["channel_schedule"][-1])
+    _normalize_window_params(params, require_equal_windows=require_equal_windows)
     return params
 
 
@@ -574,7 +770,16 @@ def _read_trial_metrics(run_dir: Path) -> dict:
 def _trial_param_column(param: str, columns: pd.Index) -> str | None:
     candidates = [f"params_{param}"]
     if param in {"input_stride", "eval_stride"}:
-        candidates.insert(0, "params_stride")
+        candidates = [
+            "params_stride_divisor",
+            "params_input_stride_divisor",
+            "params_eval_stride_divisor",
+            f"params_{param}",
+        ]
+    if param in {"input_window_length", "output_window_length"}:
+        candidates.insert(0, "params_window_length")
+    if param == "channel_schedule":
+        candidates = ["params_channel_start", "params_channel_depth", "params_channel_schedule"]
     for column in candidates:
         if column in columns:
             return column
@@ -926,22 +1131,32 @@ def _save_tuning_plots(
 
 
 def _print_search_space_info(fast_search: bool, *, model_cfg: dict | None = None) -> None:
-    stride_choices = STRIDE_CHOICES_FAST if fast_search else STRIDE_CHOICES_FULL
+    divisor_choices = _stride_divisor_choices(fast_search=fast_search)
     require_equal = _uses_full_input_training(model_cfg or {"windowing": {"training_targets": "full_input"}})
-    print("\nDefault search spaces:")
+    channel_presets = _channel_schedule_presets(fast_search=fast_search)
+    print("\nDefault search spaces (from multinilm.yaml knobs):")
     print(f"  gate_mode: {list(GATE_MODE_CHOICES)}")
-    print(f"  channel_schedule: {list(CHANNEL_SCHEDULE_PRESETS.keys())}")
+    print(
+        "  channel_schedule: start∈"
+        f"{list(CHANNEL_START_CHOICES)} (÷2/base/×2) × depth∈"
+        f"{list(CHANNEL_DEPTH_CHOICES_FAST if fast_search else CHANNEL_DEPTH_CHOICES_FULL)} "
+        f"-> {list(channel_presets.values())}"
+    )
+    print(f"  detail_kernels: {list(DETAIL_KERNEL_PRESETS.keys())}")
+    print(f"  domain_scale: {list(DOMAIN_SCALE_CHOICES)}")
+    print("  domain_adaptation.enabled: always true")
+    print(f"  epochs: fixed at {DEFAULT_EPOCHS} (not tuned)")
     if require_equal:
         print(f"  window_length (input=output): {list(WINDOW_LENGTH_CHOICES)}")
         print("  Safe rule: training_targets=full_input -> input_window_length must equal output_window_length.")
     else:
         print(f"  input_window_length: {list(INPUT_WINDOW_CHOICES)}")
         print(f"  output_window_length: any of {list(OUTPUT_WINDOW_CANDIDATES)} with output <= input")
-    print(f"  stride / input_stride / eval_stride: {list(stride_choices)} (capped by input window)")
-    print("  Example (input -> valid strides, fast):")
+    print(f"  stride_divisor: {divisor_choices}  ->  stride = window // divisor")
+    print("  Example (window -> strides):")
     for input_len in WINDOW_LENGTH_CHOICES:
         print(f"    {input_len} -> {_stride_choices_for_window(input_len, fast_search=fast_search)}")
-    print("  Aliases: 'window_length' (both windows), 'stride' (both strides).")
+    print("  Aliases: 'window_length' (both windows), 'stride' (both stride divisors).")
     print("  eval_reconstruction/training_targets: auto (derived from window + stride).\n")
 
 
@@ -951,9 +1166,12 @@ def main() -> None:
         print("Tunable hyperparameters (--tune accepts comma-separated names):")
         for name in TUNABLE_PARAMETERS:
             print(f"  - {name}")
+        print("\nAlways forced:")
+        print("  - domain_adaptation.enabled = true")
+        print(f"  - epochs = {DEFAULT_EPOCHS} (constant; not tuned)")
         print("\nSpecial aliases:")
         print("  - window_length -> input_window_length + output_window_length (kept equal for full_input)")
-        print("  - stride        -> input_stride + eval_stride together")
+        print("  - stride        -> input/eval stride_divisor together (stride = window // divisor)")
         print("\nAliases:", ", ".join(f"{k}->{v}" for k, v in sorted(TUNE_ALIASES.items())))
         _print_search_space_info(fast_search=True, model_cfg=load_model_config(DEFAULT_MODEL_CONFIG))
         return
@@ -962,12 +1180,26 @@ def main() -> None:
     experiment = load_experiment(args.experiment)
     base_model_cfg = load_model_config(args.model_config)
     baseline_params = _baseline_param_values(base_model_cfg)
-    fixed_params = {key: baseline_params[key] for key in baseline_params if key not in tune_set}
+    helper_keys = {
+        "channel_schedule_key",
+        "detail_kernels_key",
+        "channel_start",
+        "channel_depth",
+        "input_stride_divisor",
+        "eval_stride_divisor",
+    }
+    fixed_params = {
+        key: baseline_params[key]
+        for key in baseline_params
+        if key not in tune_set and key not in helper_keys
+    }
     experiment_id = str(experiment["experiment_id"])
     fast_search = bool(args.fast)
-    epochs = args.epochs
-    if epochs is None:
-        epochs = DEFAULT_EPOCHS_FAST if fast_search else DEFAULT_EPOCHS_FULL
+
+    # Epochs are never tuned; constant DEFAULT_EPOCHS unless --epochs overrides.
+    fixed_epochs = int(args.epochs) if args.epochs is not None else DEFAULT_EPOCHS
+    baseline_params["epochs"] = fixed_epochs
+    fixed_params["epochs"] = fixed_epochs
 
     results_dir = args.results_dir or (
         ROOT / "results" / f"multinilm_hyperparameter_tuning_{experiment_id}"
@@ -991,10 +1223,11 @@ def main() -> None:
         "model_config": str(args.model_config),
         "experiment_id": experiment_id,
         "n_trials": int(args.n_trials),
-        "epochs_per_trial": int(epochs),
+        "epochs_per_trial": fixed_epochs,
         "fast_search_space": fast_search,
         "seed": int(args.seed),
         "checkpoint_monitor": checkpoint_monitor,
+        "domain_adaptation_enabled": True,
         "appliances": appliances,
         "objective_metric": {
             "name": checkpoint_monitor,
@@ -1021,11 +1254,18 @@ def main() -> None:
         "tuned_parameters": sorted(tune_set),
         "fixed_parameters": fixed_params,
         "fixed_settings": {
+            "domain_adaptation.enabled": True,
             "scheduler": "none",
             "training_plots": "disabled during tuning",
             "search_space": {
                 "gate_mode": list(GATE_MODE_CHOICES),
-                "channel_schedule": CHANNEL_SCHEDULE_PRESETS,
+                "channel_start": list(CHANNEL_START_CHOICES),
+                "channel_depth": list(
+                    CHANNEL_DEPTH_CHOICES_FAST if fast_search else CHANNEL_DEPTH_CHOICES_FULL
+                ),
+                "channel_schedule": _channel_schedule_presets(fast_search=fast_search),
+                "detail_kernels": DETAIL_KERNEL_PRESETS,
+                "domain_scale": list(DOMAIN_SCALE_CHOICES),
                 "input_window_length": list(INPUT_WINDOW_CHOICES),
                 "window_length_choices_when_full_input": list(WINDOW_LENGTH_CHOICES),
                 "window_safety_rule": (
@@ -1033,8 +1273,8 @@ def main() -> None:
                 ),
                 "output_window_candidates": list(OUTPUT_WINDOW_CANDIDATES),
                 "output_window_rule": "output <= input",
-                "stride_choices": list(STRIDE_CHOICES_FAST if fast_search else STRIDE_CHOICES_FULL),
-                "stride_rule": "stride <= input_window_length",
+                "stride_divisor_choices": _stride_divisor_choices(fast_search=fast_search),
+                "stride_rule": "stride = input_window_length // stride_divisor",
             },
         },
     }
@@ -1043,13 +1283,14 @@ def main() -> None:
     print("MultiNILM surrogate hyperparameter tuning")
     print(f"Experiment: {args.experiment}")
     print(f"Model config: {args.model_config}")
-    print(f"Trials: {args.n_trials} | Epochs/trial: {epochs} | Fast space: {fast_search}")
+    print(f"Trials: {args.n_trials} | Epochs/trial: {fixed_epochs} (fixed) | Fast space: {fast_search}")
+    print("domain_adaptation.enabled: always true")
     print(f"Tuning: {', '.join(sorted(tune_set))}")
     print(f"Fixed from yaml: {', '.join(f'{k}={v}' for k, v in sorted(fixed_params.items()))}")
     print(f"Objective: minimize {checkpoint_monitor}")
     print(f"Results: {results_dir}")
     if tune_set & {"input_window_length", "output_window_length", "input_stride", "eval_stride"}:
-        print("[note] Window/stride tuning changes dataset size and trial runtime a lot.")
+        print("[note] Window/stride: stride = window // divisor (auto-recomputed when window changes).")
     _print_search_space_info(fast_search, model_cfg=base_model_cfg)
     if _uses_full_input_training(base_model_cfg):
         print("[note] full_input training: tuner keeps input_window_length == output_window_length.")
@@ -1066,8 +1307,10 @@ def main() -> None:
             baseline=baseline_params,
             model_cfg=base_model_cfg,
         )
+        trial_epochs = fixed_epochs
+        trial_params["epochs"] = trial_epochs
         model_cfg = copy.deepcopy(base_model_cfg)
-        _apply_tuning_overrides(model_cfg, trial_params, epochs=epochs)
+        _apply_tuning_overrides(model_cfg, trial_params, epochs=trial_epochs)
         _validate_window_stride_config(
             model_cfg,
             trial_params,
@@ -1088,7 +1331,7 @@ def main() -> None:
 
         adapter = MultiNILMAdapter(merged, data_root=str(data_root) if data_root else None)
         try:
-            train_model(adapter, trial_dir, epochs=epochs, seed=args.seed)
+            train_model(adapter, trial_dir, epochs=trial_epochs, seed=args.seed)
             metrics = _read_trial_metrics(trial_dir)
         except Exception as exc:
             trial.set_user_attr("error", str(exc))
@@ -1146,32 +1389,95 @@ def main() -> None:
     use_weight_decay = best_params.pop("use_weight_decay", None)
     if use_weight_decay is False:
         best_params["weight_decay"] = 0.0
-    if "channel_schedule" in best_params and isinstance(best_params["channel_schedule"], str):
-        schedule_key = best_params["channel_schedule"]
-        best_params["channel_schedule_key"] = schedule_key
-        best_params["channel_schedule"] = list(CHANNEL_SCHEDULE_PRESETS[schedule_key])
+
+    if "channel_start" in best_params or "channel_depth" in best_params:
+        channel_start = int(best_params.get("channel_start", baseline_params["channel_start"]))
+        channel_depth = int(best_params.get("channel_depth", baseline_params["channel_depth"]))
+        best_params["channel_start"] = channel_start
+        best_params["channel_depth"] = channel_depth
+        best_params["channel_schedule"] = _make_channel_schedule(channel_start, channel_depth)
+        best_params["channel_schedule_key"] = f"start{channel_start}_depth{channel_depth}"
         best_params["hidden_channels"] = int(best_params["channel_schedule"][-1])
-    if "stride" in best_params:
-        stride_value = int(best_params.pop("stride"))
-        best_params["input_stride"] = stride_value
-        best_params["eval_stride"] = stride_value
+
+    if "detail_kernels" in best_params and isinstance(best_params["detail_kernels"], str):
+        detail_key = best_params["detail_kernels"]
+        best_params["detail_kernels_key"] = detail_key
+        best_params["detail_kernels"] = list(DETAIL_KERNEL_PRESETS[detail_key])
+
+    if "window_length" in best_params:
+        window_value = int(best_params.pop("window_length"))
+        best_params["input_window_length"] = window_value
+        best_params["output_window_length"] = window_value
+
+    if "stride_divisor" in best_params:
+        stride_divisor = int(best_params.pop("stride_divisor"))
+        best_params["input_stride_divisor"] = stride_divisor
+        best_params["eval_stride_divisor"] = stride_divisor
+
     for key in TUNABLE_PARAMETERS:
         if key not in tune_set:
             best_params[key] = baseline_params[key]
-    if "weight_decay" not in tune_set:
-        best_params["weight_decay"] = baseline_params["weight_decay"]
     if "channel_schedule" not in tune_set:
         best_params["channel_schedule"] = baseline_params["channel_schedule"]
         best_params["channel_schedule_key"] = baseline_params["channel_schedule_key"]
-        best_params["hidden_channels"] = baseline_params["hidden_channels"]
-    if "gate_mode" not in tune_set:
-        best_params["gate_mode"] = baseline_params["gate_mode"]
-    for key in ("input_window_length", "output_window_length", "input_stride", "eval_stride"):
-        if key not in tune_set:
-            best_params[key] = baseline_params[key]
+        best_params["channel_start"] = baseline_params["channel_start"]
+        best_params["channel_depth"] = baseline_params["channel_depth"]
+    if "detail_kernels" not in tune_set:
+        best_params["detail_kernels"] = baseline_params["detail_kernels"]
+        best_params["detail_kernels_key"] = baseline_params["detail_kernels_key"]
+    if "input_stride" not in tune_set:
+        best_params["input_stride_divisor"] = baseline_params["input_stride_divisor"]
+    if "eval_stride" not in tune_set:
+        best_params["eval_stride_divisor"] = baseline_params["eval_stride_divisor"]
+
+    best_params["epochs"] = fixed_epochs
+    best_params["hidden_channels"] = int(best_params["channel_schedule"][-1])
     _normalize_window_params(best_params, require_equal_windows=require_equal_windows)
 
     best_trial = study.best_trial
+
+    arch_patch: dict[str, Any] = {}
+    for key in (
+        "channel_schedule",
+        "stem_kernel_size",
+        "stage_kernel_size",
+        "num_blocks",
+        "kernel_size",
+        "max_dilation",
+        "dropout",
+        "gate_mode",
+        "gate_threshold",
+        "head_local_layers",
+        "head_kernel_size",
+        "head_use_residual",
+        "use_multiscale_stem",
+        "detail_kernels",
+        "detail_branch_channels",
+    ):
+        if key in tune_set:
+            arch_patch[key] = best_params[key]
+    if "channel_schedule" in tune_set or "num_blocks" in tune_set:
+        arch_patch["hidden_channels"] = best_params["hidden_channels"]
+    if "num_blocks" in tune_set:
+        arch_patch["domain_feature_layers"] = _domain_feature_layers_for_blocks(
+            int(best_params["num_blocks"])
+        )
+
+    loss_patch: dict[str, Any] = {}
+    for key in ("domain_mu", "domain_scale", "lambda_domain"):
+        if key in tune_set:
+            loss_patch[key] = best_params[key]
+
+    window_patch: dict[str, Any] = {}
+    for key in ("input_window_length", "output_window_length", "input_stride", "eval_stride"):
+        if key in tune_set:
+            window_patch[key] = best_params[key]
+
+    train_patch: dict[str, Any] = {"scheduler": "none", "epochs": fixed_epochs}
+    for key in ("batch_size", "learning_rate", "weight_decay"):
+        if key in tune_set:
+            train_patch[key] = best_params.get(key, baseline_params.get(key))
+
     result = {
         "best_checkpoint_score": study.best_value,
         "checkpoint_monitor": checkpoint_monitor,
@@ -1191,64 +1497,11 @@ def main() -> None:
             )
         },
         "recommended_yaml_patch": {
-            **(
-                {
-                    "architecture": {
-                        **({"dropout": best_params["dropout"]} if "dropout" in tune_set else {}),
-                        **({"gate_mode": best_params["gate_mode"]} if "gate_mode" in tune_set else {}),
-                        **(
-                            {
-                                "channel_schedule": best_params["channel_schedule"],
-                                "hidden_channels": best_params["hidden_channels"],
-                            }
-                            if "channel_schedule" in tune_set
-                            else {}
-                        ),
-                    }
-                }
-                if {"dropout", "gate_mode", "channel_schedule"} & tune_set
-                else {}
-            ),
-            **({"loss": {"lambda_state": best_params["lambda_state"]}} if "lambda_state" in tune_set else {}),
-            **(
-                {
-                    "windowing": {
-                        **(
-                            {"input_window_length": best_params["input_window_length"]}
-                            if "input_window_length" in tune_set
-                            else {}
-                        ),
-                        **(
-                            {"output_window_length": best_params["output_window_length"]}
-                            if "output_window_length" in tune_set
-                            else {}
-                        ),
-                        **(
-                            {"input_stride": best_params["input_stride"]}
-                            if "input_stride" in tune_set
-                            else {}
-                        ),
-                        **(
-                            {"eval_stride": best_params["eval_stride"]}
-                            if "eval_stride" in tune_set
-                            else {}
-                        ),
-                    }
-                }
-                if {"input_window_length", "output_window_length", "input_stride", "eval_stride"} & tune_set
-                else {}
-            ),
-            "training": {
-                **({"learning_rate": best_params["learning_rate"]} if "learning_rate" in tune_set else {}),
-                **({"weight_decay": best_params.get("weight_decay", 0.0)} if "weight_decay" in tune_set else {}),
-                **(
-                    {"early_stop_patience": best_params["early_stop_patience"]}
-                    if "early_stop_patience" in tune_set
-                    else {}
-                ),
-                **({"gradient_clip": best_params["gradient_clip"]} if "gradient_clip" in tune_set else {}),
-                "scheduler": "none",
-            },
+            **({"architecture": arch_patch} if arch_patch else {}),
+            **({"loss": loss_patch} if loss_patch else {}),
+            **({"windowing": window_patch} if window_patch else {}),
+            "domain_adaptation": {"enabled": True},
+            "training": train_patch,
         },
         **study_config,
     }
