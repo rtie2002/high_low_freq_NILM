@@ -10,12 +10,12 @@ evaluation:
   pred_on_source: state_head
 
 windowing:
-  input_window_length: 480
-  output_window_length: 480
+  input_window_length: 600
+  output_window_length: 600
   output_alignment: end
   # Baseline create_dataset.py uses chunk_size=240 (Arguments window_stride=120 is unused).
-  input_stride: 240
-  eval_stride: 240
+  input_stride: 300
+  eval_stride: 300
   eval_reconstruction: overlap_mean
   training_targets: full_input
 

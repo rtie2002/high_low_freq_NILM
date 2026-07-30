@@ -1413,7 +1413,8 @@ def train_model(
             epoch_time_sec = train_time_sec + val_time_sec
             cumulative_time_sec = time.perf_counter() - training_started
 
-            # If DA is on and source-val raw BCE keeps rising, freeze DA (negative transfer).
+            # Optional: freeze DA if source-val raw BCE keeps rising (negative transfer).
+            # Default patience=0 → never freeze (Lin-style: keep λ fixed all epochs).
             if (
                 da_active
                 and (not da_freeze)
@@ -1427,7 +1428,7 @@ def train_model(
                 else:
                     val_state_bad_epochs += 1
                 patience = int(
-                    adapter.model_cfg.get("loss", {}).get("da_freeze_patience", 8)
+                    adapter.model_cfg.get("loss", {}).get("da_freeze_patience", 0)
                 )
                 if patience > 0 and val_state_bad_epochs >= patience:
                     da_freeze = True

@@ -10,11 +10,11 @@ evaluation:
   pred_on_source: state_head
 
 windowing:
-  input_window_length: 480
-  output_window_length: 480
+  input_window_length: 600
+  output_window_length: 600
   output_alignment: end
-  input_stride: 240
-  eval_stride: 240
+  input_stride: 300
+  eval_stride: 300
   eval_reconstruction: auto
   training_targets: auto
 
@@ -65,7 +65,7 @@ domain_adaptation:
 training:
   # Matched to config/models/multinilm.yaml
   batch_size: 32
-  epochs: 120
+  epochs: 100
   learning_rate: 0.0001
   weight_decay: 0
   num_workers: 0

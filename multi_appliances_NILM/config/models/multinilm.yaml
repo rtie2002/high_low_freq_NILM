@@ -1,4 +1,4 @@
-# MultiNILM UK-DALE — 480/480 full-sequence supervision (val-first setup).
+# MultiNILM UK-DALE — 600/600 full-sequence supervision (val-first setup).
 model_name: multinilm
 
 data:
@@ -10,11 +10,11 @@ evaluation:
   pred_on_source: state_head
 
 windowing:
-  input_window_length: 480
-  output_window_length: 480
+  input_window_length: 600
+  output_window_length: 600
   output_alignment: end
-  input_stride: 240
-  eval_stride: 240
+  input_stride: 300
+  eval_stride: 300
   eval_reconstruction: auto   # overlap_mean when eval_stride < output length, else flat
   training_targets: auto      # full_input when input == output length, else output_window
 
@@ -81,7 +81,7 @@ domain_adaptation:
 
 training:
   batch_size: 32
-  epochs: 200
+  epochs: 100
   learning_rate: 0.0001
   weight_decay: 0
   num_workers: 0

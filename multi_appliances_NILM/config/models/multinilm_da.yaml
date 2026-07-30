@@ -10,11 +10,11 @@ evaluation:
   pred_on_source: state_head
 
 windowing:
-  input_window_length: 480
-  output_window_length: 480
+  input_window_length: 600
+  output_window_length: 600
   output_alignment: end
-  input_stride: 240
-  eval_stride: 240
+  input_stride: 300
+  eval_stride: 300
   eval_reconstruction: auto
   training_targets: auto
 
@@ -49,7 +49,10 @@ loss:
   domain_mu: 0.4
   domain_mix: convex
   domain_scale: equal
-  # Lin TSG best λ ≈ 0.6
+  # Lin TSG best λ ≈ 0.6 — keep DA on every epoch (no mid-train freeze).
+  da_warmup_epochs: 0
+  da_ramp_epochs: 0
+  da_freeze_patience: 0
   lambda_domain: 0.6
 
 domain_adaptation:
@@ -58,7 +61,7 @@ domain_adaptation:
 
 training:
   batch_size: 32
-  epochs: 200
+  epochs: 100
   learning_rate: 0.0001
   weight_decay: 0
   num_workers: 0
