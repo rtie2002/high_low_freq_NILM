@@ -80,7 +80,7 @@ training:
   cudnn_benchmark: true
   plots:
     plot_mode: interval
-    plot_interval: 50
+    plot_interval: 5
     plot_on_periods: 5
     waveform_figsize: 5.5
     waveform_dpi: 300

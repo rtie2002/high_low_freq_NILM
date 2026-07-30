@@ -15,6 +15,7 @@ from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
 from evaluation.plots import (
     FULL_CYCLE_APPLIANCES,
     bundle_aggregate_watts,
+    bundle_csv_appliance_watts,
     dataset_on_labels_for_bundle,
     plot_loss_components,
     plot_matnilm_training_losses,
@@ -386,6 +387,15 @@ class LiveTrainingMonitor:
             n_points=len(bundle.y_true_watts),
             csv_timesteps=bundle.csv_timesteps,
         )
+        # Waveform GT must come from the same raw CSV watts as aggregate (not denorm).
+        y_true_plot = bundle_csv_appliance_watts(
+            adapter._data_loader(),
+            split,
+            n_points=len(bundle.y_true_watts),
+            csv_timesteps=bundle.csv_timesteps,
+        )
+        if y_true_plot is None:
+            y_true_plot = bundle.y_true_watts
         output_dir = self._waveform_tag_dir(split, tag)
         if output_dir.exists():
             shutil.rmtree(output_dir)
@@ -402,7 +412,7 @@ class LiveTrainingMonitor:
         return save_appliance_on_waveforms(
             output_dir,
             appliances=self.appliances,
-            y_true_watts=bundle.y_true_watts,
+            y_true_watts=y_true_plot,
             y_pred_watts=bundle.y_pred_watts,
             y_true_on=waveform_true_on,
             y_pred_on=bundle.y_pred_on,

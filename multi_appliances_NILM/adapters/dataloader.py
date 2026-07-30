@@ -423,6 +423,19 @@ class NILMDataLoader:
             )
         return np.asarray(mains[indices], dtype=np.float32)
 
+    def appliance_watts_at_timesteps(self, split: str, csv_timesteps: np.ndarray) -> np.ndarray:
+        """Raw per-appliance power (W) at the same CSV rows (for waveform GT)."""
+        _, power, _ = self.get_raw_csv_arrays(split)
+        indices = np.asarray(csv_timesteps, dtype=np.int64).reshape(-1)
+        if indices.size == 0:
+            return np.zeros((0, power.shape[1]), dtype=np.float32)
+        if int(indices.min()) < 0 or int(indices.max()) >= len(power):
+            raise IndexError(
+                f"csv_timesteps out of range for {split}: "
+                f"need [0, {len(power)}), got [{int(indices.min())}, {int(indices.max())}]"
+            )
+        return np.asarray(power[indices], dtype=np.float32)
+
     def window_flattened_csv_states(self, split: str, n_points: int) -> np.ndarray:
         """Align dataset CSV *_on columns with flattened model output timesteps.
 

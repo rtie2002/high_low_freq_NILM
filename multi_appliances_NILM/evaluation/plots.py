@@ -89,6 +89,25 @@ def bundle_aggregate_watts(
         return None
 
 
+def bundle_csv_appliance_watts(
+    data_loader,
+    split: str,
+    *,
+    n_points: int,
+    csv_timesteps: np.ndarray | None,
+) -> np.ndarray | None:
+    """Raw CSV appliance powers (W) at the same rows as aggregate (waveform GT)."""
+    if csv_timesteps is None:
+        return None
+    ts = np.asarray(csv_timesteps, dtype=np.int64).reshape(-1)
+    if len(ts) < int(n_points):
+        return None
+    try:
+        return data_loader.appliance_watts_at_timesteps(split, ts[: int(n_points)])
+    except Exception:
+        return None
+
+
 def select_appliance_on_periods(
     appliances: list[str],
     y_true_watts: np.ndarray,
@@ -325,20 +344,9 @@ def plot_single_on_period(
         fig, ax = plt.subplots(1, 1, figsize=(plot_side, plot_side))
         ax.set_box_aspect(1)
     if agg_view is not None:
-        ax_mains = ax.twinx()
-        # Twin axis: appliance shape stays readable on the left; aggregate (W) is
-        # true CSV mains on the right (may be much larger — that is expected).
-        ax_mains.plot(x, agg_view, color="#9a9a9a", linewidth=0.9, alpha=0.55, label=mains_label)
-        ax_mains.set_ylabel("Aggregate (W)", color="#777777")
-        ax_mains.tick_params(axis="y", colors="#777777", labelsize=8)
-        ax_mains.grid(False)
-        finite = np.asarray(agg_view, dtype=float)
-        finite = finite[np.isfinite(finite)]
-        if finite.size:
-            ymax_mains = max(1.0, float(np.max(finite)))
-            ymin_mains = min(0.0, float(np.min(finite)))
-            pad_m = 0.05 * max(ymax_mains - ymin_mains, 1.0)
-            ax_mains.set_ylim(ymin_mains - pad_m, ymax_mains + pad_m)
+        # Same watt axis as appliances so heights are comparable. Y-lim follows
+        # the appliance (shape focus); aggregate may clip at the top when huge.
+        ax.plot(x, agg_view, color="#9a9a9a", linewidth=1.0, alpha=0.55, label=mains_label)
 
     if highlight_start is not None and highlight_end is not None:
         hs = max(start, int(highlight_start))
@@ -369,10 +377,6 @@ def plot_single_on_period(
     ax.set_title(title or f"{appliance} ON period{title_suffix}")
 
     handles, labels = ax.get_legend_handles_labels()
-    if agg_view is not None:
-        mains_handles, mains_labels = ax_mains.get_legend_handles_labels()
-        handles.extend(mains_handles)
-        labels.extend(mains_labels)
     handles.append(Patch(facecolor="#7ad66d", alpha=0.18, label="pred ON"))
     labels.append("pred ON")
     if highlight_start is not None and highlight_end is not None:
@@ -380,9 +384,20 @@ def plot_single_on_period(
         labels.append("focused crop")
     ax.legend(handles=handles, labels=labels, loc="upper right", fontsize=8 if long_figure else 9)
 
+    # Focus y-range on appliance shape; leave headroom so modest aggregate shows.
+    app_max = max(1.0, float(np.max(true_v)), float(np.max(pred_v)))
+    if agg_view is not None and np.isfinite(agg_view).any():
+        agg_max = float(np.nanmax(agg_view))
+        # If aggregate is only slightly above appliance, show both fully.
+        # If aggregate dwarfs appliance, clip view ~1.25× appliance peak.
+        if agg_max <= app_max * 1.5:
+            ymax = max(app_max, agg_max)
+        else:
+            ymax = app_max * 1.25
+    else:
+        ymax = app_max
     ymin = min(0.0, float(np.min(true_v)), float(np.min(pred_v)))
-    ymax = max(1.0, float(np.max(true_v)), float(np.max(pred_v)))
-    pad = 0.1 * (ymax - ymin)
+    pad = 0.1 * max(ymax - ymin, 1.0)
     ax.set_ylim(ymin - pad, ymax + pad)
 
     fig.tight_layout()
