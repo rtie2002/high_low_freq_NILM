@@ -303,12 +303,18 @@ class ApplianceHead(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.power_head = nn.Conv1d(hidden_channels, 1, kernel_size=1)
         self.state_head = nn.Conv1d(hidden_channels, 1, kernel_size=1)
+        # Alias for feature-map hooks / older docs that say feature_refine.
+        self.feature_refine = self.local_decoder
 
-    def forward(self, shared_features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def encode_features(self, shared_features: torch.Tensor) -> torch.Tensor:
+        """Head body only: shared TCN map → per-appliance features ``F`` (B, C, T)."""
         features = self.local_decoder(shared_features)
         if self.head_use_residual:
             features = features + shared_features
-        features = self.dropout(features)
+        return self.dropout(features)
+
+    def decode_from_features(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Final 1×1 power/state + gate from features ``F`` or ``F^dist``."""
         power_raw = self.power_head(features)
         state_logits = self.state_head(features)
 
@@ -324,6 +330,52 @@ class ApplianceHead(nn.Module):
         # denorm(0) equals the dataset mean and causes constant watt spikes in plots.
         power = gate * power_raw + (1.0 - gate) * self.off_norm
         return power, state_logits
+
+    def forward(self, shared_features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Independent head path (no cross-appliance distill)."""
+        return self.decode_from_features(self.encode_features(shared_features))
+
+
+class CrossApplianceDistill(nn.Module):
+    """PAD-lite residual mix: ``F_k^dist = F_k + α · Mix_k(F_1..F_K)``.
+
+    Bottleneck ``(K·C) → mid → (K·C)`` (default ``mid = 2·C``). Not PAD-Net Module C.
+    """
+
+    def __init__(
+        self,
+        num_appliances: int,
+        channels: int,
+        *,
+        residual_scale: float = 0.5,
+        dropout: float = 0.0,
+        mid_channels: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.num_appliances = int(num_appliances)
+        self.channels = int(channels)
+        self.residual_scale = float(residual_scale)
+        stacked = self.num_appliances * self.channels
+        mid = int(mid_channels) if mid_channels is not None else max(2 * self.channels, 64)
+        mid = max(1, min(mid, stacked))
+        self.mix = nn.Sequential(
+            nn.Conv1d(stacked, mid, kernel_size=1, bias=True),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Conv1d(mid, stacked, kernel_size=1, bias=True),
+        )
+
+    def forward(self, features: list[torch.Tensor]) -> list[torch.Tensor]:
+        if len(features) != self.num_appliances:
+            raise ValueError(
+                f"CrossApplianceDistill expected {self.num_appliances} maps, got {len(features)}"
+            )
+        stacked = torch.stack(features, dim=1)  # (B, K, C, T)
+        bsz, _, channels, time_len = stacked.shape
+        mixed = self.mix(stacked.reshape(bsz, self.num_appliances * channels, time_len))
+        mixed = mixed.reshape(bsz, self.num_appliances, channels, time_len)
+        alpha = self.residual_scale
+        return [features[k] + alpha * mixed[:, k] for k in range(self.num_appliances)]
 
 
 class MultiNILM(nn.Module):
@@ -354,8 +406,9 @@ class MultiNILM(nn.Module):
             Output: (B, hidden_channels, output_length)
 
         5. appliance_heads (one per appliance)
-            Optional local temporal decoder (k=3 x N) + residual, then
-            1x1 power/state heads with state-gated power.
+            Optional local temporal decoder (k=3 x N) + residual → F_k.
+            Optional CrossApplianceDistill (PAD-lite): F → F^dist across appliances.
+            Then 1x1 power/state heads with state-gated power.
             Outputs: (B, output_length, num_appliances)
 
     Notes:
@@ -387,6 +440,9 @@ class MultiNILM(nn.Module):
         use_multiscale_stem: bool = False,
         detail_kernels: list[int] | None = None,
         detail_branch_channels: int = 12,
+        cross_appliance_enabled: bool = False,
+        cross_appliance_residual_scale: float = 0.5,
+        cross_appliance_mid_channels: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -494,6 +550,18 @@ class MultiNILM(nn.Module):
                 for app_i in range(self.num_appliances)
             ]
         )
+
+        # Optional PAD-lite: mix head-body features across appliances, then final 1×1.
+        if cross_appliance_enabled:
+            self.cross_appliance_distill: CrossApplianceDistill | None = CrossApplianceDistill(
+                num_appliances=self.num_appliances,
+                channels=self.hidden_channels,
+                residual_scale=float(cross_appliance_residual_scale),
+                dropout=float(dropout),
+                mid_channels=cross_appliance_mid_channels,
+            )
+        else:
+            self.cross_appliance_distill = None
 
     def _format_input(self, x: torch.Tensor) -> torch.Tensor:
         """Convert input to Conv1d format: (batch, channels, time)."""
@@ -642,7 +710,9 @@ class MultiNILM(nn.Module):
             -> aggregate_feature_extractor          # hook: stem
             -> temporal_encoder blocks              # hooks: temporal_i, temporal
             -> _align_output_time                   # hook: aligned  ★ default DA Z
-            -> per-appliance heads
+            -> per-appliance head bodies → F_k
+            -> optional CrossApplianceDistill → F_k^dist
+            -> final 1×1 + gate
             -> (B, output_length, num_appliances)
         """
         collect_layers: list[str] = []
@@ -680,11 +750,15 @@ class MultiNILM(nn.Module):
         if "aligned" in want:
             domain_feats["aligned"] = output_features
 
-        # Step 5: per-appliance heads.
+        # Step 5: head bodies → optional PAD-lite distill → final 1×1 + gate.
+        head_feats = [head.encode_features(output_features) for head in self.appliance_heads]
+        if self.cross_appliance_distill is not None:
+            head_feats = self.cross_appliance_distill(head_feats)
+
         power_parts: list[torch.Tensor] = []
         state_parts: list[torch.Tensor] = []
-        for head in self.appliance_heads:
-            power_i, state_i = head(output_features)
+        for head, feat in zip(self.appliance_heads, head_feats):
+            power_i, state_i = head.decode_from_features(feat)
             power_parts.append(power_i)
             state_parts.append(state_i)
 
@@ -724,15 +798,33 @@ class MultiNILMConfig:
     use_multiscale_stem: bool = False
     detail_kernels: list[int] = field(default_factory=lambda: [3, 5, 9])
     detail_branch_channels: int = 12
+    # PAD-lite cross-appliance distill (off = skip mix, still encode→decode).
+    cross_appliance_enabled: bool = False
+    cross_appliance_residual_scale: float = 0.5
+    cross_appliance_mid_channels: int | None = None
     # Lin-style multi-layer DA hooks (late TCN + pre-head), analogous to fc6–fc8.
     domain_feature_layers: list[str] = field(
         default_factory=lambda: ["temporal_4", "temporal_6", "aligned"]
     )
 
+
+def _parse_cross_appliance(architecture: dict[str, Any]) -> tuple[bool, float, int | None]:
+    """Read ``architecture.cross_appliance`` from model yaml."""
+    block = architecture.get("cross_appliance")
+    if not isinstance(block, dict):
+        return False, 0.5, None
+    enabled = bool(block.get("enabled", False))
+    scale = float(block.get("residual_scale", 0.5))
+    mid = block.get("mid_channels", None)
+    mid_i = None if mid is None else int(mid)
+    return enabled, scale, mid_i
+
+
 def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
     """Read MultiNILM settings from the model YAML architecture section."""
 
     detail_kernels = architecture.get("detail_kernels", [3, 5, 9])
+    ca_enabled, ca_scale, ca_mid = _parse_cross_appliance(architecture)
     return MultiNILMConfig(
         input_channels=int(architecture.get("input_channels", architecture.get("input_size", 1))),
         num_appliances=int(architecture.get("num_appliances", 5)),
@@ -753,6 +845,9 @@ def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
         use_multiscale_stem=bool(architecture.get("use_multiscale_stem", False)),
         detail_kernels=[int(k) for k in detail_kernels],
         detail_branch_channels=int(architecture.get("detail_branch_channels", 12)),
+        cross_appliance_enabled=ca_enabled,
+        cross_appliance_residual_scale=ca_scale,
+        cross_appliance_mid_channels=ca_mid,
         domain_feature_layers=normalize_domain_feature_layers(
             architecture.get("domain_feature_layers")
         ),

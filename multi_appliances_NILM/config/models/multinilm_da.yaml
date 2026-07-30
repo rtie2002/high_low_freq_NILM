@@ -36,6 +36,9 @@ architecture:
   use_multiscale_stem: true
   detail_kernels: [3, 5, 9]
   detail_branch_channels: 16
+  cross_appliance:
+    enabled: true
+    residual_scale: 0.5
   domain_feature_layers: [temporal_4, temporal_6, aligned]
 
 loss:

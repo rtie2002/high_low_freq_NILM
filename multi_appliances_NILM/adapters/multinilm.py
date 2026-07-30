@@ -88,6 +88,9 @@ class MultiNILMAdapter(BaseNILMAdapter):
             use_multiscale_stem=cfg.use_multiscale_stem,
             detail_kernels=cfg.detail_kernels,
             detail_branch_channels=cfg.detail_branch_channels,
+            cross_appliance_enabled=cfg.cross_appliance_enabled,
+            cross_appliance_residual_scale=cfg.cross_appliance_residual_scale,
+            cross_appliance_mid_channels=cfg.cross_appliance_mid_channels,
         )
 
         # Move model to GPU if available, otherwise CPU.

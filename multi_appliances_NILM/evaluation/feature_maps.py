@@ -84,12 +84,15 @@ def _pick_best_conv(convs: list[nn.Conv1d]) -> nn.Conv1d | None:
 def _pick_head_feature_module(head: nn.Module) -> nn.Module | None:
     """Appliance-head features for plotting (not shared encoder, not 1-ch power/state).
 
-    MultiNILM: hook feature_refine output (Conv+BN+GELU) — per-appliance latent features.
+    MultiNILM: hook local_decoder / feature_refine (Conv+BN+GELU) — per-appliance latent features.
     TransferNILM: hook the k=5 head conv (paper-style last conv in the head).
     """
     refine = getattr(head, "feature_refine", None)
     if isinstance(refine, nn.Sequential):
         return refine
+    local = getattr(head, "local_decoder", None)
+    if isinstance(local, nn.Sequential):
+        return local
     return _pick_best_conv(_meaningful_convs(head))
 
 

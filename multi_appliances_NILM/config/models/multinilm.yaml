@@ -44,6 +44,12 @@ architecture:
   detail_kernels: [3, 5, 9]
   detail_branch_channels: 16
 
+  # PAD-lite: F_k → mix → F_k^dist → final 1×1 + gate. enabled: false = B0 baseline.
+  cross_appliance:
+    enabled: true
+    residual_scale: 0.5
+    # mid_channels: omit → 2×hidden. Set e.g. 640 for full K·C width.
+
   # Lin-style multi-layer DA (paper: fc6–fc8 near the head).
   # With num_blocks=8: late TCN hooks + pre-head aligned ≈ paper's three late layers.
   # Options: stem | temporal | aligned | temporal_0 .. temporal_{num_blocks-1}
