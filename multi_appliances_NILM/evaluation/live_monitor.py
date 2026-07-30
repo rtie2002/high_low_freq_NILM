@@ -99,6 +99,13 @@ class LiveTrainingMonitor:
     def waveform_dpi(self) -> int:
         return int(self.plot_cfg.get("waveform_dpi", 300))
 
+    def waveform_context_scale(self) -> float:
+        # >1 saves a long ×N context strip beside each focused ON plot; <=1 disables.
+        raw = self.plot_cfg.get("waveform_context_scale", 10)
+        if raw is None:
+            return 0.0
+        return float(raw)
+
     def plot_max_batches(self) -> int | None:
         value = self.plot_cfg.get("plot_max_batches")
         return None if value is None else int(value)
@@ -403,6 +410,7 @@ class LiveTrainingMonitor:
             figsize=self.waveform_figsize(),
             dynamic_figsize=self.waveform_dynamic_figsize(),
             dpi=self.waveform_dpi(),
+            context_scale=self.waveform_context_scale(),
             rng=rng,
             file_prefix=tag,
             title_prefix=f"{self.model_name} {split} {tag} epoch {epoch} — ",

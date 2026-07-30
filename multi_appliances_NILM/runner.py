@@ -1699,9 +1699,10 @@ def evaluate_model(
         figsize=float(plot_cfg.get("waveform_figsize", 5.5)),
         dynamic_figsize=bool(plot_cfg.get("waveform_dynamic_figsize", True)),
         dpi=int(plot_cfg.get("waveform_dpi", 300)),
+        context_scale=float(plot_cfg.get("waveform_context_scale", 10)),
         rng=np.random.default_rng(int(adapter.cfg.get("seed", 0))),
         file_prefix="on",
-        title_prefix=f"{adapter.name} {split} â€” ",
+        title_prefix=f"{adapter.name} {split} — ",
     )
 
     print_evaluation_report(metrics, run_dir, split=split, show_cost_summary=show_cost_summary)

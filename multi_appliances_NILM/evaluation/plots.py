@@ -190,6 +190,26 @@ def _window_for_on_event(
     return start, end
 
 
+def _context_window(
+    event_start: int,
+    event_end: int,
+    focus_start: int,
+    focus_end: int,
+    series_len: int,
+    *,
+    scale: float = 10.0,
+) -> tuple[int, int]:
+    """Wider slice centered on the ON event: ``scale`` × the focused crop length."""
+    focus_len = max(1, int(focus_end) - int(focus_start))
+    target = max(focus_len + 1, int(round(focus_len * float(scale))))
+    center = (int(event_start) + int(event_end)) // 2
+    half = target // 2
+    start = max(0, center - half)
+    end = min(series_len, start + target)
+    start = max(0, end - target)
+    return int(start), int(end)
+
+
 def plot_single_on_period(
     *,
     appliance: str,
@@ -202,17 +222,30 @@ def plot_single_on_period(
     period_samples: int | None = None,
     margin_min: int = 30,
     margin_frac: float = 0.08,
+    window_start: int | None = None,
+    window_end: int | None = None,
     figsize: float = 5.5,
     dynamic_figsize: bool = True,
+    long_figure: bool = False,
+    highlight_start: int | None = None,
+    highlight_end: int | None = None,
     aggregate: np.ndarray | None = None,
     y_pred_on: np.ndarray | None = None,
     csv_timesteps: np.ndarray | None = None,
     title: str | None = None,
     dpi: int = WAVEFORM_DPI,
 ) -> Path:
-    """True vs predicted waveform for one ON period (full event + padding)."""
+    """True vs predicted waveform for one ON period (full event + padding).
+
+    ``long_figure=True`` draws a wide context strip (no square aspect). Optional
+    ``highlight_start/end`` mark the focused crop on a 10× context plot.
+    """
     n = len(y_true_watts)
-    if event_start is not None and event_end is not None:
+    if window_start is not None and window_end is not None:
+        start, end = int(window_start), int(window_end)
+        start = max(0, min(start, n))
+        end = max(start + 1, min(end, n))
+    elif event_start is not None and event_end is not None:
         start, end = _window_for_on_event(
             event_start,
             event_end,
@@ -228,7 +261,7 @@ def plot_single_on_period(
         end = min(n, start + cap)
         start = max(0, end - cap)
     else:
-        raise ValueError("Provide event_start/event_end or center")
+        raise ValueError("Provide event_start/event_end, window_start/window_end, or center")
 
     sl = slice(start, end)
     if csv_timesteps is not None and len(csv_timesteps) >= end:
@@ -255,11 +288,19 @@ def plot_single_on_period(
             agg_view = agg_view[order]
 
     n_pts = max(1, end - start)
-    plot_side = figsize
-    if dynamic_figsize and n_pts > 500:
-        plot_side = min(figsize * 2.5, figsize * (n_pts / 500) ** 0.45)
-    fig, ax = plt.subplots(1, 1, figsize=(plot_side, plot_side))
-    ax.set_box_aspect(1)
+    if long_figure:
+        # Wide strip: grow width with timeline length; keep modest height.
+        width = figsize * 1.6
+        if dynamic_figsize and n_pts > 400:
+            width = min(28.0, figsize * (n_pts / 400) ** 0.55)
+        height = max(2.8, figsize * 0.55)
+        fig, ax = plt.subplots(1, 1, figsize=(width, height))
+    else:
+        plot_side = figsize
+        if dynamic_figsize and n_pts > 500:
+            plot_side = min(figsize * 2.5, figsize * (n_pts / 500) ** 0.45)
+        fig, ax = plt.subplots(1, 1, figsize=(plot_side, plot_side))
+        ax.set_box_aspect(1)
     if agg_view is not None:
         ax_mains = ax.twinx()
         ax_mains.plot(x, agg_view, color="#9a9a9a", linewidth=0.9, alpha=0.45, label=mains_label)
@@ -268,6 +309,14 @@ def plot_single_on_period(
         ax_mains.grid(False)
         ymax_mains = max(1.0, float(np.nanmax(agg_view)))
         ax_mains.set_ylim(0.0, ymax_mains * 1.08)
+
+    if highlight_start is not None and highlight_end is not None:
+        hs = max(start, int(highlight_start))
+        he = min(end - 1, int(highlight_end) - 1 if int(highlight_end) > int(highlight_start) else int(highlight_end))
+        if he >= hs and csv_timesteps is not None and len(csv_timesteps) >= end:
+            ax.axvspan(int(csv_timesteps[hs]), int(csv_timesteps[he]), color="#f4a261", alpha=0.16, linewidth=0)
+        elif he >= hs:
+            ax.axvspan(hs, he, color="#f4a261", alpha=0.16, linewidth=0)
 
     if on_view is not None:
         on_mask = on_view
@@ -296,7 +345,10 @@ def plot_single_on_period(
         labels.extend(mains_labels)
     handles.append(Patch(facecolor="#7ad66d", alpha=0.18, label="pred ON"))
     labels.append("pred ON")
-    ax.legend(handles=handles, labels=labels, loc="upper right", fontsize=9)
+    if highlight_start is not None and highlight_end is not None:
+        handles.append(Patch(facecolor="#f4a261", alpha=0.16, label="focused crop"))
+        labels.append("focused crop")
+    ax.legend(handles=handles, labels=labels, loc="upper right", fontsize=8 if long_figure else 9)
 
     ymin = min(0.0, float(np.min(true_v)), float(np.min(pred_v)))
     ymax = max(1.0, float(np.max(true_v)), float(np.max(pred_v)))
@@ -329,11 +381,16 @@ def save_appliance_on_waveforms(
     figsize: float = 5.5,
     dynamic_figsize: bool = True,
     dpi: int = WAVEFORM_DPI,
+    context_scale: float = 10.0,
     rng: np.random.Generator | None = None,
     file_prefix: str = "on",
     title_prefix: str = "",
 ) -> list[Path]:
     """Save N random ON-period plots per appliance under output_dir/<appliance>/.
+
+    For each focused situation plot, also saves a long ``*_context10x.png`` with
+    ``context_scale`` × wider timeline around the same ON event (set
+    ``context_scale <= 1`` to disable).
 
     Waveform plots intentionally use dataset CSV *_on labels for selecting true
     ON periods (y_true_on). This is independent of data.state_label_source in
@@ -360,10 +417,15 @@ def save_appliance_on_waveforms(
         rng=rng,
     )
 
+    series_len = len(y_true)
+    save_context = float(context_scale) > 1.0
+    full_cycle = set(full_cycle_appliances or FULL_CYCLE_APPLIANCES)
+
     for idx, app in enumerate(appliances):
         app_dir = output_dir / app
         app_dir.mkdir(parents=True, exist_ok=True)
         pred_on = y_pred_on[:, idx] if y_pred_on is not None else None
+        app_cap = None if app in full_cycle else period_samples
 
         for period_i, period in enumerate(selections.get(app, []), start=1):
             center = (period.event_start + period.event_end) // 2
@@ -376,7 +438,7 @@ def save_appliance_on_waveforms(
                 event_start=period.event_start,
                 event_end=period.event_end,
                 output_path=path,
-                period_samples=None if app in set(full_cycle_appliances or FULL_CYCLE_APPLIANCES) else period_samples,
+                period_samples=app_cap if app_cap and app_cap > 0 else None,
                 margin_min=margin_min,
                 margin_frac=margin_frac,
                 figsize=figsize,
@@ -388,6 +450,44 @@ def save_appliance_on_waveforms(
                 dpi=dpi,
             )
             saved.append(path)
+
+            if not save_context:
+                continue
+            ctx_start, ctx_end = _context_window(
+                period.event_start,
+                period.event_end,
+                period.crop_start,
+                period.crop_end,
+                series_len,
+                scale=float(context_scale),
+            )
+            scale_tag = int(round(float(context_scale)))
+            ctx_path = app_dir / f"{file_prefix}_{period_i:02d}_t{center}_context{scale_tag}x.png"
+            ctx_title = (
+                f"{title_prefix}{app} ON period {period_i} "
+                f"(×{scale_tag} context)".strip()
+            )
+            plot_single_on_period(
+                appliance=app,
+                y_true_watts=y_true[:, idx],
+                y_pred_watts=y_pred[:, idx],
+                event_start=period.event_start,
+                event_end=period.event_end,
+                output_path=ctx_path,
+                window_start=ctx_start,
+                window_end=ctx_end,
+                figsize=figsize,
+                dynamic_figsize=dynamic_figsize,
+                long_figure=True,
+                highlight_start=period.crop_start,
+                highlight_end=period.crop_end,
+                aggregate=aggregate,
+                y_pred_on=pred_on,
+                csv_timesteps=csv_timesteps,
+                title=ctx_title,
+                dpi=dpi,
+            )
+            saved.append(ctx_path)
     return saved
 
 

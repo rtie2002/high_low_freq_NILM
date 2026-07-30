@@ -63,6 +63,7 @@ training:
     waveform_dynamic_figsize: true
     on_period_margin_min: 40
     on_period_margin_frac: 0.08
+    waveform_context_scale: 10
     feature_maps:
       enabled: true
       max_examples: 2

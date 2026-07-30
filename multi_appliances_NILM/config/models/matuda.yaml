@@ -88,4 +88,11 @@ training:
   plots:
     plot_mode: interval
     plot_interval: 50
-    n_waveform_periods: 3
+    plot_on_periods: 5
+    waveform_figsize: 5.5
+    waveform_dpi: 300
+    waveform_dynamic_figsize: true
+    on_period_margin_min: 40
+    on_period_margin_frac: 0.08
+    # Also save a long ×10 context strip for each of the 5 focused ON situations.
+    waveform_context_scale: 10
