@@ -66,6 +66,29 @@ def dataset_on_labels_for_bundle(
     return data_loader.window_flattened_csv_states(split, n_points)
 
 
+def bundle_aggregate_watts(
+    data_loader,
+    split: str,
+    *,
+    n_points: int,
+    csv_timesteps: np.ndarray | None,
+) -> np.ndarray | None:
+    """Raw CSV aggregate (W) aligned 1:1 with the prediction timeline.
+
+    Must use ``csv_timesteps`` → CSV row lookup. Do not use a sequential offset
+    into the series; that misaligns overlap-reconstructed timelines.
+    """
+    if csv_timesteps is None:
+        return None
+    ts = np.asarray(csv_timesteps, dtype=np.int64).reshape(-1)
+    if len(ts) < int(n_points):
+        return None
+    try:
+        return data_loader.mains_watts_at_timesteps(split, ts[: int(n_points)])
+    except Exception:
+        return None
+
+
 def select_appliance_on_periods(
     appliances: list[str],
     y_true_watts: np.ndarray,
@@ -303,12 +326,19 @@ def plot_single_on_period(
         ax.set_box_aspect(1)
     if agg_view is not None:
         ax_mains = ax.twinx()
-        ax_mains.plot(x, agg_view, color="#9a9a9a", linewidth=0.9, alpha=0.45, label=mains_label)
+        # Twin axis: appliance shape stays readable on the left; aggregate (W) is
+        # true CSV mains on the right (may be much larger — that is expected).
+        ax_mains.plot(x, agg_view, color="#9a9a9a", linewidth=0.9, alpha=0.55, label=mains_label)
         ax_mains.set_ylabel("Aggregate (W)", color="#777777")
         ax_mains.tick_params(axis="y", colors="#777777", labelsize=8)
         ax_mains.grid(False)
-        ymax_mains = max(1.0, float(np.nanmax(agg_view)))
-        ax_mains.set_ylim(0.0, ymax_mains * 1.08)
+        finite = np.asarray(agg_view, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        if finite.size:
+            ymax_mains = max(1.0, float(np.max(finite)))
+            ymin_mains = min(0.0, float(np.min(finite)))
+            pad_m = 0.05 * max(ymax_mains - ymin_mains, 1.0)
+            ax_mains.set_ylim(ymin_mains - pad_m, ymax_mains + pad_m)
 
     if highlight_start is not None and highlight_end is not None:
         hs = max(start, int(highlight_start))

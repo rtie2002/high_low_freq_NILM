@@ -59,7 +59,7 @@ from evaluation.live_monitor import LiveTrainingMonitor
 from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
 from evaluation.metrics import _macro_mae_norm, evaluate_bundle
 from evaluation.power_postprocess import apply_power_postprocess_pair, resolve_power_postprocess
-from evaluation.plots import dataset_on_labels_for_bundle, save_appliance_on_waveforms
+from evaluation.plots import dataset_on_labels_for_bundle, save_appliance_on_waveforms, bundle_aggregate_watts
 from evaluation.run_summary import (
     build_hardware_info,
     checkpoint_size_mb,
@@ -1684,6 +1684,12 @@ def evaluate_model(
         bundle.y_pred_watts,
         power_postprocess,
     )
+    aggregate = bundle_aggregate_watts(
+        adapter._data_loader(),
+        split,
+        n_points=len(y_true_watts),
+        csv_timesteps=bundle.csv_timesteps,
+    )
     saved = save_appliance_on_waveforms(
         waveform_dir,
         appliances=bundle.appliances,
@@ -1691,6 +1697,7 @@ def evaluate_model(
         y_pred_watts=y_pred_watts,
         y_true_on=waveform_true_on,
         y_pred_on=bundle.y_pred_on,
+        aggregate=aggregate,
         csv_timesteps=bundle.csv_timesteps,
         n_periods=int(plot_cfg.get("plot_on_periods", 5)),
         period_samples=period_samples,

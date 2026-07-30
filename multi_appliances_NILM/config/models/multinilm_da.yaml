@@ -61,7 +61,7 @@ domain_adaptation:
 
 training:
   batch_size: 32
-  epochs: 100
+  epochs: 150
   learning_rate: 0.0001
   weight_decay: 0
   num_workers: 0
@@ -80,7 +80,7 @@ training:
   cudnn_benchmark: true
   plots:
     plot_mode: interval
-    plot_interval: 25
+    plot_interval: 50
     plot_on_periods: 5
     waveform_figsize: 5.5
     waveform_dpi: 300

@@ -23,6 +23,7 @@ from torch.utils.data import DataLoader
 from adapters.dataloader import WindowDataset, _output_row_offset, _split_key
 from evaluation.plots import (
     OnPeriodSelection,
+    bundle_aggregate_watts,
     dataset_on_labels_for_bundle,
     select_appliance_on_periods,
 )
@@ -192,25 +193,12 @@ def _output_csv_range(dataset: WindowDataset, index: int) -> tuple[int, int]:
 
 
 def _bundle_aggregate(adapter, split: str, bundle) -> np.ndarray | None:
-    try:
-        n_points = len(bundle.y_true_watts)
-        data_loader = adapter._data_loader()
-        key = "validation" if split == "validation" else "test"
-        if bundle.csv_timesteps is not None and len(bundle.csv_timesteps) >= n_points:
-            raw_x, _, _ = data_loader.get_raw_csv_arrays(key)
-            return raw_x[bundle.csv_timesteps[:n_points]].astype(np.float64)
-        x, _, _ = data_loader.get_splits()[key]
-        windowing = data_loader.model_cfg["windowing"]
-        seq_len = int(windowing["input_window_length"])
-        if windowing.get("force_even_input_length", False) and seq_len % 2 != 0:
-            seq_len += 1
-        offset = seq_len - 1
-        end = min(offset + n_points, len(x))
-        if end <= offset:
-            return None
-        return x[offset:end].astype(np.float64)
-    except Exception:
-        return None
+    return bundle_aggregate_watts(
+        adapter._data_loader(),
+        split,
+        n_points=len(bundle.y_true_watts),
+        csv_timesteps=bundle.csv_timesteps,
+    )
 
 
 def _activations_for_period(

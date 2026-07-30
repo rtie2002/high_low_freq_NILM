@@ -407,8 +407,21 @@ class NILMDataLoader:
         return z_csv[indices].astype(np.int32)
 
     def get_raw_csv_arrays(self, split: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return raw CSV mains/power/state arrays without threshold relabelling."""
+        """Return raw CSV mains/power/state arrays (watts / labels, not z-scored)."""
         return self.get_splits()[_split_key(split)]
+
+    def mains_watts_at_timesteps(self, split: str, csv_timesteps: np.ndarray) -> np.ndarray:
+        """Raw aggregate (W) at the same CSV rows as a prediction-bundle timeline."""
+        mains, _, _ = self.get_raw_csv_arrays(split)
+        indices = np.asarray(csv_timesteps, dtype=np.int64).reshape(-1)
+        if indices.size == 0:
+            return np.zeros((0,), dtype=np.float32)
+        if int(indices.min()) < 0 or int(indices.max()) >= len(mains):
+            raise IndexError(
+                f"csv_timesteps out of range for {split}: "
+                f"need [0, {len(mains)}), got [{int(indices.min())}, {int(indices.max())}]"
+            )
+        return np.asarray(mains[indices], dtype=np.float32)
 
     def window_flattened_csv_states(self, split: str, n_points: int) -> np.ndarray:
         """Align dataset CSV *_on columns with flattened model output timesteps.
