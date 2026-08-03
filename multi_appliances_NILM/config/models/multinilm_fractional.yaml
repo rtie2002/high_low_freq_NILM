@@ -55,10 +55,14 @@ loss:
   domain_mu: 0.4
   domain_mix: convex
   domain_scale: equal
-  lambda_domain: 0
+  # Lin TSG best λ ≈ 0.6 — keep DA on every epoch (no mid-train freeze).
+  da_warmup_epochs: 0
+  da_ramp_epochs: 0
+  da_freeze_patience: 0
+  lambda_domain: 0.6
 
 domain_adaptation:
-  enabled: false
+  enabled: true
   target_split: test
 
 training:
