@@ -15,6 +15,8 @@ from adapters.config import load_experiment, load_model_config, merge_configs, m
 from adapters.mat_nilm import MATNILMAdapter
 from adapters.matuda import MATUDAAdapter
 from adapters.multinilm import MultiNILMAdapter
+from adapters.multinilm_fractional import MultiNILMFractionalAdapter
+from adapters.multinilm_kle import MultiNILMKLEAdapter
 from adapters.multinilm_no_distill import MultiNILMNoDistillAdapter
 from adapters.transfer_multi_appliance import TransferMultiApplianceAdapter
 from evaluation.compare import compare_experiment
@@ -26,6 +28,8 @@ MODELS = {
     "mat_nilm": MATNILMAdapter,
     "matuda": MATUDAAdapter,
     "multinilm": MultiNILMAdapter,
+    "multinilm_fractional": MultiNILMFractionalAdapter,
+    "multinilm_kle": MultiNILMKLEAdapter,
     "multinilm_no_distill": MultiNILMNoDistillAdapter,
     "transfer_multi_appliance": TransferMultiApplianceAdapter,
 }
