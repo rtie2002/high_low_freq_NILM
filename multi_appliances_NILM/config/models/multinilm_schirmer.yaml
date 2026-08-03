@@ -84,8 +84,8 @@ domain_adaptation:
 
 # Aligned with multinilm_fractional for fair ablation
 training:
-  batch_size: 64
-  epochs: 200
+  batch_size: 32
+  epochs: 150
   learning_rate: 0.0001
   weight_decay: 0
   num_workers: 0
