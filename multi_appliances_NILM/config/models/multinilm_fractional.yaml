@@ -61,7 +61,7 @@ loss:
   da_warmup_epochs: 0
   da_ramp_epochs: 0
   da_freeze_patience: 0
-  lambda_domain: 0.6
+  lambda_domain: 0.3
 
 domain_adaptation:
   enabled: true
