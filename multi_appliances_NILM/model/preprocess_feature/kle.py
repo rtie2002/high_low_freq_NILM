@@ -504,3 +504,65 @@ def kle_spectrogram_from_channels(
     mag = mag_f.reshape(b, k, n_components).transpose(1, 2)
     phase = phase_f.reshape(b, k, n_components).transpose(1, 2)
     return mag, phase
+
+
+def kle_spectrogram_sliding(
+    channels: torch.Tensor,
+    n_components: int,
+    *,
+    frame_length: int | None = None,
+    hop: int | None = None,
+    demean: bool = True,
+    normalize: Literal["mean_std", "fundamental", "l2", "none"] = "mean_std",
+    phase_mode: Literal["hilbert", "coeff_sign"] = "hilbert",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Sliding-frame KLE spectrograms along time (paper-style framing).
+
+    Args:
+        channels: (B, K, T)
+        frame_length: analysis frame L (default max(n_components, 128))
+        hop: stride between frames (default frame_length // 2)
+    Returns:
+        mag (B, F, N, K), phase (B, F, N, K) with F = #frames
+    """
+    if channels.dim() != 3:
+        raise ValueError(f"expected (B,K,T), got {tuple(channels.shape)}")
+    b, k, t_len = channels.shape
+    n = int(n_components)
+    frame_len = int(frame_length) if frame_length is not None else max(n, 128)
+    hop_i = int(hop) if hop is not None else max(1, frame_len // 2)
+    if frame_len < n:
+        raise ValueError(f"frame_length ({frame_len}) must be >= n_components ({n})")
+    if frame_len > t_len:
+        # Single full-window map (degenerate sliding).
+        mag, phase = kle_spectrogram_from_channels(
+            channels,
+            n,
+            demean=demean,
+            normalize=normalize,
+            phase_mode=phase_mode,
+        )
+        return mag.unsqueeze(1), phase.unsqueeze(1)
+
+    starts = list(range(0, t_len - frame_len + 1, hop_i))
+    if not starts or starts[-1] != t_len - frame_len:
+        # Always include an end-aligned frame (matches seq2seq end focus).
+        end_start = t_len - frame_len
+        if not starts or starts[-1] != end_start:
+            starts.append(end_start)
+
+    mags = []
+    phases = []
+    for s in starts:
+        seg = channels[:, :, s : s + frame_len]
+        mag, phase = kle_spectrogram_from_channels(
+            seg,
+            n,
+            demean=demean,
+            normalize=normalize,
+            phase_mode=phase_mode,
+        )
+        mags.append(mag)
+        phases.append(phase)
+    return torch.stack(mags, dim=1), torch.stack(phases, dim=1)

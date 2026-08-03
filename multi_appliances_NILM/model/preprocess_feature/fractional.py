@@ -193,6 +193,8 @@ class FractionalFrontEnd(nn.Module):
         memory: int | None = None,
         h: float = 1.0,
         max_memory: int = 256,
+        channel_normalize: str = "mean_std",
+        channel_norm_eps: float = 1e-5,
     ) -> None:
         super().__init__()
         alphas_list = (
@@ -207,6 +209,12 @@ class FractionalFrontEnd(nn.Module):
         self.memory = int(memory) if memory is not None else int(max_memory)
         if self.memory < 1:
             raise ValueError(f"memory must be >= 1, got {self.memory}")
+        self.channel_normalize = str(channel_normalize)
+        self.channel_norm_eps = float(channel_norm_eps)
+        if self.channel_normalize not in {"mean_std", "none"}:
+            raise ValueError(
+                f"channel_normalize must be mean_std|none, got {self.channel_normalize!r}"
+            )
 
         self.out_channels = (1 if self.include_raw else 0) + len(self.alphas)
 
@@ -250,7 +258,13 @@ class FractionalFrontEnd(nn.Module):
             )
             parts.append(frac)
 
-        return torch.cat(parts, dim=1)
+        out = torch.cat(parts, dim=1)
+        if self.channel_normalize == "mean_std":
+            # Per-channel, per-window: balances raw vs high-α energy before the stem.
+            mu = out.mean(dim=-1, keepdim=True)
+            sigma = out.std(dim=-1, keepdim=True).clamp_min(self.channel_norm_eps)
+            out = (out - mu) / sigma
+        return out
 
 
 def parse_fractional_architecture(

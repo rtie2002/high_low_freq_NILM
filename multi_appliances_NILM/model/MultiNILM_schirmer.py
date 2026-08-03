@@ -1,13 +1,15 @@
 """
-MultiNILM + Schirmer front-end: fractional (1D channels) + KLE spectrogram (2D matrix).
+MultiNILM + Schirmer-inspired front-end (honest hybrid).
 
-Pipeline
---------
-1. ``FractionalFrontEnd``: p → (B, C, T), default C=9 (raw + 8 α) on GPU.
-2. ``kle_spectrogram_from_channels`` (GPU): fractional channels → A, Φ ∈ R^{N×K}.
-3. ``KleSpectrogramEncoder`` (Conv2d) reads the matrix → embedding.
-4. FiLM modulates the C fractional channels with that embedding.
-5. Unchanged ``MultiNILM`` backbone (``input_channels=C``).
+Not a full Schirmer 2D-CNN regressor: we keep multi-appliance seq2seq MultiNILM
++ DA. The spectrogram path is a *learned spectral prior* with temporal support:
+
+1. ``FractionalFrontEnd``: p → (B, C, T), C=9 (raw + 8 α), per-channel z-score.
+2. Sliding-frame KLE → A, Φ ∈ R^{F×N×K} (paper-style framing along the window).
+3. Conv2d encoder (+ phase/π + BN) → embeddings (B, D, F) → upsample to T.
+4. Time-varying FiLM on **α channels only** (raw untouched); identity-init.
+5. Optional residual inject from spectral emb into α channels (zero-init).
+6. Unchanged ``MultiNILM`` backbone.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from typing import Any
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from model.MultiNILM import MultiNILM, MultiNILMConfig, multinilm_config
 from model.preprocess_feature.fractional import (
@@ -23,11 +26,15 @@ from model.preprocess_feature.fractional import (
     default_schirmer_alphas,
     parse_fractional_architecture,
 )
-from model.preprocess_feature.kle import kle_spectrogram_from_channels
+from model.preprocess_feature.kle import kle_spectrogram_sliding
 
 
 class KleSpectrogramEncoder(nn.Module):
-    """Conv2d encoder for Schirmer A/Φ maps ``(B, 2, N, K)`` → ``(B, out_dim)``."""
+    """
+    Conv2d encoder for one Schirmer A/Φ map ``(B, 2, N, K)`` → ``(B, out_dim)``.
+
+    Phase is scaled by 1/π; BatchNorm2d balances mag vs phase (paper uses BN).
+    """
 
     def __init__(
         self,
@@ -39,6 +46,7 @@ class KleSpectrogramEncoder(nn.Module):
         super().__init__()
         in_ch = 2 if use_phase else 1
         self.use_phase = bool(use_phase)
+        self.input_bn = nn.BatchNorm2d(in_ch)
         self.net = nn.Sequential(
             nn.Conv2d(in_ch, width, kernel_size=3, padding=1),
             nn.GELU(),
@@ -52,21 +60,30 @@ class KleSpectrogramEncoder(nn.Module):
     def forward(self, mag: torch.Tensor, phase: torch.Tensor | None = None) -> torch.Tensor:
         """
         Args:
-            mag: (B, N, K)
-            phase: (B, N, K) if use_phase
+            mag: (B, N, K) or (B*F, N, K)
+            phase: same shape if use_phase
         """
         if self.use_phase:
             if phase is None:
                 raise ValueError("phase required when use_phase=True")
-            x = torch.stack([mag, phase], dim=1)  # (B, 2, N, K)
+            # Mag already normalized; phase ∈ [-π, π] → [-1, 1].
+            x = torch.stack([mag, phase / torch.pi], dim=1)
         else:
             x = mag.unsqueeze(1)
+        x = self.input_bn(x)
         return self.net(x)
+
+
+def _zero_init_conv1d(module: nn.Conv1d) -> nn.Conv1d:
+    nn.init.zeros_(module.weight)
+    if module.bias is not None:
+        nn.init.zeros_(module.bias)
+    return module
 
 
 class MultiNILMSchirmer(nn.Module):
     """
-    Fractional 1D path + KLE 2D matrix path → FiLM → MultiNILM backbone.
+    Fractional 1D + sliding KLE spectral prior → time-varying FiLM → MultiNILM.
     """
 
     def __init__(
@@ -75,39 +92,50 @@ class MultiNILMSchirmer(nn.Module):
         backbone: MultiNILM,
         frontend: FractionalFrontEnd,
         spec_encoder: KleSpectrogramEncoder,
-        film: nn.Linear,
+        film: nn.Conv1d,
         kle_n_components: int = 64,
-        kle_normalize: str = "fundamental",
+        kle_normalize: str = "mean_std",
         kle_include_raw_column: bool = False,
-        kle_memory: int | None = None,
         kle_phase_mode: str = "hilbert",
+        kle_frame_length: int = 128,
+        kle_hop: int = 64,
+        film_on_raw: bool = False,
+        spec_residual: nn.Conv1d | None = None,
     ) -> None:
         super().__init__()
         self.frontend = frontend
         self.backbone = backbone
         self.spec_encoder = spec_encoder
         self.film = film
+        self.spec_residual = spec_residual
 
         self.kle_n_components = int(kle_n_components)
         self.kle_normalize = str(kle_normalize)
         self.kle_include_raw_column = bool(kle_include_raw_column)
-        self.kle_memory = kle_memory
         self.kle_phase_mode = str(kle_phase_mode)
+        self.kle_frame_length = int(kle_frame_length)
+        self.kle_hop = int(kle_hop)
+        self.film_on_raw = bool(film_on_raw)
         self.alphas = list(frontend.alphas)
 
-        if int(backbone.input_channels) != int(frontend.out_channels):
+        feature_c = int(frontend.out_channels)
+        if int(backbone.input_channels) != feature_c:
             raise ValueError(
                 "backbone input_channels must match FractionalFrontEnd.out_channels: "
-                f"{backbone.input_channels} vs {frontend.out_channels}"
-            )
-        if int(film.out_features) != 2 * int(frontend.out_channels):
-            raise ValueError(
-                "FiLM must map to 2*C (gamma, beta); "
-                f"got out_features={film.out_features}, C={frontend.out_channels}"
+                f"{backbone.input_channels} vs {feature_c}"
             )
 
+        n_film = feature_c if self.film_on_raw else max(feature_c - (1 if frontend.include_raw else 0), 0)
+        if n_film < 1:
+            raise ValueError("need at least one channel to FiLM (α or raw)")
+        if int(film.out_channels) != 2 * n_film:
+            raise ValueError(
+                f"FiLM Conv1d must map to 2*n_film={2 * n_film}; got {film.out_channels}"
+            )
+        self._n_film_channels = n_film
+
         self.input_channels = 1
-        self.feature_channels = int(frontend.out_channels)
+        self.feature_channels = feature_c
         self.num_appliances = backbone.num_appliances
         self.output_length = backbone.output_length
         self.domain_feature_layers = backbone.domain_feature_layers
@@ -124,40 +152,61 @@ class MultiNILMSchirmer(nn.Module):
         )
 
     def _kle_channels_from_frontend(self, xf: torch.Tensor) -> torch.Tensor:
-        """
-        Select channels for KLE spectrogram from FractionalFrontEnd output.
-
-        If frontend includes raw and ``kle_include_raw_column`` is False (default),
-        use only the α channels (paper K columns). If True, KLE all C channels.
-        """
         if self.frontend.include_raw and not self.kle_include_raw_column:
             if xf.shape[1] <= 1:
                 return xf
             return xf[:, 1:, :]
         return xf
 
-    def forward(self, x: torch.Tensor, return_domain_features: bool = False):
-        b1t = self._to_b1t(x)
-        # 1) Fractional multi-channel time series on GPU.
-        xf = self.frontend(b1t)  # (B, C, T)
+    def _film_slice(self, xf: torch.Tensor) -> tuple[slice, torch.Tensor]:
+        """Channel slice that receives FiLM (default: α only, leave raw)."""
+        if self.film_on_raw or not self.frontend.include_raw:
+            return slice(None), xf
+        return slice(1, None), xf[:, 1:, :]
 
-        # 2) KLE spectrogram on GPU (reuse fractional channels; no CPU numpy).
-        kle_in = self._kle_channels_from_frontend(xf)
+    def _encode_sliding_kle(self, kle_in: torch.Tensor, t_len: int) -> torch.Tensor:
+        """
+        Sliding KLE → (B, D, T) spectral embeddings (trainable encoder; KLE fixed).
+        """
         with torch.no_grad():
-            # Fixed front-end features (like numpy path); keeps graph on FiLM/backbone.
-            mag, phase = kle_spectrogram_from_channels(
+            mag, phase = kle_spectrogram_sliding(
                 kle_in.detach(),
                 self.kle_n_components,
+                frame_length=self.kle_frame_length,
+                hop=self.kle_hop,
                 normalize=self.kle_normalize,  # type: ignore[arg-type]
                 phase_mode=self.kle_phase_mode,  # type: ignore[arg-type]
             )
-        emb = self.spec_encoder(mag, phase)  # (B, D)
+        # mag/phase: (B, F, N, K)
+        b, n_frames, n_comp, k = mag.shape
+        mag_f = mag.reshape(b * n_frames, n_comp, k)
+        phase_f = phase.reshape(b * n_frames, n_comp, k)
+        emb_f = self.spec_encoder(mag_f, phase_f)  # (B*F, D)
+        emb = emb_f.reshape(b, n_frames, -1).transpose(1, 2)  # (B, D, F)
+        if n_frames == 1:
+            return emb.expand(-1, -1, t_len)
+        return F.interpolate(emb, size=t_len, mode="linear", align_corners=False)
 
-        # 3) FiLM: modulate each fractional channel with spectral prior.
-        gb = self.film(emb)  # (B, 2C)
-        c = xf.shape[1]
-        gamma, beta = gb[:, :c], gb[:, c:]
-        xf = xf * (1.0 + gamma.unsqueeze(-1)) + beta.unsqueeze(-1)
+    def forward(self, x: torch.Tensor, return_domain_features: bool = False):
+        b1t = self._to_b1t(x)
+        xf = self.frontend(b1t)  # (B, C, T)
+        t_len = int(xf.shape[-1])
+
+        kle_in = self._kle_channels_from_frontend(xf)
+        emb_t = self._encode_sliding_kle(kle_in, t_len)  # (B, D, T)
+
+        # Time-varying FiLM on α (or all) channels; identity at init.
+        film_slice, xf_mod = self._film_slice(xf)
+        gb = self.film(emb_t)  # (B, 2*n_film, T)
+        n = self._n_film_channels
+        gamma, beta = gb[:, :n], gb[:, n:]
+        xf_mod = xf_mod * (1.0 + gamma) + beta
+        xf = xf.clone()
+        xf[:, film_slice] = xf_mod
+
+        # Optional spectral residual into FiLM'd channels (zero-init → no-op at start).
+        if self.spec_residual is not None:
+            xf[:, film_slice] = xf[:, film_slice] + self.spec_residual(emb_t)
 
         return self.backbone(xf, return_domain_features=return_domain_features)
 
@@ -171,8 +220,8 @@ def build_multinilm_schirmer(
 ) -> MultiNILMSchirmer:
     """
     Yaml blocks:
-      fractional: {k, include_raw, memory, ...}
-      kle: {n_components, normalize, use_phase, include_raw_column, ...}
+      fractional: {k, include_raw, memory, channel_normalize, ...}
+      kle: {n_components, frame_length, hop, normalize, film_on_raw, ...}
     """
     frac_block = architecture.get("fractional", {})
     if not isinstance(frac_block, dict):
@@ -181,35 +230,46 @@ def build_multinilm_schirmer(
     if not isinstance(kle_block, dict):
         kle_block = {}
 
-    # Parse fractional (dedicated model → always on).
-    enabled, alphas, include_raw, memory, h = parse_fractional_architecture(
+    _, alphas, include_raw, memory, h = parse_fractional_architecture(
         {"fractional": {**frac_block, "enabled": True}}
     )
     if alphas is None:
         alphas = default_schirmer_alphas(int(frac_block.get("k", 8)))
 
+    ch_norm = str(frac_block.get("channel_normalize", "mean_std"))
     frontend = FractionalFrontEnd(
         alphas=alphas,
         include_raw=bool(include_raw if frac_block else True),
         memory=memory if memory is not None else frac_block.get("memory"),
         h=float(h),
+        channel_normalize=ch_norm,
     )
     feature_c = int(frontend.out_channels)
 
     n_comp = int(kle_block.get("n_components", 64))
     use_phase = bool(kle_block.get("use_phase", True))
-    kle_norm = str(kle_block.get("normalize", "fundamental"))
+    kle_norm = str(kle_block.get("normalize", "mean_std"))
     kle_raw_col = bool(kle_block.get("include_raw_column", False))
     kle_phase_mode = str(kle_block.get("phase_mode", "hilbert"))
-    kle_memory = kle_block.get("memory", memory)
-    kle_memory_i = None if kle_memory is None else int(kle_memory)
+    frame_length = int(kle_block.get("frame_length", max(n_comp, 128)))
+    hop = int(kle_block.get("hop", max(1, frame_length // 2)))
+    film_on_raw = bool(kle_block.get("film_on_raw", False))
+    use_spec_residual = bool(kle_block.get("spec_residual", True))
     emb_dim = int(kle_block.get("embed_dim", 64))
     conv_width = int(kle_block.get("conv_width", 32))
+
+    n_film = feature_c if film_on_raw else max(
+        feature_c - (1 if frontend.include_raw else 0), 0
+    )
 
     spec_encoder = KleSpectrogramEncoder(
         out_dim=emb_dim, use_phase=use_phase, width=conv_width
     )
-    film = nn.Linear(emb_dim, 2 * feature_c)
+    # Identity FiLM at init: γ=0, β=0 → xf unchanged.
+    film = _zero_init_conv1d(nn.Conv1d(emb_dim, 2 * n_film, kernel_size=1))
+    spec_residual = None
+    if use_spec_residual:
+        spec_residual = _zero_init_conv1d(nn.Conv1d(emb_dim, n_film, kernel_size=1))
 
     arch = dict(architecture)
     arch["input_channels"] = feature_c
@@ -250,6 +310,9 @@ def build_multinilm_schirmer(
         kle_n_components=n_comp,
         kle_normalize=kle_norm,
         kle_include_raw_column=kle_raw_col,
-        kle_memory=kle_memory_i,
         kle_phase_mode=kle_phase_mode,
+        kle_frame_length=frame_length,
+        kle_hop=hop,
+        film_on_raw=film_on_raw,
+        spec_residual=spec_residual,
     )

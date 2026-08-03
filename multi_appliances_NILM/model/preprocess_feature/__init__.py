@@ -10,7 +10,7 @@ Package layout
 
 ``kle`` — Karhunen–Loève (scale / brand)
   - NumPy: ACM / eig / mag-phase / ``kle_subspace_channels``
-  - Torch: ``kle_spectrogram_from_channels`` (GPU for MultiNILM_schirmer)
+  - Torch: ``kle_spectrogram_from_channels``, ``kle_spectrogram_sliding``
 
 ``schirmer_frontend`` — combine fractional (+ optional KLE maps)
   - ``fractional_channels_for_tcn`` (+ batch)
@@ -35,6 +35,7 @@ from .kle import (
     kle_magnitude_phase,
     kle_spectrogram_column,
     kle_spectrogram_from_channels,
+    kle_spectrogram_sliding,
     kle_subspace_channels,
     kle_subspace_channels_batch,
     normalize_spectrum,
@@ -70,6 +71,7 @@ __all__ = [
     "normalize_spectrum",
     # kle — torch
     "kle_spectrogram_from_channels",
+    "kle_spectrogram_sliding",
     # schirmer combine
     "fractional_channels_for_tcn",
     "fractional_channels_for_tcn_batch",

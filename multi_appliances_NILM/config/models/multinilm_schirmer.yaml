@@ -1,5 +1,5 @@
-# MultiNILM + Schirmer: fractional 9-ch (1D) + KLE spectrogram matrix (2D Conv) + FiLM.
-# Backbone = same MultiNILM; DA on (H1+H5 → unlabeled H2).
+# MultiNILM + Schirmer-inspired prior: fractional 9-ch + sliding KLE → time-varying FiLM.
+# Honest hybrid (not full paper 2D-CNN regressor). DA: H1+H5 → unlabeled H2.
 model_name: multinilm_schirmer
 
 data:
@@ -18,20 +18,25 @@ windowing:
   eval_reconstruction: auto
   training_targets: auto
 
-# 1D path: raw + 8 fractional orders → C=9
+# 1D path: raw + 8 α → C=9; per-channel z-score balances energies
 fractional:
   enabled: true
   k: 8
   include_raw: true
   memory: 256
+  channel_normalize: mean_std
 
-# 2D path: KLE mag/phase A,Φ ∈ R^{N×K} on GPU (kle.py torch API)
+# Sliding KLE maps A,Φ (paper-style frames) → Conv2d → time-varying FiLM on α only
 kle:
-  n_components: 64          # paper in-house 64; transfer used 256 (slower)
-  normalize: fundamental
+  n_components: 64
+  frame_length: 128          # analysis frame L (>= n_components)
+  hop: 64                    # stride along T=600 → ~9 frames + end-aligned
+  normalize: mean_std        # closer to paper BN / mean-std than max-abs
   use_phase: true
-  phase_mode: hilbert       # or coeff_sign (faster, coarser)
-  include_raw_column: false # KLE columns = the 8 α only
+  phase_mode: hilbert
+  include_raw_column: false  # KLE columns = 8 α
+  film_on_raw: false         # never FiLM the raw watts channel
+  spec_residual: true        # zero-init residual from spectral emb → α
   embed_dim: 64
   conv_width: 32
 
@@ -45,7 +50,8 @@ architecture:
   kernel_size: 5
   max_dilation: 64
   dropout: 0.15
-  gate_mode: hard
+  # Soft in train (stable w/ DA); hard at eval
+  gate_mode: soft_train_hard_eval
   gate_threshold: 0.5
   head_local_layers: 2
   head_kernel_size: 3
@@ -66,18 +72,20 @@ loss:
   domain_mu: 0.4
   domain_mix: convex
   domain_scale: equal
-  da_warmup_epochs: 0
-  da_ramp_epochs: 0
+  # Warm up task first; then ramp DA (avoids early domain-grad blow-up)
+  da_warmup_epochs: 15
+  da_ramp_epochs: 15
   da_freeze_patience: 0
-  lambda_domain: 0.6
+  lambda_domain: 0.3
 
 domain_adaptation:
   enabled: true
   target_split: test
 
+# Aligned with multinilm_fractional for fair ablation
 training:
-  batch_size: 64
-  epochs: 150
+  batch_size: 32
+  epochs: 200
   learning_rate: 0.0001
   weight_decay: 0
   num_workers: 0
@@ -85,15 +93,15 @@ training:
   amp_dtype: bf16
   checkpoint_monitor: val_mae_minus_f1
   checkpoint_mae_space: normalized
-  early_stop_patience: 40
-  scheduler: reduce_on_plateau
+  early_stop_patience: 60
+  scheduler: none
   lr_scheduler:
     type: reduce_on_plateau
     monitor: val_mae_minus_f1
-    patience: 10
+    patience: 5
     factor: 0.5
     min_lr: 0.000001
-  gradient_clip: 5.0
+  gradient_clip: 1.0
   train_shuffle: true
   cudnn_benchmark: true
   tf32: true
@@ -101,7 +109,7 @@ training:
     plot_mode: interval
     plot_interval: 50
     plot_on_periods: 5
-    plot_max_batches: 8
+    plot_max_batches: 16
     waveform_figsize: 5.5
     waveform_dpi: 300
     waveform_dynamic_figsize: true

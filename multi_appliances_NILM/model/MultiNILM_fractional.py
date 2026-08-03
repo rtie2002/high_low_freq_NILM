@@ -95,6 +95,11 @@ def build_multinilm_fractional(
         include_raw=include_raw,
         memory=memory,
         h=h,
+        channel_normalize=str(
+            (architecture.get("fractional") or {}).get("channel_normalize", "mean_std")
+            if isinstance(architecture.get("fractional"), dict)
+            else "mean_std"
+        ),
     )
     feature_c = int(frontend.out_channels)
 

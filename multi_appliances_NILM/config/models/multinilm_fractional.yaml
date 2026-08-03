@@ -23,6 +23,7 @@ fractional:
   k: 8
   include_raw: true
   memory: 256
+  channel_normalize: mean_std
 
 architecture:
   input_channels: 9
@@ -34,7 +35,8 @@ architecture:
   kernel_size: 5
   max_dilation: 64
   dropout: 0.15
-  gate_mode: hard
+  # Soft in train (stable w/ DA); hard at eval — match schirmer / fair DA runs
+  gate_mode: soft_train_hard_eval
   gate_threshold: 0.5
   head_local_layers: 2
   head_kernel_size: 3
@@ -55,11 +57,11 @@ loss:
   domain_mu: 0.4
   domain_mix: convex
   domain_scale: equal
-  # Lin TSG best λ ≈ 0.6 — keep DA on every epoch (no mid-train freeze).
-  da_warmup_epochs: 0
-  da_ramp_epochs: 0
+  # Warm up task first; then ramp DA
+  da_warmup_epochs: 15
+  da_ramp_epochs: 15
   da_freeze_patience: 0
-  lambda_domain: 0.6
+  lambda_domain: 0.3
 
 domain_adaptation:
   enabled: true
