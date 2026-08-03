@@ -215,7 +215,10 @@ class FractionalFrontEnd(nn.Module):
             for alpha in self.alphas:
                 w = gl_binomial_weights(alpha, self.memory)
                 scale = 1.0 / (self.h ** alpha)
-                kernels.append(torch.tensor(w * scale, dtype=torch.float32))
+                # PyTorch conv1d is cross-correlation; flip so it matches
+                # np.convolve / causal GL: y[t] = Σ_j w[j] x[t-j].
+                w_conv = np.asarray(w * scale, dtype=np.float64)[::-1].copy()
+                kernels.append(torch.tensor(w_conv, dtype=torch.float32))
             weight = torch.stack(kernels, dim=0).unsqueeze(1)  # (K, 1, L)
             self.register_buffer("gl_weight", weight, persistent=True)
         else:
