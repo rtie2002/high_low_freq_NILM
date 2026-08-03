@@ -9,6 +9,14 @@ near-sinusoid → magnitude A and phase Φ.
 Physical goal (scale invariance): after normalization, different brands of
 the same appliance share similar spectral *shape* even if steady-state
 watts differ (e.g. 75 W vs 100 W fridge).
+
+Components
+----------
+1. NumPy API (offline, scripts, schirmer_frontend)
+   - ACM / eig / mag-phase / ``kle_subspace_channels``
+
+2. PyTorch API (MultiNILM_schirmer GPU path)
+   - ``kle_spectrogram_from_channels`` — (B,K,T) → mag/phase (B,N,K)
 """
 
 from __future__ import annotations
@@ -16,6 +24,7 @@ from __future__ import annotations
 from typing import Literal
 
 import numpy as np
+import torch
 from numpy.typing import NDArray
 from scipy.linalg import toeplitz
 from scipy.signal import hilbert
@@ -341,3 +350,157 @@ def kle_subspace_channels_batch(
         ],
         axis=0,
     )
+
+
+# ---------------------------------------------------------------------------
+# 2. PyTorch API (GPU spectrogram for MultiNILM_schirmer)
+# ---------------------------------------------------------------------------
+
+def _hilbert_torch(x: torch.Tensor) -> torch.Tensor:
+    """Analytic signal along last dim (SciPy ``hilbert`` equivalent)."""
+    n = int(x.shape[-1])
+    if n < 1:
+        return x
+    Xf = torch.fft.fft(x, dim=-1)
+    h = torch.zeros(n, device=x.device, dtype=x.dtype)
+    if n % 2 == 0:
+        h[0] = 1.0
+        h[n // 2] = 1.0
+        h[1 : n // 2] = 2.0
+    else:
+        h[0] = 1.0
+        h[1 : (n + 1) // 2] = 2.0
+    return torch.fft.ifft(Xf * h, dim=-1)
+
+
+def _acf_toeplitz_torch(x: torch.Tensor, n: int, *, demean: bool = True) -> torch.Tensor:
+    """Biased ACF Toeplitz ACM. ``x``: (M, T) → (M, n, n)."""
+    m, t_len = x.shape
+    if demean:
+        x = x - x.mean(dim=-1, keepdim=True)
+    if t_len < n:
+        pad = torch.zeros(m, n, device=x.device, dtype=x.dtype)
+        pad[:, :t_len] = x
+        x = pad
+        t_len = n
+
+    r_list = [(x * x).sum(dim=-1) / float(t_len)]
+    for lag in range(1, n):
+        r_list.append((x[:, :-lag] * x[:, lag:]).sum(dim=-1) / float(t_len))
+    r = torch.stack(r_list, dim=-1)  # (M, n)
+
+    idx = torch.arange(n, device=x.device)
+    lags = (idx[:, None] - idx[None, :]).abs()
+    return r[:, lags]
+
+
+def kle_magnitude_phase_torch(
+    frames: torch.Tensor,
+    n_components: int,
+    *,
+    demean: bool = True,
+    phase_mode: Literal["hilbert", "coeff_sign"] = "hilbert",
+    min_eig: float = 1e-12,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Args:
+        frames: (M, T) real signals (e.g. flattened B*K fractional channels)
+    Returns:
+        mag (M, N), phase (M, N)
+    """
+    if frames.dim() != 2:
+        raise ValueError(f"expected (M,T), got {tuple(frames.shape)}")
+    n = int(n_components)
+    m = int(frames.shape[0])
+    device = frames.device
+    dtype = frames.dtype
+
+    acm = _acf_toeplitz_torch(frames, n, demean=demean)
+    acm = 0.5 * (acm + acm.transpose(-1, -2))
+    evals, evecs = torch.linalg.eigh(acm)
+    evals = evals.clamp_min(min_eig)
+
+    t_len = int(frames.shape[-1])
+    if t_len >= n:
+        segment = frames[:, -n:]
+    else:
+        segment = torch.zeros(m, n, device=device, dtype=dtype)
+        segment[:, -t_len:] = frames
+    if demean:
+        segment = segment - segment.mean(dim=-1, keepdim=True)
+
+    coeffs = torch.matmul(evecs.transpose(-1, -2), segment.unsqueeze(-1)).squeeze(-1)
+
+    if phase_mode == "coeff_sign":
+        mag = coeffs.abs()
+        phase = torch.where(
+            coeffs >= 0,
+            torch.zeros_like(coeffs),
+            torch.full_like(coeffs, float(torch.pi)),
+        )
+        return mag, phase
+
+    if phase_mode != "hilbert":
+        raise ValueError(f"unknown phase_mode={phase_mode!r}")
+
+    sc = evecs * coeffs.unsqueeze(-2)  # (M, N, N)
+    sc_t = sc.transpose(-1, -2)
+    analytic = _hilbert_torch(sc_t)
+    mag = analytic.abs().mean(dim=-1)
+    center = n // 2
+    phase = torch.angle(analytic[..., center])
+    return mag, phase
+
+
+def normalize_spectrum_torch(
+    values: torch.Tensor,
+    *,
+    mode: Literal["mean_std", "fundamental", "l2", "none"] = "fundamental",
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """Normalize along last dim (GPU twin of ``normalize_spectrum``)."""
+    if mode == "none":
+        return values
+    if mode == "mean_std":
+        mu = values.mean(dim=-1, keepdim=True)
+        sigma = values.std(dim=-1, keepdim=True).clamp_min(eps)
+        return (values - mu).abs() / sigma
+    if mode == "fundamental":
+        scale = values.abs().amax(dim=-1, keepdim=True).clamp_min(eps)
+        return values / scale
+    if mode == "l2":
+        scale = values.norm(dim=-1, keepdim=True).clamp_min(eps)
+        return values / scale
+    raise ValueError(f"unknown normalize mode={mode!r}")
+
+
+def kle_spectrogram_from_channels(
+    channels: torch.Tensor,
+    n_components: int,
+    *,
+    demean: bool = True,
+    normalize: Literal["mean_std", "fundamental", "l2", "none"] = "fundamental",
+    phase_mode: Literal["hilbert", "coeff_sign"] = "hilbert",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Batched GPU KLE spectrogram columns.
+
+    Args:
+        channels: (B, K, T) fractional (or raw+frac) signals on device
+    Returns:
+        mag (B, N, K), phase (B, N, K)
+    """
+    if channels.dim() != 3:
+        raise ValueError(f"expected (B,K,T), got {tuple(channels.shape)}")
+    b, k, t_len = channels.shape
+    flat = channels.reshape(b * k, t_len)
+    mag_f, phase_f = kle_magnitude_phase_torch(
+        flat,
+        n_components,
+        demean=demean,
+        phase_mode=phase_mode,
+    )
+    mag_f = normalize_spectrum_torch(mag_f, mode=normalize)
+    mag = mag_f.reshape(b, k, n_components).transpose(1, 2)
+    phase = phase_f.reshape(b, k, n_components).transpose(1, 2)
+    return mag, phase

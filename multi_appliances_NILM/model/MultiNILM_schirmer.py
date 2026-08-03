@@ -3,22 +3,17 @@ MultiNILM + Schirmer front-end: fractional (1D channels) + KLE spectrogram (2D m
 
 Pipeline
 --------
-1. ``FractionalFrontEnd``: p → (B, C, T), default C=9 (raw + 8 α).
-2. ``schirmer_kle_maps``: same p → magnitude/phase matrices A, Φ ∈ R^{N×K}
-   (paper-style 2D spectrogram; N = KLE order, K = #fractional orders).
+1. ``FractionalFrontEnd``: p → (B, C, T), default C=9 (raw + 8 α) on GPU.
+2. ``kle_spectrogram_from_channels`` (GPU): fractional channels → A, Φ ∈ R^{N×K}.
 3. ``KleSpectrogramEncoder`` (Conv2d) reads the matrix → embedding.
 4. FiLM modulates the C fractional channels with that embedding.
 5. Unchanged ``MultiNILM`` backbone (``input_channels=C``).
-
-So yes: the model *does* handle the 2D KLE matrix (via Conv2d), while keeping
-the existing seq2seq MultiNILM heads.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
 import torch
 import torch.nn as nn
 
@@ -28,7 +23,7 @@ from model.preprocess_feature.fractional import (
     default_schirmer_alphas,
     parse_fractional_architecture,
 )
-from model.preprocess_feature.schirmer_frontend import schirmer_kle_maps_batch
+from model.preprocess_feature.kle import kle_spectrogram_from_channels
 
 
 class KleSpectrogramEncoder(nn.Module):
@@ -85,6 +80,7 @@ class MultiNILMSchirmer(nn.Module):
         kle_normalize: str = "fundamental",
         kle_include_raw_column: bool = False,
         kle_memory: int | None = None,
+        kle_phase_mode: str = "hilbert",
     ) -> None:
         super().__init__()
         self.frontend = frontend
@@ -96,6 +92,7 @@ class MultiNILMSchirmer(nn.Module):
         self.kle_normalize = str(kle_normalize)
         self.kle_include_raw_column = bool(kle_include_raw_column)
         self.kle_memory = kle_memory
+        self.kle_phase_mode = str(kle_phase_mode)
         self.alphas = list(frontend.alphas)
 
         if int(backbone.input_channels) != int(frontend.out_channels):
@@ -126,31 +123,34 @@ class MultiNILMSchirmer(nn.Module):
             f"MultiNILMSchirmer expects (B,T) or (B,1,T); got {tuple(x.shape)}"
         )
 
-    def _kle_matrices(
-        self, bt: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """(B,T) → mag/phase (B,N,K) via numpy Schirmer maps (CPU)."""
-        device = bt.device
-        arr = bt.detach().cpu().numpy().astype(np.float64, copy=False)
-        mag, phase = schirmer_kle_maps_batch(
-            arr,
-            alphas=self.alphas,
-            n_components=self.kle_n_components,
-            memory=self.kle_memory,
-            include_raw_as_alpha0=self.kle_include_raw_column,
-            normalize=self.kle_normalize,  # type: ignore[arg-type]
-        )
-        mag_t = torch.from_numpy(mag.astype(np.float32, copy=False)).to(device)
-        phase_t = torch.from_numpy(phase.astype(np.float32, copy=False)).to(device)
-        return mag_t, phase_t
+    def _kle_channels_from_frontend(self, xf: torch.Tensor) -> torch.Tensor:
+        """
+        Select channels for KLE spectrogram from FractionalFrontEnd output.
+
+        If frontend includes raw and ``kle_include_raw_column`` is False (default),
+        use only the α channels (paper K columns). If True, KLE all C channels.
+        """
+        if self.frontend.include_raw and not self.kle_include_raw_column:
+            if xf.shape[1] <= 1:
+                return xf
+            return xf[:, 1:, :]
+        return xf
 
     def forward(self, x: torch.Tensor, return_domain_features: bool = False):
         b1t = self._to_b1t(x)
-        # 1) Fractional multi-channel time series (matrix view: T × C).
+        # 1) Fractional multi-channel time series on GPU.
         xf = self.frontend(b1t)  # (B, C, T)
 
-        # 2) KLE spectrogram matrices (matrix view: N × K) + Conv2d.
-        mag, phase = self._kle_matrices(b1t[:, 0, :])
+        # 2) KLE spectrogram on GPU (reuse fractional channels; no CPU numpy).
+        kle_in = self._kle_channels_from_frontend(xf)
+        with torch.no_grad():
+            # Fixed front-end features (like numpy path); keeps graph on FiLM/backbone.
+            mag, phase = kle_spectrogram_from_channels(
+                kle_in.detach(),
+                self.kle_n_components,
+                normalize=self.kle_normalize,  # type: ignore[arg-type]
+                phase_mode=self.kle_phase_mode,  # type: ignore[arg-type]
+            )
         emb = self.spec_encoder(mag, phase)  # (B, D)
 
         # 3) FiLM: modulate each fractional channel with spectral prior.
@@ -200,6 +200,7 @@ def build_multinilm_schirmer(
     use_phase = bool(kle_block.get("use_phase", True))
     kle_norm = str(kle_block.get("normalize", "fundamental"))
     kle_raw_col = bool(kle_block.get("include_raw_column", False))
+    kle_phase_mode = str(kle_block.get("phase_mode", "hilbert"))
     kle_memory = kle_block.get("memory", memory)
     kle_memory_i = None if kle_memory is None else int(kle_memory)
     emb_dim = int(kle_block.get("embed_dim", 64))
@@ -250,4 +251,5 @@ def build_multinilm_schirmer(
         kle_normalize=kle_norm,
         kle_include_raw_column=kle_raw_col,
         kle_memory=kle_memory_i,
+        kle_phase_mode=kle_phase_mode,
     )

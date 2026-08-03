@@ -25,11 +25,12 @@ fractional:
   include_raw: true
   memory: 256
 
-# 2D path: KLE mag/phase matrices A,Φ ∈ R^{N×K} (paper spectrogram)
+# 2D path: KLE mag/phase A,Φ ∈ R^{N×K} on GPU (kle.py torch API)
 kle:
   n_components: 64          # paper in-house 64; transfer used 256 (slower)
   normalize: fundamental
   use_phase: true
+  phase_mode: hilbert       # or coeff_sign (faster, coarser)
   include_raw_column: false # KLE columns = the 8 α only
   embed_dim: 64
   conv_width: 32
@@ -75,7 +76,7 @@ domain_adaptation:
   target_split: test
 
 training:
-  batch_size: 16            # KLE spectrogram is CPU-heavy; keep smaller
+  batch_size: 32            # KLE spectrogram is CPU-heavy; keep smaller
   epochs: 150
   learning_rate: 0.0001
   weight_decay: 0
