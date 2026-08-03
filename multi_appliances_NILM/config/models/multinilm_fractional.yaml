@@ -58,8 +58,8 @@ loss:
   domain_mix: convex
   domain_scale: equal
   # Warm up task first; then ramp DA
-  da_warmup_epochs: 15
-  da_ramp_epochs: 15
+  da_warmup_epochs: 0
+  da_ramp_epochs: 0
   da_freeze_patience: 0
   lambda_domain: 0.3
 
