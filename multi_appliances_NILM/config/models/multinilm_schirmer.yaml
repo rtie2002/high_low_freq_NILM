@@ -29,14 +29,14 @@ fractional:
 # Sliding KLE maps A,Φ (paper-style frames) → Conv2d → time-varying FiLM on α only
 kle:
   n_components: 64
-  frame_length: 128          # analysis frame L (>= n_components)
-  hop: 64                    # stride along T=600 → ~9 frames + end-aligned
-  normalize: mean_std        # closer to paper BN / mean-std than max-abs
+  frame_length: 128
+  hop: 472                 # ~2 frames (start+end); was 64 (~9 frames, ~5min/epoch)
+  normalize: mean_std
   use_phase: true
-  phase_mode: hilbert
-  include_raw_column: false  # KLE columns = 8 α
-  film_on_raw: false         # never FiLM the raw watts channel
-  spec_residual: true        # zero-init residual from spectral emb → α
+  phase_mode: coeff_sign   # cheaper than hilbert; fine for FiLM prior
+  include_raw_column: false
+  film_on_raw: false
+  spec_residual: true
   embed_dim: 64
   conv_width: 32
 
