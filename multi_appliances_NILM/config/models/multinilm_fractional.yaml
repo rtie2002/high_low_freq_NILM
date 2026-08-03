@@ -10,11 +10,11 @@ evaluation:
   pred_on_source: state_head
 
 windowing:
-  input_window_length: 600
-  output_window_length: 600
+  input_window_length: 512
+  output_window_length: 512
   output_alignment: end
-  input_stride: 300
-  eval_stride: 300
+  input_stride: 256
+  eval_stride: 256
   eval_reconstruction: auto
   training_targets: auto
 
@@ -61,7 +61,7 @@ loss:
   da_warmup_epochs: 0
   da_ramp_epochs: 0
   da_freeze_patience: 0
-  lambda_domain: 0.3
+  lambda_domain: 0.6
 
 domain_adaptation:
   enabled: true
