@@ -1,5 +1,5 @@
-# MultiNILM + Schirmer-inspired prior: fractional 9-ch + sliding KLE → time-varying FiLM.
-# Honest hybrid (not full paper 2D-CNN regressor). DA: H1+H5 → unlabeled H2.
+# MultiNILM + Schirmer-inspired: fractional 9-ch + sliding KLE → FiLM.
+# Shared hyperparameters match multinilm_fractional.yaml (fair ablation).
 model_name: multinilm_schirmer
 
 data:
@@ -10,15 +10,14 @@ evaluation:
   pred_on_source: state_head
 
 windowing:
-  input_window_length: 600
-  output_window_length: 600
+  input_window_length: 512
+  output_window_length: 512
   output_alignment: end
-  input_stride: 300
-  eval_stride: 300
+  input_stride: 256
+  eval_stride: 256
   eval_reconstruction: auto
   training_targets: auto
 
-# 1D path: raw + 8 α → C=9; per-channel z-score balances energies
 fractional:
   enabled: true
   k: 8
@@ -26,14 +25,14 @@ fractional:
   memory: 256
   channel_normalize: mean_std
 
-# Sliding KLE maps A,Φ (paper-style frames) → Conv2d → time-varying FiLM on α only
+# Schirmer-only block (not in fractional.yaml)
 kle:
   n_components: 64
   frame_length: 128
-  hop: 472                 # ~2 frames (start+end); was 64 (~9 frames, ~5min/epoch)
+  hop: 384                 # T=512 → ~2 frames (start + end-aligned)
   normalize: mean_std
   use_phase: true
-  phase_mode: coeff_sign   # cheaper than hilbert; fine for FiLM prior
+  phase_mode: coeff_sign
   include_raw_column: false
   film_on_raw: false
   spec_residual: true
@@ -50,7 +49,6 @@ architecture:
   kernel_size: 5
   max_dilation: 64
   dropout: 0.15
-  # Soft in train (stable w/ DA); hard at eval
   gate_mode: soft_train_hard_eval
   gate_threshold: 0.5
   head_local_layers: 2
@@ -72,19 +70,17 @@ loss:
   domain_mu: 0.4
   domain_mix: convex
   domain_scale: equal
-  # Warm up task first; then ramp DA (avoids early domain-grad blow-up)
   da_warmup_epochs: 0
   da_ramp_epochs: 0
   da_freeze_patience: 0
-  lambda_domain: 0.6
+  lambda_domain: 0.3
 
 domain_adaptation:
   enabled: true
   target_split: test
 
-# Aligned with multinilm_fractional for fair ablation
 training:
-  batch_size: 32
+  batch_size: 64
   epochs: 150
   learning_rate: 0.0001
   weight_decay: 0
@@ -100,7 +96,7 @@ training:
     monitor: val_mae_minus_f1
     patience: 5
     factor: 0.5
-    min_lr: 0.000025
+    min_lr: 0.00001
   gradient_clip: 1.0
   train_shuffle: true
   cudnn_benchmark: true
