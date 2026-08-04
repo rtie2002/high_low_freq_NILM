@@ -53,6 +53,11 @@ loss:
   task_balance: equal
   lambda_state: 1
   pos_weight: auto
+  # Auto pos_weight = (1-p)/p from train ON rate; for microwave/dishwasher
+  # (p~0.5%) that's ~200x. A few misclassified rare-appliance ON tokens in
+  # a val batch then swing raw BCE hugely (the jagged/exploding "val raw"
+  # curve) without actually meaning the optimized loss diverged. Cap it.
+  pos_weight_cap: 20
   domain_method: both
   domain_mu: 0.4
   domain_mix: convex
