@@ -11,7 +11,6 @@ Source CSVs (under datasets/ukdale/):
     ukdale_house1_lf_6s.csv
     ukdale_house2_lf_6s.csv
     ukdale_house5_lf_6s.csv
-(Legacy alias still accepted: multi_appliance_FULL_house{N}.csv)
 
 Outputs:
     datasets/ukdale/training/multi_appliance_training.csv
