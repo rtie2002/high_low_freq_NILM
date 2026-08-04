@@ -7,14 +7,20 @@ Default (expanded source data):
 
 Previous default was 4 weeks/house (3 train + 1 val). Override with --source-weeks.
 
+Source CSVs (under datasets/ukdale/):
+    ukdale_house1_lf_6s.csv
+    ukdale_house2_lf_6s.csv
+    ukdale_house5_lf_6s.csv
+(Legacy alias still accepted: multi_appliance_FULL_house{N}.csv)
+
 Outputs:
     datasets/ukdale/training/multi_appliance_training.csv
     datasets/ukdale/validating/multi_appliance_validating.csv
     datasets/ukdale/testing/multi_appliance_testing.csv
 
-Example (on the machine that has FULL CSVs):
+Example:
     python scripts/prepare_ukdale_crosshouse_split.py
-    python scripts/prepare_ukdale_crosshouse_split.py --source-weeks 8 --val-weeks 2
+    python scripts/prepare_ukdale_crosshouse_split.py --source-weeks 20 --val-weeks 4
 """
 
 from __future__ import annotations
@@ -28,10 +34,6 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 UKDALE_DIR = ROOT / "datasets" / "ukdale"
-
-HOUSE1_CSV = UKDALE_DIR / "multi_appliance_FULL_house1.csv"
-HOUSE2_CSV = UKDALE_DIR / "multi_appliance_FULL_house2.csv"
-HOUSE5_CSV = UKDALE_DIR / "multi_appliance_FULL_house5.csv"
 
 TRAIN_OUT = UKDALE_DIR / "training" / "multi_appliance_training.csv"
 VAL_OUT = UKDALE_DIR / "validating" / "multi_appliance_validating.csv"
@@ -49,6 +51,22 @@ HOUSE2_TEST_START = "2013-07-09 00:00:00"
 HOUSE2_TEST_END = "2013-08-05 23:59:59"
 
 
+def resolve_house_csv(ukdale: Path, house: int) -> Path:
+    """Prefer ukdale_house{N}_lf_6s.csv; accept legacy FULL / lf names."""
+    candidates = [
+        ukdale / f"ukdale_house{house}_lf_6s.csv",
+        ukdale / f"multi_appliance_FULL_house{house}.csv",
+        ukdale / f"multi_appliance_house{house}_lf.csv",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path
+    raise FileNotFoundError(
+        f"Missing house {house} CSV under {ukdale}. Tried:\n  - "
+        + "\n  - ".join(str(p) for p in candidates)
+    )
+
+
 def _parse_end(end: str) -> datetime:
     return datetime.strptime(end, "%Y-%m-%d %H:%M:%S")
 
@@ -64,9 +82,7 @@ def _block_start_from_end(end: str, weeks: int) -> str:
 
 def _load_slice(csv_path: Path, start: str, end: str) -> pd.DataFrame:
     if not csv_path.is_file():
-        raise FileNotFoundError(
-            f"Missing {csv_path}. Build FULL house CSVs first, then re-run this script."
-        )
+        raise FileNotFoundError(f"Missing {csv_path}.")
     df = pd.read_csv(csv_path)
     df[TIME_COL] = pd.to_datetime(df[TIME_COL])
     out = df[(df[TIME_COL] >= start) & (df[TIME_COL] <= end)].copy()
@@ -122,7 +138,7 @@ def parse_args() -> argparse.Namespace:
         "--ukdale-dir",
         type=Path,
         default=UKDALE_DIR,
-        help="Directory with FULL house CSVs and train/val/test folders.",
+        help="Directory with ukdale_house*_lf_6s.csv and train/val/test folders.",
     )
     return p.parse_args()
 
@@ -130,9 +146,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     ukdale = args.ukdale_dir
-    house1_csv = ukdale / "multi_appliance_FULL_house1.csv"
-    house2_csv = ukdale / "multi_appliance_FULL_house2.csv"
-    house5_csv = ukdale / "multi_appliance_FULL_house5.csv"
+    house1_csv = resolve_house_csv(ukdale, 1)
+    house2_csv = resolve_house_csv(ukdale, 2)
+    house5_csv = resolve_house_csv(ukdale, 5)
     train_out = ukdale / "training" / "multi_appliance_training.csv"
     val_out = ukdale / "validating" / "multi_appliance_validating.csv"
     test_out = ukdale / "testing" / "multi_appliance_testing.csv"
@@ -149,6 +165,9 @@ def main() -> None:
         f"({train_weeks} train + {val_weeks} val); H2 test = 4 wk (fixed).",
         flush=True,
     )
+    print(f"  house1 CSV: {house1_csv.name}", flush=True)
+    print(f"  house2 CSV: {house2_csv.name}", flush=True)
+    print(f"  house5 CSV: {house5_csv.name}", flush=True)
 
     train_h1_full = _load_slice(house1_csv, h1_start, HOUSE1_BLOCK_END)
     train_h5_full = _load_slice(house5_csv, h5_start, HOUSE5_BLOCK_END)
@@ -160,7 +179,9 @@ def main() -> None:
         ("house2", test_h2, HOUSE2_TEST_START, HOUSE2_TEST_END),
     ):
         if block.empty:
-            raise ValueError(f"{name} slice empty for {start} -> {end}. Check FULL CSV coverage.")
+            raise ValueError(
+                f"{name} slice empty for {start} -> {end}. Check CSV date coverage."
+            )
         print(
             f"  {name}: rows={len(block):,}  "
             f"time={block[TIME_COL].iloc[0]} -> {block[TIME_COL].iloc[-1]}",
@@ -184,7 +205,7 @@ def main() -> None:
         .sort_values(TIME_COL)
         .reset_index(drop=True)
     )
-    test_df = test_h2.sort_values(TIME_COL).reset_index(drop=True)
+    test_df = test_h2
 
     train_out.parent.mkdir(parents=True, exist_ok=True)
     val_out.parent.mkdir(parents=True, exist_ok=True)
@@ -194,18 +215,13 @@ def main() -> None:
     val_df.to_csv(val_out, index=False)
     test_df.to_csv(test_out, index=False)
 
-    print("Saved cross-house UK-DALE split:")
-    print(f"  train: {train_out}  rows={len(train_df):,}")
-    print(f"  val:   {val_out}  rows={len(val_df):,}")
-    print(f"  test:  {test_out}  rows={len(test_df):,}")
-    print()
-    print("Selected ranges:")
-    print(f"  house1 block: {h1_start} -> {HOUSE1_BLOCK_END}")
-    print(f"  house5 block: {h5_start} -> {HOUSE5_BLOCK_END}")
-    print(f"  house2 test:  {HOUSE2_TEST_START} -> {HOUSE2_TEST_END}")
+    print("Wrote:", flush=True)
+    print(f"  train: {train_out}  rows={len(train_df):,}", flush=True)
+    print(f"  val:   {val_out}  rows={len(val_df):,}", flush=True)
+    print(f"  test:  {test_out}  rows={len(test_df):,}", flush=True)
     print(
         f"  per source house: ~{train_weeks} wk train + ~{val_weeks} wk val "
-        f"(was 3+1 on a 4-wk block).",
+        f"(H2 test unchanged at 4 wk).",
         flush=True,
     )
 
