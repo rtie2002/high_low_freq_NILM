@@ -64,7 +64,7 @@ loss:
   lambda_domain: 0.3
 
 domain_adaptation:
-  enabled: true
+  enabled: false
   target_split: test
 
 training:
