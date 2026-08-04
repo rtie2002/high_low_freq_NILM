@@ -151,23 +151,18 @@ python main.py --model multinilm_fractional --model-config config/models/multini
 
 # KLE C=9
 python main.py --model multinilm_kle --model-config config/models/multinilm_kle.yaml
-
-# fractional + KLE spectrogram matrix (Conv2d) + FiLM + DA
-python main.py --model multinilm_schirmer --model-config config/models/multinilm_schirmer.yaml
 ```
 
-### 5.2 AFTER-C — `MultiNILM_schirmer.py`（分数阶 + KLE 矩阵）
+### 5.2 AFTER-C — Schirmer hybrid（已移除）
 
-```text
-p → FractionalFrontEnd → (B,9,T)
-  → schirmer_kle_maps → A,Φ (B,N,K)  ← 2D matrix
-  → Conv2d encoder → FiLM on 9 channels
-  → MultiNILM backbone (unchanged)
-```
+`multinilm_schirmer`（fractional + online KLE spectrogram + FiLM）已删除：计算极重，
+UK-DALE H2 相对 `multinilm_fractional` 无可靠增益。`kle.py` / `schirmer_frontend.py`
+工具函数仍保留，供以后重新设计时使用。
 
-| 路径 | forward | 注册 | yaml | 可启动 train？ |
-|------|---------|------|------|----------------|
-| `multinilm_schirmer` | ✅ | ✅ | ✅（DA on） | ✅（KLE 谱图 CPU 很慢，batch=16） |
+| 路径 | 状态 |
+|------|------|
+| `multinilm_schirmer` | **已移除**（yaml / model / adapter / main 注册） |
+
 ---
 
 ## 6. `preprocess_feature` 组件清单（合并后）

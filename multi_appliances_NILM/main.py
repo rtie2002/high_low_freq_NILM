@@ -18,7 +18,6 @@ from adapters.multinilm import MultiNILMAdapter
 from adapters.multinilm_fractional import MultiNILMFractionalAdapter
 from adapters.multinilm_kle import MultiNILMKLEAdapter
 from adapters.multinilm_no_distill import MultiNILMNoDistillAdapter
-from adapters.multinilm_schirmer import MultiNILMSchirmerAdapter
 from adapters.transfer_multi_appliance import TransferMultiApplianceAdapter
 from evaluation.compare import compare_experiment
 from evaluation.run_summary import print_run_cost_summary, print_val_test_comparison
@@ -31,7 +30,6 @@ MODELS = {
     "multinilm": MultiNILMAdapter,
     "multinilm_fractional": MultiNILMFractionalAdapter,
     "multinilm_kle": MultiNILMKLEAdapter,
-    "multinilm_schirmer": MultiNILMSchirmerAdapter,
     "multinilm_no_distill": MultiNILMNoDistillAdapter,
     "transfer_multi_appliance": TransferMultiApplianceAdapter,
 }

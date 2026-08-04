@@ -15,8 +15,8 @@ Components
 1. NumPy API (offline, scripts, schirmer_frontend)
    - ACM / eig / mag-phase / ``kle_subspace_channels``
 
-2. PyTorch API (MultiNILM_schirmer GPU path)
-   - ``kle_spectrogram_from_channels`` — (B,K,T) → mag/phase (B,N,K)
+2. PyTorch API (GPU spectrogram helpers; optional for future models)
+   - ``kle_spectrogram_from_channels`` / ``kle_spectrogram_sliding``
 """
 
 from __future__ import annotations
@@ -353,7 +353,7 @@ def kle_subspace_channels_batch(
 
 
 # ---------------------------------------------------------------------------
-# 2. PyTorch API (GPU spectrogram for MultiNILM_schirmer)
+# 2. PyTorch API (GPU spectrogram helpers)
 # ---------------------------------------------------------------------------
 
 def _hilbert_torch(x: torch.Tensor) -> torch.Tensor:
