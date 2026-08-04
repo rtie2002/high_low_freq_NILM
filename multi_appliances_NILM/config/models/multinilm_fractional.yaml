@@ -35,8 +35,8 @@ architecture:
   kernel_size: 5
   max_dilation: 64
   dropout: 0.15
-  # Soft in train (stable w/ DA); hard at eval — match schirmer / fair DA runs
-  gate_mode: soft_train_hard_eval
+  # Hard gate train+eval: power = 1{state>thr}*power_raw + else off_norm
+  gate_mode: hard
   gate_threshold: 0.5
   head_local_layers: 2
   head_kernel_size: 3
