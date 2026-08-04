@@ -25,6 +25,17 @@ fractional:
   memory: 1024
   channel_normalize: mean_std
 
+# Schirmer Sec. III-C: snap predicted ON watts to FCM active centers (eval-only).
+# Fit on train ground-truth watts; apply on denorm predictions (Fig. 2 post-processing).
+active_state_fcm:
+  enabled: true
+  on_threshold_watts: 5
+  eps_watts: 5
+  use_ifcm: true
+  c_min: 2
+  c_max: 8
+  mu_th_watts: 50
+
 architecture:
   input_channels: 9
   channel_schedule: [32, 64, 128]
@@ -35,8 +46,8 @@ architecture:
   kernel_size: 5
   max_dilation: 64
   dropout: 0.15
-  # Hard gate train+eval: power = 1{state>thr}*power_raw + else off_norm
-  gate_mode: hard
+  # Soft in train (stable w/ DA); hard at eval — match schirmer / fair DA runs
+  gate_mode: soft_train_hard_eval
   gate_threshold: 0.5
   head_local_layers: 2
   head_kernel_size: 3
