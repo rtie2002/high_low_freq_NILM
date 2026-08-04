@@ -90,16 +90,15 @@ def build_multinilm_fractional(
         memory = None
         h = 1.0
 
+    frac_block = architecture.get("fractional")
+    frac_block = frac_block if isinstance(frac_block, dict) else {}
     frontend = FractionalFrontEnd(
         alphas=alphas,
         include_raw=include_raw,
         memory=memory,
         h=h,
-        channel_normalize=str(
-            (architecture.get("fractional") or {}).get("channel_normalize", "mean_std")
-            if isinstance(architecture.get("fractional"), dict)
-            else "mean_std"
-        ),
+        channel_normalize=str(frac_block.get("channel_normalize", "mean_std")),
+        channel_norm_floor=float(frac_block.get("channel_norm_floor", 0.05)),
     )
     feature_c = int(frontend.out_channels)
 

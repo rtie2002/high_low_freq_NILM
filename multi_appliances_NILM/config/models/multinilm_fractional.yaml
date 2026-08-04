@@ -22,8 +22,19 @@ fractional:
   enabled: true
   k: 8
   include_raw: true
-  memory: 1024
+  # J (look-back taps). Kept << input_window_length on purpose: memory equal
+  # to the window length makes every timestep's feature depend on the
+  # zero-padded window boundary (an artifact of where we happened to cut
+  # the window), which is the opposite of the intended device/time
+  # invariance. See docs/fractional_calculus_frontend.md.
+  memory: 128
   channel_normalize: mean_std
+  # Absolute floor (not a relative eps) for the per-window std used to
+  # normalize the K fractional channels. Near-flat/OFF windows have a true
+  # post-filter std that can be ~1e-4; without a floor, dividing by that
+  # amplifies sensor noise into a fake "signal". Tuned in the same units as
+  # the (already globally-normalized) aggregate input.
+  channel_norm_floor: 0.05
 
 architecture:
   input_channels: 9
