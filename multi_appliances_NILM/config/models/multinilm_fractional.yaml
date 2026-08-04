@@ -22,7 +22,7 @@ fractional:
   enabled: true
   k: 8
   include_raw: true
-  memory: 256
+  memory: 512
   channel_normalize: mean_std
 
 architecture:
