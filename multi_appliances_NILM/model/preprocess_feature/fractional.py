@@ -194,7 +194,7 @@ class FractionalFrontEnd(nn.Module):
         h: float = 1.0,
         max_memory: int = 256,
         channel_normalize: str = "mean_std",
-        channel_norm_floor: float = 0.05,
+        channel_norm_eps: float = 1e-5,
     ) -> None:
         super().__init__()
         alphas_list = (
@@ -210,12 +210,7 @@ class FractionalFrontEnd(nn.Module):
         if self.memory < 1:
             raise ValueError(f"memory must be >= 1, got {self.memory}")
         self.channel_normalize = str(channel_normalize)
-        # Absolute floor, NOT a tiny relative eps. A near-flat / long-OFF
-        # window has a true post-filter std that can be ~1e-4-1e-6 (in the
-        # already-globally-normalized input's own units); dividing by that
-        # amplifies sensor/quantization noise into a fake "signal". The
-        # floor keeps quiet windows quiet instead of blowing them up.
-        self.channel_norm_floor = float(channel_norm_floor)
+        self.channel_norm_eps = float(channel_norm_eps)
         if self.channel_normalize not in {"mean_std", "none"}:
             raise ValueError(
                 f"channel_normalize must be mean_std|none, got {self.channel_normalize!r}"
@@ -247,10 +242,6 @@ class FractionalFrontEnd(nn.Module):
 
         parts: list[torch.Tensor] = []
         if self.include_raw:
-            # Left untouched: the dataloader already applied the dataset's
-            # fixed global mean/std to ``x`` (see ``NormalizationStats``).
-            # Re-normalizing it per-window here would throw that consistent
-            # scale away and replace it with a window-dependent one.
             parts.append(x)
 
         if self.alphas:
@@ -265,16 +256,15 @@ class FractionalFrontEnd(nn.Module):
                 padding=0,
                 groups=len(self.alphas),
             )
-            if self.channel_normalize == "mean_std":
-                # Per-channel, per-window, floor-protected: balances the
-                # K fractional-order channels' very different energies
-                # before the stem, without amplifying near-silent windows.
-                mu = frac.mean(dim=-1, keepdim=True)
-                sigma = frac.std(dim=-1, keepdim=True).clamp_min(self.channel_norm_floor)
-                frac = (frac - mu) / sigma
             parts.append(frac)
 
-        return torch.cat(parts, dim=1)
+        out = torch.cat(parts, dim=1)
+        if self.channel_normalize == "mean_std":
+            # Per-channel, per-window: balances raw vs high-α energy before the stem.
+            mu = out.mean(dim=-1, keepdim=True)
+            sigma = out.std(dim=-1, keepdim=True).clamp_min(self.channel_norm_eps)
+            out = (out - mu) / sigma
+        return out
 
 
 def parse_fractional_architecture(
