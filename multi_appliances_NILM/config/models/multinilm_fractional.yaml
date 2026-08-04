@@ -27,12 +27,11 @@ fractional:
 
 architecture:
   input_channels: 9
-  # Mild enlarge vs 128/8-block baseline
-  channel_schedule: [48, 96, 192]
-  hidden_channels: 192
+  channel_schedule: [32, 64, 128]
+  hidden_channels: 128
   stem_kernel_size: 7
   stage_kernel_size: 5
-  num_blocks: 10
+  num_blocks: 8
   kernel_size: 5
   max_dilation: 64
   dropout: 0.15
