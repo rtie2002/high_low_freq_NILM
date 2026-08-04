@@ -15,10 +15,6 @@ Package layout
 ``schirmer_frontend`` — combine fractional (+ optional KLE maps)
   - ``fractional_channels_for_tcn`` (+ batch)
   - ``schirmer_kle_maps`` (+ batch)
-
-``fcm`` — Schirmer active-state post-process (Sec. III-C / Eq. 9–10)
-  - ``fuzzy_cmeans``, ``iterative_fuzzy_cmeans`` (Ji IFCM)
-  - ``snap_active_power``, ``ActiveStateFCMPostProcess``
 """
 
 from .fractional import (
@@ -30,14 +26,6 @@ from .fractional import (
     fractional_stack_batch,
     gl_binomial_weights,
     parse_fractional_architecture,
-)
-from .fcm import (
-    ActiveStateFCMConfig,
-    ActiveStateFCMPostProcess,
-    fuzzy_cmeans,
-    iterative_fuzzy_cmeans,
-    parse_active_state_fcm_config,
-    snap_active_power,
 )
 from .kle import (
     autocorrelation,
@@ -71,13 +59,6 @@ __all__ = [
     # fractional — torch
     "FractionalFrontEnd",
     "parse_fractional_architecture",
-    # fcm — Schirmer C / Ji IFCM
-    "fuzzy_cmeans",
-    "iterative_fuzzy_cmeans",
-    "snap_active_power",
-    "ActiveStateFCMConfig",
-    "ActiveStateFCMPostProcess",
-    "parse_active_state_fcm_config",
     # kle — numpy
     "autocorrelation",
     "autocorrelation_matrix",
