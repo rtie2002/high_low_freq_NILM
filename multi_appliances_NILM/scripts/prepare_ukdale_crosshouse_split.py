@@ -84,8 +84,21 @@ def _load_slice(csv_path: Path, start: str, end: str) -> pd.DataFrame:
     if not csv_path.is_file():
         raise FileNotFoundError(f"Missing {csv_path}.")
     df = pd.read_csv(csv_path)
-    df[TIME_COL] = pd.to_datetime(df[TIME_COL])
-    out = df[(df[TIME_COL] >= start) & (df[TIME_COL] <= end)].copy()
+    # Inferring a strict format from the first rows fails if later rows are
+    # truncated/corrupt (seen on training PC: "2014-0"). Coerce → drop.
+    parsed = pd.to_datetime(df[TIME_COL], errors="coerce")
+    n_bad = int(parsed.isna().sum())
+    if n_bad:
+        print(
+            f"  warning: {csv_path.name}: dropping {n_bad:,} rows with bad {TIME_COL}",
+            flush=True,
+        )
+        df = df.loc[parsed.notna()].copy()
+        parsed = parsed.loc[parsed.notna()]
+    df[TIME_COL] = parsed
+    start_ts = pd.Timestamp(start)
+    end_ts = pd.Timestamp(end)
+    out = df[(df[TIME_COL] >= start_ts) & (df[TIME_COL] <= end_ts)].copy()
     return out.sort_values(TIME_COL).reset_index(drop=True)
 
 
