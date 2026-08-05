@@ -20,24 +20,11 @@ def _to_numpy(t: torch.Tensor) -> np.ndarray:
 
 
 def _resolve_pos_weight(adapter: "MultiNILMAdapter", loss_cfg: dict) -> list[float] | None:
-    """Use yaml pos_weight, or auto-balance rare ON events from the train split.
-
-    Auto weight = (1-p)/p from the train ON rate. For a rare appliance (e.g.
-    microwave, p~0.5%) that is ~200. BCEWithLogits then scores a single
-    confidently-wrong ON timestep at ~200x a normal one, so a handful of
-    hard val windows (few ON samples for rare appliances) can swing the raw
-    BCE by a huge amount batch-to-batch -- the jagged/exploding "val raw"
-    curve is this, not divergence of the actual optimized loss. Cap it so
-    rare-class balancing still helps without this variance blowing up.
-    """
+    """Use yaml pos_weight, or auto-balance rare ON events from the train split."""
     configured = loss_cfg.get("pos_weight")
     if configured is not None and str(configured).lower() not in {"auto", "null", "none"}:
         return configured
-    weights = adapter._data_loader().estimate_state_pos_weights("train")
-    cap = loss_cfg.get("pos_weight_cap", 20.0)
-    if cap is not None:
-        weights = np.clip(weights, None, float(cap))
-    return weights.tolist()
+    return adapter._data_loader().estimate_state_pos_weights("train").tolist()
 
 
 def _pred_on_from_config(
