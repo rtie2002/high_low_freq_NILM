@@ -85,6 +85,8 @@ class MultiNILMAdapter(BaseNILMAdapter):
             head_local_layers=cfg.head_local_layers,
             head_kernel_size=cfg.head_kernel_size,
             head_use_residual=cfg.head_use_residual,
+            split_task_bodies=cfg.split_task_bodies,
+            detach_gate=cfg.detach_gate,
             use_multiscale_stem=cfg.use_multiscale_stem,
             detail_kernels=cfg.detail_kernels,
             detail_branch_channels=cfg.detail_branch_channels,

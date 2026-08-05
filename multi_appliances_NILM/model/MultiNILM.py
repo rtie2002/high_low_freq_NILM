@@ -243,15 +243,58 @@ class StagedFeatureExtractor(nn.Module):
         return self.stages(x)
 
 
+def _build_head_body(
+    hidden_channels: int,
+    *,
+    head_local_layers: int,
+    head_kernel_size: int,
+) -> nn.Sequential:
+    """Shared helper: short temporal stack (or 1×1) used as a task body."""
+    n_local = int(head_local_layers)
+    if n_local <= 0:
+        return nn.Sequential(
+            nn.Conv1d(hidden_channels, hidden_channels, kernel_size=1),
+            nn.BatchNorm1d(hidden_channels),
+            nn.GELU(),
+        )
+    k = int(head_kernel_size)
+    if k < 1 or k % 2 == 0:
+        raise ValueError(f"head_kernel_size must be odd positive, got {k}")
+    blocks: list[nn.Module] = []
+    for _ in range(n_local):
+        blocks.extend(
+            [
+                nn.Conv1d(
+                    hidden_channels,
+                    hidden_channels,
+                    kernel_size=k,
+                    padding=k // 2,
+                ),
+                nn.BatchNorm1d(hidden_channels),
+                nn.GELU(),
+            ]
+        )
+    return nn.Sequential(*blocks)
+
+
 class ApplianceHead(nn.Module):
     """One appliance-specific decoder on top of the shared TCN features.
 
-    Each appliance gets its own small head instead of sharing one multi-channel
-    Conv1d. This reduces competition between appliances with very different
-    power scales and ON/OFF patterns.
+    Default (``split_task_bodies=False``): one local body ``F``, then two 1×1
+    readouts (power / state) + SGN gate.
 
-    With ``head_local_layers > 0``, a short temporal stack (k=3 by default)
-    redraws local waveform shape before the 1x1 power/state readouts.
+    Split (``split_task_bodies=True``, SAMNet-style towers):
+      shared TCN ``h``
+        ├─ state_body(h) → Fs → state_head → p
+        └─ power_body(h) → Fp → power_head → power_raw
+      power = gate(p) · power_raw + (1−gate)·off_norm
+
+    Cross-appliance distill (if enabled upstream) mixes **power-path** ``Fp``
+    only; state_body always reads the shared TCN map ``h`` so classification
+    is not contaminated by PAD-lite mixing.
+
+    ``detach_gate``: gate uses ``p.detach()`` so power MSE does not flow into
+    the state tower (BCE alone trains classification).
     """
 
     def __init__(
@@ -265,63 +308,96 @@ class ApplianceHead(nn.Module):
         head_local_layers: int = 2,
         head_kernel_size: int = 3,
         head_use_residual: bool = True,
+        split_task_bodies: bool = False,
+        detach_gate: bool = False,
     ) -> None:
         super().__init__()
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
+        self.split_task_bodies = bool(split_task_bodies)
+        self.detach_gate = bool(detach_gate)
         self.register_buffer("off_norm", torch.tensor(float(off_norm), dtype=torch.float32))
 
         n_local = int(head_local_layers)
         self.head_use_residual = bool(head_use_residual) and n_local > 0
-        if n_local <= 0:
-            # Legacy pointwise refine (no local temporal context).
-            self.local_decoder = nn.Sequential(
-                nn.Conv1d(hidden_channels, hidden_channels, kernel_size=1),
-                nn.BatchNorm1d(hidden_channels),
-                nn.GELU(),
+
+        if self.split_task_bodies:
+            self.state_body = _build_head_body(
+                hidden_channels,
+                head_local_layers=n_local,
+                head_kernel_size=head_kernel_size,
             )
+            self.power_body = _build_head_body(
+                hidden_channels,
+                head_local_layers=n_local,
+                head_kernel_size=head_kernel_size,
+            )
+            # Compat aliases: distill / hooks use the power path.
+            self.local_decoder = self.power_body
+            self.feature_refine = self.power_body
         else:
-            k = int(head_kernel_size)
-            if k < 1 or k % 2 == 0:
-                raise ValueError(f"head_kernel_size must be odd positive, got {k}")
-            blocks: list[nn.Module] = []
-            for _ in range(n_local):
-                blocks.extend(
-                    [
-                        nn.Conv1d(
-                            hidden_channels,
-                            hidden_channels,
-                            kernel_size=k,
-                            padding=k // 2,
-                        ),
-                        nn.BatchNorm1d(hidden_channels),
-                        nn.GELU(),
-                    ]
-                )
-            self.local_decoder = nn.Sequential(*blocks)
+            self.local_decoder = _build_head_body(
+                hidden_channels,
+                head_local_layers=n_local,
+                head_kernel_size=head_kernel_size,
+            )
+            self.state_body = None
+            self.power_body = None
+            self.feature_refine = self.local_decoder
 
         self.dropout = nn.Dropout(dropout)
         self.power_head = nn.Conv1d(hidden_channels, 1, kernel_size=1)
         self.state_head = nn.Conv1d(hidden_channels, 1, kernel_size=1)
-        # Alias for feature-map hooks / older docs that say feature_refine.
-        self.feature_refine = self.local_decoder
 
-    def encode_features(self, shared_features: torch.Tensor) -> torch.Tensor:
-        """Head body only: shared TCN map → per-appliance features ``F`` (B, C, T)."""
-        features = self.local_decoder(shared_features)
+    def _apply_body(self, body: nn.Module, shared_features: torch.Tensor) -> torch.Tensor:
+        features = body(shared_features)
         if self.head_use_residual:
             features = features + shared_features
         return self.dropout(features)
 
-    def decode_from_features(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Final 1×1 power/state + gate from features ``F`` or ``F^dist``."""
-        power_raw = self.power_head(features)
-        state_logits = self.state_head(features)
+    def encode_features(self, shared_features: torch.Tensor) -> torch.Tensor:
+        """Head body for distill hooks: shared ``F`` or power-path ``Fp`` (B, C, T)."""
+        if self.split_task_bodies:
+            assert self.power_body is not None
+            return self._apply_body(self.power_body, shared_features)
+        return self._apply_body(self.local_decoder, shared_features)
 
-        # State logits stay unbounded for BCEWithLogitsLoss.
+    def encode_state_features(self, shared_features: torch.Tensor) -> torch.Tensor:
+        """State-path features ``Fs`` (split mode); same as ``encode_features`` if not split."""
+        if self.split_task_bodies:
+            assert self.state_body is not None
+            return self._apply_body(self.state_body, shared_features)
+        return self.encode_features(shared_features)
+
+    def decode_from_features(
+        self,
+        features: torch.Tensor,
+        *,
+        shared_features: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Final 1×1 power/state + gate.
+
+        ``features`` is ``F`` (legacy) or distilled ``Fp`` (split).
+        In split mode, ``shared_features`` (TCN map ``h``) is required for ``Fs``.
+        """
+        if self.split_task_bodies:
+            if shared_features is None:
+                raise ValueError(
+                    "split_task_bodies=True requires shared_features=h in decode_from_features"
+                )
+            power_feat = features
+            state_feat = self.encode_state_features(shared_features)
+        else:
+            power_feat = features
+            state_feat = features
+
+        power_raw = self.power_head(power_feat)
+        state_logits = self.state_head(state_feat)
+
         state_prob = torch.sigmoid(state_logits)
+        gate_prob = state_prob.detach() if self.detach_gate else state_prob
         gate = state_gate(
-            state_prob,
+            gate_prob,
             mode=self.gate_mode,
             threshold=self.gate_threshold,
             training=self.training,
@@ -333,7 +409,8 @@ class ApplianceHead(nn.Module):
 
     def forward(self, shared_features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Independent head path (no cross-appliance distill)."""
-        return self.decode_from_features(self.encode_features(shared_features))
+        feat = self.encode_features(shared_features)
+        return self.decode_from_features(feat, shared_features=shared_features)
 
 
 class CrossApplianceDistill(nn.Module):
@@ -437,6 +514,8 @@ class MultiNILM(nn.Module):
         head_local_layers: int = 2,
         head_kernel_size: int = 3,
         head_use_residual: bool = True,
+        split_task_bodies: bool = False,
+        detach_gate: bool = False,
         use_multiscale_stem: bool = False,
         detail_kernels: list[int] | None = None,
         detail_branch_channels: int = 12,
@@ -546,6 +625,8 @@ class MultiNILM(nn.Module):
                     head_local_layers=int(head_local_layers),
                     head_kernel_size=int(head_kernel_size),
                     head_use_residual=bool(head_use_residual),
+                    split_task_bodies=bool(split_task_bodies),
+                    detach_gate=bool(detach_gate),
                 )
                 for app_i in range(self.num_appliances)
             ]
@@ -751,6 +832,7 @@ class MultiNILM(nn.Module):
             domain_feats["aligned"] = output_features
 
         # Step 5: head bodies → optional PAD-lite distill → final 1×1 + gate.
+        # Distill mixes power-path features; split heads re-read h for state_body.
         head_feats = [head.encode_features(output_features) for head in self.appliance_heads]
         if self.cross_appliance_distill is not None:
             head_feats = self.cross_appliance_distill(head_feats)
@@ -758,7 +840,9 @@ class MultiNILM(nn.Module):
         power_parts: list[torch.Tensor] = []
         state_parts: list[torch.Tensor] = []
         for head, feat in zip(self.appliance_heads, head_feats):
-            power_i, state_i = head.decode_from_features(feat)
+            power_i, state_i = head.decode_from_features(
+                feat, shared_features=output_features
+            )
             power_parts.append(power_i)
             state_parts.append(state_i)
 
@@ -794,6 +878,10 @@ class MultiNILMConfig:
     head_local_layers: int = 2
     head_kernel_size: int = 3
     head_use_residual: bool = True
+    # SAMNet-lite: separate state/power bodies on top of shared TCN.
+    split_task_bodies: bool = False
+    # If True, gate uses p.detach() so power MSE does not train state.
+    detach_gate: bool = False
     # Multi-scale front-end (shape-oriented); no shape loss required.
     use_multiscale_stem: bool = False
     detail_kernels: list[int] = field(default_factory=lambda: [3, 5, 9])
@@ -842,6 +930,8 @@ def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
         head_local_layers=int(architecture.get("head_local_layers", 2)),
         head_kernel_size=int(architecture.get("head_kernel_size", 3)),
         head_use_residual=bool(architecture.get("head_use_residual", True)),
+        split_task_bodies=bool(architecture.get("split_task_bodies", False)),
+        detach_gate=bool(architecture.get("detach_gate", False)),
         use_multiscale_stem=bool(architecture.get("use_multiscale_stem", False)),
         detail_kernels=[int(k) for k in detail_kernels],
         detail_branch_channels=int(architecture.get("detail_branch_channels", 12)),
