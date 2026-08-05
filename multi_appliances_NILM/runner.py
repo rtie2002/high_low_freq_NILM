@@ -46,6 +46,7 @@ from tqdm import tqdm
 
 from adapters.common import StepOutput
 from adapters.config import appliance_list, resolve_lr_scheduler_settings, resolve_tensor_dtype
+from model.adabn import adapt_batchnorm_running_stats
 from adapters.dataloader import (
     NILMDataLoader,
     _resolve_input_length,
@@ -1642,6 +1643,29 @@ def evaluate_model(
     # Step 3-4:
     # Build the requested split loader and run model inference through the adapter.
     loader = adapter.build_dataloader(split)
+
+    # Optional AdaBN (Li et al. 2016): re-estimate BatchNorm running stats on
+    # this split's *unlabeled* aggregate input before scoring it. Only runs
+    # for the configured target_split (default "test" = H2) so source
+    # validation — and therefore checkpoint selection during training,
+    # which already happened — is completely unaffected.
+    adabn_cfg = adapter.model_cfg.get("evaluation", {}).get("adabn", {})
+    if bool(adabn_cfg.get("enabled", False)) and split == str(
+        adabn_cfg.get("target_split", "test")
+    ):
+        max_batches = adabn_cfg.get("max_batches")
+        n_batches = adapt_batchnorm_running_stats(
+            model,
+            loader,
+            device,
+            max_batches=int(max_batches) if max_batches else None,
+        )
+        print(
+            f"AdaBN: recalibrated BatchNorm running stats on {n_batches} "
+            f"unlabeled '{split}' batches (no labels, no weight updates).",
+            flush=True,
+        )
+
     bundle = adapter.predict_dataloader(model, loader, device, split=split)
 
     # Step 5:
