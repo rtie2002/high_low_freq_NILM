@@ -252,11 +252,6 @@ class ApplianceHead(nn.Module):
 
     With ``head_local_layers > 0``, a short temporal stack (k=3 by default)
     redraws local waveform shape before the 1x1 power/state readouts.
-
-    When ``power_conditioned_on_state`` is True (MTL figure style-a lite):
-    state is predicted first, then ``concat(F, sigmoid(state))`` feeds the
-    power 1×1 so classification informs regression as an input channel.
-    SGN gating on the final power is unchanged.
     """
 
     def __init__(
@@ -270,12 +265,10 @@ class ApplianceHead(nn.Module):
         head_local_layers: int = 2,
         head_kernel_size: int = 3,
         head_use_residual: bool = True,
-        power_conditioned_on_state: bool = False,
     ) -> None:
         super().__init__()
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
-        self.power_conditioned_on_state = bool(power_conditioned_on_state)
         self.register_buffer("off_norm", torch.tensor(float(off_norm), dtype=torch.float32))
 
         n_local = int(head_local_layers)
@@ -308,8 +301,7 @@ class ApplianceHead(nn.Module):
             self.local_decoder = nn.Sequential(*blocks)
 
         self.dropout = nn.Dropout(dropout)
-        power_in = int(hidden_channels) + (1 if self.power_conditioned_on_state else 0)
-        self.power_head = nn.Conv1d(power_in, 1, kernel_size=1)
+        self.power_head = nn.Conv1d(hidden_channels, 1, kernel_size=1)
         self.state_head = nn.Conv1d(hidden_channels, 1, kernel_size=1)
         # Alias for feature-map hooks / older docs that say feature_refine.
         self.feature_refine = self.local_decoder
@@ -323,16 +315,11 @@ class ApplianceHead(nn.Module):
 
     def decode_from_features(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Final 1×1 power/state + gate from features ``F`` or ``F^dist``."""
-        # State first so optional power conditioning can use ON probability.
+        power_raw = self.power_head(features)
         state_logits = self.state_head(features)
+
+        # State logits stay unbounded for BCEWithLogitsLoss.
         state_prob = torch.sigmoid(state_logits)
-
-        if self.power_conditioned_on_state:
-            power_in = torch.cat([features, state_prob], dim=1)
-        else:
-            power_in = features
-        power_raw = self.power_head(power_in)
-
         gate = state_gate(
             state_prob,
             mode=self.gate_mode,
@@ -450,7 +437,6 @@ class MultiNILM(nn.Module):
         head_local_layers: int = 2,
         head_kernel_size: int = 3,
         head_use_residual: bool = True,
-        power_conditioned_on_state: bool = False,
         use_multiscale_stem: bool = False,
         detail_kernels: list[int] | None = None,
         detail_branch_channels: int = 12,
@@ -560,7 +546,6 @@ class MultiNILM(nn.Module):
                     head_local_layers=int(head_local_layers),
                     head_kernel_size=int(head_kernel_size),
                     head_use_residual=bool(head_use_residual),
-                    power_conditioned_on_state=bool(power_conditioned_on_state),
                 )
                 for app_i in range(self.num_appliances)
             ]
@@ -809,8 +794,6 @@ class MultiNILMConfig:
     head_local_layers: int = 2
     head_kernel_size: int = 3
     head_use_residual: bool = True
-    # Style-(a) lite: concat ON prob into power 1×1 (still keep SGN gate).
-    power_conditioned_on_state: bool = False
     # Multi-scale front-end (shape-oriented); no shape loss required.
     use_multiscale_stem: bool = False
     detail_kernels: list[int] = field(default_factory=lambda: [3, 5, 9])
@@ -859,9 +842,6 @@ def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
         head_local_layers=int(architecture.get("head_local_layers", 2)),
         head_kernel_size=int(architecture.get("head_kernel_size", 3)),
         head_use_residual=bool(architecture.get("head_use_residual", True)),
-        power_conditioned_on_state=bool(
-            architecture.get("power_conditioned_on_state", False)
-        ),
         use_multiscale_stem=bool(architecture.get("use_multiscale_stem", False)),
         detail_kernels=[int(k) for k in detail_kernels],
         detail_branch_channels=int(architecture.get("detail_branch_channels", 12)),
