@@ -252,6 +252,26 @@ def _context_window(
     return int(start), int(end)
 
 
+def _axvspan_bool_mask(
+    ax,
+    x: np.ndarray,
+    mask: np.ndarray,
+    *,
+    color: str,
+    alpha: float,
+) -> None:
+    """Shade contiguous True runs of ``mask`` along the plot x-axis."""
+    on_mask = np.asarray(mask, dtype=bool)
+    if on_mask.shape[0] != len(x):
+        raise ValueError(f"mask length {on_mask.shape[0]} != x length {len(x)}")
+    active = np.flatnonzero(on_mask)
+    if not len(active):
+        return
+    groups = np.split(active, np.where(np.diff(active) != 1)[0] + 1)
+    for group in groups:
+        ax.axvspan(x[group[0]], x[group[-1]], color=color, alpha=alpha, linewidth=0)
+
+
 def plot_single_on_period(
     *,
     appliance: str,
@@ -272,16 +292,25 @@ def plot_single_on_period(
     highlight_start: int | None = None,
     highlight_end: int | None = None,
     aggregate: np.ndarray | None = None,
+    y_true_on: np.ndarray | None = None,
     y_pred_on: np.ndarray | None = None,
+    true_on_threshold_watts: float | None = None,
     csv_timesteps: np.ndarray | None = None,
     title: str | None = None,
     dpi: int = WAVEFORM_DPI,
 ) -> Path:
     """True vs predicted waveform for one ON period (full event + padding).
 
-    ``long_figure=True`` draws a wide context strip (no square aspect). Optional
-    ``highlight_start/end`` mark the focused crop on a 10× context plot.
+    Background bands (no focused-crop highlight):
+      - true ON only  (threshold on watts if ``true_on_threshold_watts`` set,
+        else ``y_true_on``)
+      - pred ON only  (``y_pred_on``)
+      - overlap       (true ∩ pred) in purple
+
+    ``highlight_start/end`` are ignored (kept for call-site compatibility).
     """
+    del highlight_start, highlight_end  # focused-crop band removed
+
     n = len(y_true_watts)
     if window_start is not None and window_end is not None:
         start, end = int(window_start), int(window_end)
@@ -316,6 +345,12 @@ def plot_single_on_period(
         mains_label = "aggregate"
     true_v = np.asarray(y_true_watts, dtype=float)[sl]
     pred_v = np.maximum(np.asarray(y_pred_watts, dtype=float)[sl], 0.0)
+    if true_on_threshold_watts is not None:
+        true_on_view = true_v > float(true_on_threshold_watts)
+    elif y_true_on is not None:
+        true_on_view = np.asarray(y_true_on)[sl].astype(bool)
+    else:
+        true_on_view = None
     on_view = np.asarray(y_pred_on)[sl].astype(bool) if y_pred_on is not None else None
     agg_view = aggregate[sl] if aggregate is not None and len(aggregate) >= end else None
 
@@ -324,6 +359,8 @@ def plot_single_on_period(
         x = x[order]
         true_v = true_v[order]
         pred_v = pred_v[order]
+        if true_on_view is not None:
+            true_on_view = true_on_view[order]
         if on_view is not None:
             on_view = on_view[order]
         if agg_view is not None:
@@ -348,21 +385,21 @@ def plot_single_on_period(
         # the appliance (shape focus); aggregate may clip at the top when huge.
         ax.plot(x, agg_view, color="#9a9a9a", linewidth=1.0, alpha=0.55, label=mains_label)
 
-    if highlight_start is not None and highlight_end is not None:
-        hs = max(start, int(highlight_start))
-        he = min(end - 1, int(highlight_end) - 1 if int(highlight_end) > int(highlight_start) else int(highlight_end))
-        if he >= hs and csv_timesteps is not None and len(csv_timesteps) >= end:
-            ax.axvspan(int(csv_timesteps[hs]), int(csv_timesteps[he]), color="#f4a261", alpha=0.16, linewidth=0)
-        elif he >= hs:
-            ax.axvspan(hs, he, color="#f4a261", alpha=0.16, linewidth=0)
-
-    if on_view is not None:
-        on_mask = on_view
-        active = np.flatnonzero(on_mask)
-        if len(active):
-            groups = np.split(active, np.where(np.diff(active) != 1)[0] + 1)
-            for group in groups:
-                ax.axvspan(x[group[0]], x[group[-1]], color="#7ad66d", alpha=0.18, linewidth=0)
+    # ON bands: true-only (blue), pred-only (green), overlap (purple).
+    true_only = pred_only = both = None
+    if true_on_view is not None and on_view is not None:
+        both = true_on_view & on_view
+        true_only = true_on_view & ~on_view
+        pred_only = on_view & ~true_on_view
+        _axvspan_bool_mask(ax, x, true_only, color="#6baed6", alpha=0.20)
+        _axvspan_bool_mask(ax, x, pred_only, color="#7ad66d", alpha=0.20)
+        _axvspan_bool_mask(ax, x, both, color="#9b59b6", alpha=0.28)
+    elif true_on_view is not None:
+        true_only = true_on_view
+        _axvspan_bool_mask(ax, x, true_only, color="#6baed6", alpha=0.20)
+    elif on_view is not None:
+        pred_only = on_view
+        _axvspan_bool_mask(ax, x, pred_only, color="#7ad66d", alpha=0.20)
 
     ax.plot(x, true_v, color="#1f77b4", linewidth=1.8, label=f"{appliance} true")
     ax.plot(x, pred_v, color="#d62728", linewidth=1.5, alpha=0.92, label=f"{appliance} pred")
@@ -377,11 +414,16 @@ def plot_single_on_period(
     ax.set_title(title or f"{appliance} ON period{title_suffix}")
 
     handles, labels = ax.get_legend_handles_labels()
-    handles.append(Patch(facecolor="#7ad66d", alpha=0.18, label="pred ON"))
-    labels.append("pred ON")
-    if highlight_start is not None and highlight_end is not None:
-        handles.append(Patch(facecolor="#f4a261", alpha=0.16, label="focused crop"))
-        labels.append("focused crop")
+    if true_on_view is not None:
+        thr_note = " (threshold)" if true_on_threshold_watts is not None else ""
+        handles.append(Patch(facecolor="#6baed6", alpha=0.20, label=f"true ON{thr_note}"))
+        labels.append(f"true ON{thr_note}")
+    if on_view is not None:
+        handles.append(Patch(facecolor="#7ad66d", alpha=0.20, label="pred ON"))
+        labels.append("pred ON")
+    if true_on_view is not None and on_view is not None:
+        handles.append(Patch(facecolor="#9b59b6", alpha=0.28, label="ON overlap"))
+        labels.append("ON overlap")
     ax.legend(handles=handles, labels=labels, loc="upper right", fontsize=8 if long_figure else 9)
 
     # Focus y-range on appliance shape; leave headroom so modest aggregate shows.
@@ -415,6 +457,7 @@ def save_appliance_on_waveforms(
     y_pred_watts: np.ndarray,
     y_true_on: np.ndarray | None = None,
     y_pred_on: np.ndarray | None = None,
+    on_thresholds_watts: float | np.ndarray | None = None,
     aggregate: np.ndarray | None = None,
     csv_timesteps: np.ndarray | None = None,
     n_periods: int = 5,
@@ -437,9 +480,9 @@ def save_appliance_on_waveforms(
     ``context_scale`` × wider timeline around the same ON event (set
     ``context_scale <= 1`` to disable).
 
-    Waveform plots intentionally use dataset CSV *_on labels for selecting true
-    ON periods (y_true_on). This is independent of data.state_label_source in
-    model yaml, which may still rebuild labels from power for training/F1.
+    Period selection still uses ``y_true_on`` (typically CSV *_on). Background
+    true-ON shading uses ``on_thresholds_watts`` on appliance watts when set
+    (same thresholds as training ``state_label_source: threshold``).
     """
     output_dir = Path(output_dir)
     rng = rng or np.random.default_rng()
@@ -448,6 +491,16 @@ def save_appliance_on_waveforms(
     saved: list[Path] = []
     if y_true_on is None:
         raise ValueError("Waveform plots require dataset CSV ON/OFF labels in y_true_on")
+
+    thr = None
+    if on_thresholds_watts is not None:
+        thr = np.asarray(on_thresholds_watts, dtype=np.float32).reshape(-1)
+        if thr.size == 1:
+            thr = np.full(len(appliances), float(thr[0]), dtype=np.float32)
+        if thr.size != len(appliances):
+            raise ValueError(
+                f"on_thresholds_watts length {thr.size} != num appliances {len(appliances)}"
+            )
 
     selections = select_appliance_on_periods(
         appliances,
@@ -470,6 +523,8 @@ def save_appliance_on_waveforms(
         app_dir = output_dir / app
         app_dir.mkdir(parents=True, exist_ok=True)
         pred_on = y_pred_on[:, idx] if y_pred_on is not None else None
+        true_on = y_true_on[:, idx]
+        app_thr = float(thr[idx]) if thr is not None else None
         app_cap = None if app in full_cycle else period_samples
 
         for period_i, period in enumerate(selections.get(app, []), start=1):
@@ -489,7 +544,9 @@ def save_appliance_on_waveforms(
                 figsize=figsize,
                 dynamic_figsize=dynamic_figsize,
                 aggregate=aggregate,
+                y_true_on=true_on,
                 y_pred_on=pred_on,
+                true_on_threshold_watts=app_thr,
                 csv_timesteps=csv_timesteps,
                 title=title,
                 dpi=dpi,
@@ -524,10 +581,10 @@ def save_appliance_on_waveforms(
                 figsize=figsize,
                 dynamic_figsize=dynamic_figsize,
                 long_figure=True,
-                highlight_start=period.crop_start,
-                highlight_end=period.crop_end,
                 aggregate=aggregate,
+                y_true_on=true_on,
                 y_pred_on=pred_on,
+                true_on_threshold_watts=app_thr,
                 csv_timesteps=csv_timesteps,
                 title=ctx_title,
                 dpi=dpi,

@@ -1703,6 +1703,7 @@ def evaluate_model(
     )
     if y_true_plot is None:
         y_true_plot = y_true_watts
+    on_thresholds = resolve_state_thresholds_watts(adapter.experiment, bundle.appliances)
     saved = save_appliance_on_waveforms(
         waveform_dir,
         appliances=bundle.appliances,
@@ -1710,6 +1711,7 @@ def evaluate_model(
         y_pred_watts=y_pred_watts,
         y_true_on=waveform_true_on,
         y_pred_on=bundle.y_pred_on,
+        on_thresholds_watts=on_thresholds,
         aggregate=aggregate,
         csv_timesteps=bundle.csv_timesteps,
         n_periods=int(plot_cfg.get("plot_on_periods", 5)),

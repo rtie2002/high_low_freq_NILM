@@ -11,6 +11,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+from adapters.dataloader import resolve_state_thresholds_watts
 from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
 from evaluation.plots import (
     FULL_CYCLE_APPLIANCES,
@@ -409,6 +410,7 @@ class LiveTrainingMonitor:
             len(bundle.y_true_watts),
             bundle.csv_timesteps,
         )
+        on_thresholds = resolve_state_thresholds_watts(adapter.experiment, self.appliances)
         return save_appliance_on_waveforms(
             output_dir,
             appliances=self.appliances,
@@ -416,6 +418,7 @@ class LiveTrainingMonitor:
             y_pred_watts=bundle.y_pred_watts,
             y_true_on=waveform_true_on,
             y_pred_on=bundle.y_pred_on,
+            on_thresholds_watts=on_thresholds,
             aggregate=aggregate,
             csv_timesteps=bundle.csv_timesteps,
             n_periods=self.plot_on_periods(),
