@@ -41,6 +41,8 @@ architecture:
   head_local_layers: 2
   head_kernel_size: 3
   head_use_residual: true
+  # Style-(a) lite: state prob concat into power 1×1 (keep SGN gate).
+  power_conditioned_on_state: true
   use_multiscale_stem: true
   detail_kernels: [3, 5, 9]
   detail_branch_channels: 16
