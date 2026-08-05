@@ -34,28 +34,33 @@ architecture:
   num_blocks: 5
   kernel_size: 5
   max_dilation: 16
-  dropout: 0.15
-  # Hard gate train+eval: power = 1{state>thr}*power_raw + else off_norm
+  # Slightly higher dropout vs overconfident state on val.
+  dropout: 0.2
+  # Soft train / hard eval gate (SGN). Fusion off until val state raw stops rising.
   gate_mode: soft_train_hard_eval
   gate_threshold: 0.5
-  head_local_layers: 4
+  head_local_layers: 2
   head_kernel_size: 3
   head_use_residual: true
-  # State → expand p (same T as power) to C ch → concat(F, P) → power (2C→1).
-  # Gate still uses the same p (same length as regression).
-  power_conditioned_on_state: true
+  # Off: class→power expand+concat was amplifying overfit state into watts.
+  power_conditioned_on_state: false
   use_multiscale_stem: true
   detail_kernels: [3, 5, 9]
   detail_branch_channels: 16
+  # Off: reduce cross-app crosstalk while diagnosing state overfit.
   cross_appliance:
-    enabled: true
+    enabled: false
     residual_scale: 0.5
-  domain_feature_layers: [temporal_4, temporal_6, aligned]
+  # Only 5 TCN blocks (0..4); temporal_6 does not exist.
+  domain_feature_layers: [temporal_4, aligned]
 
 loss:
-  task_balance: equal
-  lambda_state: 1
+  # none: exploding val BCE is visible in L_NILM (equal was hiding it).
+  task_balance: none
+  lambda_state: 0.5
   pos_weight: auto
+  # Cap rare-ON boost so logits do not go wild (auto can be huge).
+  pos_weight_cap: 20
   domain_method: both
   domain_mu: 0.4
   domain_mix: convex

@@ -20,11 +20,19 @@ def _to_numpy(t: torch.Tensor) -> np.ndarray:
 
 
 def _resolve_pos_weight(adapter: "MultiNILMAdapter", loss_cfg: dict) -> list[float] | None:
-    """Use yaml pos_weight, or auto-balance rare ON events from the train split."""
+    """Use yaml pos_weight, or auto-balance rare ON events from the train split.
+
+    ``pos_weight_cap`` (optional) clips auto weights so rare appliances do not
+    drive extreme logits / rising val BCE.
+    """
     configured = loss_cfg.get("pos_weight")
     if configured is not None and str(configured).lower() not in {"auto", "null", "none"}:
         return configured
-    return adapter._data_loader().estimate_state_pos_weights("train").tolist()
+    weights = adapter._data_loader().estimate_state_pos_weights("train")
+    cap = loss_cfg.get("pos_weight_cap", None)
+    if cap is not None:
+        weights = np.minimum(weights, float(cap))
+    return weights.tolist()
 
 
 def _pred_on_from_config(
