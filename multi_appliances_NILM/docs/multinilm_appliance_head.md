@@ -7,204 +7,101 @@ Used by: baseline MultiNILM and `MultiNILM_fractional` (same backbone heads).
 
 ## One-line summary
 
-Each appliance has **one shared body** + **state 1×1 first**, then (optional) **expand `p` → C channels** and **concat with `F`** into power, then **SGN gate** (same `p`, same length `T` as power).
+Each appliance has **one shared body** + **state 1×1 first**, then **power 1×1** (optionally on `concat(F, p)`), then **SGN gate** blends power with `off_norm`.
 
 Default (`power_conditioned_on_state: false`): two independent 1×1 readouts from `F`.  
-Enabled (`true`): `p (B,1,T)` → `Conv1d(1→C)` → `P (B,C,T)` → `concat(F,P)=(B,2C,T)` → power.
-
-`p`, gate, and power all share the **same time length `T`** (same as regression).
+Enabled (`true`): classification informs regression as an extra input channel (MTL style-a lite).
 
 ---
 
-## What changed (state → power)
-
-Only the **final decode** inside `ApplianceHead`. Shared TCN body, local decoder, residual, dropout, CrossApplianceDistill, and SGN gate formula are unchanged.
-
-### Before — parallel heads (`power_conditioned_on_state: false`)
+## Form (ASCII) — `power_conditioned_on_state: true`
 
 ```text
                     shared TCN features
                          (B, C, T)
                             │
                             ▼
-              ┌──────────────────────────────────────┐
-              │          ApplianceHead (per app)     │
-              │                                      │
-              │   local_decoder → +res? → Dropout    │
-              │                  │                   │
-              │                  F  (B, C, T)        │
-              │                 / \                  │
-              │                /   \                 │
-              │               ▼     ▼                │
-              │        power_head   state_head       │
-              │        Conv1d       Conv1d           │
-              │        C → 1        C → 1            │
-              │           │            │             │
-              │      power_raw    state_logits       │
-              │           │            │             │
-              │           │       sigmoid → p        │
-              │           │       (B, 1, T)          │
-              │           │            │             │
-              │           │      state_gate(p)       │
-              │           │            │             │
-              │           └──── × gate ─┘            │
-              │                  │                   │
-              │   power = gate·power_raw             │
-              │         + (1−gate)·off_norm          │
-              └──────────────────┬───────────────────┘
-                                 │
-                      power , state_logits
+              ┌─────────────────────────────┐
+              │     ApplianceHead (per app) │
+              │                             │
+              │  local_decoder              │
+              │  (head_local_layers ×       │
+              │   Conv1d k + BN + GELU)     │
+              │           │                 │
+              │           + residual?       │
+              │           │                 │
+              │        Dropout              │
+              │           │                 │
+              │           F  (B, C, T)      │
+              │           │                 │
+              │           ▼                 │
+              │      state_head             │
+              │      Conv1d C→1, k=1        │
+              │           │                 │
+              │      state_logits           │
+              │           │                 │
+              │      sigmoid → p            │
+              │          / \                │
+              │         /   \               │
+              │        ▼     ▼              │
+              │  concat(F,p)  state_gate(p) │
+              │        │                    │
+              │   power_head                │
+              │   Conv1d (C+1)→1, k=1       │
+              │        │                    │
+              │   power_raw                 │
+              │        │                    │
+              │        └───× gate ──┘       │
+              │              │              │
+              │   power = gate·power_raw    │
+              │         + (1-gate)·off_norm │
+              └──────────────┬──────────────┘
+                             │
+                    power (B,1,T) , state_logits (B,1,T)
 ```
 
-State only multiplies power (gate). Power Conv never sees class features.
+With `power_conditioned_on_state: false`, `power_head` is `Conv1d C→1` on `F` alone (parallel to `state_head`); gate still uses `p`.
 
-### Weak try (dropped) — concat raw `p` as 1 channel
+---
 
-```text
-concat(F, p) → (B, C+1, T)   # C≈128 → p is ~1/129 — too weak
-```
-
-### After — expand class to C, then concat (`power_conditioned_on_state: true`)
-
-```text
-                    shared TCN features
-                         (B, C, T)
-                            │
-                            ▼
-              ┌──────────────────────────────────────┐
-              │          ApplianceHead (per app)     │
-              │                                      │
-              │   local_decoder → +res? → Dropout    │
-              │                  │                   │
-              │                  F  (B, C, T)        │
-              │                  │                   │
-              │                  ▼                   │
-              │             state_head               │
-              │             Conv1d C → 1             │
-              │                  │                   │
-              │             state_logits             │
-              │                  │                   │
-              │             sigmoid → p              │
-              │             (B, 1, T)  ← same T as power
-              │                /   \                 │
-              │               /     \                │
-              │              ▼       ▼               │
-              │     state_to_power   state_gate(p)   │
-              │     Conv1d 1 → C          │          │
-              │              │            │          │
-              │         P (B, C, T)       │          │
-              │         “new 128”         │          │
-              │              │            │          │
-              │      concat(F, P)         │          │
-              │      (B, 2C, T)           │          │
-              │              │            │          │
-              │         power_head        │          │
-              │         Conv1d 2C → 1     │          │
-              │              │            │          │
-              │         power_raw         │          │
-              │         (B, 1, T)         │          │
-              │              │            │          │
-              │              └──── × gate ─┘         │
-              │                    │                 │
-              │   power = gate·power_raw             │
-              │         + (1−gate)·off_norm          │
-              │         (B, 1, T)                    │
-              └────────────────────┬─────────────────┘
-                                   │
-                        power , state_logits
-```
-
-`p`, `P`, `power_raw`, gate, and final `power` are all length **`T`** (aligned with regression).
-
-### Side-by-side (decode only)
-
-```text
-  BEFORE                         AFTER (current)
-  ──────                         ───────────────
-
-       F                              F
-      / \                             │
-     /   \                            ▼
-    ▼     ▼                      state_head
- power   state                        │
-  head    head                        ▼
-    │      │                     logits → p (B,1,T)
-    │      ▼                         / \
-    │   sigmoid                     /   \
-    │      │                       ▼     ▼
-    │      p               state_to_power  gate(p)
-    │      │               (1→C) → P
-    │   gate(p)                    │
-    │      │                 concat(F, P)
-    ▼      ▼                 (B, 2C, T)
-   × ────────                      │
-    │                         power_head (2C→1)
-    ▼                              │
-  power                       power_raw (B,1,T)
-                                   │
-                              × gate(p)  ← same p, same T
-                                   │
-                                 power
-```
-
-### Mermaid — before
+## Mermaid
 
 ```mermaid
 flowchart TB
-  F["F (B, C, T)"]
-  ph["power_head<br/>C → 1"]
-  sh["state_head<br/>C → 1"]
-  raw["power_raw (B, 1, T)"]
-  logits["state_logits"]
-  p["p = sigmoid (B, 1, T)"]
-  g["gate(p)"]
-  out["power = gate·raw + (1−gate)·off_norm"]
+  shared["shared TCN features<br/>(B, C, T)"]
 
-  F --> ph --> raw
-  F --> sh --> logits --> p --> g
-  raw --> out
-  g -->|"×"| out
+  subgraph ApplianceHead["ApplianceHead (per app)"]
+    direction TB
+    local["local_decoder<br/>(head_local_layers × Conv1d k + BN + GELU)"]
+    res["+ residual?"]
+    drop["Dropout"]
+    F["F (B, C, T)"]
+
+    state_head["state_head<br/>Conv1d C→1, k=1"]
+    state_logits["state_logits"]
+    sig["sigmoid → p"]
+    cat["concat(F, p) if conditioned"]
+    power_head["power_head<br/>Conv1d C or C+1 →1, k=1"]
+    power_raw["power_raw"]
+    gate_fn["state_gate(p)"]
+    blend["power = gate · power_raw + (1 − gate) · off_norm"]
+
+    local --> res --> drop --> F
+    F --> state_head --> state_logits --> sig
+    F --> cat
+    sig --> cat
+    cat --> power_head --> power_raw
+    sig --> gate_fn
+    power_raw --> blend
+    gate_fn -->|"× gate"| blend
+  end
+
+  out["power (B, 1, T) , state_logits (B, 1, T)"]
+
+  shared --> ApplianceHead
+  blend --> out
+  state_logits -.-> out
 ```
-
-### Mermaid — after
-
-```mermaid
-flowchart TB
-  F["F (B, C, T)"]
-  sh["state_head<br/>C → 1"]
-  logits["state_logits"]
-  p["p = sigmoid<br/>(B, 1, T) same T as power"]
-  proj["state_to_power<br/>Conv1d 1 → C"]
-  P["P (B, C, T) new C from class"]
-  cat["concat(F, P)<br/>(B, 2C, T)"]
-  ph["power_head<br/>2C → 1"]
-  raw["power_raw (B, 1, T)"]
-  g["gate(p)"]
-  out["power = gate·raw + (1−gate)·off_norm"]
-
-  F --> sh --> logits --> p
-  p --> proj --> P
-  F --> cat
-  P --> cat
-  cat --> ph --> raw
-  p --> g
-  raw --> out
-  g -->|"×"| out
-```
-
-### Code / config touch list
-
-| File | Change |
-|------|--------|
-| `model/MultiNILM.py` | `state_to_power` `1→C`; `power_head` `2C→1`; gate still on `p` |
-| `model/MultiNILM.py` | Config / `MultiNILM` / adapters pass `power_conditioned_on_state` |
-| `config/models/multinilm_fractional.yaml` | `architecture.power_conditioned_on_state: true` |
-
-Other model yamls leave the flag unset → **false** (old parallel heads).
-
-### Intent
-
-Classification and features enter power on **equal channel count** (`C` + `C`). Gate still uses the raw ON prob `p` (same length as regression). Not “power from `p` alone.”
 
 ---
 
@@ -239,7 +136,7 @@ power_k, state_k = decode_from_features(F_k^dist)
 | `head_local_layers` | Depth of body Conv stack (0 → legacy 1×1 only) |
 | `head_kernel_size` | Odd kernel for local temporal shape (default 3) |
 | `head_use_residual` | Add shared features back onto body output |
-| `power_conditioned_on_state` | If true: `p→P(C ch)` then `concat(F,P)` → power `2C→1` |
+| `power_conditioned_on_state` | If true, `concat(F, p)` → power 1×1 (style-a lite) |
 | `gate_mode` | `soft` / `hard` / `soft_train_hard_eval` |
 | `gate_threshold` | Hard gate threshold (e.g. 0.5) |
 | `dropout` | On features `F` before the 1×1 heads |
@@ -263,7 +160,7 @@ With soft gate training, power MSE also backprops into the state path (and into 
 
 | Is | Is not |
 |----|--------|
-| Shared body, state then expand-to-C + concat into power | One linear layer emitting class+power together |
-| Class map `P` same channel count as `F` | Raw `p` as a single drowned channel (`C+1`) |
-| SGN: state **gates** power (same `p`, same `T`) | Independent power ignored by state |
+| Shared body, state then power readouts | One linear layer emitting class+power together |
+| Optional `p` as power-head input channel | Power head fed by `p` alone (no `F`) |
+| SGN: state **gates** power | Independent power ignored by state |
 | Per-appliance specialization | One shared Conv out with A channels only |

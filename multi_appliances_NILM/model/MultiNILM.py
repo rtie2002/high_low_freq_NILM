@@ -253,10 +253,10 @@ class ApplianceHead(nn.Module):
     With ``head_local_layers > 0``, a short temporal stack (k=3 by default)
     redraws local waveform shape before the 1x1 power/state readouts.
 
-    When ``power_conditioned_on_state`` is True:
-    state first → ``p = sigmoid(logits)`` (same length T as power) →
-    ``P = Conv1d(1→C)(p)`` (new C-channel map) → ``concat(F, P)`` → power.
-    SGN gating on the final power still uses the same ``p`` (same T).
+    When ``power_conditioned_on_state`` is True (MTL figure style-a lite):
+    state is predicted first, then ``concat(F, sigmoid(state))`` feeds the
+    power 1×1 so classification informs regression as an input channel.
+    SGN gating on the final power is unchanged.
     """
 
     def __init__(
@@ -308,16 +308,9 @@ class ApplianceHead(nn.Module):
             self.local_decoder = nn.Sequential(*blocks)
 
         self.dropout = nn.Dropout(dropout)
-        self.state_head = nn.Conv1d(hidden_channels, 1, kernel_size=1)
-        # Expand ON prob p (B,1,T) → P (B,C,T), same length T as regression, then
-        # concat with F so class and features enter power on equal channel count.
-        if self.power_conditioned_on_state:
-            self.state_to_power = nn.Conv1d(1, hidden_channels, kernel_size=1)
-            power_in = int(hidden_channels) * 2
-        else:
-            self.state_to_power = None
-            power_in = int(hidden_channels)
+        power_in = int(hidden_channels) + (1 if self.power_conditioned_on_state else 0)
         self.power_head = nn.Conv1d(power_in, 1, kernel_size=1)
+        self.state_head = nn.Conv1d(hidden_channels, 1, kernel_size=1)
         # Alias for feature-map hooks / older docs that say feature_refine.
         self.feature_refine = self.local_decoder
 
@@ -330,14 +323,12 @@ class ApplianceHead(nn.Module):
 
     def decode_from_features(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Final 1×1 power/state + gate from features ``F`` or ``F^dist``."""
-        # State first; p has the same length T as power_raw / gated power.
+        # State first so optional power conditioning can use ON probability.
         state_logits = self.state_head(features)
         state_prob = torch.sigmoid(state_logits)
 
         if self.power_conditioned_on_state:
-            # P: learned C-channel view of classification (same T as F / power).
-            state_feat = self.state_to_power(state_prob)
-            power_in = torch.cat([features, state_feat], dim=1)  # (B, 2C, T)
+            power_in = torch.cat([features, state_prob], dim=1)
         else:
             power_in = features
         power_raw = self.power_head(power_in)

@@ -38,11 +38,10 @@ architecture:
   # Hard gate train+eval: power = 1{state>thr}*power_raw + else off_norm
   gate_mode: soft_train_hard_eval
   gate_threshold: 0.5
-  head_local_layers: 4
+  head_local_layers: 2
   head_kernel_size: 3
   head_use_residual: true
-  # State → expand p (same T as power) to C ch → concat(F, P) → power (2C→1).
-  # Gate still uses the same p (same length as regression).
+  # Style-(a) lite: state prob concat into power 1×1 (keep SGN gate).
   power_conditioned_on_state: true
   use_multiscale_stem: true
   detail_kernels: [3, 5, 9]
