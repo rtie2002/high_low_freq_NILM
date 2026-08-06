@@ -228,9 +228,33 @@ class FractionalFrontEnd(nn.Module):
                 w_conv = np.asarray(w * scale, dtype=np.float64)[::-1].copy()
                 kernels.append(torch.tensor(w_conv, dtype=torch.float32))
             weight = torch.stack(kernels, dim=0).unsqueeze(1)  # (K, 1, L)
-            self.register_buffer("gl_weight", weight, persistent=True)
+            # Named child so ``print(model)`` shows the GL bank (weights frozen).
+            k_len = int(weight.shape[-1])
+            n_a = len(self.alphas)
+            self.gl_conv = nn.Conv1d(
+                in_channels=n_a,
+                out_channels=n_a,
+                kernel_size=k_len,
+                groups=n_a,
+                bias=False,
+                padding=0,
+            )
+            with torch.no_grad():
+                self.gl_conv.weight.copy_(weight)
+            self.gl_conv.weight.requires_grad_(False)
+            # Alias buffer for dumps / older code that reads ``gl_weight``.
+            self.register_buffer("gl_weight", self.gl_conv.weight, persistent=False)
         else:
+            self.gl_conv = None
             self.register_buffer("gl_weight", torch.zeros(0), persistent=True)
+
+    def extra_repr(self) -> str:
+        w_shape = tuple(self.gl_weight.shape) if self.gl_weight.numel() else None
+        return (
+            f"alphas={self.alphas}, include_raw={self.include_raw}, "
+            f"memory={self.memory}, out_channels={self.out_channels}, "
+            f"channel_normalize={self.channel_normalize!r}, gl_weight={w_shape}"
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() != 3:
@@ -245,17 +269,11 @@ class FractionalFrontEnd(nn.Module):
             parts.append(x)
 
         if self.alphas:
-            pad = int(self.gl_weight.shape[-1]) - 1
+            assert self.gl_conv is not None
+            pad = int(self.gl_conv.weight.shape[-1]) - 1
             x_pad = F.pad(x, (pad, 0))
             x_rep = x_pad.expand(-1, len(self.alphas), -1)
-            frac = F.conv1d(
-                x_rep,
-                self.gl_weight,
-                bias=None,
-                stride=1,
-                padding=0,
-                groups=len(self.alphas),
-            )
+            frac = self.gl_conv(x_rep)
             parts.append(frac)
 
         out = torch.cat(parts, dim=1)
