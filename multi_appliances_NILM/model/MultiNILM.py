@@ -243,15 +243,57 @@ class StagedFeatureExtractor(nn.Module):
         return self.stages(x)
 
 
+# Shin SGN appendix (TSG): dual subnetworks then ŷ = p̂ ⊙ ô.
+# Even kernels use floor padding so seq2seq length T is preserved.
+_SGN_CONV_KERNELS: tuple[int, ...] = (10, 8, 6, 5, 5, 5)
+_SGN_CONV_FILTERS: tuple[int, ...] = (30, 30, 40, 50, 50, 50)
+_SGN_FC_HIDDEN: int = 1024
+
+
+def _build_sgn_subnetwork(
+    in_channels: int,
+    *,
+    dropout: float,
+) -> nn.Sequential:
+    """One SGN subnetwork: 6 Conv + 2 pointwise layers → (B, 1, T).
+
+    Paper uses FC(1024) and FC(32) after flattening a short window. We keep
+    full length T (seq2seq) by using Conv1d k=1 as the two 'FC' stages, with
+    the last map 1 channel (logits or power_raw).
+    """
+    layers: list[nn.Module] = []
+    c_in = int(in_channels)
+    for k, c_out in zip(_SGN_CONV_KERNELS, _SGN_CONV_FILTERS):
+        # ``same`` keeps length T (even kernels break with padding=k//2).
+        layers.extend(
+            [
+                nn.Conv1d(c_in, int(c_out), kernel_size=int(k), padding="same"),
+                nn.ReLU(inplace=True),
+            ]
+        )
+        c_in = int(c_out)
+    layers.extend(
+        [
+            nn.Conv1d(c_in, _SGN_FC_HIDDEN, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.Dropout(float(dropout)),
+            nn.Conv1d(_SGN_FC_HIDDEN, 1, kernel_size=1),
+        ]
+    )
+    return nn.Sequential(*layers)
+
+
 class ApplianceHead(nn.Module):
     """One appliance-specific decoder on top of the shared TCN features.
 
-    Each appliance gets its own small head instead of sharing one multi-channel
-    Conv1d. This reduces competition between appliances with very different
-    power scales and ON/OFF patterns.
+    ``head_style="default"`` (legacy):
+      shared ``h`` → local_decoder → ``F`` → power/state 1×1 + SGN gate.
 
-    With ``head_local_layers > 0``, a short temporal stack (k=3 by default)
-    redraws local waveform shape before the 1x1 power/state readouts.
+    ``head_style="sgn"`` (Shin Subtask Gated Network style):
+      shared ``h``
+        ├─ regression subnetwork (6 Conv + 2×1×1) → power_raw
+        └─ classification subnetwork (same depth) → state_logits → p
+      power = gate(p) · power_raw + (1−gate)·off_norm
     """
 
     def __init__(
@@ -265,60 +307,84 @@ class ApplianceHead(nn.Module):
         head_local_layers: int = 2,
         head_kernel_size: int = 3,
         head_use_residual: bool = True,
+        head_style: str = "default",
     ) -> None:
         super().__init__()
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
+        self.head_style = str(head_style or "default").lower()
         self.register_buffer("off_norm", torch.tensor(float(off_norm), dtype=torch.float32))
 
-        n_local = int(head_local_layers)
-        self.head_use_residual = bool(head_use_residual) and n_local > 0
-        if n_local <= 0:
-            # Legacy pointwise refine (no local temporal context).
-            self.local_decoder = nn.Sequential(
-                nn.Conv1d(hidden_channels, hidden_channels, kernel_size=1),
-                nn.BatchNorm1d(hidden_channels),
-                nn.GELU(),
-            )
-        else:
-            k = int(head_kernel_size)
-            if k < 1 or k % 2 == 0:
-                raise ValueError(f"head_kernel_size must be odd positive, got {k}")
-            blocks: list[nn.Module] = []
-            for _ in range(n_local):
-                blocks.extend(
-                    [
-                        nn.Conv1d(
-                            hidden_channels,
-                            hidden_channels,
-                            kernel_size=k,
-                            padding=k // 2,
-                        ),
-                        nn.BatchNorm1d(hidden_channels),
-                        nn.GELU(),
-                    ]
-                )
-            self.local_decoder = nn.Sequential(*blocks)
+        if self.head_style not in {"default", "sgn"}:
+            raise ValueError(f"head_style must be 'default' or 'sgn', got {head_style!r}")
 
-        self.dropout = nn.Dropout(dropout)
-        self.power_head = nn.Conv1d(hidden_channels, 1, kernel_size=1)
-        self.state_head = nn.Conv1d(hidden_channels, 1, kernel_size=1)
-        # Alias for feature-map hooks / older docs that say feature_refine.
-        self.feature_refine = self.local_decoder
+        if self.head_style == "sgn":
+            self.power_tower = _build_sgn_subnetwork(hidden_channels, dropout=dropout)
+            self.state_tower = _build_sgn_subnetwork(hidden_channels, dropout=dropout)
+            # Distill / hooks: expose TCN map; towers run in decode from (possibly mixed) h.
+            self.local_decoder = nn.Identity()
+            self.feature_refine = self.local_decoder
+            self.dropout = nn.Identity()
+            self.power_head = None
+            self.state_head = None
+            self.head_use_residual = False
+        else:
+            n_local = int(head_local_layers)
+            self.head_use_residual = bool(head_use_residual) and n_local > 0
+            if n_local <= 0:
+                self.local_decoder = nn.Sequential(
+                    nn.Conv1d(hidden_channels, hidden_channels, kernel_size=1),
+                    nn.BatchNorm1d(hidden_channels),
+                    nn.GELU(),
+                )
+            else:
+                k = int(head_kernel_size)
+                if k < 1 or k % 2 == 0:
+                    raise ValueError(f"head_kernel_size must be odd positive, got {k}")
+                blocks: list[nn.Module] = []
+                for _ in range(n_local):
+                    blocks.extend(
+                        [
+                            nn.Conv1d(
+                                hidden_channels,
+                                hidden_channels,
+                                kernel_size=k,
+                                padding=k // 2,
+                            ),
+                            nn.BatchNorm1d(hidden_channels),
+                            nn.GELU(),
+                        ]
+                    )
+                self.local_decoder = nn.Sequential(*blocks)
+
+            self.dropout = nn.Dropout(dropout)
+            self.power_head = nn.Conv1d(hidden_channels, 1, kernel_size=1)
+            self.state_head = nn.Conv1d(hidden_channels, 1, kernel_size=1)
+            self.feature_refine = self.local_decoder
+            self.power_tower = None
+            self.state_tower = None
 
     def encode_features(self, shared_features: torch.Tensor) -> torch.Tensor:
-        """Head body only: shared TCN map → per-appliance features ``F`` (B, C, T)."""
+        """Features for optional cross-appliance distill (B, C, T)."""
+        if self.head_style == "sgn":
+            # Mix shared TCN maps; both SGN towers consume the (possibly distilled) h.
+            return shared_features
         features = self.local_decoder(shared_features)
         if self.head_use_residual:
             features = features + shared_features
         return self.dropout(features)
 
     def decode_from_features(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Final 1×1 power/state + gate from features ``F`` or ``F^dist``."""
-        power_raw = self.power_head(features)
-        state_logits = self.state_head(features)
+        """Power + state logits + gate from head features / shared map."""
+        if self.head_style == "sgn":
+            assert self.power_tower is not None and self.state_tower is not None
+            power_raw = self.power_tower(features)
+            state_logits = self.state_tower(features)
+        else:
+            assert self.power_head is not None and self.state_head is not None
+            power_raw = self.power_head(features)
+            state_logits = self.state_head(features)
 
-        # State logits stay unbounded for BCEWithLogitsLoss.
         state_prob = torch.sigmoid(state_logits)
         gate = state_gate(
             state_prob,
@@ -326,8 +392,6 @@ class ApplianceHead(nn.Module):
             threshold=self.gate_threshold,
             training=self.training,
         )
-        # Blend ON power with the normalized OFF level (0 W -> -mean/std), not 0.
-        # denorm(0) equals the dataset mean and causes constant watt spikes in plots.
         power = gate * power_raw + (1.0 - gate) * self.off_norm
         return power, state_logits
 
@@ -437,6 +501,7 @@ class MultiNILM(nn.Module):
         head_local_layers: int = 2,
         head_kernel_size: int = 3,
         head_use_residual: bool = True,
+        head_style: str = "default",
         use_multiscale_stem: bool = False,
         detail_kernels: list[int] | None = None,
         detail_branch_channels: int = 12,
@@ -546,6 +611,7 @@ class MultiNILM(nn.Module):
                     head_local_layers=int(head_local_layers),
                     head_kernel_size=int(head_kernel_size),
                     head_use_residual=bool(head_use_residual),
+                    head_style=str(head_style),
                 )
                 for app_i in range(self.num_appliances)
             ]
@@ -794,6 +860,8 @@ class MultiNILMConfig:
     head_local_layers: int = 2
     head_kernel_size: int = 3
     head_use_residual: bool = True
+    # default | sgn (Shin dual subnetworks on shared TCN features)
+    head_style: str = "default"
     # Multi-scale front-end (shape-oriented); no shape loss required.
     use_multiscale_stem: bool = False
     detail_kernels: list[int] = field(default_factory=lambda: [3, 5, 9])
@@ -842,6 +910,7 @@ def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
         head_local_layers=int(architecture.get("head_local_layers", 2)),
         head_kernel_size=int(architecture.get("head_kernel_size", 3)),
         head_use_residual=bool(architecture.get("head_use_residual", True)),
+        head_style=str(architecture.get("head_style", "default")),
         use_multiscale_stem=bool(architecture.get("use_multiscale_stem", False)),
         detail_kernels=[int(k) for k in detail_kernels],
         detail_branch_channels=int(architecture.get("detail_branch_channels", 12)),

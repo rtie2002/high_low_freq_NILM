@@ -168,6 +168,7 @@ def build_multinilm_kle(
         head_local_layers=cfg.head_local_layers,
         head_kernel_size=cfg.head_kernel_size,
         head_use_residual=cfg.head_use_residual,
+        head_style=cfg.head_style,
         use_multiscale_stem=cfg.use_multiscale_stem,
         detail_kernels=cfg.detail_kernels,
         detail_branch_channels=cfg.detail_branch_channels,
