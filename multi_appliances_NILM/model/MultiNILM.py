@@ -138,7 +138,7 @@ class ResidualTemporalBlock(nn.Module):
             dilation=dilation,
         )
         self.norm = nn.BatchNorm1d(channels)
-        self.activation = nn.GELU()
+        self.activation = nn.ReLU(inplace=True)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -180,14 +180,14 @@ class MultiScaleWaveformStem(nn.Module):
                 nn.Sequential(
                     nn.Conv1d(in_ch, branch_ch, kernel_size=k, padding=k // 2),
                     nn.BatchNorm1d(branch_ch),
-                    nn.GELU(),
+                    nn.ReLU(inplace=True),
                 )
             )
         self.branches = nn.ModuleList(branches)
         self.fuse = nn.Sequential(
             nn.Conv1d(branch_ch * len(branches), out_ch, kernel_size=1),
             nn.BatchNorm1d(out_ch),
-            nn.GELU(),
+            nn.ReLU(inplace=True),
         )
         self.skip = (
             nn.Identity()
@@ -203,9 +203,9 @@ class StagedFeatureExtractor(nn.Module):
     """Gradually widen channel depth before the shared TCN (seq2point-style).
 
     Example schedule [16, 32, 64]:
-        Conv1d 1→16  k=7  + BN + GELU
-        Conv1d 16→32 k=5  + BN + GELU
-        Conv1d 32→64 k=5  + BN + GELU
+        Conv1d 1→16  k=7  + BN + ReLU
+        Conv1d 16→32 k=5  + BN + ReLU
+        Conv1d 32→64 k=5  + BN + ReLU
     """
 
     def __init__(
@@ -233,7 +233,7 @@ class StagedFeatureExtractor(nn.Module):
                         padding=padding,
                     ),
                     nn.BatchNorm1d(int(out_channels)),
-                    nn.GELU(),
+                    nn.ReLU(inplace=True),
                 ]
             )
             in_channels = int(out_channels)
@@ -278,7 +278,7 @@ class ApplianceHead(nn.Module):
             self.local_decoder = nn.Sequential(
                 nn.Conv1d(hidden_channels, hidden_channels, kernel_size=1),
                 nn.BatchNorm1d(hidden_channels),
-                nn.GELU(),
+                nn.ReLU(inplace=True),
             )
         else:
             k = int(head_kernel_size)
@@ -295,7 +295,7 @@ class ApplianceHead(nn.Module):
                             padding=k // 2,
                         ),
                         nn.BatchNorm1d(hidden_channels),
-                        nn.GELU(),
+                        nn.ReLU(inplace=True),
                     ]
                 )
             self.local_decoder = nn.Sequential(*blocks)
@@ -360,7 +360,7 @@ class CrossApplianceDistill(nn.Module):
         mid = max(1, min(mid, stacked))
         self.mix = nn.Sequential(
             nn.Conv1d(stacked, mid, kernel_size=1, bias=True),
-            nn.GELU(),
+            nn.ReLU(inplace=True),
             nn.Dropout(float(dropout)),
             nn.Conv1d(mid, stacked, kernel_size=1, bias=True),
         )
@@ -514,7 +514,7 @@ class MultiNILM(nn.Module):
                     padding=int(stem_kernel_size) // 2,
                 ),
                 nn.BatchNorm1d(self.hidden_channels),
-                nn.GELU(),
+                nn.ReLU(inplace=True),
             )
 
         # Step 2: residual TCN. Dilations cycle 1,2,4,...,max_dilation so deeper
