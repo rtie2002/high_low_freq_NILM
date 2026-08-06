@@ -593,6 +593,108 @@ def save_appliance_on_waveforms(
     return saved
 
 
+def plot_validation_metrics(
+    history: pd.DataFrame | str | Path,
+    output_path: str | Path,
+    *,
+    epoch_col: str = "epoch",
+    title: str = "Validation Metrics",
+    best_epoch: int | None = None,
+    figsize: float = 5.5,
+    dpi: int = 150,
+) -> Path:
+    """Per-epoch val F1 / Acc (left) and MAE in watts (right).
+
+    Matches the console line: ON-F1, Acc, MAE=… W. Prefers ``val_mae_watts``;
+    falls back to ``val_mae`` for older history.csv files.
+    """
+    if not isinstance(history, pd.DataFrame):
+        history = pd.read_csv(history)
+    if history.empty:
+        return _ensure_parent(output_path)
+
+    x = history[epoch_col] if epoch_col in history else np.arange(len(history))
+    has_f1 = "val_f1" in history.columns and not history["val_f1"].isna().all()
+    has_acc = "val_acc" in history.columns and not history["val_acc"].isna().all()
+    mae_col = None
+    for candidate in ("val_mae_watts", "val_mae"):
+        if candidate in history.columns and not history[candidate].isna().all():
+            mae_col = candidate
+            break
+    if not (has_f1 or has_acc or mae_col):
+        return _ensure_parent(output_path)
+
+    fig, ax = plt.subplots(1, 1, figsize=(figsize, figsize))
+    ax.set_box_aspect(1)
+    handles: list = []
+    labels: list[str] = []
+
+    if has_f1:
+        (ln,) = ax.plot(
+            x,
+            history["val_f1"],
+            marker="o",
+            markersize=3,
+            linewidth=1.8,
+            color="#1f77b4",
+            label="val ON-F1",
+        )
+        handles.append(ln)
+        labels.append("val ON-F1")
+    if has_acc:
+        (ln,) = ax.plot(
+            x,
+            history["val_acc"],
+            marker="s",
+            markersize=3,
+            linewidth=1.6,
+            color="#2ca02c",
+            label="val Acc",
+        )
+        handles.append(ln)
+        labels.append("val Acc")
+    ax.set_ylabel("F1 / Acc")
+    ax.set_ylim(0.0, 1.05)
+    ax.set_xlabel("Epoch")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.25)
+    _set_epoch_axis(ax, x)
+
+    if mae_col is not None:
+        ax_mae = ax.twinx()
+        mae_label = "val MAE (W)" if mae_col == "val_mae_watts" else "val MAE"
+        (ln_mae,) = ax_mae.plot(
+            x,
+            history[mae_col],
+            marker="^",
+            markersize=3,
+            linewidth=1.6,
+            color="#d62728",
+            label=mae_label,
+        )
+        ax_mae.set_ylabel("MAE (W)" if mae_col == "val_mae_watts" else "MAE")
+        handles.append(ln_mae)
+        labels.append(mae_label)
+
+    if best_epoch is not None and best_epoch > 0:
+        ln_best = ax.axvline(
+            best_epoch,
+            color="green",
+            linestyle="--",
+            linewidth=1.2,
+            label=f"best epoch {best_epoch}",
+        )
+        handles.append(ln_best)
+        labels.append(f"best epoch {best_epoch}")
+
+    ax.legend(handles, labels, fontsize=8, loc="best")
+    fig.tight_layout()
+    output_path = _ensure_parent(output_path)
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
 def plot_training_history(
     history: pd.DataFrame | str | Path,
     output_path: str | Path,

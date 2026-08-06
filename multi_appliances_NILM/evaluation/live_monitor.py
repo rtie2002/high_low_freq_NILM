@@ -21,6 +21,7 @@ from evaluation.plots import (
     plot_loss_components,
     plot_matnilm_training_losses,
     plot_training_history,
+    plot_validation_metrics,
     save_appliance_on_waveforms,
 )
 
@@ -47,6 +48,7 @@ class LiveTrainingMonitor:
         self.loss_detail_path = self.run_dir / "loss_detail.csv"
         self.live_history_png = self.run_dir / "live_training_loss.png"
         self.live_loss_png = self.run_dir / "live_loss_components.png"
+        self.live_metrics_png = self.run_dir / "live_validation_metrics.png"
 
         self._history_file: TextIO | None = None
         self._loss_file: TextIO | None = None
@@ -121,12 +123,15 @@ class LiveTrainingMonitor:
             if np.isfinite(train_time_sec) and np.isfinite(val_time_sec)
             else float("nan")
         )
+        val_mae = float(val_logs.get("mae", float("nan")))
         history_row = {
             "epoch": epoch,
             "train_loss": train_logs.get("loss", float("nan")),
             "val_loss": val_logs.get("loss", float("nan")),
             "train_mae": train_logs.get("mae", float("nan")),
-            "val_mae": val_logs.get("mae", float("nan")),
+            "val_mae": val_mae,
+            "val_mae_norm": float(val_logs.get("mae_norm", float("nan"))),
+            "val_mae_watts": float(val_logs.get("mae_watts_epoch", val_mae)),
             "val_f1": val_logs.get("val_f1", float("nan")),
             "val_acc": val_logs.get("val_acc", float("nan")),
             "val_mif1": val_logs.get("val_mif1", float("nan")),
@@ -207,6 +212,13 @@ class LiveTrainingMonitor:
             self.history_path,
             self.live_history_png,
             title=f"{self.model_name} training (epoch {epoch})",
+            best_epoch=best_epoch,
+            figsize=figsize,
+        )
+        plot_validation_metrics(
+            self.history_path,
+            self.live_metrics_png,
+            title=f"{self.model_name} validation metrics (epoch {epoch})",
             best_epoch=best_epoch,
             figsize=figsize,
         )
@@ -447,6 +459,13 @@ class LiveTrainingMonitor:
             self.history_path,
             self.run_dir / "training_loss.png",
             title=f"{self.model_name} training",
+            best_epoch=best_epoch,
+            figsize=figsize,
+        )
+        plot_validation_metrics(
+            self.history_path,
+            self.run_dir / "validation_metrics.png",
+            title=f"{self.model_name} validation metrics",
             best_epoch=best_epoch,
             figsize=figsize,
         )
