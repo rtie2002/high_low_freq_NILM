@@ -1548,9 +1548,9 @@ def train_model(
                 best_epoch = epoch_no
                 epochs_without_improvement = 0
                 torch.save({"model_state_dict": model.state_dict(), "epoch": epoch_no}, best_path)
-                # Best waveforms follow checkpoint updates, not plot_interval,
-                # so early-stop mid-interval still keeps waveforms/best in sync.
-                if plot_cfg.get("enabled") is not False:
+                # Waveform PNG export is expensive (full val+test infer + 300dpi).
+                # Only refresh waveforms/best on plot_interval; best.pt still updates every improve.
+                if monitor.should_plot(epoch_no):
                     _save_best_waveforms(
                         monitor=monitor,
                         adapter=adapter,
@@ -1583,26 +1583,38 @@ def train_model(
         epochs_completed = len(history)
         last_epoch = int(history[-1]["epoch"]) if history else 0
         # Early stop / natural end may land between plot_interval epochs.
-        # Force one final latest update so live curves + waveforms are not stale.
-        if (
-            plot_cfg.get("enabled") is not False
-            and history
-            and not monitor.should_plot(last_epoch)
-        ):
-            _save_latest_waveforms(
-                monitor=monitor,
-                adapter=adapter,
-                model=model,
-                val_loader=val_loader,
-                test_loader=test_loader,
-                device=device,
-                epoch_no=last_epoch,
-                best_epoch=best_epoch,
-            )
-            tqdm.write(
-                f"Final plot update at epoch {last_epoch} "
-                f"(between plot_interval ticks / early stop)"
-            )
+        # Force one final latest + best waveform refresh so plots are not stale.
+        if plot_cfg.get("enabled") is not False and history:
+            need_final_plots = not monitor.should_plot(last_epoch)
+            if need_final_plots:
+                _save_latest_waveforms(
+                    monitor=monitor,
+                    adapter=adapter,
+                    model=model,
+                    val_loader=val_loader,
+                    test_loader=test_loader,
+                    device=device,
+                    epoch_no=last_epoch,
+                    best_epoch=best_epoch,
+                )
+            if best_epoch > 0 and best_path.is_file():
+                # Reload best weights so waveforms/best match best.pt (not last epoch).
+                ckpt = torch.load(best_path, map_location=device)
+                model.load_state_dict(ckpt["model_state_dict"], strict=True)
+                _save_best_waveforms(
+                    monitor=monitor,
+                    adapter=adapter,
+                    model=model,
+                    val_loader=val_loader,
+                    test_loader=test_loader,
+                    device=device,
+                    best_epoch_no=best_epoch,
+                )
+            if need_final_plots or best_epoch > 0:
+                tqdm.write(
+                    f"Final plot update at epoch {last_epoch} "
+                    f"(best epoch {best_epoch}; between plot_interval / end)"
+                )
         timing_summary = {
             "total_seconds": total_training_sec,
             "total_formatted": _format_duration(total_training_sec),
