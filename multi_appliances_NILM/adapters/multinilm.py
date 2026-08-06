@@ -125,14 +125,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
                 if loss_cfg.get("mmd_sigma", None) in (None, "", "auto")
                 else float(loss_cfg["mmd_sigma"])
             ),
-
-            # Regression-only DILATE (NeurIPS 2019); BCE/state unchanged.
-            power_objective=str(loss_cfg.get("power_objective", "mse")),
-            dilate_alpha=float(loss_cfg.get("dilate_alpha", 0.5)),
-            dilate_gamma=float(loss_cfg.get("dilate_gamma", 0.01)),
-            dilate_downsample=int(loss_cfg.get("dilate_downsample", 8)),
-            lambda_dilate=float(loss_cfg.get("lambda_dilate", 1.0)),
-            dilate_appliance_indices=loss_cfg.get("dilate_appliance_indices", None),
         )
 
     def step(
@@ -207,7 +199,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
                 "loss_state_term": float(out.loss_state_term.detach()),
                 "loss_domain": float(out.loss_domain.detach()),
                 "loss_domain_term": float(out.loss_domain_term.detach()),
-                "loss_dilate": float(out.loss_dilate.detach()),
                 "mae": float(out.mae.detach()),
                 **app_logs,
             },

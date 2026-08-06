@@ -10,18 +10,14 @@ Legacy additive (domain_mix=additive)::
 
 Supervised part (see docs/multinilm_task_loss_balance.md)::
 
-    L_power = sum_i MSE_i                 # power_objective=mse (default)
-            | sum_i DILATE_i              # power_objective=dilate  (regression only)
-            | MSE + λ_dilate * DILATE     # power_objective=mse_dilate
-    L_state = sum_i BCE_i                 # classification unchanged
+    L_power = sum_i MSE_i
+    L_state = sum_i BCE_i
     L_NILM  = L_power + state_term
 
     task_balance=none :  state_term = lambda_state * L_state
     task_balance=equal:  state_term = lambda_state * L_state
                                        * (L_power / L_state).detach()
                          → lambda_state=1 means equal power ↔ state weight
-
-DILATE (NeurIPS 2019) is regression-only: α Soft-DTW + (1−α) temporal path term.
 
 Domain part (Lin et al., IEEE TSG 2022)::
 
@@ -42,7 +38,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from model.MultiNILM import pool_domain_feature_map
-from model.dilate_loss import dilate_power_loss
 
 
 # ---------------------------------------------------------------------------
@@ -217,12 +212,11 @@ class MultiNILMLossOutput:
     """Scalars / vectors returned for backprop and logging."""
 
     loss: torch.Tensor                 # L (scalar, has grad)
-    loss_power: torch.Tensor           # power objective entering L_NILM (raw)
+    loss_power: torch.Tensor           # Σ_i MSE_i  (raw)
     loss_state: torch.Tensor           # Σ_i BCE_i  (raw)
     loss_state_term: torch.Tensor      # balanced state contribution into L_NILM
     loss_domain: torch.Tensor          # raw L_domain (0 if DA off)
     loss_domain_term: torch.Tensor     # domain contribution before mix weights
-    loss_dilate: torch.Tensor          # raw DILATE sum (0 if power_objective=mse)
     mae: torch.Tensor                  # logging only (often denorm scale)
     loss_power_per_appliance: torch.Tensor
     loss_state_per_appliance: torch.Tensor
@@ -244,12 +238,6 @@ class MultiNILMLoss(nn.Module):
         mmd_sigma: float | None = None,
         domain_mix: str = "convex",
         domain_scale: str = "none",
-        power_objective: str = "mse",
-        dilate_alpha: float = 0.5,
-        dilate_gamma: float = 0.01,
-        dilate_downsample: int = 8,
-        lambda_dilate: float = 1.0,
-        dilate_appliance_indices: list[int] | None = None,
     ) -> None:
         super().__init__()
         self.lambda_state = float(lambda_state)
@@ -264,19 +252,6 @@ class MultiNILMLoss(nn.Module):
         self.domain_scale = str(domain_scale or "none").lower()
         if self.domain_scale not in {"none", "equal"}:
             raise ValueError(f"domain_scale must be none|equal, got {domain_scale!r}")
-
-        self.power_objective = str(power_objective or "mse").lower()
-        if self.power_objective not in {"mse", "dilate", "mse_dilate"}:
-            raise ValueError(
-                f"power_objective must be mse|dilate|mse_dilate, got {power_objective!r}"
-            )
-        self.dilate_alpha = float(dilate_alpha)
-        self.dilate_gamma = float(dilate_gamma)
-        self.dilate_downsample = max(1, int(dilate_downsample))
-        self.lambda_dilate = float(lambda_dilate)
-        self.dilate_appliance_indices = (
-            None if dilate_appliance_indices is None else list(dilate_appliance_indices)
-        )
 
         # MAE logging scale (watts / std); not used in the training objective.
         self.register_buffer("power_scale", torch.as_tensor(power_scale, dtype=torch.float32))
@@ -364,7 +339,7 @@ class MultiNILMLoss(nn.Module):
 
         Math
         ----
-        L_power from power_objective (mse | dilate | mse_dilate)
+        L_power = Σ_i MSE_i
         L_state = Σ_i BCE_i
         L_NILM  = L_power + state_term          # see _balanced_state_term
 
@@ -382,34 +357,11 @@ class MultiNILMLoss(nn.Module):
         power_true = power_true.float()
         state_true = state_true.float()
 
-        # --- supervised NILM (regression objective + BCE classification) ---
-        mse_per_app = self._per_appliance_power_loss(power_pred, power_true)
+        # --- supervised NILM ---
+        loss_power_per_app = self._per_appliance_power_loss(power_pred, power_true)
         loss_state_per_app = self._per_appliance_state_loss(state_logits, state_true)
+        loss_power = loss_power_per_app.sum()
         loss_state = loss_state_per_app.sum()
-
-        if self.power_objective == "mse":
-            loss_power_per_app = mse_per_app
-            loss_power = loss_power_per_app.sum()
-            loss_dilate = loss_power.new_zeros(())
-        else:
-            dilate_sum, dilate_per_app = dilate_power_loss(
-                power_pred,
-                power_true,
-                alpha=self.dilate_alpha,
-                gamma=self.dilate_gamma,
-                downsample=self.dilate_downsample,
-                appliance_indices=self.dilate_appliance_indices,
-            )
-            loss_dilate = dilate_sum
-            if self.power_objective == "dilate":
-                # Paper-style: replace pointwise MSE with DILATE on power only.
-                loss_power_per_app = dilate_per_app
-                loss_power = dilate_sum
-            else:
-                # Hybrid: keep MSE energy fit + shape/time DILATE.
-                loss_power_per_app = mse_per_app + self.lambda_dilate * dilate_per_app
-                loss_power = mse_per_app.sum() + self.lambda_dilate * dilate_sum
-
         loss_state_term = self._balanced_state_term(loss_power, loss_state)
         loss_nilm = loss_power + loss_state_term
 
@@ -459,7 +411,6 @@ class MultiNILMLoss(nn.Module):
             loss_state_term=loss_state_term.detach(),
             loss_domain=loss_domain.detach(),
             loss_domain_term=domain_term.detach(),
-            loss_dilate=loss_dilate.detach(),
             mae=mae,
             loss_power_per_appliance=loss_power_per_app.detach(),
             loss_state_per_appliance=loss_state_per_app.detach(),

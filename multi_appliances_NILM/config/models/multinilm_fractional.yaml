@@ -10,11 +10,11 @@ evaluation:
   pred_on_source: state_head
 
 windowing:
-  input_window_length: 1024
-  output_window_length: 1024
+  input_window_length: 2048
+  output_window_length: 2048
   output_alignment: end
-  input_stride: 512
-  eval_stride: 512
+  input_stride: 1024
+  eval_stride: 1024
   eval_reconstruction: auto
   training_targets: auto
 
@@ -53,15 +53,6 @@ loss:
   task_balance: equal
   lambda_state: 1
   pos_weight: auto
-  # Pure dilate replaced MSE → spikes OK if coarse Soft-DTW matches (ds=64).
-  # Hybrid: MSE kills false OFF spikes; Soft-DTW (shape-only) nudges plateaus.
-  power_objective: mse_dilate
-  dilate_alpha: 1.0
-  dilate_gamma: 0.01
-  dilate_downsample: 32
-  lambda_dilate: 0.2
-  # Optional: only hard appliances (indices into experiment appliance list).
-  # dilate_appliance_indices: [2, 3]  # dishwasher, washingmachine
   domain_method: both
   domain_mu: 0.4
   domain_mix: convex
