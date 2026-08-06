@@ -53,13 +53,13 @@ loss:
   task_balance: equal
   lambda_state: 1
   pos_weight: auto
-  # Full DILATE: α shape Soft-DTW + (1-α) temporal path term.
-  # α=1 was speed-only; 0.5 matches paper mix (slower — keep downsample ≥64).
-  power_objective: dilate
-  dilate_alpha: 0.5
+  # Pure dilate replaced MSE → spikes OK if coarse Soft-DTW matches (ds=64).
+  # Hybrid: MSE kills false OFF spikes; Soft-DTW (shape-only) nudges plateaus.
+  power_objective: mse_dilate
+  dilate_alpha: 1.0
   dilate_gamma: 0.01
-  dilate_downsample: 64
-  lambda_dilate: 1.0
+  dilate_downsample: 32
+  lambda_dilate: 0.2
   # Optional: only hard appliances (indices into experiment appliance list).
   # dilate_appliance_indices: [2, 3]  # dishwasher, washingmachine
   domain_method: both
