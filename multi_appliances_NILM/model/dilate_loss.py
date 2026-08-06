@@ -5,7 +5,10 @@ Regression-only shape + temporal distortion (not for BCE/state)::
     L_DILATE = α L_shape + (1 − α) L_temporal
 
 Soft-DTW uses an anti-diagonal GPU sweep; multi-appliance series are stacked
-into one batch. Prefer ``dilate_alpha: 1.0`` (shape-only) for training speed.
+into one batch.
+
+Temporal needs ∇_Δ Soft-DTW with create_graph. Under ``torch.no_grad()``
+(validation) that path is skipped and only L_shape is used.
 """
 
 from __future__ import annotations
@@ -20,14 +23,15 @@ def _pairwise_sq_1d(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 
 
 def soft_dtw(cost: torch.Tensor, gamma: float) -> torch.Tensor:
-    """Batched Soft-DTW. ``cost`` (B, n, m) → (B,). Anti-diagonal vectorized."""
+    """Batched Soft-DTW. ``cost`` (B, n, m) → (B,). Anti-diagonal, out-of-place."""
     if cost.dim() != 3:
         raise ValueError(f"soft_dtw expects (B,n,m), got {tuple(cost.shape)}")
     if gamma <= 0:
         raise ValueError(f"gamma must be > 0, got {gamma}")
 
-    _batch, n, m = cost.shape
-    r = cost.new_full((cost.shape[0], n + 1, m + 1), 1.0e9)
+    batch, n, m = cost.shape
+    r = cost.new_full((batch, n + 1, m + 1), 1.0e9)
+    r = r.clone()
     r[:, 0, 0] = 0.0
     inv_gamma = 1.0 / float(gamma)
     gamma_f = float(gamma)
@@ -46,8 +50,11 @@ def soft_dtw(cost: torch.Tensor, gamma: float) -> torch.Tensor:
         stacked = torch.stack((r0, r1, r2), dim=0)
         softmin = -gamma_f * torch.logsumexp(-stacked * inv_gamma, dim=0)
         vals = c + softmin
+        # Out-of-place write so create_graph / backward stay valid.
+        r_new = r.clone()
         for t in range(i_idx.numel()):
-            r[:, int(i_idx[t]), int(j_idx[t])] = vals[:, t]
+            r_new[:, int(i_idx[t]), int(j_idx[t])] = vals[:, t]
+        r = r_new
 
     return r[:, n, m]
 
@@ -55,6 +62,35 @@ def soft_dtw(cost: torch.Tensor, gamma: float) -> torch.Tensor:
 def temporal_omega(k: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
     idx = torch.arange(k, device=device, dtype=dtype)
     return ((idx.unsqueeze(1) - idx.unsqueeze(0)) / float(k)).pow(2)
+
+
+def _shape_and_temporal(
+    cost: torch.Tensor,
+    *,
+    alpha: float,
+    gamma: float,
+    k: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Returns (loss, loss_shape_mean, loss_temporal) from cost (B,k,k)."""
+    dtw_b = soft_dtw(cost, gamma)
+    loss_shape = dtw_b.mean() / float(k)
+
+    want_temporal = alpha < 1.0 - 1e-8
+    can_temporal = want_temporal and cost.requires_grad and torch.is_grad_enabled()
+    if not can_temporal:
+        z = loss_shape * 0.0
+        return loss_shape, loss_shape, z
+
+    path = torch.autograd.grad(
+        dtw_b.sum(),
+        cost,
+        create_graph=True,
+        retain_graph=True,
+    )[0]
+    omega = temporal_omega(k, device=cost.device, dtype=cost.dtype)
+    loss_temporal = (path * omega.unsqueeze(0)).sum() / float(k * k)
+    loss = float(alpha) * loss_shape + (1.0 - float(alpha)) * loss_temporal
+    return loss, loss_shape, loss_temporal
 
 
 def dilate_loss(
@@ -78,20 +114,7 @@ def dilate_loss(
         return z, z, z
 
     cost = _pairwise_sq_1d(target, pred)
-    dtw_b = soft_dtw(cost, gamma)
-    loss_shape = dtw_b.mean() / float(k)
-
-    if alpha >= 1.0 - 1e-8:
-        z = loss_shape * 0.0
-        return loss_shape, loss_shape, z
-
-    path = torch.autograd.grad(
-        dtw_b.sum(), cost, create_graph=True, retain_graph=True
-    )[0]
-    omega = temporal_omega(k, device=pred.device, dtype=pred.dtype)
-    loss_temporal = (path * omega.unsqueeze(0)).sum() / float(k * k)
-    loss = alpha * loss_shape + (1.0 - alpha) * loss_temporal
-    return loss, loss_shape, loss_temporal
+    return _shape_and_temporal(cost, alpha=alpha, gamma=gamma, k=k)
 
 
 def _downsample_bt(x: torch.Tensor, stride: int) -> torch.Tensor:
@@ -142,26 +165,28 @@ def dilate_power_loss(
     cost = _pairwise_sq_1d(yt_d, yp_d)
     dtw_vec = soft_dtw(cost, gamma) / float(k)  # (B*A_sel,)
     dtw_ba = dtw_vec.view(batch, len(apps)).mean(dim=0)  # (A_sel,)
+    loss_shape = dtw_ba.sum()
 
     per_app = power_pred.new_zeros(n_app)
     for j, app_i in enumerate(apps):
         per_app[app_i] = dtw_ba[j]
 
-    if alpha >= 1.0 - 1e-8:
-        return dtw_ba.sum(), per_app
+    want_temporal = alpha < 1.0 - 1e-8
+    can_temporal = want_temporal and cost.requires_grad and torch.is_grad_enabled()
+    if not can_temporal:
+        # Val / no_grad / α=1: shape only (still valid monitor of Soft-DTW).
+        return loss_shape, per_app
 
-    # Temporal on the stacked batch (one path grad).
     path = torch.autograd.grad(
-        dtw_vec.sum() * float(k),  # undo /k for path scale ≈ official Soft-DTW
+        (dtw_vec * float(k)).sum(),
         cost,
         create_graph=True,
         retain_graph=True,
     )[0]
     omega = temporal_omega(k, device=power_pred.device, dtype=power_pred.dtype)
     loss_temporal = (path * omega.unsqueeze(0)).sum() / float(k * k)
-    loss_shape = dtw_ba.sum()
     loss = alpha * loss_shape + (1.0 - alpha) * loss_temporal
-    # Log mix: put full loss on apps proportional to shape share.
+
     w = dtw_ba.detach().clamp_min(1e-8)
     w = w / w.sum()
     per_app = power_pred.new_zeros(n_app)
