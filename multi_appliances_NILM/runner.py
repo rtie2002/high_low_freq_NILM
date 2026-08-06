@@ -1539,7 +1539,9 @@ def train_model(
                 best_epoch = epoch_no
                 epochs_without_improvement = 0
                 torch.save({"model_state_dict": model.state_dict(), "epoch": epoch_no}, best_path)
-                if monitor.should_plot(epoch_no):
+                # Best waveforms follow checkpoint updates, not plot_interval,
+                # so early-stop mid-interval still keeps waveforms/best in sync.
+                if plot_cfg.get("enabled") is not False:
                     _save_best_waveforms(
                         monitor=monitor,
                         adapter=adapter,
@@ -1570,6 +1572,28 @@ def train_model(
         # Save the final history file and close out the live monitor state.
         total_training_sec = time.perf_counter() - training_started
         epochs_completed = len(history)
+        last_epoch = int(history[-1]["epoch"]) if history else 0
+        # Early stop / natural end may land between plot_interval epochs.
+        # Force one final latest update so live curves + waveforms are not stale.
+        if (
+            plot_cfg.get("enabled") is not False
+            and history
+            and not monitor.should_plot(last_epoch)
+        ):
+            _save_latest_waveforms(
+                monitor=monitor,
+                adapter=adapter,
+                model=model,
+                val_loader=val_loader,
+                test_loader=test_loader,
+                device=device,
+                epoch_no=last_epoch,
+                best_epoch=best_epoch,
+            )
+            tqdm.write(
+                f"Final plot update at epoch {last_epoch} "
+                f"(between plot_interval ticks / early stop)"
+            )
         timing_summary = {
             "total_seconds": total_training_sec,
             "total_formatted": _format_duration(total_training_sec),
@@ -1597,7 +1621,7 @@ def train_model(
             f"params {format_parameter_count(param_stats['parameters_total'])} | "
             f"{ckpt_note}",
         )
-        monitor.finalize(best_epoch=best_epoch)
+        monitor.finalize(best_epoch=best_epoch, last_epoch=last_epoch)
     finally:
         monitor.close()
 

@@ -453,7 +453,19 @@ class LiveTrainingMonitor:
         if self._loss_file is not None:
             self._loss_file.close()
 
-    def finalize(self, *, best_epoch: int) -> None:
+    def finalize(self, *, best_epoch: int, last_epoch: int | None = None) -> None:
+        """Write final loss/metric PNGs (and refresh live_* copies).
+
+        Always runs at training end — including early stop — so curves are not
+        left stale when the last epoch falls between ``plot_interval`` ticks.
+        """
+        if self.plot_cfg.get("enabled") is False:
+            return
+        if not self.history_path.exists():
+            return
+        epoch = int(last_epoch if last_epoch is not None else best_epoch or 0)
+        # Refresh live_* first (same paths used during interval updates).
+        self.save_loss_plots(epoch=epoch, best_epoch=best_epoch or None)
         figsize = self.waveform_figsize()
         plot_training_history(
             self.history_path,
