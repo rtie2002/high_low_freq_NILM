@@ -59,8 +59,10 @@ loss:
   power_objective: dilate
   dilate_alpha: 1.0
   dilate_gamma: 0.01
-  dilate_downsample: 32
+  dilate_downsample: 64
   lambda_dilate: 1.0
+  # Optional: only hard appliances (indices into experiment appliance list).
+  # dilate_appliance_indices: [2, 3]  # dishwasher, washingmachine
   domain_method: both
   domain_mu: 0.4
   domain_mix: convex
