@@ -8,6 +8,23 @@ data:
 
 evaluation:
   pred_on_source: state_head
+  # Schirmer/MSDC-style: cluster source active watts → snap ON preds to levels.
+  # Fit once: python scripts/fit_active_state_centers.py --experiment ... --model ... --output ...
+  # If centers_path is null, evaluate() fits from fit_split automatically.
+  active_state_snap:
+    enabled: true
+    method: kmeans
+    mode: segment
+    on_source: state_head
+    fill_gaps_max: 30
+    fit_split: train
+    centers_path: null  # or config/active_state_centers_ukdale.json after fit script
+    n_clusters:
+      kettle: 1
+      fridge: 2
+      dishwasher: 3
+      washingmachine: 3
+      microwave: 1
 
 windowing:
   input_window_length: 2048

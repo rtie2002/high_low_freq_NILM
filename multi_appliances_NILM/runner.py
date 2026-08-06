@@ -36,6 +36,7 @@ import itertools
 import json
 import shutil
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from typing import Any
@@ -54,6 +55,14 @@ from adapters.dataloader import (
     get_state_label_source,
     resolve_mains_column,
     resolve_state_thresholds_watts,
+)
+from evaluation.active_state_snap import (
+    ActiveStateSnapConfig,
+    apply_active_state_snap,
+    fit_centers_from_power_matrix,
+    load_centers,
+    resolve_active_state_snap,
+    save_centers,
 )
 from evaluation.live_monitor import LiveTrainingMonitor
 from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
@@ -1628,6 +1637,47 @@ def train_model(
     return best_path
 
 
+def _resolve_or_fit_active_centers(
+    adapter,
+    snap_cfg: ActiveStateSnapConfig,
+    *,
+    appliances: list[str],
+    run_dir: Path,
+) -> dict[str, np.ndarray]:
+    """Load cached centers, or fit on source split submeter watts and cache."""
+    path = snap_cfg.centers_path
+    # Resolve relative paths from package root (multi_appliances_NILM/).
+    pkg_root = Path(__file__).resolve().parent
+    candidates: list[Path] = []
+    if path is not None:
+        candidates.append(path if path.is_absolute() else pkg_root / path)
+        candidates.append(Path.cwd() / path)
+    for candidate in candidates:
+        if candidate.is_file():
+            centers = load_centers(candidate)
+            missing = [a for a in appliances if a not in centers]
+            if missing:
+                raise ValueError(f"centers file missing appliances {missing}: {candidate}")
+            return {a: centers[a] for a in appliances}
+
+    data_loader = adapter._data_loader()
+    _, power, _ = data_loader.get_raw_csv_arrays(snap_cfg.fit_split)
+    thr = resolve_state_thresholds_watts(adapter.experiment, appliances)
+    centers = fit_centers_from_power_matrix(power, appliances, snap_cfg, thr)
+    out_path = run_dir / "active_state_centers.json"
+    save_centers(
+        out_path,
+        centers,
+        meta={
+            "fit_split": snap_cfg.fit_split,
+            "method": snap_cfg.method,
+            "n_clusters": snap_cfg.n_clusters,
+        },
+    )
+    tqdm.write(f"Fitted active-state centers from '{snap_cfg.fit_split}' -> {out_path}")
+    return centers
+
+
 def evaluate_model(
     adapter,
     checkpoint: Path,
@@ -1673,6 +1723,42 @@ def evaluate_model(
     run_dir.mkdir(parents=True, exist_ok=True)
     pred_path = run_dir / f"{split}_predictions.npz"
     bundle.save(pred_path)
+
+    # Optional Schirmer/MSDC-style active-state snap (source centers → ON levels).
+    snap_cfg = resolve_active_state_snap(
+        adapter.experiment,
+        bundle.appliances,
+        adapter.model_cfg,
+    )
+    y_pred_for_metrics = bundle.y_pred_watts
+    if snap_cfg is not None:
+        centers = _resolve_or_fit_active_centers(
+            adapter,
+            snap_cfg,
+            appliances=bundle.appliances,
+            run_dir=run_dir,
+        )
+        y_pred_for_metrics = apply_active_state_snap(
+            bundle.y_pred_watts,
+            centers,
+            bundle.appliances,
+            snap_cfg,
+            y_pred_on=bundle.y_pred_on,
+        )
+        # Keep a snapped copy beside raw predictions for inspection.
+        np.savez_compressed(
+            run_dir / f"{split}_predictions_snapped.npz",
+            y_pred_watts=y_pred_for_metrics,
+            appliances=np.asarray(bundle.appliances),
+        )
+        tqdm.write(
+            f"Active-state snap ({snap_cfg.mode}): "
+            + ", ".join(
+                f"{app}→{[round(float(v),1) for v in centers.get(app, [])]}"
+                for app in bundle.appliances
+            )
+        )
+        bundle = replace(bundle, y_pred_watts=y_pred_for_metrics)
 
     # Step 6:
     # Compute the standard metrics from the shared PredictionBundle format.
