@@ -53,6 +53,13 @@ loss:
   task_balance: equal
   lambda_state: 1
   pos_weight: auto
+  # Regression only: replace pointwise MSE with DILATE (shape Soft-DTW + temporal).
+  # BCE/state head unchanged. Options: mse | dilate | mse_dilate
+  power_objective: dilate
+  dilate_alpha: 0.5
+  dilate_gamma: 0.01
+  dilate_downsample: 16
+  lambda_dilate: 1.0
   domain_method: both
   domain_mu: 0.4
   domain_mix: convex
