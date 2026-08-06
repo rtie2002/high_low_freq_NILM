@@ -38,17 +38,14 @@ architecture:
   # Hard gate train+eval: power = 1{state>thr}*power_raw + else off_norm
   gate_mode: soft_train_hard_eval
   gate_threshold: 0.5
-  # Shin SGN-style dual towers (6 Conv + 2×1×1 each) then gate; keep shared TCN.
-  head_style: sgn
   head_local_layers: 2
   head_kernel_size: 3
   head_use_residual: true
   use_multiscale_stem: true
   detail_kernels: [3, 5, 9]
   detail_branch_channels: 16
-  # Off while trying SGN heads (towers already heavy / dual).
   cross_appliance:
-    enabled: false
+    enabled: true
     residual_scale: 0.5
   domain_feature_layers: [temporal_4, temporal_6, aligned]
 
