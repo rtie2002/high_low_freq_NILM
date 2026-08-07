@@ -1739,7 +1739,8 @@ def evaluate_model(
     )
     if y_true_plot is None:
         y_true_plot = y_true_watts
-    on_thresholds = resolve_state_thresholds_watts(adapter.experiment, bundle.appliances)
+    # Match training label source: threshold shade only if state_label_source=threshold.
+    on_thresholds = _state_eval_thresholds(adapter.model_cfg, adapter.experiment, bundle.appliances)
     saved = save_appliance_on_waveforms(
         waveform_dir,
         appliances=bundle.appliances,

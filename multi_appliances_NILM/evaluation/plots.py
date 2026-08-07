@@ -302,8 +302,8 @@ def plot_single_on_period(
     """True vs predicted waveform for one ON period (full event + padding).
 
     Background bands (no focused-crop highlight):
-      - true ON only  (threshold on watts if ``true_on_threshold_watts`` set,
-        else ``y_true_on``)
+      - true ON only  (``power > thr`` if ``true_on_threshold_watts`` set,
+        else CSV ``y_true_on``)
       - pred ON only  (``y_pred_on``)
       - overlap       (true ∩ pred) in purple
 
@@ -480,9 +480,10 @@ def save_appliance_on_waveforms(
     ``context_scale`` × wider timeline around the same ON event (set
     ``context_scale <= 1`` to disable).
 
-    Period selection still uses ``y_true_on`` (typically CSV *_on). Background
-    true-ON shading uses ``on_thresholds_watts`` on appliance watts when set
-    (same thresholds as training ``state_label_source: threshold``).
+    Period selection uses ``y_true_on`` (typically CSV *_on). True-ON shading:
+    if ``on_thresholds_watts`` is set → ``power > thr`` (threshold label mode);
+    else → ``y_true_on`` (CSV / Algorithm 1). Do not pass thresholds when training
+    with ``state_label_source: csv``, or WM/DW plots will flicker on low-power dips.
     """
     output_dir = Path(output_dir)
     rng = rng or np.random.default_rng()

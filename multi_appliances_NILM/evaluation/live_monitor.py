@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from adapters.dataloader import resolve_state_thresholds_watts
+from adapters.dataloader import get_state_label_source, resolve_state_thresholds_watts
 from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
 from evaluation.plots import (
     FULL_CYCLE_APPLIANCES,
@@ -415,14 +415,19 @@ class LiveTrainingMonitor:
 
         split_id = 0 if split == "validation" else 1
         rng = np.random.default_rng(self.seed + epoch * 1009 + split_id)
-        # Waveform plots always use dataset CSV *_on labels for true ON periods.
         waveform_true_on = dataset_on_labels_for_bundle(
             adapter._data_loader(),
             split,
             len(bundle.y_true_watts),
             bundle.csv_timesteps,
         )
-        on_thresholds = resolve_state_thresholds_watts(adapter.experiment, self.appliances)
+        # Shade with CSV *_on unless training uses threshold labels.
+        # Always passing experiment thr overrode CSV and flickered on WM low-power dips.
+        on_thresholds = (
+            resolve_state_thresholds_watts(adapter.experiment, self.appliances)
+            if get_state_label_source(adapter.model_cfg) == "threshold"
+            else None
+        )
         return save_appliance_on_waveforms(
             output_dir,
             appliances=self.appliances,
