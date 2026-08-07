@@ -4,7 +4,7 @@ model_name: multinilm_fractional
 
 data:
   mains_column: aggregate
-  state_label_source: threshold
+  state_label_source: csv
 
 evaluation:
   pred_on_source: state_head
