@@ -36,9 +36,9 @@ architecture:
   max_dilation: 16
   dropout: 0.15
   # Hard gate train+eval: power = 1{state>thr}*power_raw + else off_norm
-  gate_mode: hard
+  gate_mode: soft_train_hard_eval
   gate_threshold: 0.5
-  head_local_layers: 2
+  head_local_layers: 4
   head_kernel_size: 3
   head_use_residual: true
   use_multiscale_stem: true
