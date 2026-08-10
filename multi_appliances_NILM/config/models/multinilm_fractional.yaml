@@ -8,6 +8,8 @@ data:
 
 evaluation:
   pred_on_source: state_head
+  # After overlap_mean stitch: zero watts where pred ON is false (align plot/metrics with hard gate)
+  regate_power_with_pred_on: true
 
 windowing:
   input_window_length: 2048

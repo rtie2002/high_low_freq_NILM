@@ -363,7 +363,8 @@ class BaseNILMAdapter(AdapterDataMixin):
             y_true, _ = loader.reconstruct_timeline_from_windows(split_key, true_power_windows)
             state_prob, _ = loader.reconstruct_timeline_from_windows(split_key, state_windows.astype(np.float64))
             z_true_f, _ = loader.reconstruct_timeline_from_windows(split_key, true_state_windows.astype(np.float64))
-            z_pred = (state_prob >= 0.5).astype(np.int32)
+            on_thr = float(self.model_cfg.get("architecture", {}).get("gate_threshold", 0.5))
+            z_pred = (state_prob >= on_thr).astype(np.int32)
             z_true = (z_true_f >= 0.5).astype(np.int32)
         else:
             y_pred = power_windows.reshape(-1, len(appliances))
@@ -372,8 +373,9 @@ class BaseNILMAdapter(AdapterDataMixin):
             # Casting floats in (0,1) to int32 truncates to 0 and destroys F1 — threshold first.
             z_pred_raw = state_windows.reshape(-1, len(appliances))
             z_true_raw = true_state_windows.reshape(-1, len(appliances))
+            on_thr = float(self.model_cfg.get("architecture", {}).get("gate_threshold", 0.5))
             if np.issubdtype(z_pred_raw.dtype, np.floating) and float(np.nanmax(z_pred_raw)) <= 1.0 + 1e-6:
-                z_pred = (z_pred_raw >= 0.5).astype(np.int32)
+                z_pred = (z_pred_raw >= on_thr).astype(np.int32)
             else:
                 z_pred = z_pred_raw.astype(np.int32)
             if np.issubdtype(z_true_raw.dtype, np.floating) and float(np.nanmax(np.abs(z_true_raw))) <= 1.0 + 1e-6:
@@ -384,6 +386,12 @@ class BaseNILMAdapter(AdapterDataMixin):
 
         y_pred = loader.denorm_to_watts(y_pred)
         y_true = loader.denorm_to_watts(y_true)
+
+        # Overlap-mean can leave residual watts where averaged state_prob < thr.
+        # Re-apply hard gate so plots/metrics match pred ON (eval gate semantics).
+        if bool(self.model_cfg.get("evaluation", {}).get("regate_power_with_pred_on", True)):
+            y_pred = np.asarray(y_pred, dtype=np.float64) * z_pred.astype(np.float64)
+
         # Return the standard prediction object used everywhere else in the repo.
         return build_prediction_bundle(
             experiment_id=self.experiment["experiment_id"],
