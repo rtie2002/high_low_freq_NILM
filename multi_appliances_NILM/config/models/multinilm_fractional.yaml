@@ -106,7 +106,7 @@ training:
     waveform_context_scale: 10
     # One-picture dashboards under run_dir/comparisons/ (period 01 across epochs)
     comparison_period_index: 1
-    comparison_dpi: 140
+    comparison_dpi: 600
     feature_maps:
       enabled: false
       max_examples: 2

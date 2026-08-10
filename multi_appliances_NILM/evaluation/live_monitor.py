@@ -25,7 +25,6 @@ from evaluation.plots import (
     plot_training_history,
     plot_validation_metrics,
     save_appliance_on_waveforms,
-    save_epoch_round_snapshot,
     save_multi_epoch_metrics_collage,
     save_multi_epoch_waveform_collages,
     save_val_test_comparison_figure,
@@ -465,7 +464,7 @@ class LiveTrainingMonitor:
             out,
             epoch=epoch,
             title=f"{self.model_name} epoch {epoch} — VALIDATION vs TEST",
-            dpi=int(self.plot_cfg.get("waveform_dpi", 200)),
+            dpi=max(600, int(self.plot_cfg.get("comparison_dpi", 600))),
         )
         latest_dir = self.run_dir / "metrics_by_epoch" / "latest"
         latest_dir.mkdir(parents=True, exist_ok=True)
@@ -478,22 +477,12 @@ class LiveTrainingMonitor:
         return out
 
     def _save_epoch_comparison_dashboards(self, epoch: int) -> list[Path]:
-        """Build single-picture comparisons across epochs (metrics + waveforms)."""
+        """Build single-picture comparisons across epochs (metrics XOR waveforms)."""
         saved: list[Path] = []
         period_index = int(self.plot_cfg.get("comparison_period_index", 1))
-        dpi = int(self.plot_cfg.get("comparison_dpi", 140))
+        dpi = int(self.plot_cfg.get("comparison_dpi", 600))
 
-        snap = save_epoch_round_snapshot(
-            self.run_dir,
-            epoch=epoch,
-            appliances=self.appliances,
-            period_index=period_index,
-            dpi=dpi,
-            title_prefix=f"{self.model_name} ",
-        )
-        if snap is not None:
-            saved.append(snap)
-
+        # Metrics only (no waveforms mixed in).
         metrics_all = save_multi_epoch_metrics_collage(
             self.run_dir,
             title=f"{self.model_name} — VALIDATION vs TEST (all plot epochs)",
@@ -502,6 +491,7 @@ class LiveTrainingMonitor:
         if metrics_all is not None:
             saved.append(metrics_all)
 
+        # Waveforms only: all appliances × val/test for every epoch in one PNG.
         saved.extend(
             save_multi_epoch_waveform_collages(
                 self.run_dir,

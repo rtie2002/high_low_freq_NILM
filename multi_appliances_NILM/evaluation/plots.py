@@ -659,13 +659,13 @@ def save_val_test_comparison_figure(
         ])
 
     n_rows = len(cell_text)
-    fig_h = max(2.8, 0.45 * n_rows + 1.6)
-    fig, ax = plt.subplots(figsize=(11.0, fig_h))
+    fig_h = max(2.2, 0.38 * n_rows + 1.15)
+    fig, ax = plt.subplots(figsize=(10.5, fig_h))
     ax.axis("off")
     if title is None:
         ep = f"epoch {epoch} — " if epoch is not None else ""
         title = f"{ep}VALIDATION vs TEST (transfer / house gap)"
-    ax.set_title(title, fontsize=12, pad=12)
+    ax.set_title(title, fontsize=11, pad=6)
 
     table = ax.table(
         cellText=cell_text,
@@ -675,7 +675,7 @@ def save_val_test_comparison_figure(
     )
     table.auto_set_font_size(False)
     table.set_fontsize(9)
-    table.scale(1.0, 1.35)
+    table.scale(1.0, 1.2)
 
     # Header + overall row emphasis.
     for j in range(len(col_labels)):
@@ -714,10 +714,10 @@ def save_val_test_comparison_figure(
         else:
             note = "Transfer note: test better than val — check split overlap or leakage."
     if note:
-        fig.text(0.5, 0.02, note, ha="center", va="bottom", fontsize=8, style="italic")
+        fig.text(0.5, 0.01, note, ha="center", va="bottom", fontsize=8, style="italic")
 
-    fig.tight_layout(rect=(0, 0.06, 1, 1))
-    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    fig.tight_layout(rect=(0, 0.04, 1, 1), pad=0.3)
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight", pad_inches=0.08)
     plt.close(fig)
 
     # Also keep CSV next to the PNG when writing into an epoch folder.
@@ -780,9 +780,86 @@ def _pick_period_waveform_png(
     focused = [p for p in candidates if not _is_context(p)]
     context = [p for p in candidates if _is_context(p)]
     pool = context if prefer_context and context else (focused or candidates)
-    # Prefer names that include the period tag (stable event index).
     tagged = [p for p in pool if period_tag in p.name]
     return (tagged or pool)[0]
+
+
+def _trim_white_border(img: np.ndarray, *, thresh: float = 0.97, pad: int = 4) -> np.ndarray:
+    """Crop near-white margins so stacked collages do not waste vertical space."""
+    arr = np.asarray(img)
+    if arr.ndim == 2:
+        content = arr < thresh
+    else:
+        # Ignore alpha when present.
+        rgb = arr[..., :3]
+        content = np.any(rgb < thresh, axis=-1)
+    rows = np.where(content.any(axis=1))[0]
+    cols = np.where(content.any(axis=0))[0]
+    if rows.size == 0 or cols.size == 0:
+        return arr
+    r0 = max(int(rows[0]) - pad, 0)
+    r1 = min(int(rows[-1]) + pad + 1, arr.shape[0])
+    c0 = max(int(cols[0]) - pad, 0)
+    c1 = min(int(cols[-1]) + pad + 1, arr.shape[1])
+    return arr[r0:r1, c0:c1]
+
+
+def _resize_width(img: np.ndarray, width: int) -> np.ndarray:
+    """Nearest-neighbor width match for stacking differently sized PNGs."""
+    h, w = img.shape[:2]
+    if w == width:
+        return img
+    new_h = max(1, int(round(h * (width / float(w)))))
+    # Map destination pixels back to source (fast, no PIL dependency).
+    ys = (np.linspace(0, h - 1, new_h)).astype(np.int32)
+    xs = (np.linspace(0, w - 1, width)).astype(np.int32)
+    return img[ys][:, xs]
+
+
+def _vstack_trimmed_images(
+    panels: list[tuple[str, np.ndarray]],
+    *,
+    gap_px: int = 10,
+    label_band_px: int = 28,
+) -> np.ndarray:
+    """Vertically pack labeled panels with a thin gap (no subplot whitespace)."""
+    if not panels:
+        raise ValueError("no panels to stack")
+    width = max(img.shape[1] for _, img in panels)
+    chunks: list[np.ndarray] = []
+    for i, (label, img) in enumerate(panels):
+        img = _resize_width(_trim_white_border(img), width)
+        # Convert to RGBA float for a uniform canvas.
+        if img.ndim == 2:
+            rgba = np.stack([img, img, img, np.ones_like(img)], axis=-1)
+        elif img.shape[-1] == 3:
+            rgba = np.concatenate([img, np.ones(img.shape[:2] + (1,), dtype=img.dtype)], axis=-1)
+        else:
+            rgba = img.astype(np.float32, copy=False)
+            if rgba.max() > 1.5:
+                rgba = rgba / 255.0
+
+        band = np.ones((label_band_px, width, 4), dtype=np.float32)
+        # Draw label via a tiny matplotlib render into the band.
+        fig = plt.figure(figsize=(width / 100.0, label_band_px / 100.0), dpi=100)
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis("off")
+        ax.text(0.01, 0.5, label, va="center", ha="left", fontsize=11, fontweight="bold")
+        fig.canvas.draw()
+        buf = np.asarray(fig.canvas.buffer_rgba(), dtype=np.float32) / 255.0
+        plt.close(fig)
+        band = _resize_width(buf, width)
+        if band.shape[0] != label_band_px:
+            # Force exact band height.
+            ys = (np.linspace(0, band.shape[0] - 1, label_band_px)).astype(np.int32)
+            band = band[ys]
+        chunks.append(band)
+        chunks.append(rgba.astype(np.float32, copy=False))
+        if i < len(panels) - 1 and gap_px > 0:
+            chunks.append(np.full((gap_px, width, 4), 0.92, dtype=np.float32))
+    return np.concatenate(chunks, axis=0)
 
 
 def save_multi_epoch_metrics_collage(
@@ -790,49 +867,55 @@ def save_multi_epoch_metrics_collage(
     output_path: str | Path | None = None,
     *,
     title: str | None = None,
-    dpi: int = 160,
+    dpi: int = 600,
 ) -> Path | None:
-    """Stack every epoch's val/test comparison PNG into one scrollable figure."""
+    """Stack every epoch's val/test comparison PNG tightly at native resolution."""
+    from PIL import Image, ImageDraw, ImageFont
+
     run_dir = Path(run_dir)
-    epoch_dirs = _list_metric_epoch_dirs(run_dir)
-    images: list[tuple[int, np.ndarray]] = []
-    for ep, ep_dir in epoch_dirs:
+    panels: list[tuple[str, np.ndarray]] = []
+    for ep, ep_dir in _list_metric_epoch_dirs(run_dir):
         png = ep_dir / "validation_test_comparison.png"
         if not png.exists():
             continue
-        img = plt.imread(png)
-        images.append((ep, img))
-    if not images:
+        panels.append((f"epoch {ep}", plt.imread(png)))
+    if not panels:
         return None
 
+    # Pack at source pixel resolution (no matplotlib downsampling).
+    stacked = _vstack_trimmed_images(panels, gap_px=12, label_band_px=36)
     output_path = _ensure_parent(
         output_path
         if output_path is not None
         else run_dir / "comparisons" / "metrics_all_epochs.png"
     )
-    n = len(images)
-    # Keep relative panel heights from native image aspect ratios.
-    aspects = [max(img.shape[0] / max(img.shape[1], 1), 0.25) for _, img in images]
-    fig_w = 12.0
-    fig_h = min(3.2 * n, 28.0)
-    fig, axes = plt.subplots(
-        n,
-        1,
-        figsize=(fig_w, fig_h),
-        gridspec_kw={"height_ratios": aspects},
-    )
-    if n == 1:
-        axes = [axes]
-    for ax, (ep, img) in zip(axes, images):
-        ax.imshow(img)
-        ax.set_axis_off()
-        ax.set_title(f"epoch {ep}", fontsize=11, loc="left", pad=4)
     if title is None:
         title = "VALIDATION vs TEST — all plot-interval epochs"
-    fig.suptitle(title, fontsize=13, y=0.995)
-    fig.tight_layout(rect=(0, 0, 1, 0.98))
-    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
-    plt.close(fig)
+
+    rgba = np.clip(stacked, 0.0, 1.0)
+    if rgba.dtype != np.float32 and rgba.dtype != np.float64:
+        rgba = rgba.astype(np.float32)
+        if rgba.max() > 1.5:
+            rgba = rgba / 255.0
+    body = (rgba * 255.0).astype(np.uint8)
+    if body.shape[-1] == 3:
+        body = np.concatenate([body, np.full(body.shape[:2] + (1,), 255, dtype=np.uint8)], axis=-1)
+
+    width = int(body.shape[1])
+    title_h = max(48, int(round(0.035 * width)))
+    title_band = Image.new("RGBA", (width, title_h), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(title_band)
+    try:
+        font = ImageFont.truetype("arial.ttf", size=max(18, title_h // 2))
+    except OSError:
+        font = ImageFont.load_default()
+    draw.text((12, title_h // 2), title, fill=(20, 20, 20, 255), font=font, anchor="lm")
+
+    canvas = Image.new("RGBA", (width, title_h + body.shape[0]), (255, 255, 255, 255))
+    canvas.paste(title_band, (0, 0))
+    canvas.paste(Image.fromarray(body, mode="RGBA"), (0, title_h))
+    # dpi metadata helps viewers; pixels stay 1:1 sharp.
+    canvas.convert("RGB").save(output_path, format="PNG", dpi=(dpi, dpi), optimize=True)
     return Path(output_path)
 
 
@@ -843,13 +926,16 @@ def save_multi_epoch_waveform_collages(
     output_dir: str | Path | None = None,
     period_index: int = 1,
     prefer_context: bool = False,
-    dpi: int = 140,
+    dpi: int = 600,
     title_prefix: str = "",
 ) -> list[Path]:
-    """One PNG per appliance: rows=epochs, cols=validation|test (same ON period).
+    """One high-res PNG: for each epoch, show ALL appliances (validation + test rows).
 
-    Avoids jumping across ``waveforms/{split}/epoch_XXXX/<app>/`` folders.
-    Period selection is shared across epochs when waveform RNG is epoch-stable.
+    Layout (compact)::
+        epoch 50  validation | kettle | fridge | ... |
+        epoch 50  test       | kettle | fridge | ... |
+        epoch 100 validation | ...
+    Metrics tables are NOT included (separate ``metrics_all_epochs.png``).
     """
     run_dir = Path(run_dir)
     output_dir = Path(output_dir) if output_dir is not None else run_dir / "comparisons" / "waveforms_by_epoch"
@@ -858,148 +944,80 @@ def save_multi_epoch_waveform_collages(
     val_epochs = {ep: p for ep, p in _list_waveform_epoch_dirs(run_dir, "validation")}
     test_epochs = {ep: p for ep, p in _list_waveform_epoch_dirs(run_dir, "test")}
     epochs = sorted(set(val_epochs) | set(test_epochs))
-    if not epochs:
+    if not epochs or not appliances:
         return []
 
-    saved: list[Path] = []
-    for app in appliances:
-        # Collect (epoch, val_img|None, test_img|None).
-        rows: list[tuple[int, np.ndarray | None, np.ndarray | None]] = []
-        for ep in epochs:
-            val_png = None
-            test_png = None
-            if ep in val_epochs:
-                val_png = _pick_period_waveform_png(
-                    val_epochs[ep] / app,
-                    period_index=period_index,
-                    prefer_context=prefer_context,
-                )
-            if ep in test_epochs:
-                test_png = _pick_period_waveform_png(
-                    test_epochs[ep] / app,
-                    period_index=period_index,
-                    prefer_context=prefer_context,
-                )
-            val_img = plt.imread(val_png) if val_png is not None else None
-            test_img = plt.imread(test_png) if test_png is not None else None
-            if val_img is None and test_img is None:
-                continue
-            rows.append((ep, val_img, test_img))
-        if not rows:
-            continue
-
-        n = len(rows)
-        fig_w = 14.0
-        fig_h = min(2.6 * n + 0.8, 30.0)
-        fig, axes = plt.subplots(n, 2, figsize=(fig_w, fig_h), squeeze=False)
-        for i, (ep, val_img, test_img) in enumerate(rows):
-            for j, img in enumerate((val_img, test_img)):
-                ax = axes[i, j]
-                if img is None:
-                    ax.text(0.5, 0.5, "missing", ha="center", va="center", fontsize=10)
-                    ax.set_facecolor("#f0f0f0")
+    grid_rows: list[tuple[int, str, list[np.ndarray | None]]] = []
+    for ep in epochs:
+        for split, ep_map in (("validation", val_epochs), ("test", test_epochs)):
+            imgs: list[np.ndarray | None] = []
+            any_hit = False
+            for app in appliances:
+                png = None
+                if ep in ep_map:
+                    png = _pick_period_waveform_png(
+                        ep_map[ep] / app,
+                        period_index=period_index,
+                        prefer_context=prefer_context,
+                    )
+                if png is not None:
+                    imgs.append(_trim_white_border(plt.imread(png)))
+                    any_hit = True
                 else:
-                    ax.imshow(img)
-                ax.set_xticks([])
-                ax.set_yticks([])
-                for spine in ax.spines.values():
-                    spine.set_visible(False)
-            axes[i, 0].set_ylabel(f"ep {ep}", fontsize=10, rotation=0, labelpad=28, va="center")
-        axes[0, 0].set_title("validation", fontsize=11)
-        axes[0, 1].set_title("test", fontsize=11)
-        fig.suptitle(
-            f"{title_prefix}{app} — ON period {period_index:02d} across epochs".strip(),
-            fontsize=13,
-        )
-        fig.tight_layout(rect=(0.02, 0, 1, 0.97))
-        out = output_dir / f"{app}_period{period_index:02d}_by_epoch.png"
-        fig.savefig(out, dpi=dpi, bbox_inches="tight")
-        plt.close(fig)
-        saved.append(out)
+                    imgs.append(None)
+            if any_hit:
+                grid_rows.append((ep, split, imgs))
+    if not grid_rows:
+        return []
 
-    return saved
-
-
-def save_epoch_round_snapshot(
-    run_dir: str | Path,
-    *,
-    epoch: int,
-    appliances: list[str],
-    period_index: int = 1,
-    dpi: int = 140,
-    title_prefix: str = "",
-) -> Path | None:
-    """One picture for this plot round: val/test metrics table + period-01 waveforms.
-
-    Layout:
-      [ validation vs test metrics table ]
-      [ val waveform | test waveform ]  × appliances (period_index)
-    """
-    run_dir = Path(run_dir)
-    metrics_png = run_dir / "metrics_by_epoch" / f"epoch_{int(epoch):04d}" / "validation_test_comparison.png"
-    panels: list[np.ndarray] = []
-    labels: list[str] = []
-    if metrics_png.exists():
-        panels.append(plt.imread(metrics_png))
-        labels.append("metrics")
-
-    for app in appliances:
-        row_imgs = []
-        for split in ("validation", "test"):
-            app_dir = run_dir / "waveforms" / split / f"epoch_{int(epoch):04d}" / app
-            png = _pick_period_waveform_png(app_dir, period_index=period_index, prefer_context=False)
-            row_imgs.append(plt.imread(png) if png is not None else None)
-        if row_imgs[0] is None and row_imgs[1] is None:
-            continue
-        # Render a small 1x2 strip for this appliance, then stack.
-        fig_r, ax_r = plt.subplots(1, 2, figsize=(12.0, 2.8))
-        for ax, img, split in zip(ax_r, row_imgs, ("validation", "test")):
-            if img is None:
-                ax.text(0.5, 0.5, "missing", ha="center", va="center")
-                ax.set_facecolor("#f0f0f0")
-            else:
-                ax.imshow(img)
-            ax.set_title(f"{app} · {split}", fontsize=9)
-            ax.set_axis_off()
-        fig_r.tight_layout()
-        tmp = run_dir / "comparisons" / "_tmp_row.png"
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        fig_r.savefig(tmp, dpi=dpi, bbox_inches="tight")
-        plt.close(fig_r)
-        panels.append(plt.imread(tmp))
-        labels.append(app)
-        tmp.unlink(missing_ok=True)
-
-    if not panels:
-        return None
-
-    out = run_dir / "comparisons" / f"epoch_{int(epoch):04d}_snapshot.png"
-    aspects = [max(img.shape[0] / max(img.shape[1], 1), 0.2) for img in panels]
+    n_rows = len(grid_rows)
+    n_cols = len(appliances)
+    # Large panels so source 300dpi waveforms stay readable after collage.
+    cell_w, cell_h = 4.2, 2.7
+    fig_w = min(2.4 + cell_w * n_cols, 36.0)
+    fig_h = min(1.0 + cell_h * n_rows, 48.0)
     fig, axes = plt.subplots(
-        len(panels),
-        1,
-        figsize=(12.5, min(2.8 * len(panels), 36.0)),
-        gridspec_kw={"height_ratios": aspects},
+        n_rows,
+        n_cols,
+        figsize=(fig_w, fig_h),
+        squeeze=False,
+        gridspec_kw={"wspace": 0.04, "hspace": 0.10},
     )
-    if len(panels) == 1:
-        axes = [axes]
-    for ax, img, lab in zip(axes, panels, labels):
-        ax.imshow(img)
-        ax.set_axis_off()
-        if lab != "metrics":
-            ax.set_title(lab, fontsize=10, loc="left", pad=2)
+    for i, (ep, split, imgs) in enumerate(grid_rows):
+        for j, (app, img) in enumerate(zip(appliances, imgs)):
+            ax = axes[i, j]
+            if img is None:
+                ax.set_facecolor("#eeeeee")
+                ax.text(0.5, 0.5, "—", ha="center", va="center", fontsize=12, color="#888888")
+            else:
+                # nearest keeps line art/text crisp when panel is large enough.
+                ax.imshow(img, interpolation="nearest", aspect="auto")
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_linewidth(0.5)
+                spine.set_color("#bbbbbb")
+            if i == 0:
+                ax.set_title(app, fontsize=12, pad=3)
+            if j == 0:
+                ax.set_ylabel(
+                    f"ep{ep}\n{split[:3]}",
+                    fontsize=10,
+                    rotation=0,
+                    labelpad=36,
+                    va="center",
+                )
+
     fig.suptitle(
-        f"{title_prefix}epoch {epoch} — val/test metrics + period {period_index:02d} waveforms".strip(),
-        fontsize=13,
+        f"{title_prefix}all appliances — period {period_index:02d} by epoch (val / test)".strip(),
+        fontsize=14,
+        y=0.995,
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.98))
-    out = _ensure_parent(out)
-    fig.savefig(out, dpi=dpi, bbox_inches="tight")
+    fig.subplots_adjust(left=0.06, right=0.995, top=0.95, bottom=0.01, wspace=0.04, hspace=0.10)
+    out = output_dir / f"ALL_appliances_period{period_index:02d}_by_epoch.png"
+    fig.savefig(out, dpi=dpi, bbox_inches="tight", pad_inches=0.04)
     plt.close(fig)
-    # Latest pointer.
-    latest = run_dir / "comparisons" / "latest_epoch_snapshot.png"
-    latest.write_bytes(out.read_bytes())
-    return out
+    return [out]
 
 
 def plot_validation_metrics(
