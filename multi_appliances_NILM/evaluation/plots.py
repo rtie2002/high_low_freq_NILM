@@ -594,6 +594,138 @@ def save_appliance_on_waveforms(
     return saved
 
 
+def build_val_test_comparison_frame(
+    val_metrics: pd.DataFrame | str | Path,
+    test_metrics: pd.DataFrame | str | Path,
+) -> pd.DataFrame:
+    """Per-appliance + overall val/test MAE/F1/SAE with gaps (same as console table)."""
+    if not isinstance(val_metrics, pd.DataFrame):
+        val_metrics = pd.read_csv(val_metrics)
+    if not isinstance(test_metrics, pd.DataFrame):
+        test_metrics = pd.read_csv(test_metrics)
+
+    val_app = val_metrics.set_index("appliance")
+    test_app = test_metrics.set_index("appliance")
+    appliances = [a for a in val_app.index if a in test_app.index]
+    rows = []
+    for app in appliances:
+        v = val_app.loc[app]
+        t = test_app.loc[app]
+        rows.append({
+            "appliance": app,
+            "val_MAE": float(v["mae"]),
+            "test_MAE": float(t["mae"]),
+            "MAE_gap": float(t["mae"] - v["mae"]),
+            "val_F1": float(v["f1"]),
+            "test_F1": float(t["f1"]),
+            "F1_gap": float(t["f1"] - v["f1"]),
+            "val_SAE": float(v["sae"]),
+            "test_SAE": float(t["sae"]),
+        })
+    return pd.DataFrame(rows)
+
+
+def save_val_test_comparison_figure(
+    val_metrics: pd.DataFrame | str | Path,
+    test_metrics: pd.DataFrame | str | Path,
+    output_path: str | Path,
+    *,
+    epoch: int | None = None,
+    title: str | None = None,
+    dpi: int = 200,
+) -> Path:
+    """Render validation vs test metrics as a table PNG (one figure per epoch round)."""
+    compare = build_val_test_comparison_frame(val_metrics, test_metrics)
+    output_path = _ensure_parent(output_path)
+    if compare.empty:
+        return output_path
+
+    # Put overall last if present.
+    if "overall" in set(compare["appliance"]):
+        apps = [a for a in compare["appliance"] if a != "overall"] + ["overall"]
+        compare = compare.set_index("appliance").loc[apps].reset_index()
+
+    col_labels = ["appliance", "val_MAE", "test_MAE", "MAE_gap", "val_F1", "test_F1", "F1_gap"]
+    cell_text = []
+    for _, r in compare.iterrows():
+        cell_text.append([
+            str(r["appliance"]),
+            f"{r['val_MAE']:.2f}",
+            f"{r['test_MAE']:.2f}",
+            f"{r['MAE_gap']:+.2f}",
+            f"{r['val_F1']:.4f}",
+            f"{r['test_F1']:.4f}",
+            f"{r['F1_gap']:+.4f}",
+        ])
+
+    n_rows = len(cell_text)
+    fig_h = max(2.8, 0.45 * n_rows + 1.6)
+    fig, ax = plt.subplots(figsize=(11.0, fig_h))
+    ax.axis("off")
+    if title is None:
+        ep = f"epoch {epoch} — " if epoch is not None else ""
+        title = f"{ep}VALIDATION vs TEST (transfer / house gap)"
+    ax.set_title(title, fontsize=12, pad=12)
+
+    table = ax.table(
+        cellText=cell_text,
+        colLabels=col_labels,
+        loc="center",
+        cellLoc="center",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    table.scale(1.0, 1.35)
+
+    # Header + overall row emphasis.
+    for j in range(len(col_labels)):
+        table[0, j].set_facecolor("#2f3e4e")
+        table[0, j].set_text_props(color="white", weight="bold")
+    for i, app in enumerate(compare["appliance"], start=1):
+        if str(app) == "overall":
+            for j in range(len(col_labels)):
+                table[i, j].set_facecolor("#e8eef5")
+                table[i, j].set_text_props(weight="bold")
+        elif i % 2 == 0:
+            for j in range(len(col_labels)):
+                table[i, j].set_facecolor("#f7f7f7")
+
+    # Gap coloring on MAE_gap / F1_gap columns.
+    mae_j, f1_j = col_labels.index("MAE_gap"), col_labels.index("F1_gap")
+    for i, (_, r) in enumerate(compare.iterrows(), start=1):
+        if r["MAE_gap"] > 0:
+            table[i, mae_j].set_text_props(color="#b00020")
+        elif r["MAE_gap"] < 0:
+            table[i, mae_j].set_text_props(color="#1b7f3a")
+        if r["F1_gap"] < 0:
+            table[i, f1_j].set_text_props(color="#b00020")
+        elif r["F1_gap"] > 0:
+            table[i, f1_j].set_text_props(color="#1b7f3a")
+
+    overall = compare[compare["appliance"] == "overall"]
+    note = ""
+    if not overall.empty:
+        mae_gap = float(overall.iloc[0]["MAE_gap"])
+        f1_gap = float(overall.iloc[0]["F1_gap"])
+        if abs(mae_gap) < 5 and abs(f1_gap) < 0.05:
+            note = "Transfer note: val and test are close — similar generalization."
+        elif mae_gap > 0 or f1_gap < 0:
+            note = "Transfer note: test weaker than val on F1 and/or MAE — domain/house gap remains."
+        else:
+            note = "Transfer note: test better than val — check split overlap or leakage."
+    if note:
+        fig.text(0.5, 0.02, note, ha="center", va="bottom", fontsize=8, style="italic")
+
+    fig.tight_layout(rect=(0, 0.06, 1, 1))
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+    # Also keep CSV next to the PNG when writing into an epoch folder.
+    csv_path = Path(output_path).with_suffix(".csv")
+    compare.to_csv(csv_path, index=False)
+    return Path(output_path)
+
+
 def plot_validation_metrics(
     history: pd.DataFrame | str | Path,
     output_path: str | Path,

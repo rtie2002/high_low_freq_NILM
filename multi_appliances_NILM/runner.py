@@ -1535,6 +1535,10 @@ def train_model(
                     f"  {epoch_tag} | saved metrics tables -> "
                     f".../metrics_by_epoch/epoch_{epoch_no:04d}/ (+ metrics_history.csv)"
                 )
+                tqdm.write(
+                    f"  {epoch_tag} | saved val/test table figure -> "
+                    f".../metrics_by_epoch/epoch_{epoch_no:04d}/validation_test_comparison.png"
+                )
                 if FeatureMapConfig.from_dict(plot_cfg.get("feature_maps")).enabled:
                     tqdm.write(
                         f"  {epoch_tag} | saved feature maps -> "

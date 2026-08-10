@@ -229,6 +229,8 @@ def print_evaluation_report(
 
 def print_val_test_comparison(run_dir: Path) -> None:
     """Compare validation vs test metrics to inspect generalization gap."""
+    from evaluation.plots import save_val_test_comparison_figure
+
     val_path = run_dir / "validation_metrics.csv"
     test_path = run_dir / "test_metrics.csv"
     if not val_path.exists() or not test_path.exists():
@@ -261,6 +263,15 @@ def print_val_test_comparison(run_dir: Path) -> None:
     compare_df = pd.DataFrame(rows)
     compare_path = run_dir / "validation_test_comparison.csv"
     compare_df.to_csv(compare_path, index=False)
+
+    # Same table as a PNG (final best-checkpoint evaluate).
+    fig_path = run_dir / "validation_test_comparison.png"
+    save_val_test_comparison_figure(
+        val_df,
+        test_df,
+        fig_path,
+        title="VALIDATION vs TEST (best checkpoint)",
+    )
 
     val_overall = val_df[val_df["appliance"] == "overall"].iloc[0]
     test_overall = test_df[test_df["appliance"] == "overall"].iloc[0]
@@ -303,6 +314,7 @@ def print_val_test_comparison(run_dir: Path) -> None:
     print(_row(width, note), flush=True)
     print(bot, flush=True)
     print(f"Saved comparison table: {compare_path}", flush=True)
+    print(f"Saved comparison figure: {fig_path}", flush=True)
 
 
 def enrich_compare_table(table: pd.DataFrame, runs_dir: Path, experiment_id: str) -> pd.DataFrame:

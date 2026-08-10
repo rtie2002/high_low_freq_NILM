@@ -25,6 +25,7 @@ from evaluation.plots import (
     plot_training_history,
     plot_validation_metrics,
     save_appliance_on_waveforms,
+    save_val_test_comparison_figure,
 )
 from evaluation.power_postprocess import resolve_power_postprocess
 
@@ -273,6 +274,9 @@ class LiveTrainingMonitor:
                         adapter, model, test_loader, device, split="test", epoch=epoch, tag="latest"
                     )
                 )
+                fig_path = self._save_epoch_val_test_comparison_figure(epoch)
+                if fig_path is not None:
+                    saved.append(fig_path)
             if self.should_plot_feature_maps():
                 saved.extend(
                     self._save_feature_maps(
@@ -441,6 +445,32 @@ class LiveTrainingMonitor:
         metrics.to_csv(latest_dir / f"{split}_metrics.csv", index=False)
         self._append_metrics_history(epoch=epoch, split=split, metrics=metrics)
         return path
+
+    def _save_epoch_val_test_comparison_figure(self, epoch: int) -> Path | None:
+        """PNG table of validation vs test metrics for this plot-interval epoch."""
+        epoch_dir = self._metrics_epoch_dir(epoch)
+        val_path = epoch_dir / "validation_metrics.csv"
+        test_path = epoch_dir / "test_metrics.csv"
+        if not val_path.exists() or not test_path.exists():
+            return None
+        out = epoch_dir / "validation_test_comparison.png"
+        save_val_test_comparison_figure(
+            val_path,
+            test_path,
+            out,
+            epoch=epoch,
+            title=f"{self.model_name} epoch {epoch} — VALIDATION vs TEST",
+            dpi=int(self.plot_cfg.get("waveform_dpi", 200)),
+        )
+        latest_dir = self.run_dir / "metrics_by_epoch" / "latest"
+        latest_dir.mkdir(parents=True, exist_ok=True)
+        latest_png = latest_dir / "validation_test_comparison.png"
+        latest_csv = latest_dir / "validation_test_comparison.csv"
+        shutil.copy2(out, latest_png)
+        csv_src = out.with_suffix(".csv")
+        if csv_src.exists():
+            shutil.copy2(csv_src, latest_csv)
+        return out
 
     def _write_waveforms_for_bundle(
         self,
