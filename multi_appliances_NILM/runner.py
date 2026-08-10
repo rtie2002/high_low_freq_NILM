@@ -1527,10 +1527,18 @@ def train_model(
                     epoch_no=epoch_no,
                     best_epoch=best_epoch,
                 )
-                tqdm.write(f"  {epoch_tag} | saved latest waveforms -> .../waveforms/{{validation,test}}/latest/")
+                tqdm.write(
+                    f"  {epoch_tag} | saved waveforms -> "
+                    f".../waveforms/{{validation,test}}/epoch_{epoch_no:04d}/ (+ latest/)"
+                )
+                tqdm.write(
+                    f"  {epoch_tag} | saved metrics tables -> "
+                    f".../metrics_by_epoch/epoch_{epoch_no:04d}/ (+ metrics_history.csv)"
+                )
                 if FeatureMapConfig.from_dict(plot_cfg.get("feature_maps")).enabled:
                     tqdm.write(
-                        f"  {epoch_tag} | saved latest feature maps -> .../feature_maps/{{validation,test}}/latest/"
+                        f"  {epoch_tag} | saved feature maps -> "
+                        f".../feature_maps/{{validation,test}}/epoch_{epoch_no:04d}/ (+ latest/)"
                     )
 
             # 6g. Save best checkpoint when validation metric improves.
@@ -1702,12 +1710,19 @@ def evaluate_model(
     )
     metrics_path = run_dir / f"{split}_metrics.csv"
     metrics.to_csv(metrics_path, index=False)
+    # Also archive under metrics_by_epoch for comparison with mid-training tables.
+    ckpt_epoch = int(ckpt.get("epoch", -1)) if isinstance(ckpt, dict) else -1
+    if ckpt_epoch > 0:
+        archive_dir = run_dir / "metrics_by_epoch" / f"evaluate_epoch_{ckpt_epoch:04d}"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        metrics.to_csv(archive_dir / f"{split}_metrics.csv", index=False)
 
     # Step 7:
     # Waveform plots always use dataset CSV *_on labels for true ON periods.
     # Training/F1 above may still follow data.state_label_source in model yaml.
     plot_cfg = adapter.model_cfg.get("training", {}).get("plots", {})
-    waveform_dir = run_dir / "waveforms" / split
+    # Keep training-time epoch_* waveform history; only refresh the evaluate/ slot.
+    waveform_dir = run_dir / "waveforms" / split / "evaluate"
     if waveform_dir.exists():
         shutil.rmtree(waveform_dir)
 

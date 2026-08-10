@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any, TextIO
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
 from adapters.dataloader import get_state_label_source, resolve_state_thresholds_watts
 from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
+from evaluation.metrics import evaluate_bundle
 from evaluation.plots import (
     FULL_CYCLE_APPLIANCES,
     bundle_aggregate_watts,
@@ -24,6 +26,7 @@ from evaluation.plots import (
     plot_validation_metrics,
     save_appliance_on_waveforms,
 )
+from evaluation.power_postprocess import resolve_power_postprocess
 
 
 class LiveTrainingMonitor:
@@ -311,20 +314,20 @@ class LiveTrainingMonitor:
     def _feature_map_tag_dir(self, split: str, tag: str) -> Path:
         return self.run_dir / "feature_maps" / split / tag
 
+    def _epoch_tag(self, epoch: int) -> str:
+        return f"epoch_{int(epoch):04d}"
+
     def _prune_legacy_epoch_feature_map_dirs(self) -> None:
-        """Remove old epoch_XXXX folders under feature_maps/{split}/{tag}/."""
+        """Remove obsolete ``live/`` feature-map folders only (keep epoch_* history)."""
         feature_root = self.run_dir / "feature_maps"
         if not feature_root.exists():
             return
         for split_dir in feature_root.iterdir():
             if not split_dir.is_dir():
                 continue
-            for tag_dir in split_dir.iterdir():
-                if not tag_dir.is_dir():
-                    continue
-                for child in tag_dir.iterdir():
-                    if child.is_dir() and child.name.startswith("epoch_"):
-                        shutil.rmtree(child, ignore_errors=True)
+            live = split_dir / "live"
+            if live.is_dir():
+                shutil.rmtree(live, ignore_errors=True)
 
     def _save_feature_maps(
         self,
@@ -340,39 +343,173 @@ class LiveTrainingMonitor:
         cfg = self.feature_map_cfg()
         if not cfg.enabled:
             return []
-        output_dir = self._feature_map_tag_dir(split, tag)
-        if output_dir.exists():
-            shutil.rmtree(output_dir)
-        return save_feature_maps(
-            adapter,
-            model,
-            loader,
-            output_dir,
-            split=split,
-            device=device,
-            cfg=cfg,
-            max_batches=self.plot_max_batches(),
-        )
+        # Keep a durable epoch copy + refresh latest/best pointer tag.
+        tags = [self._epoch_tag(epoch), tag] if tag in {"latest", "best"} else [tag]
+        saved: list[Path] = []
+        for out_tag in tags:
+            output_dir = self._feature_map_tag_dir(split, out_tag)
+            if output_dir.exists():
+                shutil.rmtree(output_dir)
+            saved.extend(
+                save_feature_maps(
+                    adapter,
+                    model,
+                    loader,
+                    output_dir,
+                    split=split,
+                    device=device,
+                    cfg=cfg,
+                    max_batches=self.plot_max_batches(),
+                )
+            )
+        return saved
 
     def _waveform_tag_dir(self, split: str, tag: str) -> Path:
         return self.waveforms_dir / split / tag
 
+    def _metrics_epoch_dir(self, epoch: int) -> Path:
+        return self.run_dir / "metrics_by_epoch" / self._epoch_tag(epoch)
+
     def _prune_legacy_epoch_waveform_dirs(self) -> None:
-        """Remove old live/epoch_XXX and best/epoch_XXX folders from earlier runs."""
+        """Remove obsolete ``live/`` waveform folders only (keep epoch_* history)."""
         if not self.waveforms_dir.exists():
             return
         for split_dir in self.waveforms_dir.iterdir():
             if not split_dir.is_dir():
                 continue
-            for tag_dir in split_dir.iterdir():
-                if not tag_dir.is_dir():
-                    continue
-                if tag_dir.name == "live":
-                    shutil.rmtree(tag_dir, ignore_errors=True)
-                    continue
-                for child in tag_dir.iterdir():
-                    if child.is_dir() and child.name.startswith("epoch_"):
-                        shutil.rmtree(child, ignore_errors=True)
+            live = split_dir / "live"
+            if live.is_dir():
+                shutil.rmtree(live, ignore_errors=True)
+
+    def _append_metrics_history(
+        self,
+        *,
+        epoch: int,
+        split: str,
+        metrics: pd.DataFrame,
+    ) -> None:
+        """Append overall (+ per-app) rows into a long-running comparison CSV."""
+        history_path = self.run_dir / "metrics_history.csv"
+        df = metrics.copy()
+        df.insert(0, "epoch", int(epoch))
+        df.insert(1, "split", str(split))
+        if history_path.exists():
+            prev = pd.read_csv(history_path)
+            out = pd.concat([prev, df], ignore_index=True)
+        else:
+            out = df
+        out.to_csv(history_path, index=False)
+
+    def _save_split_metrics_table(
+        self,
+        adapter,
+        bundle,
+        *,
+        split: str,
+        epoch: int,
+    ) -> Path:
+        """Write the same MAE/SAE/F1 table as final evaluate, keyed by epoch."""
+        power_postprocess = resolve_power_postprocess(
+            adapter.experiment,
+            bundle.appliances,
+            adapter.model_cfg,
+        )
+        metrics = evaluate_bundle(
+            bundle,
+            sae_period=int(adapter.experiment["evaluation"].get("sae_period", 1200)),
+            on_threshold_watts=(
+                resolve_state_thresholds_watts(adapter.experiment, self.appliances)
+                if get_state_label_source(adapter.model_cfg) == "threshold"
+                else None
+            ),
+            state_label_source=get_state_label_source(adapter.model_cfg),
+            power_postprocess=power_postprocess,
+        )
+        epoch_dir = self._metrics_epoch_dir(epoch)
+        epoch_dir.mkdir(parents=True, exist_ok=True)
+        path = epoch_dir / f"{split}_metrics.csv"
+        metrics.to_csv(path, index=False)
+        # Also keep a rolling "latest" copy of the table for this split.
+        latest_dir = self.run_dir / "metrics_by_epoch" / "latest"
+        latest_dir.mkdir(parents=True, exist_ok=True)
+        metrics.to_csv(latest_dir / f"{split}_metrics.csv", index=False)
+        self._append_metrics_history(epoch=epoch, split=split, metrics=metrics)
+        return path
+
+    def _write_waveforms_for_bundle(
+        self,
+        adapter,
+        bundle,
+        *,
+        split: str,
+        epoch: int,
+        tag: str,
+    ) -> list[Path]:
+        aggregate = bundle_aggregate_watts(
+            adapter._data_loader(),
+            split,
+            n_points=len(bundle.y_true_watts),
+            csv_timesteps=bundle.csv_timesteps,
+        )
+        y_true_plot = bundle_csv_appliance_watts(
+            adapter._data_loader(),
+            split,
+            n_points=len(bundle.y_true_watts),
+            csv_timesteps=bundle.csv_timesteps,
+        )
+        if y_true_plot is None:
+            y_true_plot = bundle.y_true_watts
+
+        waveform_true_on = dataset_on_labels_for_bundle(
+            adapter._data_loader(),
+            split,
+            len(bundle.y_true_watts),
+            bundle.csv_timesteps,
+        )
+        on_thresholds = (
+            resolve_state_thresholds_watts(adapter.experiment, self.appliances)
+            if get_state_label_source(adapter.model_cfg) == "threshold"
+            else None
+        )
+        split_id = 0 if split == "validation" else 1
+        rng = np.random.default_rng(self.seed + epoch * 1009 + split_id)
+
+        # Durable epoch folder + pointer tag (latest / best).
+        tags = [self._epoch_tag(epoch)]
+        if tag in {"latest", "best"}:
+            tags.append(tag)
+
+        saved: list[Path] = []
+        for out_tag in tags:
+            output_dir = self._waveform_tag_dir(split, out_tag)
+            if output_dir.exists():
+                shutil.rmtree(output_dir)
+            saved.extend(
+                save_appliance_on_waveforms(
+                    output_dir,
+                    appliances=self.appliances,
+                    y_true_watts=y_true_plot,
+                    y_pred_watts=bundle.y_pred_watts,
+                    y_true_on=waveform_true_on,
+                    y_pred_on=bundle.y_pred_on,
+                    on_thresholds_watts=on_thresholds,
+                    aggregate=aggregate,
+                    csv_timesteps=bundle.csv_timesteps,
+                    n_periods=self.plot_on_periods(),
+                    period_samples=self.on_period_samples(),
+                    full_cycle_appliances=self.full_cycle_appliances(),
+                    margin_min=self.on_period_margin_min(),
+                    margin_frac=self.on_period_margin_frac(),
+                    figsize=self.waveform_figsize(),
+                    dynamic_figsize=self.waveform_dynamic_figsize(),
+                    dpi=self.waveform_dpi(),
+                    context_scale=self.waveform_context_scale(),
+                    rng=rng,
+                    file_prefix=out_tag,
+                    title_prefix=f"{self.model_name} {split} {out_tag} epoch {epoch} — ",
+                )
+            )
+        return saved
 
     def _save_split_waveforms(
         self,
@@ -394,63 +531,24 @@ class LiveTrainingMonitor:
             split=split,
             max_batches=None,
         )
-        aggregate = bundle_aggregate_watts(
-            adapter._data_loader(),
-            split,
-            n_points=len(bundle.y_true_watts),
-            csv_timesteps=bundle.csv_timesteps,
+        saved = self._write_waveforms_for_bundle(
+            adapter, bundle, split=split, epoch=epoch, tag=tag
         )
-        # Waveform GT must come from the same raw CSV watts as aggregate (not denorm).
-        y_true_plot = bundle_csv_appliance_watts(
-            adapter._data_loader(),
-            split,
-            n_points=len(bundle.y_true_watts),
-            csv_timesteps=bundle.csv_timesteps,
-        )
-        if y_true_plot is None:
-            y_true_plot = bundle.y_true_watts
-        output_dir = self._waveform_tag_dir(split, tag)
-        if output_dir.exists():
-            shutil.rmtree(output_dir)
-
-        split_id = 0 if split == "validation" else 1
-        rng = np.random.default_rng(self.seed + epoch * 1009 + split_id)
-        waveform_true_on = dataset_on_labels_for_bundle(
-            adapter._data_loader(),
-            split,
-            len(bundle.y_true_watts),
-            bundle.csv_timesteps,
-        )
-        # Shade with CSV *_on unless training uses threshold labels.
-        # Always passing experiment thr overrode CSV and flickered on WM low-power dips.
-        on_thresholds = (
-            resolve_state_thresholds_watts(adapter.experiment, self.appliances)
-            if get_state_label_source(adapter.model_cfg) == "threshold"
-            else None
-        )
-        return save_appliance_on_waveforms(
-            output_dir,
-            appliances=self.appliances,
-            y_true_watts=y_true_plot,
-            y_pred_watts=bundle.y_pred_watts,
-            y_true_on=waveform_true_on,
-            y_pred_on=bundle.y_pred_on,
-            on_thresholds_watts=on_thresholds,
-            aggregate=aggregate,
-            csv_timesteps=bundle.csv_timesteps,
-            n_periods=self.plot_on_periods(),
-            period_samples=self.on_period_samples(),
-            full_cycle_appliances=self.full_cycle_appliances(),
-            margin_min=self.on_period_margin_min(),
-            margin_frac=self.on_period_margin_frac(),
-            figsize=self.waveform_figsize(),
-            dynamic_figsize=self.waveform_dynamic_figsize(),
-            dpi=self.waveform_dpi(),
-            context_scale=self.waveform_context_scale(),
-            rng=rng,
-            file_prefix=tag,
-            title_prefix=f"{self.model_name} {split} {tag} epoch {epoch} — ",
-        )
+        # Same inference → full MAE/SAE/F1 table for this epoch (val/test).
+        if tag == "latest":
+            metrics_path = self._save_split_metrics_table(
+                adapter, bundle, split=split, epoch=epoch
+            )
+            # Touch a small README so the epoch folder is self-describing.
+            note = self._metrics_epoch_dir(epoch) / "README.txt"
+            note.write_text(
+                f"Metrics and waveforms for training epoch {epoch}.\n"
+                f"Waveforms: waveforms/{{validation,test}}/epoch_{epoch:04d}/\n"
+                f"Table: {metrics_path.name}\n"
+                f"All epochs appended to metrics_history.csv\n",
+                encoding="utf-8",
+            )
+        return saved
 
     def close(self) -> None:
         if self._history_file is not None:

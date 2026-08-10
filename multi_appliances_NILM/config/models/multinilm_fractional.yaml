@@ -94,6 +94,7 @@ training:
   tf32: true
   plots:
     plot_mode: interval
+    # Every N epochs: keep waveforms under epoch_XXXX/ and val/test MAE/SAE/F1 tables
     plot_interval: 50
     plot_on_periods: 5
     plot_max_batches: 16
