@@ -391,13 +391,19 @@ class LiveTrainingMonitor:
         """Append overall (+ per-app) rows into a long-running comparison CSV."""
         history_path = self.run_dir / "metrics_history.csv"
         df = metrics.copy()
+        # evaluate_bundle already has a ``split`` column; only add ``epoch``.
         df.insert(0, "epoch", int(epoch))
-        df.insert(1, "split", str(split))
+        df["split"] = str(split)
         if history_path.exists():
             prev = pd.read_csv(history_path)
             out = pd.concat([prev, df], ignore_index=True)
         else:
             out = df
+        # Prefer epoch, split, appliance first for easy reading.
+        cols = list(out.columns)
+        front = [c for c in ("epoch", "split", "appliance") if c in cols]
+        rest = [c for c in cols if c not in front]
+        out = out[front + rest]
         out.to_csv(history_path, index=False)
 
     def _save_split_metrics_table(
