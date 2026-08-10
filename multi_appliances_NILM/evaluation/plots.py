@@ -444,7 +444,12 @@ def plot_single_on_period(
 
     fig.tight_layout()
     output_path = _ensure_parent(output_path)
-    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    try:
+        fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    except FileNotFoundError:
+        # Windows delayed-delete race after rmtree — recreate parent and retry once.
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     return output_path
 
@@ -486,6 +491,7 @@ def save_appliance_on_waveforms(
     with ``state_label_source: csv``, or WM/DW plots will flicker on low-power dips.
     """
     output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     rng = rng or np.random.default_rng()
     y_true = np.asarray(y_true_watts, dtype=float)
     y_pred = np.maximum(np.asarray(y_pred_watts, dtype=float), 0.0)

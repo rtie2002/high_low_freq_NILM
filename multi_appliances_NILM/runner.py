@@ -75,7 +75,30 @@ from evaluation.run_summary import (
 )
 
 
+def _reset_dir(path: Path) -> Path:
+    """Create an empty directory, avoiding Windows rmtree→recreate races.
+
+    ``shutil.rmtree`` can finish deleting asynchronously; recreating files under
+    the same path immediately may raise FileNotFoundError on the next open/save.
+    Rename-away then recreate is safer on NTFS.
+    """
+    path = Path(path)
+    if path.exists():
+        trash = path.with_name(f"{path.name}.__old__")
+        if trash.exists():
+            shutil.rmtree(trash, ignore_errors=True)
+        try:
+            path.replace(trash)
+        except OSError:
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            shutil.rmtree(trash, ignore_errors=True)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def seed_everything(seed: int) -> None:
+
     """Make training more repeatable.
 
     Called once near the start of train_model(...).  This controls Python,
@@ -1731,9 +1754,10 @@ def evaluate_model(
     # Training/F1 above may still follow data.state_label_source in model yaml.
     plot_cfg = adapter.model_cfg.get("training", {}).get("plots", {})
     # Keep training-time epoch_* waveform history; only refresh the evaluate/ slot.
+    # On Windows, rmtree(dir) then immediate recreate can race (delayed deletes) and
+    # cause FileNotFoundError on savefig — wipe children or replace via rename.
     waveform_dir = run_dir / "waveforms" / split / "evaluate"
-    if waveform_dir.exists():
-        shutil.rmtree(waveform_dir)
+    _reset_dir(waveform_dir)
 
     raw_period = plot_cfg.get("on_period_samples", 0)
     period_samples = None if raw_period is None or int(raw_period) <= 0 else int(raw_period)
