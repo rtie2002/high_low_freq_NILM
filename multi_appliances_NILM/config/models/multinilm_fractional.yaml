@@ -38,7 +38,7 @@ architecture:
   # Hard gate train+eval: power = 1{state>thr}*power_raw + else off_norm
   gate_mode: soft_train_hard_eval
   gate_threshold: 0.5
-  head_local_layers: 4
+  head_local_layers: 2
   head_kernel_size: 3
   head_use_residual: true
   use_multiscale_stem: true
@@ -47,7 +47,8 @@ architecture:
   cross_appliance:
     enabled: true
     residual_scale: 0.5
-  domain_feature_layers: [temporal_4, temporal_6, aligned]
+  # num_blocks=5 → valid hooks: temporal_0..temporal_4 (+ stem/aligned)
+  domain_feature_layers: [temporal_2, temporal_4, aligned]
 
 loss:
   task_balance: equal
@@ -61,7 +62,7 @@ loss:
   da_warmup_epochs: 0
   da_ramp_epochs: 0
   da_freeze_patience: 0
-  lambda_domain: 0.3
+  lambda_domain: 0.1
 
 domain_adaptation:
   enabled: false

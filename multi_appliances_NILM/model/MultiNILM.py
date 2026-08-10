@@ -661,7 +661,7 @@ class MultiNILM(nn.Module):
 
         Paper analogue: Lin et al. set ``l1=6, l2=8`` on fc layers.
         Here you select by name, e.g. ``["aligned"]`` or
-        ``["temporal_3", "temporal_5", "aligned"]``.
+        ``["temporal_2", "temporal_4", "aligned"]`` (indices < num_blocks).
         """
         names = ["stem", "temporal", "aligned"]
         for i in range(len(self.temporal_encoder)):
@@ -804,7 +804,7 @@ class MultiNILMConfig:
     cross_appliance_mid_channels: int | None = None
     # Lin-style multi-layer DA hooks (late TCN + pre-head), analogous to fc6–fc8.
     domain_feature_layers: list[str] = field(
-        default_factory=lambda: ["temporal_4", "temporal_6", "aligned"]
+        default_factory=lambda: ["temporal_2", "temporal_4", "aligned"]
     )
 
 
