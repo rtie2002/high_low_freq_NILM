@@ -256,7 +256,7 @@ def print_val_test_comparison(run_dir: Path) -> None:
         val_df,
         test_df,
         fig_path,
-        title="VALIDATION vs TEST (best checkpoint)",
+        title="best ckpt val vs test",
     )
 
     width = 110

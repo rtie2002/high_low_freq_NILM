@@ -653,7 +653,7 @@ def save_val_test_comparison_figure(
     title: str | None = None,
     dpi: int = 200,
 ) -> Path:
-    """Render validation vs test metrics as a table PNG (one figure per epoch round)."""
+    """Compact val/test table: MAE + per-app F1; maF1/miF1 summarized below."""
     compare = build_val_test_comparison_frame(val_metrics, test_metrics)
     output_path = _ensure_parent(output_path)
     if compare.empty:
@@ -664,18 +664,8 @@ def save_val_test_comparison_figure(
         apps = [a for a in compare["appliance"] if a != "overall"] + ["overall"]
         compare = compare.set_index("appliance").loc[apps].reset_index()
 
-    col_labels = [
-        "appliance",
-        "val_MAE",
-        "test_MAE",
-        "MAE_gap",
-        "val_maF1",
-        "test_maF1",
-        "maF1_gap",
-        "val_miF1",
-        "test_miF1",
-        "miF1_gap",
-    ]
+    # Narrow table only (no miF1 columns — those are overall-only, shown under the table).
+    col_labels = ["appliance", "val_MAE", "test_MAE", "MAE_gap", "val_F1", "test_F1", "F1_gap"]
 
     def _fmt_f1(x) -> str:
         if x is None or (isinstance(x, float) and np.isnan(x)):
@@ -689,6 +679,7 @@ def save_val_test_comparison_figure(
 
     cell_text = []
     for _, r in compare.iterrows():
+        # Per-app F1; overall row uses macro F1 in the F1 columns.
         cell_text.append([
             str(r["appliance"]),
             f"{r['val_MAE']:.2f}",
@@ -697,34 +688,50 @@ def save_val_test_comparison_figure(
             _fmt_f1(r["val_maF1"]),
             _fmt_f1(r["test_maF1"]),
             _fmt_gap(r["maF1_gap"]),
-            _fmt_f1(r["val_miF1"]),
-            _fmt_f1(r["test_miF1"]),
-            _fmt_gap(r["miF1_gap"]),
         ])
 
+    overall = compare[compare["appliance"] == "overall"]
+    footer_lines: list[str] = []
+    if not overall.empty:
+        o = overall.iloc[0]
+        footer_lines.append(
+            f"maF1  val={_fmt_f1(o['val_maF1'])}  test={_fmt_f1(o['test_maF1'])}  "
+            f"gap={_fmt_gap(o['maF1_gap'])}   "
+            f"miF1  val={_fmt_f1(o['val_miF1'])}  test={_fmt_f1(o['test_miF1'])}  "
+            f"gap={_fmt_gap(o['miF1_gap'])}"
+        )
+        mae_gap = float(o["MAE_gap"])
+        f1_gap = float(o["maF1_gap"])
+        if abs(mae_gap) < 5 and abs(f1_gap) < 0.05:
+            transfer = "transfer: val≈test"
+        elif mae_gap > 0 or f1_gap < 0:
+            transfer = "transfer: test weaker (house gap)"
+        else:
+            transfer = "transfer: test better (check leakage)"
+        footer_lines.append(transfer)
+
     n_rows = len(cell_text)
-    fig_h = max(2.4, 0.38 * n_rows + 1.35)
-    fig, ax = plt.subplots(figsize=(13.5, fig_h))
+    footer_h = 0.35 if footer_lines else 0.05
+    fig_h = max(1.6, 0.32 * n_rows + 0.55 + footer_h)
+    fig, ax = plt.subplots(figsize=(9.2, fig_h))
     ax.axis("off")
     if title is None:
-        ep = f"epoch {epoch} — " if epoch is not None else ""
-        title = f"{ep}VALIDATION vs TEST (transfer / house gap)"
-    ax.set_title(title, fontsize=11, pad=6)
+        title = f"ep{epoch} val vs test" if epoch is not None else "val vs test"
+    ax.set_title(title, fontsize=9, pad=2, loc="left")
 
     table = ax.table(
         cellText=cell_text,
         colLabels=col_labels,
-        loc="center",
+        loc="upper center",
         cellLoc="center",
     )
     table.auto_set_font_size(False)
     table.set_fontsize(8)
-    table.scale(1.0, 1.2)
+    table.scale(1.0, 1.05)
 
-    # Header + overall row emphasis.
     for j in range(len(col_labels)):
         table[0, j].set_facecolor("#2f3e4e")
-        table[0, j].set_text_props(color="white", weight="bold")
+        table[0, j].set_text_props(color="white", weight="bold", fontsize=8)
     for i, app in enumerate(compare["appliance"], start=1):
         if str(app) == "overall":
             for j in range(len(col_labels)):
@@ -734,43 +741,29 @@ def save_val_test_comparison_figure(
             for j in range(len(col_labels)):
                 table[i, j].set_facecolor("#f7f7f7")
 
-    # Gap coloring.
-    for gap_col in ("MAE_gap", "maF1_gap", "miF1_gap"):
+    for gap_col, key in (("MAE_gap", "MAE_gap"), ("F1_gap", "maF1_gap")):
         j = col_labels.index(gap_col)
         for i, (_, r) in enumerate(compare.iterrows(), start=1):
-            val = r[gap_col]
+            val = r[key]
             if val is None or (isinstance(val, float) and np.isnan(val)):
                 continue
-            if gap_col == "MAE_gap":
-                worse = val > 0
-                better = val < 0
-            else:
-                # F1: negative gap = test weaker.
-                worse = val < 0
-                better = val > 0
+            worse = val > 0 if gap_col == "MAE_gap" else val < 0
+            better = val < 0 if gap_col == "MAE_gap" else val > 0
             if worse:
                 table[i, j].set_text_props(color="#b00020")
             elif better:
                 table[i, j].set_text_props(color="#1b7f3a")
 
-    overall = compare[compare["appliance"] == "overall"]
-    note = "maF1 = macro (mean of per-appliance F1); miF1 = micro (pooled TP/FP/FN). "
-    if not overall.empty:
-        mae_gap = float(overall.iloc[0]["MAE_gap"])
-        f1_gap = float(overall.iloc[0]["maF1_gap"])
-        if abs(mae_gap) < 5 and abs(f1_gap) < 0.05:
-            note += "Transfer: val ≈ test."
-        elif mae_gap > 0 or f1_gap < 0:
-            note += "Transfer: test weaker than val — domain/house gap remains."
-        else:
-            note += "Transfer: test better than val — check split overlap/leakage."
-    fig.text(0.5, 0.01, note, ha="center", va="bottom", fontsize=7.5, style="italic")
+    # maF1 / miF1 under the table (overall only — saves the empty — columns).
+    y = 0.02
+    for line in reversed(footer_lines):
+        fig.text(0.5, y, line, ha="center", va="bottom", fontsize=7.5, family="monospace")
+        y += 0.045
 
-    fig.tight_layout(rect=(0, 0.05, 1, 1), pad=0.3)
-    fig.savefig(output_path, dpi=dpi, bbox_inches="tight", pad_inches=0.08)
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.90, bottom=0.12 if footer_lines else 0.02)
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight", pad_inches=0.04)
     plt.close(fig)
 
-    # Also keep CSV next to the PNG when writing into an epoch folder.
     csv_path = Path(output_path).with_suffix(".csv")
     compare.to_csv(csv_path, index=False)
     return Path(output_path)
@@ -879,7 +872,6 @@ def _vstack_trimmed_images(
     chunks: list[np.ndarray] = []
     for i, (label, img) in enumerate(panels):
         img = _resize_width(_trim_white_border(img), width)
-        # Convert to RGBA float for a uniform canvas.
         if img.ndim == 2:
             rgba = np.stack([img, img, img, np.ones_like(img)], axis=-1)
         elif img.shape[-1] == 3:
@@ -889,26 +881,24 @@ def _vstack_trimmed_images(
             if rgba.max() > 1.5:
                 rgba = rgba / 255.0
 
-        band = np.ones((label_band_px, width, 4), dtype=np.float32)
-        # Draw label via a tiny matplotlib render into the band.
-        fig = plt.figure(figsize=(width / 100.0, label_band_px / 100.0), dpi=100)
-        ax = fig.add_axes([0, 0, 1, 1])
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
-        ax.axis("off")
-        ax.text(0.01, 0.5, label, va="center", ha="left", fontsize=11, fontweight="bold")
-        fig.canvas.draw()
-        buf = np.asarray(fig.canvas.buffer_rgba(), dtype=np.float32) / 255.0
-        plt.close(fig)
-        band = _resize_width(buf, width)
-        if band.shape[0] != label_band_px:
-            # Force exact band height.
-            ys = (np.linspace(0, band.shape[0] - 1, label_band_px)).astype(np.int32)
-            band = band[ys]
-        chunks.append(band)
+        if label_band_px > 0 and label:
+            fig = plt.figure(figsize=(width / 100.0, label_band_px / 100.0), dpi=100)
+            ax = fig.add_axes([0, 0, 1, 1])
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            ax.axis("off")
+            ax.text(0.01, 0.5, label, va="center", ha="left", fontsize=10, fontweight="bold")
+            fig.canvas.draw()
+            buf = np.asarray(fig.canvas.buffer_rgba(), dtype=np.float32) / 255.0
+            plt.close(fig)
+            band = _resize_width(buf, width)
+            if band.shape[0] != label_band_px:
+                ys = (np.linspace(0, band.shape[0] - 1, label_band_px)).astype(np.int32)
+                band = band[ys]
+            chunks.append(band)
         chunks.append(rgba.astype(np.float32, copy=False))
         if i < len(panels) - 1 and gap_px > 0:
-            chunks.append(np.full((gap_px, width, 4), 0.92, dtype=np.float32))
+            chunks.append(np.full((gap_px, width, 4), 0.85, dtype=np.float32))
     return np.concatenate(chunks, axis=0)
 
 
@@ -932,15 +922,16 @@ def save_multi_epoch_metrics_collage(
     if not panels:
         return None
 
-    # Pack at source pixel resolution (no matplotlib downsampling).
-    stacked = _vstack_trimmed_images(panels, gap_px=12, label_band_px=36)
+    # Each panel already has a short "epN val vs test" title — no extra epoch banners.
+    stacked = _vstack_trimmed_images(panels, gap_px=4, label_band_px=0)
     output_path = _ensure_parent(
         output_path
         if output_path is not None
         else run_dir / "comparisons" / "metrics_all_epochs.png"
     )
+    # Optional tiny header; empty string skips it.
     if title is None:
-        title = "VALIDATION vs TEST — all plot-interval epochs"
+        title = ""
 
     rgba = np.clip(stacked, 0.0, 1.0)
     if rgba.dtype != np.float32 and rgba.dtype != np.float64:
@@ -952,19 +943,20 @@ def save_multi_epoch_metrics_collage(
         body = np.concatenate([body, np.full(body.shape[:2] + (1,), 255, dtype=np.uint8)], axis=-1)
 
     width = int(body.shape[1])
-    title_h = max(48, int(round(0.035 * width)))
-    title_band = Image.new("RGBA", (width, title_h), (255, 255, 255, 255))
-    draw = ImageDraw.Draw(title_band)
-    try:
-        font = ImageFont.truetype("arial.ttf", size=max(18, title_h // 2))
-    except OSError:
-        font = ImageFont.load_default()
-    draw.text((12, title_h // 2), title, fill=(20, 20, 20, 255), font=font, anchor="lm")
-
-    canvas = Image.new("RGBA", (width, title_h + body.shape[0]), (255, 255, 255, 255))
-    canvas.paste(title_band, (0, 0))
-    canvas.paste(Image.fromarray(body, mode="RGBA"), (0, title_h))
-    # dpi metadata helps viewers; pixels stay 1:1 sharp.
+    if title:
+        title_h = max(36, int(round(0.028 * width)))
+        title_band = Image.new("RGBA", (width, title_h), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(title_band)
+        try:
+            font = ImageFont.truetype("arial.ttf", size=max(14, title_h // 2))
+        except OSError:
+            font = ImageFont.load_default()
+        draw.text((8, title_h // 2), title, fill=(20, 20, 20, 255), font=font, anchor="lm")
+        canvas = Image.new("RGBA", (width, title_h + body.shape[0]), (255, 255, 255, 255))
+        canvas.paste(title_band, (0, 0))
+        canvas.paste(Image.fromarray(body, mode="RGBA"), (0, title_h))
+    else:
+        canvas = Image.fromarray(body, mode="RGBA")
     canvas.convert("RGB").save(output_path, format="PNG", dpi=(dpi, dpi), optimize=True)
     return Path(output_path)
 

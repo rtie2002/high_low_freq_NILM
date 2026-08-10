@@ -12,11 +12,11 @@ evaluation:
   regate_power_with_pred_on: true
 
 windowing:
-  input_window_length: 2048
-  output_window_length: 2048
+  input_window_length: 1024
+  output_window_length: 1024
   output_alignment: end
-  input_stride: 1024
-  eval_stride: 1024
+  input_stride: 512
+  eval_stride: 512
   eval_reconstruction: auto
   training_targets: auto
 

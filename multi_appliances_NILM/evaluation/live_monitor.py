@@ -463,7 +463,7 @@ class LiveTrainingMonitor:
             test_path,
             out,
             epoch=epoch,
-            title=f"{self.model_name} epoch {epoch} — VALIDATION vs TEST",
+            title=f"ep{epoch} val vs test",
             dpi=max(600, int(self.plot_cfg.get("comparison_dpi", 600))),
         )
         latest_dir = self.run_dir / "metrics_by_epoch" / "latest"
@@ -486,7 +486,7 @@ class LiveTrainingMonitor:
         # Metrics only (no waveforms mixed in).
         metrics_all = save_multi_epoch_metrics_collage(
             self.run_dir,
-            title=f"{self.model_name} — VALIDATION vs TEST (all plot epochs)",
+            title="",  # panels already labeled; keep collage compact
             dpi=dpi,
         )
         if metrics_all is not None:
