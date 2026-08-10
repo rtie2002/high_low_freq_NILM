@@ -12,11 +12,11 @@ evaluation:
   regate_power_with_pred_on: true
 
 windowing:
-  input_window_length: 4096
-  output_window_length: 4096
+  input_window_length: 2048
+  output_window_length: 2048
   output_alignment: end
-  input_stride: 2048
-  eval_stride: 2048
+  input_stride: 512
+  eval_stride: 512
   eval_reconstruction: auto
   training_targets: auto
 
@@ -72,7 +72,7 @@ domain_adaptation:
 
 training:
   batch_size: 64
-  epochs: 250
+  epochs: 200
   learning_rate: 0.0001
   weight_decay: 0.0001
   num_workers: 0
