@@ -25,6 +25,9 @@ from evaluation.plots import (
     plot_training_history,
     plot_validation_metrics,
     save_appliance_on_waveforms,
+    save_epoch_round_snapshot,
+    save_multi_epoch_metrics_collage,
+    save_multi_epoch_waveform_collages,
     save_val_test_comparison_figure,
 )
 from evaluation.power_postprocess import resolve_power_postprocess
@@ -277,6 +280,8 @@ class LiveTrainingMonitor:
                 fig_path = self._save_epoch_val_test_comparison_figure(epoch)
                 if fig_path is not None:
                     saved.append(fig_path)
+                # One-picture dashboards so you don't jump epoch folders.
+                saved.extend(self._save_epoch_comparison_dashboards(epoch))
             if self.should_plot_feature_maps():
                 saved.extend(
                     self._save_feature_maps(
@@ -472,6 +477,43 @@ class LiveTrainingMonitor:
             shutil.copy2(csv_src, latest_csv)
         return out
 
+    def _save_epoch_comparison_dashboards(self, epoch: int) -> list[Path]:
+        """Build single-picture comparisons across epochs (metrics + waveforms)."""
+        saved: list[Path] = []
+        period_index = int(self.plot_cfg.get("comparison_period_index", 1))
+        dpi = int(self.plot_cfg.get("comparison_dpi", 140))
+
+        snap = save_epoch_round_snapshot(
+            self.run_dir,
+            epoch=epoch,
+            appliances=self.appliances,
+            period_index=period_index,
+            dpi=dpi,
+            title_prefix=f"{self.model_name} ",
+        )
+        if snap is not None:
+            saved.append(snap)
+
+        metrics_all = save_multi_epoch_metrics_collage(
+            self.run_dir,
+            title=f"{self.model_name} — VALIDATION vs TEST (all plot epochs)",
+            dpi=dpi,
+        )
+        if metrics_all is not None:
+            saved.append(metrics_all)
+
+        saved.extend(
+            save_multi_epoch_waveform_collages(
+                self.run_dir,
+                self.appliances,
+                period_index=period_index,
+                prefer_context=False,
+                dpi=dpi,
+                title_prefix=f"{self.model_name} ",
+            )
+        )
+        return saved
+
     def _write_waveforms_for_bundle(
         self,
         adapter,
@@ -507,8 +549,9 @@ class LiveTrainingMonitor:
             if get_state_label_source(adapter.model_cfg) == "threshold"
             else None
         )
+        # Epoch-stable seed → same ON periods every plot interval (fair collage).
         split_id = 0 if split == "validation" else 1
-        rng = np.random.default_rng(self.seed + epoch * 1009 + split_id)
+        rng = np.random.default_rng(self.seed + 17 * split_id)
 
         # Durable epoch folder + pointer tag (latest / best).
         tags = [self._epoch_tag(epoch)]

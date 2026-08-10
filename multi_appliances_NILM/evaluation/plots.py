@@ -726,6 +726,282 @@ def save_val_test_comparison_figure(
     return Path(output_path)
 
 
+def _list_metric_epoch_dirs(run_dir: Path) -> list[tuple[int, Path]]:
+    root = Path(run_dir) / "metrics_by_epoch"
+    if not root.is_dir():
+        return []
+    out: list[tuple[int, Path]] = []
+    for p in root.iterdir():
+        if not p.is_dir() or not p.name.startswith("epoch_"):
+            continue
+        try:
+            ep = int(p.name.split("_", 1)[1])
+        except ValueError:
+            continue
+        out.append((ep, p))
+    return sorted(out, key=lambda x: x[0])
+
+
+def _list_waveform_epoch_dirs(run_dir: Path, split: str) -> list[tuple[int, Path]]:
+    root = Path(run_dir) / "waveforms" / split
+    if not root.is_dir():
+        return []
+    out: list[tuple[int, Path]] = []
+    for p in root.iterdir():
+        if not p.is_dir() or not p.name.startswith("epoch_"):
+            continue
+        try:
+            ep = int(p.name.split("_", 1)[1])
+        except ValueError:
+            continue
+        out.append((ep, p))
+    return sorted(out, key=lambda x: x[0])
+
+
+def _pick_period_waveform_png(
+    app_dir: Path,
+    *,
+    period_index: int = 1,
+    prefer_context: bool = False,
+) -> Path | None:
+    """Pick one ON-period PNG (default period 01, focused crop, not context)."""
+    if not app_dir.is_dir():
+        return None
+    period_tag = f"_{int(period_index):02d}_"
+    candidates = sorted(app_dir.glob(f"*{period_tag}*.png"))
+    if not candidates:
+        candidates = sorted(app_dir.glob("*.png"))
+    if not candidates:
+        return None
+
+    def _is_context(path: Path) -> bool:
+        return "_context" in path.stem
+
+    focused = [p for p in candidates if not _is_context(p)]
+    context = [p for p in candidates if _is_context(p)]
+    pool = context if prefer_context and context else (focused or candidates)
+    # Prefer names that include the period tag (stable event index).
+    tagged = [p for p in pool if period_tag in p.name]
+    return (tagged or pool)[0]
+
+
+def save_multi_epoch_metrics_collage(
+    run_dir: str | Path,
+    output_path: str | Path | None = None,
+    *,
+    title: str | None = None,
+    dpi: int = 160,
+) -> Path | None:
+    """Stack every epoch's val/test comparison PNG into one scrollable figure."""
+    run_dir = Path(run_dir)
+    epoch_dirs = _list_metric_epoch_dirs(run_dir)
+    images: list[tuple[int, np.ndarray]] = []
+    for ep, ep_dir in epoch_dirs:
+        png = ep_dir / "validation_test_comparison.png"
+        if not png.exists():
+            continue
+        img = plt.imread(png)
+        images.append((ep, img))
+    if not images:
+        return None
+
+    output_path = _ensure_parent(
+        output_path
+        if output_path is not None
+        else run_dir / "comparisons" / "metrics_all_epochs.png"
+    )
+    n = len(images)
+    # Keep relative panel heights from native image aspect ratios.
+    aspects = [max(img.shape[0] / max(img.shape[1], 1), 0.25) for _, img in images]
+    fig_w = 12.0
+    fig_h = min(3.2 * n, 28.0)
+    fig, axes = plt.subplots(
+        n,
+        1,
+        figsize=(fig_w, fig_h),
+        gridspec_kw={"height_ratios": aspects},
+    )
+    if n == 1:
+        axes = [axes]
+    for ax, (ep, img) in zip(axes, images):
+        ax.imshow(img)
+        ax.set_axis_off()
+        ax.set_title(f"epoch {ep}", fontsize=11, loc="left", pad=4)
+    if title is None:
+        title = "VALIDATION vs TEST — all plot-interval epochs"
+    fig.suptitle(title, fontsize=13, y=0.995)
+    fig.tight_layout(rect=(0, 0, 1, 0.98))
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    return Path(output_path)
+
+
+def save_multi_epoch_waveform_collages(
+    run_dir: str | Path,
+    appliances: list[str],
+    *,
+    output_dir: str | Path | None = None,
+    period_index: int = 1,
+    prefer_context: bool = False,
+    dpi: int = 140,
+    title_prefix: str = "",
+) -> list[Path]:
+    """One PNG per appliance: rows=epochs, cols=validation|test (same ON period).
+
+    Avoids jumping across ``waveforms/{split}/epoch_XXXX/<app>/`` folders.
+    Period selection is shared across epochs when waveform RNG is epoch-stable.
+    """
+    run_dir = Path(run_dir)
+    output_dir = Path(output_dir) if output_dir is not None else run_dir / "comparisons" / "waveforms_by_epoch"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    val_epochs = {ep: p for ep, p in _list_waveform_epoch_dirs(run_dir, "validation")}
+    test_epochs = {ep: p for ep, p in _list_waveform_epoch_dirs(run_dir, "test")}
+    epochs = sorted(set(val_epochs) | set(test_epochs))
+    if not epochs:
+        return []
+
+    saved: list[Path] = []
+    for app in appliances:
+        # Collect (epoch, val_img|None, test_img|None).
+        rows: list[tuple[int, np.ndarray | None, np.ndarray | None]] = []
+        for ep in epochs:
+            val_png = None
+            test_png = None
+            if ep in val_epochs:
+                val_png = _pick_period_waveform_png(
+                    val_epochs[ep] / app,
+                    period_index=period_index,
+                    prefer_context=prefer_context,
+                )
+            if ep in test_epochs:
+                test_png = _pick_period_waveform_png(
+                    test_epochs[ep] / app,
+                    period_index=period_index,
+                    prefer_context=prefer_context,
+                )
+            val_img = plt.imread(val_png) if val_png is not None else None
+            test_img = plt.imread(test_png) if test_png is not None else None
+            if val_img is None and test_img is None:
+                continue
+            rows.append((ep, val_img, test_img))
+        if not rows:
+            continue
+
+        n = len(rows)
+        fig_w = 14.0
+        fig_h = min(2.6 * n + 0.8, 30.0)
+        fig, axes = plt.subplots(n, 2, figsize=(fig_w, fig_h), squeeze=False)
+        for i, (ep, val_img, test_img) in enumerate(rows):
+            for j, img in enumerate((val_img, test_img)):
+                ax = axes[i, j]
+                if img is None:
+                    ax.text(0.5, 0.5, "missing", ha="center", va="center", fontsize=10)
+                    ax.set_facecolor("#f0f0f0")
+                else:
+                    ax.imshow(img)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                for spine in ax.spines.values():
+                    spine.set_visible(False)
+            axes[i, 0].set_ylabel(f"ep {ep}", fontsize=10, rotation=0, labelpad=28, va="center")
+        axes[0, 0].set_title("validation", fontsize=11)
+        axes[0, 1].set_title("test", fontsize=11)
+        fig.suptitle(
+            f"{title_prefix}{app} — ON period {period_index:02d} across epochs".strip(),
+            fontsize=13,
+        )
+        fig.tight_layout(rect=(0.02, 0, 1, 0.97))
+        out = output_dir / f"{app}_period{period_index:02d}_by_epoch.png"
+        fig.savefig(out, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+        saved.append(out)
+
+    return saved
+
+
+def save_epoch_round_snapshot(
+    run_dir: str | Path,
+    *,
+    epoch: int,
+    appliances: list[str],
+    period_index: int = 1,
+    dpi: int = 140,
+    title_prefix: str = "",
+) -> Path | None:
+    """One picture for this plot round: val/test metrics table + period-01 waveforms.
+
+    Layout:
+      [ validation vs test metrics table ]
+      [ val waveform | test waveform ]  × appliances (period_index)
+    """
+    run_dir = Path(run_dir)
+    metrics_png = run_dir / "metrics_by_epoch" / f"epoch_{int(epoch):04d}" / "validation_test_comparison.png"
+    panels: list[np.ndarray] = []
+    labels: list[str] = []
+    if metrics_png.exists():
+        panels.append(plt.imread(metrics_png))
+        labels.append("metrics")
+
+    for app in appliances:
+        row_imgs = []
+        for split in ("validation", "test"):
+            app_dir = run_dir / "waveforms" / split / f"epoch_{int(epoch):04d}" / app
+            png = _pick_period_waveform_png(app_dir, period_index=period_index, prefer_context=False)
+            row_imgs.append(plt.imread(png) if png is not None else None)
+        if row_imgs[0] is None and row_imgs[1] is None:
+            continue
+        # Render a small 1x2 strip for this appliance, then stack.
+        fig_r, ax_r = plt.subplots(1, 2, figsize=(12.0, 2.8))
+        for ax, img, split in zip(ax_r, row_imgs, ("validation", "test")):
+            if img is None:
+                ax.text(0.5, 0.5, "missing", ha="center", va="center")
+                ax.set_facecolor("#f0f0f0")
+            else:
+                ax.imshow(img)
+            ax.set_title(f"{app} · {split}", fontsize=9)
+            ax.set_axis_off()
+        fig_r.tight_layout()
+        tmp = run_dir / "comparisons" / "_tmp_row.png"
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        fig_r.savefig(tmp, dpi=dpi, bbox_inches="tight")
+        plt.close(fig_r)
+        panels.append(plt.imread(tmp))
+        labels.append(app)
+        tmp.unlink(missing_ok=True)
+
+    if not panels:
+        return None
+
+    out = run_dir / "comparisons" / f"epoch_{int(epoch):04d}_snapshot.png"
+    aspects = [max(img.shape[0] / max(img.shape[1], 1), 0.2) for img in panels]
+    fig, axes = plt.subplots(
+        len(panels),
+        1,
+        figsize=(12.5, min(2.8 * len(panels), 36.0)),
+        gridspec_kw={"height_ratios": aspects},
+    )
+    if len(panels) == 1:
+        axes = [axes]
+    for ax, img, lab in zip(axes, panels, labels):
+        ax.imshow(img)
+        ax.set_axis_off()
+        if lab != "metrics":
+            ax.set_title(lab, fontsize=10, loc="left", pad=2)
+    fig.suptitle(
+        f"{title_prefix}epoch {epoch} — val/test metrics + period {period_index:02d} waveforms".strip(),
+        fontsize=13,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.98))
+    out = _ensure_parent(out)
+    fig.savefig(out, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    # Latest pointer.
+    latest = run_dir / "comparisons" / "latest_epoch_snapshot.png"
+    latest.write_bytes(out.read_bytes())
+    return out
+
+
 def plot_validation_metrics(
     history: pd.DataFrame | str | Path,
     output_path: str | Path,
