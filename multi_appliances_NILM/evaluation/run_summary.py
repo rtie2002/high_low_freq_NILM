@@ -182,17 +182,18 @@ def print_evaluation_report(
     per_app = metrics[metrics["appliance"] != "overall"]
     overall = metrics[metrics["appliance"] == "overall"]
 
-    width = 78
+    width = 88
     top, _, bot = _box(f"{split.upper()} METRICS", width)
     print(f"\n{top}", flush=True)
     header = (
         f"{'appliance':<16}"
         f"{'MAE':>10}"
         f"{'SAE':>10}"
-        f"{'F1':>10}"
+        f"{'maF1':>10}"
+        f"{'miF1':>10}"
     )
     print(_row(width, header), flush=True)
-    print(_row(width, "-" * 46), flush=True)
+    print(_row(width, "-" * 56), flush=True)
 
     if not per_app.empty:
         for _, r in per_app.iterrows():
@@ -201,23 +202,27 @@ def print_evaluation_report(
                 f"{float(r['mae']):>10.4f}"
                 f"{float(r['sae']):>10.4f}"
                 f"{float(r['f1']):>10.4f}"
+                f"{'—':>10}"
             )
             print(_row(width, line), flush=True)
 
     if not overall.empty:
         row = overall.iloc[0]
-        print(_row(width, "-" * 46), flush=True)
+        print(_row(width, "-" * 56), flush=True)
+        macro = float(row["macro_f1"]) if "macro_f1" in row.index and pd.notna(row["macro_f1"]) else float(row["f1"])
+        micro = float(row["micro_f1"]) if pd.notna(row["micro_f1"]) else float("nan")
         overall_line = (
             f"{'OVERALL':<16}"
             f"{float(row['mae']):>10.4f}"
             f"{float(row['sae']):>10.4f}"
-            f"{float(row['f1']):>10.4f}"
+            f"{macro:>10.4f}"
+            f"{micro:>10.4f}"
         )
         print(_row(width, overall_line), flush=True)
         print(
             _row(
                 width,
-                f"micro_f1 = {float(row['micro_f1']):.4f}  (token-level; often higher than macro F1)",
+                "maF1=macro mean of per-app F1; miF1=micro pooled TP/FP/FN",
             ),
             flush=True,
         )
@@ -229,7 +234,7 @@ def print_evaluation_report(
 
 def print_val_test_comparison(run_dir: Path) -> None:
     """Compare validation vs test metrics to inspect generalization gap."""
-    from evaluation.plots import save_val_test_comparison_figure
+    from evaluation.plots import build_val_test_comparison_frame, save_val_test_comparison_figure
 
     val_path = run_dir / "validation_metrics.csv"
     test_path = run_dir / "test_metrics.csv"
@@ -240,27 +245,8 @@ def print_val_test_comparison(run_dir: Path) -> None:
 
     val_df = pd.read_csv(val_path)
     test_df = pd.read_csv(test_path)
-    val_app = val_df[val_df["appliance"] != "overall"].set_index("appliance")
-    test_app = test_df[test_df["appliance"] != "overall"].set_index("appliance")
-    appliances = [app for app in val_app.index if app in test_app.index]
-
-    rows = []
-    for app in appliances:
-        v = val_app.loc[app]
-        t = test_app.loc[app]
-        rows.append({
-            "appliance": app,
-            "val_mae": float(v["mae"]),
-            "test_mae": float(t["mae"]),
-            "mae_gap": float(t["mae"] - v["mae"]),
-            "val_f1": float(v["f1"]),
-            "test_f1": float(t["f1"]),
-            "f1_gap": float(t["f1"] - v["f1"]),
-            "val_sae": float(v["sae"]),
-            "test_sae": float(t["sae"]),
-        })
-
-    compare_df = pd.DataFrame(rows)
+    compare_df = build_val_test_comparison_frame(val_df, test_df)
+    # Appliance rows only in the CSV summary of gaps (overall included).
     compare_path = run_dir / "validation_test_comparison.csv"
     compare_df.to_csv(compare_path, index=False)
 
@@ -273,44 +259,50 @@ def print_val_test_comparison(run_dir: Path) -> None:
         title="VALIDATION vs TEST (best checkpoint)",
     )
 
-    val_overall = val_df[val_df["appliance"] == "overall"].iloc[0]
-    test_overall = test_df[test_df["appliance"] == "overall"].iloc[0]
-    mae_gap = float(test_overall["mae"] - val_overall["mae"])
-    f1_gap = float(test_overall["f1"] - val_overall["f1"])
-
-    width = 90
+    width = 110
     top, _, bot = _box("VALIDATION vs TEST  (transfer / house gap)", width)
     print(f"\n{top}", flush=True)
     hdr = (
         f"{'appliance':<16}"
-        f"{'val_MAE':>9}{'test_MAE':>10}{'MAE_gap':>10}"
-        f"{'val_F1':>9}{'test_F1':>9}{'F1_gap':>9}"
+        f"{'val_MAE':>9}{'test_MAE':>10}{'MAE_gap':>9}"
+        f"{'val_maF1':>10}{'test_maF1':>10}{'maF1_gap':>10}"
+        f"{'val_miF1':>10}{'test_miF1':>10}{'miF1_gap':>10}"
     )
     print(_row(width, hdr), flush=True)
-    print(_row(width, "-" * 72), flush=True)
+    print(_row(width, "-" * 98), flush=True)
 
-    for r in rows:
+    def _f1(x) -> str:
+        if x is None or (isinstance(x, float) and pd.isna(x)):
+            return f"{'—':>10}"
+        return f"{float(x):>10.4f}"
+
+    def _gap(x) -> str:
+        if x is None or (isinstance(x, float) and pd.isna(x)):
+            return f"{'—':>10}"
+        return f"{float(x):>+10.4f}"
+
+    for _, r in compare_df.iterrows():
+        if str(r["appliance"]) == "overall":
+            print(_row(width, "-" * 98), flush=True)
         line = (
-            f"{r['appliance']:<16}"
-            f"{r['val_mae']:>9.2f}{r['test_mae']:>10.2f}{r['mae_gap']:>+10.2f}"
-            f"{r['val_f1']:>9.4f}{r['test_f1']:>9.4f}{r['f1_gap']:>+9.4f}"
+            f"{str(r['appliance']):<16}"
+            f"{float(r['val_MAE']):>9.2f}{float(r['test_MAE']):>10.2f}{float(r['MAE_gap']):>+9.2f}"
+            f"{_f1(r['val_maF1'])}{_f1(r['test_maF1'])}{_gap(r['maF1_gap'])}"
+            f"{_f1(r['val_miF1'])}{_f1(r['test_miF1'])}{_gap(r['miF1_gap'])}"
         )
         print(_row(width, line), flush=True)
 
-    print(_row(width, "-" * 72), flush=True)
-    overall_line = (
-        f"{'OVERALL':<16}"
-        f"{float(val_overall['mae']):>9.2f}{float(test_overall['mae']):>10.2f}{mae_gap:>+10.2f}"
-        f"{float(val_overall['f1']):>9.4f}{float(test_overall['f1']):>9.4f}{f1_gap:>+9.4f}"
-    )
-    print(_row(width, overall_line), flush=True)
-
-    if abs(mae_gap) < 5 and abs(f1_gap) < 0.05:
-        note = "Transfer note: val and test are close — similar generalization."
-    elif test_overall["mae"] > val_overall["mae"] or test_overall["f1"] < val_overall["f1"]:
-        note = "Transfer note: test weaker than val on F1 and/or MAE — domain/house gap remains."
-    else:
-        note = "Transfer note: test better than val — check split overlap or leakage."
+    overall = compare_df[compare_df["appliance"] == "overall"]
+    note = "maF1=macro; miF1=micro (pooled). "
+    if not overall.empty:
+        mae_gap = float(overall.iloc[0]["MAE_gap"])
+        f1_gap = float(overall.iloc[0]["maF1_gap"])
+        if abs(mae_gap) < 5 and abs(f1_gap) < 0.05:
+            note += "Transfer: val ≈ test."
+        elif mae_gap > 0 or f1_gap < 0:
+            note += "Transfer: test weaker than val — domain/house gap remains."
+        else:
+            note += "Transfer: test better than val — check split/leakage."
     print(_row(width, note), flush=True)
     print(bot, flush=True)
     print(f"Saved comparison table: {compare_path}", flush=True)

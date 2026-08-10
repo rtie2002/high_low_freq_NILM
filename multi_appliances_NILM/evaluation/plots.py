@@ -598,11 +598,21 @@ def build_val_test_comparison_frame(
     val_metrics: pd.DataFrame | str | Path,
     test_metrics: pd.DataFrame | str | Path,
 ) -> pd.DataFrame:
-    """Per-appliance + overall val/test MAE/F1/SAE with gaps (same as console table)."""
+    """Per-appliance + overall val/test MAE with macro/micro F1 and gaps."""
     if not isinstance(val_metrics, pd.DataFrame):
         val_metrics = pd.read_csv(val_metrics)
     if not isinstance(test_metrics, pd.DataFrame):
         test_metrics = pd.read_csv(test_metrics)
+
+    def _macro(row: pd.Series) -> float:
+        if "macro_f1" in row.index and pd.notna(row["macro_f1"]):
+            return float(row["macro_f1"])
+        return float(row["f1"])
+
+    def _micro(row: pd.Series) -> float | None:
+        if "micro_f1" not in row.index or pd.isna(row["micro_f1"]):
+            return None
+        return float(row["micro_f1"])
 
     val_app = val_metrics.set_index("appliance")
     test_app = test_metrics.set_index("appliance")
@@ -611,16 +621,25 @@ def build_val_test_comparison_frame(
     for app in appliances:
         v = val_app.loc[app]
         t = test_app.loc[app]
+        v_ma, t_ma = _macro(v), _macro(t)
+        v_mi, t_mi = _micro(v), _micro(t)
         rows.append({
             "appliance": app,
             "val_MAE": float(v["mae"]),
             "test_MAE": float(t["mae"]),
             "MAE_gap": float(t["mae"] - v["mae"]),
-            "val_F1": float(v["f1"]),
-            "test_F1": float(t["f1"]),
-            "F1_gap": float(t["f1"] - v["f1"]),
+            "val_maF1": v_ma,
+            "test_maF1": t_ma,
+            "maF1_gap": float(t_ma - v_ma),
+            "val_miF1": v_mi,
+            "test_miF1": t_mi,
+            "miF1_gap": None if v_mi is None or t_mi is None else float(t_mi - v_mi),
             "val_SAE": float(v["sae"]),
             "test_SAE": float(t["sae"]),
+            # Backward-compatible aliases used by older notes/code.
+            "val_F1": v_ma,
+            "test_F1": t_ma,
+            "F1_gap": float(t_ma - v_ma),
         })
     return pd.DataFrame(rows)
 
@@ -645,7 +664,29 @@ def save_val_test_comparison_figure(
         apps = [a for a in compare["appliance"] if a != "overall"] + ["overall"]
         compare = compare.set_index("appliance").loc[apps].reset_index()
 
-    col_labels = ["appliance", "val_MAE", "test_MAE", "MAE_gap", "val_F1", "test_F1", "F1_gap"]
+    col_labels = [
+        "appliance",
+        "val_MAE",
+        "test_MAE",
+        "MAE_gap",
+        "val_maF1",
+        "test_maF1",
+        "maF1_gap",
+        "val_miF1",
+        "test_miF1",
+        "miF1_gap",
+    ]
+
+    def _fmt_f1(x) -> str:
+        if x is None or (isinstance(x, float) and np.isnan(x)):
+            return "—"
+        return f"{float(x):.4f}"
+
+    def _fmt_gap(x) -> str:
+        if x is None or (isinstance(x, float) and np.isnan(x)):
+            return "—"
+        return f"{float(x):+.4f}"
+
     cell_text = []
     for _, r in compare.iterrows():
         cell_text.append([
@@ -653,14 +694,17 @@ def save_val_test_comparison_figure(
             f"{r['val_MAE']:.2f}",
             f"{r['test_MAE']:.2f}",
             f"{r['MAE_gap']:+.2f}",
-            f"{r['val_F1']:.4f}",
-            f"{r['test_F1']:.4f}",
-            f"{r['F1_gap']:+.4f}",
+            _fmt_f1(r["val_maF1"]),
+            _fmt_f1(r["test_maF1"]),
+            _fmt_gap(r["maF1_gap"]),
+            _fmt_f1(r["val_miF1"]),
+            _fmt_f1(r["test_miF1"]),
+            _fmt_gap(r["miF1_gap"]),
         ])
 
     n_rows = len(cell_text)
-    fig_h = max(2.2, 0.38 * n_rows + 1.15)
-    fig, ax = plt.subplots(figsize=(10.5, fig_h))
+    fig_h = max(2.4, 0.38 * n_rows + 1.35)
+    fig, ax = plt.subplots(figsize=(13.5, fig_h))
     ax.axis("off")
     if title is None:
         ep = f"epoch {epoch} — " if epoch is not None else ""
@@ -674,7 +718,7 @@ def save_val_test_comparison_figure(
         cellLoc="center",
     )
     table.auto_set_font_size(False)
-    table.set_fontsize(9)
+    table.set_fontsize(8)
     table.scale(1.0, 1.2)
 
     # Header + overall row emphasis.
@@ -690,33 +734,39 @@ def save_val_test_comparison_figure(
             for j in range(len(col_labels)):
                 table[i, j].set_facecolor("#f7f7f7")
 
-    # Gap coloring on MAE_gap / F1_gap columns.
-    mae_j, f1_j = col_labels.index("MAE_gap"), col_labels.index("F1_gap")
-    for i, (_, r) in enumerate(compare.iterrows(), start=1):
-        if r["MAE_gap"] > 0:
-            table[i, mae_j].set_text_props(color="#b00020")
-        elif r["MAE_gap"] < 0:
-            table[i, mae_j].set_text_props(color="#1b7f3a")
-        if r["F1_gap"] < 0:
-            table[i, f1_j].set_text_props(color="#b00020")
-        elif r["F1_gap"] > 0:
-            table[i, f1_j].set_text_props(color="#1b7f3a")
+    # Gap coloring.
+    for gap_col in ("MAE_gap", "maF1_gap", "miF1_gap"):
+        j = col_labels.index(gap_col)
+        for i, (_, r) in enumerate(compare.iterrows(), start=1):
+            val = r[gap_col]
+            if val is None or (isinstance(val, float) and np.isnan(val)):
+                continue
+            if gap_col == "MAE_gap":
+                worse = val > 0
+                better = val < 0
+            else:
+                # F1: negative gap = test weaker.
+                worse = val < 0
+                better = val > 0
+            if worse:
+                table[i, j].set_text_props(color="#b00020")
+            elif better:
+                table[i, j].set_text_props(color="#1b7f3a")
 
     overall = compare[compare["appliance"] == "overall"]
-    note = ""
+    note = "maF1 = macro (mean of per-appliance F1); miF1 = micro (pooled TP/FP/FN). "
     if not overall.empty:
         mae_gap = float(overall.iloc[0]["MAE_gap"])
-        f1_gap = float(overall.iloc[0]["F1_gap"])
+        f1_gap = float(overall.iloc[0]["maF1_gap"])
         if abs(mae_gap) < 5 and abs(f1_gap) < 0.05:
-            note = "Transfer note: val and test are close — similar generalization."
+            note += "Transfer: val ≈ test."
         elif mae_gap > 0 or f1_gap < 0:
-            note = "Transfer note: test weaker than val on F1 and/or MAE — domain/house gap remains."
+            note += "Transfer: test weaker than val — domain/house gap remains."
         else:
-            note = "Transfer note: test better than val — check split overlap or leakage."
-    if note:
-        fig.text(0.5, 0.01, note, ha="center", va="bottom", fontsize=8, style="italic")
+            note += "Transfer: test better than val — check split overlap/leakage."
+    fig.text(0.5, 0.01, note, ha="center", va="bottom", fontsize=7.5, style="italic")
 
-    fig.tight_layout(rect=(0, 0.04, 1, 1), pad=0.3)
+    fig.tight_layout(rect=(0, 0.05, 1, 1), pad=0.3)
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight", pad_inches=0.08)
     plt.close(fig)
 
@@ -929,95 +979,91 @@ def save_multi_epoch_waveform_collages(
     dpi: int = 600,
     title_prefix: str = "",
 ) -> list[Path]:
-    """One high-res PNG: for each epoch, show ALL appliances (validation + test rows).
+    """Two high-res PNGs per period: validation-only and test-only across epochs.
 
-    Layout (compact)::
-        epoch 50  validation | kettle | fridge | ... |
-        epoch 50  test       | kettle | fridge | ... |
-        epoch 100 validation | ...
-    Metrics tables are NOT included (separate ``metrics_all_epochs.png``).
+    Files::
+        ALL_appliances_period01_by_epoch_validation.png
+        ALL_appliances_period01_by_epoch_test.png
+
+    Layout (each split separately)::
+        epoch 50  | kettle | fridge | ... |
+        epoch 100 | kettle | fridge | ... |
     """
     run_dir = Path(run_dir)
     output_dir = Path(output_dir) if output_dir is not None else run_dir / "comparisons" / "waveforms_by_epoch"
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    val_epochs = {ep: p for ep, p in _list_waveform_epoch_dirs(run_dir, "validation")}
-    test_epochs = {ep: p for ep, p in _list_waveform_epoch_dirs(run_dir, "test")}
-    epochs = sorted(set(val_epochs) | set(test_epochs))
-    if not epochs or not appliances:
+    if not appliances:
         return []
 
-    grid_rows: list[tuple[int, str, list[np.ndarray | None]]] = []
-    for ep in epochs:
-        for split, ep_map in (("validation", val_epochs), ("test", test_epochs)):
+    saved: list[Path] = []
+    for split in ("validation", "test"):
+        ep_map = {ep: p for ep, p in _list_waveform_epoch_dirs(run_dir, split)}
+        epochs = sorted(ep_map)
+        if not epochs:
+            continue
+
+        grid_rows: list[tuple[int, list[np.ndarray | None]]] = []
+        for ep in epochs:
             imgs: list[np.ndarray | None] = []
             any_hit = False
             for app in appliances:
-                png = None
-                if ep in ep_map:
-                    png = _pick_period_waveform_png(
-                        ep_map[ep] / app,
-                        period_index=period_index,
-                        prefer_context=prefer_context,
-                    )
+                png = _pick_period_waveform_png(
+                    ep_map[ep] / app,
+                    period_index=period_index,
+                    prefer_context=prefer_context,
+                )
                 if png is not None:
                     imgs.append(_trim_white_border(plt.imread(png)))
                     any_hit = True
                 else:
                     imgs.append(None)
             if any_hit:
-                grid_rows.append((ep, split, imgs))
-    if not grid_rows:
-        return []
+                grid_rows.append((ep, imgs))
+        if not grid_rows:
+            continue
 
-    n_rows = len(grid_rows)
-    n_cols = len(appliances)
-    # Large panels so source 300dpi waveforms stay readable after collage.
-    cell_w, cell_h = 4.2, 2.7
-    fig_w = min(2.4 + cell_w * n_cols, 36.0)
-    fig_h = min(1.0 + cell_h * n_rows, 48.0)
-    fig, axes = plt.subplots(
-        n_rows,
-        n_cols,
-        figsize=(fig_w, fig_h),
-        squeeze=False,
-        gridspec_kw={"wspace": 0.04, "hspace": 0.10},
-    )
-    for i, (ep, split, imgs) in enumerate(grid_rows):
-        for j, (app, img) in enumerate(zip(appliances, imgs)):
-            ax = axes[i, j]
-            if img is None:
-                ax.set_facecolor("#eeeeee")
-                ax.text(0.5, 0.5, "—", ha="center", va="center", fontsize=12, color="#888888")
-            else:
-                # nearest keeps line art/text crisp when panel is large enough.
-                ax.imshow(img, interpolation="nearest", aspect="auto")
-            ax.set_xticks([])
-            ax.set_yticks([])
-            for spine in ax.spines.values():
-                spine.set_linewidth(0.5)
-                spine.set_color("#bbbbbb")
-            if i == 0:
-                ax.set_title(app, fontsize=12, pad=3)
-            if j == 0:
-                ax.set_ylabel(
-                    f"ep{ep}\n{split[:3]}",
-                    fontsize=10,
-                    rotation=0,
-                    labelpad=36,
-                    va="center",
-                )
+        n_rows = len(grid_rows)
+        n_cols = len(appliances)
+        cell_w, cell_h = 4.2, 2.7
+        fig_w = min(2.4 + cell_w * n_cols, 36.0)
+        fig_h = min(1.0 + cell_h * n_rows, 48.0)
+        fig, axes = plt.subplots(
+            n_rows,
+            n_cols,
+            figsize=(fig_w, fig_h),
+            squeeze=False,
+            gridspec_kw={"wspace": 0.04, "hspace": 0.10},
+        )
+        for i, (ep, imgs) in enumerate(grid_rows):
+            for j, (app, img) in enumerate(zip(appliances, imgs)):
+                ax = axes[i, j]
+                if img is None:
+                    ax.set_facecolor("#eeeeee")
+                    ax.text(0.5, 0.5, "—", ha="center", va="center", fontsize=12, color="#888888")
+                else:
+                    ax.imshow(img, interpolation="nearest", aspect="auto")
+                ax.set_xticks([])
+                ax.set_yticks([])
+                for spine in ax.spines.values():
+                    spine.set_linewidth(0.5)
+                    spine.set_color("#bbbbbb")
+                if i == 0:
+                    ax.set_title(app, fontsize=12, pad=3)
+                if j == 0:
+                    ax.set_ylabel(f"ep{ep}", fontsize=10, rotation=0, labelpad=36, va="center")
 
-    fig.suptitle(
-        f"{title_prefix}all appliances — period {period_index:02d} by epoch (val / test)".strip(),
-        fontsize=14,
-        y=0.995,
-    )
-    fig.subplots_adjust(left=0.06, right=0.995, top=0.95, bottom=0.01, wspace=0.04, hspace=0.10)
-    out = output_dir / f"ALL_appliances_period{period_index:02d}_by_epoch.png"
-    fig.savefig(out, dpi=dpi, bbox_inches="tight", pad_inches=0.04)
-    plt.close(fig)
-    return [out]
+        fig.suptitle(
+            f"{title_prefix}{split} — all appliances period {period_index:02d} by epoch".strip(),
+            fontsize=14,
+            y=0.995,
+        )
+        fig.subplots_adjust(left=0.06, right=0.995, top=0.93, bottom=0.01, wspace=0.04, hspace=0.10)
+        out = output_dir / f"ALL_appliances_period{period_index:02d}_by_epoch_{split}.png"
+        fig.savefig(out, dpi=dpi, bbox_inches="tight", pad_inches=0.04)
+        plt.close(fig)
+        saved.append(out)
+
+    return saved
 
 
 def plot_validation_metrics(

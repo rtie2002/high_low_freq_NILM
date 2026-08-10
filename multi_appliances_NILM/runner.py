@@ -1542,7 +1542,7 @@ def train_model(
                 tqdm.write(
                     f"  {epoch_tag} | saved one-picture comparisons -> "
                     f".../comparisons/metrics_all_epochs.png + "
-                    f".../comparisons/waveforms_by_epoch/ALL_appliances_period01_by_epoch.png"
+                    f".../waveforms_by_epoch/ALL_appliances_period{{01..N}}_by_epoch_{{validation,test}}.png"
                 )
                 if FeatureMapConfig.from_dict(plot_cfg.get("feature_maps")).enabled:
                     tqdm.write(

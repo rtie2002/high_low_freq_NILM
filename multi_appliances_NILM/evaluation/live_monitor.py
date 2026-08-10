@@ -479,8 +479,9 @@ class LiveTrainingMonitor:
     def _save_epoch_comparison_dashboards(self, epoch: int) -> list[Path]:
         """Build single-picture comparisons across epochs (metrics XOR waveforms)."""
         saved: list[Path] = []
-        period_index = int(self.plot_cfg.get("comparison_period_index", 1))
         dpi = int(self.plot_cfg.get("comparison_dpi", 600))
+        # One collage per ON-period example (same count as plot_on_periods).
+        n_periods = max(1, self.plot_on_periods())
 
         # Metrics only (no waveforms mixed in).
         metrics_all = save_multi_epoch_metrics_collage(
@@ -491,17 +492,18 @@ class LiveTrainingMonitor:
         if metrics_all is not None:
             saved.append(metrics_all)
 
-        # Waveforms only: all appliances × val/test for every epoch in one PNG.
-        saved.extend(
-            save_multi_epoch_waveform_collages(
-                self.run_dir,
-                self.appliances,
-                period_index=period_index,
-                prefer_context=False,
-                dpi=dpi,
-                title_prefix=f"{self.model_name} ",
+        # Waveforms: separate PNG for each ON-period case (01..N).
+        for period_index in range(1, n_periods + 1):
+            saved.extend(
+                save_multi_epoch_waveform_collages(
+                    self.run_dir,
+                    self.appliances,
+                    period_index=period_index,
+                    prefer_context=False,
+                    dpi=dpi,
+                    title_prefix=f"{self.model_name} ",
+                )
             )
-        )
         return saved
 
     def _write_waveforms_for_bundle(

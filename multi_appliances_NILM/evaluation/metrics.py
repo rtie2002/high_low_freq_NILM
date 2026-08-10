@@ -142,17 +142,23 @@ def evaluate_bundle(
             "appliance": app,
             "mae": float(mae_vals[i]),
             "sae": float(sae_vals[i]),
+            # Per-appliance binary F1 (ON class).
             "f1": float(f1_vals[i]),
+            "macro_f1": float(f1_vals[i]),
             "micro_f1": np.nan,
         })
 
+    macro = float(np.mean(f1_vals)) if len(f1_vals) else 0.0
+    micro = _micro_f1(tp, fp, fn)
     rows.append({
         **base,
         "appliance": "overall",
         "mae": float(np.mean(mae_vals)),
         "sae": float(np.mean(sae_vals)),
-        "f1": float(np.mean(f1_vals)),
-        "micro_f1": _micro_f1(tp, fp, fn),
+        # overall.f1 kept as macro for backward compatibility with older tables/plots.
+        "f1": macro,
+        "macro_f1": macro,
+        "micro_f1": micro,
     })
     return pd.DataFrame(rows)
 
