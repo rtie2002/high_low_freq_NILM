@@ -29,8 +29,8 @@ fractional:
 
 architecture:
   input_channels: 9
-  channel_schedule: [16, 32, 64]
-  hidden_channels: 64
+  channel_schedule: [16, 32, 64, 128]
+  hidden_channels: 128
   stem_kernel_size: 7
   stage_kernel_size: 5
   num_blocks: 5
