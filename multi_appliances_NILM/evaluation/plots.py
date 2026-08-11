@@ -718,19 +718,19 @@ def save_val_test_comparison_figure(
 
     n_rows = len(cell_text)  # data rows (excludes header)
     n_footer = len(footer_lines)
-    # Tight height: header+rows + small footer band (avoid empty axes under table).
+    # Compact table, but leave readable space for maF1/miF1 footer under it.
     row_inch = 0.22
     title_inch = 0.28
-    footer_inch = 0.16 * n_footer + (0.04 if n_footer else 0.0)
-    fig_h = title_inch + row_inch * (n_rows + 1) + footer_inch + 0.08
+    footer_inch = 0.22 * n_footer + (0.10 if n_footer else 0.0)
+    fig_h = title_inch + row_inch * (n_rows + 1) + footer_inch + 0.10
     fig, ax = plt.subplots(figsize=(9.2, fig_h))
     ax.axis("off")
     if title is None:
         title = f"ep{epoch} val vs test" if epoch is not None else "val vs test"
     ax.set_title(title, fontsize=9, pad=1, loc="left")
 
-    # Reserve a thin strip at the bottom of the axes for footer; table fills the rest.
-    footer_frac = min(0.28, 0.055 * max(n_footer, 1) + 0.02) if n_footer else 0.0
+    # Footer band under the table (enough to read maF1 / transfer lines).
+    footer_frac = min(0.36, 0.10 * max(n_footer, 1) + 0.06) if n_footer else 0.0
     table = ax.table(
         cellText=cell_text,
         colLabels=col_labels,
@@ -766,11 +766,17 @@ def save_val_test_comparison_figure(
             elif better:
                 table[i, j].set_text_props(color="#1b7f3a")
 
-    # Footer glued under the table (axes coords), not at figure bottom.
+    # Footer centered in the reserved band, with clear gap below the table.
     if footer_lines:
-        y = footer_frac * 0.72
-        dy = footer_frac * 0.38 / max(n_footer, 1)
-        for line in reversed(footer_lines):
+        # Top of footer band is footer_frac; leave a small gap under table edge.
+        y_top = footer_frac - 0.02
+        y_bot = 0.04
+        span = max(y_top - y_bot, 0.06)
+        # Evenly space lines from near-table down toward bottom.
+        for i, line in enumerate(footer_lines):
+            # i=0 is maF1 line (closer to table), i=1 is transfer note.
+            frac = (i + 0.55) / max(n_footer, 1)
+            y = y_top - frac * span
             ax.text(
                 0.5,
                 y,
@@ -782,10 +788,9 @@ def save_val_test_comparison_figure(
                 family="monospace",
                 clip_on=False,
             )
-            y += dy
 
-    fig.subplots_adjust(left=0.01, right=0.99, top=0.92, bottom=0.02)
-    fig.savefig(output_path, dpi=dpi, bbox_inches="tight", pad_inches=0.02)
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.92, bottom=0.04)
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight", pad_inches=0.04)
     plt.close(fig)
 
     csv_path = Path(output_path).with_suffix(".csv")
@@ -947,7 +952,7 @@ def save_multi_epoch_metrics_collage(
         return None
 
     # Each panel already has a short "epN val vs test" title — no extra epoch banners.
-    stacked = _vstack_trimmed_images(panels, gap_px=2, label_band_px=0)
+    stacked = _vstack_trimmed_images(panels, gap_px=12, label_band_px=0)
     output_path = _ensure_parent(
         output_path
         if output_path is not None

@@ -75,7 +75,7 @@ loss:
   da_warmup_epochs: 0
   da_ramp_epochs: 0
   da_freeze_patience: 0
-  lambda_domain: 0.1
+  lambda_domain: 0.3
 
 domain_adaptation:
   enabled: true
@@ -91,6 +91,8 @@ training:
   amp_dtype: bf16
   checkpoint_monitor: val_mae_minus_f1
   checkpoint_mae_space: normalized
+  # score = w * MAE_norm - F1. Raw MAE_norm≈0.1 vs F1≈0.7 → F1 dominates unless w≈7.
+  checkpoint_mae_weight: 7.0
   early_stop_patience: 50
   scheduler: none
   lr_scheduler:

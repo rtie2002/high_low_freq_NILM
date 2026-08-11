@@ -216,7 +216,8 @@ def _print_training_data_summary(
         ckpt_text = str(ckpt)
         if str(ckpt).lower() in {"val_mae_minus_f1", "mae_minus_f1"}:
             space = str(train_cfg.get("checkpoint_mae_space", "normalized")).lower()
-            ckpt_text += f"  ({space} MAE - F1)"
+            w = _checkpoint_mae_weight(train_cfg)
+            ckpt_text += f"  ({w:g}×{space} MAE - F1)"
         _summary_line("Checkpoint", ckpt_text)
 
     data_notes = _data_preprocess_note(model_cfg, experiment_cfg)
@@ -620,6 +621,24 @@ def _checkpoint_mae_for_score(monitor_key: str, train_cfg: dict, logs: dict[str,
     return float(logs.get("mae", float("inf")))
 
 
+def _checkpoint_mae_weight(train_cfg: dict) -> float:
+    """Scale MAE before subtracting F1 so both terms can trade off.
+
+    Raw ``mae_norm − F1`` is dominated by F1 because mae_norm≈0.1 while F1≈0.7.
+    Use ``score = mae_weight * mae − F1`` (lower better).
+
+    Rule of thumb: ``mae_weight ≈ typical_F1 / typical_MAE_norm`` (e.g. 0.7/0.1 → 7)
+    so both terms sit near the same magnitude. Epoch-to-epoch: a +0.01 MAE and
+    −0.01 F1 still trade 1:1 only when weight=1; raise weight if you want MAE
+    changes to matter more relative to small F1 wiggles.
+    """
+    return float(train_cfg.get("checkpoint_mae_weight", 7.0))
+
+
+def _mae_minus_f1_score(mae: float, f1: float, *, mae_weight: float) -> float:
+    return float(mae_weight) * float(mae) - float(f1)
+
+
 def _batch_to_device(
     batch,
     device: torch.device,
@@ -657,8 +676,9 @@ def _resolve_checkpoint_monitor(train_cfg: dict) -> tuple[str, str, float]:
 
         checkpoint_monitor: val_mae
         checkpoint_monitor: val_f1
-        checkpoint_monitor: val_mae_minus_f1   # balanced: normalized MAE - F1
+        checkpoint_monitor: val_mae_minus_f1   # balanced: w*MAE - F1
         checkpoint_mae_space: normalized       # normalized | watts
+        checkpoint_mae_weight: 7.0             # ≈ typical_F1 / typical_MAE_norm
 
     Return:
 
@@ -686,7 +706,8 @@ def _epoch_score(monitor_key: str, logs: dict[str, float], train_cfg: dict | Non
     train_cfg = train_cfg or {}
     if monitor_key == "val_mae_minus_f1":
         mae = _checkpoint_mae_for_score(monitor_key, train_cfg, logs)
-        return mae - float(logs.get("val_f1", 0.0))
+        f1 = float(logs.get("val_f1", 0.0))
+        return _mae_minus_f1_score(mae, f1, mae_weight=_checkpoint_mae_weight(train_cfg))
     if monitor_key in logs:
         return float(logs[monitor_key])
     if monitor_key == "val_f1":
@@ -979,7 +1000,10 @@ def _run_epoch(
             if monitor_key in {"val_mae_minus_f1", "mae_minus_f1"}:
                 train_cfg = adapter.model_cfg.get("training", {})
                 mae = _checkpoint_mae_for_score("val_mae_minus_f1", train_cfg, logs)
-                logs["val_mae_minus_f1"] = mae - float(logs.get("val_f1", 0.0))
+                f1 = float(logs.get("val_f1", 0.0))
+                logs["val_mae_minus_f1"] = _mae_minus_f1_score(
+                    mae, f1, mae_weight=_checkpoint_mae_weight(train_cfg)
+                )
     logs["elapsed_sec"] = time.perf_counter() - epoch_started
     return logs
 
@@ -1504,7 +1528,10 @@ def train_model(
             if monitor_key == "val_mae_minus_f1":
                 mae_ckpt = _checkpoint_mae_for_score(monitor_key, train_cfg, val_logs)
                 space = str(train_cfg.get("checkpoint_mae_space", "normalized")).lower()
-                ckpt_detail = f"{space} mae-f1, mae={mae_ckpt:.4f}, f1={val_f1:.4f}"
+                w = _checkpoint_mae_weight(train_cfg)
+                ckpt_detail = (
+                    f"{w:g}×{space} mae - f1, mae={mae_ckpt:.4f}, f1={val_f1:.4f}"
+                )
 
             # Prefer live lambda logged by the adapter (warmup-safe).
             live_lambda = float(
