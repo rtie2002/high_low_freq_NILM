@@ -15,8 +15,8 @@ windowing:
   input_window_length: 2048
   output_window_length: 2048
   output_alignment: end
-  input_stride: 512
-  eval_stride: 512
+  input_stride: 1024
+  eval_stride: 1024
   eval_reconstruction: auto
   training_targets: auto
 
@@ -29,8 +29,8 @@ fractional:
 
 architecture:
   input_channels: 9
-  channel_schedule: [32, 64, 128]
-  hidden_channels: 128
+  channel_schedule: [16, 32, 64]
+  hidden_channels: 64
   stem_kernel_size: 7
   stage_kernel_size: 5
   num_blocks: 5
