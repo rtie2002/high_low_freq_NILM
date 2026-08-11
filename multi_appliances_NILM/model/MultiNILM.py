@@ -127,13 +127,20 @@ class ResidualTemporalBlock(nn.Module):
     ) -> None:
         super().__init__()
 
-        # Same-length padding for odd kernel sizes.
-        padding = ((kernel_size - 1) * dilation) // 2
+        # Same-length padding only works for odd kernels:
+        # L_out = L + 2*pad - dil*(k-1); need 2*pad == dil*(k-1).
+        k = int(kernel_size)
+        if k < 1 or k % 2 == 0:
+            raise ValueError(
+                f"ResidualTemporalBlock kernel_size must be odd positive, got {k}. "
+                "Even k (e.g. 10) shrinks length by 1 and breaks residual add."
+            )
+        padding = ((k - 1) * dilation) // 2
 
         self.conv = nn.Conv1d(
             in_channels=channels,
             out_channels=channels,
-            kernel_size=kernel_size,
+            kernel_size=k,
             padding=padding,
             dilation=dilation,
         )
