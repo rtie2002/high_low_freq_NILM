@@ -51,7 +51,7 @@ architecture:
 
   # --- 4) HEADS: per-appliance power + ON/OFF ---
   head_local_layers: 2
-  head_kernel_size: 9               # odd; small local refine before 1x1 heads
+  head_kernel_size: 3               # odd; small local refine before 1x1 heads
   head_use_residual: true
   gate_mode: soft_train_hard_eval   # soft gate in train; hard mask at eval
   gate_threshold: 0.5
@@ -78,7 +78,7 @@ loss:
   lambda_domain: 0.1
 
 domain_adaptation:
-  enabled: false
+  enabled: true
   target_split: test
 
 training:

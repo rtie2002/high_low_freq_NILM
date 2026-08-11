@@ -716,24 +716,30 @@ def save_val_test_comparison_figure(
             transfer = "transfer: test better (check leakage)"
         footer_lines.append(transfer)
 
-    n_rows = len(cell_text)
-    footer_h = 0.35 if footer_lines else 0.05
-    fig_h = max(1.6, 0.32 * n_rows + 0.55 + footer_h)
+    n_rows = len(cell_text)  # data rows (excludes header)
+    n_footer = len(footer_lines)
+    # Tight height: header+rows + small footer band (avoid empty axes under table).
+    row_inch = 0.22
+    title_inch = 0.28
+    footer_inch = 0.16 * n_footer + (0.04 if n_footer else 0.0)
+    fig_h = title_inch + row_inch * (n_rows + 1) + footer_inch + 0.08
     fig, ax = plt.subplots(figsize=(9.2, fig_h))
     ax.axis("off")
     if title is None:
         title = f"ep{epoch} val vs test" if epoch is not None else "val vs test"
-    ax.set_title(title, fontsize=9, pad=2, loc="left")
+    ax.set_title(title, fontsize=9, pad=1, loc="left")
 
+    # Reserve a thin strip at the bottom of the axes for footer; table fills the rest.
+    footer_frac = min(0.28, 0.055 * max(n_footer, 1) + 0.02) if n_footer else 0.0
     table = ax.table(
         cellText=cell_text,
         colLabels=col_labels,
-        loc="upper center",
         cellLoc="center",
+        bbox=[0.0, footer_frac, 1.0, 1.0 - footer_frac],
     )
     table.auto_set_font_size(False)
     table.set_fontsize(8)
-    table.scale(1.0, 1.05)
+    table.scale(1.0, 1.0)
 
     for j in range(len(col_labels)):
         table[0, j].set_facecolor("#2f3e4e")
@@ -760,14 +766,26 @@ def save_val_test_comparison_figure(
             elif better:
                 table[i, j].set_text_props(color="#1b7f3a")
 
-    # maF1 / miF1 under the table (overall only — saves the empty — columns).
-    y = 0.02
-    for line in reversed(footer_lines):
-        fig.text(0.5, y, line, ha="center", va="bottom", fontsize=7.5, family="monospace")
-        y += 0.045
+    # Footer glued under the table (axes coords), not at figure bottom.
+    if footer_lines:
+        y = footer_frac * 0.72
+        dy = footer_frac * 0.38 / max(n_footer, 1)
+        for line in reversed(footer_lines):
+            ax.text(
+                0.5,
+                y,
+                line,
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=7.5,
+                family="monospace",
+                clip_on=False,
+            )
+            y += dy
 
-    fig.subplots_adjust(left=0.02, right=0.98, top=0.90, bottom=0.12 if footer_lines else 0.02)
-    fig.savefig(output_path, dpi=dpi, bbox_inches="tight", pad_inches=0.04)
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.92, bottom=0.02)
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight", pad_inches=0.02)
     plt.close(fig)
 
     csv_path = Path(output_path).with_suffix(".csv")
@@ -929,7 +947,7 @@ def save_multi_epoch_metrics_collage(
         return None
 
     # Each panel already has a short "epN val vs test" title — no extra epoch banners.
-    stacked = _vstack_trimmed_images(panels, gap_px=4, label_band_px=0)
+    stacked = _vstack_trimmed_images(panels, gap_px=2, label_band_px=0)
     output_path = _ensure_parent(
         output_path
         if output_path is not None
