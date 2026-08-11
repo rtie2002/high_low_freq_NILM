@@ -28,29 +28,39 @@ fractional:
   channel_normalize: mean_std
 
 architecture:
-  input_channels: 9
-  channel_schedule: [32, 64, 128]
-  hidden_channels: 128
-  stem_kernel_size: 7
-  stage_kernel_size: 5
-  num_blocks: 5
-  # Must be odd: ResidualTemporalBlock padding keeps length only for odd k
-  kernel_size: 9
-  max_dilation: 16
-  dropout: 0.15
-  # Hard gate train+eval: power = 1{state>thr}*power_raw + else off_norm
-  gate_mode: soft_train_hard_eval
-  gate_threshold: 0.5
-  head_local_layers: 2
-  head_kernel_size: 3
-  head_use_residual: true
+  # --- width (channels, not kernels) ---
+  input_channels: 9                 # fractional: raw + 8 α
+  channel_schedule: [32, 64, 128]   # stem out → mid → before TCN
+  hidden_channels: 128              # TCN + heads stay at 128
+
+  # --- 1) STEM: local waveform shape (first look at aggregate) ---
+  # Multiscale ON: three parallel kernels, then fuse. detail_* are the ones that matter.
   use_multiscale_stem: true
-  detail_kernels: [3, 5, 9]
-  detail_branch_channels: 16
+  detail_kernels: [3, 5, 9]         # short / mid / wide local patterns
+  detail_branch_channels: 16        # channels per branch before 1x1 fuse
+  stem_kernel_size: 7               # ONLY used if use_multiscale_stem: false
+
+  # --- 2) STAGES: widen 32→64→128 (still local, no dilation) ---
+  stage_kernel_size: 5
+
+  # --- 3) TCN: long context on 6 s grid (must use odd kernel_size) ---
+  num_blocks: 5                     # residual blocks; dilations 1,2,4,8,16
+  kernel_size: 9                    # odd only (even → length 2048→2047 crash)
+  max_dilation: 32                  # cap; tap spacing = dilation × 6 s
+  dropout: 0.15
+
+  # --- 4) HEADS: per-appliance power + ON/OFF ---
+  head_local_layers: 2
+  head_kernel_size: 3               # odd; small local refine before 1x1 heads
+  head_use_residual: true
+  gate_mode: soft_train_hard_eval   # soft gate in train; hard mask at eval
+  gate_threshold: 0.5
+
+  # --- 5) extras ---
   cross_appliance:
     enabled: true
-    residual_scale: 0.5
-  # num_blocks=5 → valid hooks: temporal_0..temporal_4 (+ stem/aligned)
+    residual_scale: 0.5             # how strong cross-app mix is
+  # DA hooks (unused while domain_adaptation.enabled: false)
   domain_feature_layers: [temporal_2, temporal_4, aligned]
 
 loss:
