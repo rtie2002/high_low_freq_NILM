@@ -46,12 +46,12 @@ architecture:
   # --- 3) TCN: long context on 6 s grid (must use odd kernel_size) ---
   num_blocks: 5                     # residual blocks; dilations 1,2,4,8,16
   kernel_size: 9                    # odd only (even → length 2048→2047 crash)
-  max_dilation: 32                  # cap; tap spacing = dilation × 6 s
+  max_dilation: 16                  # cap; tap spacing = dilation × 6 s
   dropout: 0.15
 
   # --- 4) HEADS: per-appliance power + ON/OFF ---
   head_local_layers: 2
-  head_kernel_size: 3               # odd; small local refine before 1x1 heads
+  head_kernel_size: 9               # odd; small local refine before 1x1 heads
   head_use_residual: true
   gate_mode: soft_train_hard_eval   # soft gate in train; hard mask at eval
   gate_threshold: 0.5
