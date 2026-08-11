@@ -29,12 +29,12 @@ fractional:
 
 architecture:
   input_channels: 9
-  channel_schedule: [16, 32, 64, 128]
+  channel_schedule: [32, 64, 128]
   hidden_channels: 128
   stem_kernel_size: 7
   stage_kernel_size: 5
   num_blocks: 5
-  kernel_size: 5
+  kernel_size: 10
   max_dilation: 16
   dropout: 0.15
   # Hard gate train+eval: power = 1{state>thr}*power_raw + else off_norm
