@@ -106,6 +106,10 @@ class MultiNILMAdapter(BaseNILMAdapter):
             # Preference on state vs power after optional equal-balance (1 = equal).
             lambda_state=float(loss_cfg.get("lambda_state", 0.1)),
             task_balance=str(loss_cfg.get("task_balance", "none")),
+            # >1 emphasizes ON timesteps in power MSE (fights flat/lazy amp collapse).
+            on_power_weight=float(loss_cfg.get("on_power_weight", 1.0)),
+            # Optional temporal total-variation on predicted power (smoother waveforms).
+            lambda_tv=float(loss_cfg.get("lambda_tv", 0.0)),
 
             # Auto-balance rare ON timesteps when pos_weight is null/auto.
             pos_weight=_resolve_pos_weight(self, loss_cfg),

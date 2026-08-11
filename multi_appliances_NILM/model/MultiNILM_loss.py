@@ -232,6 +232,8 @@ class MultiNILMLoss(nn.Module):
         power_scale: float | list[float] | torch.Tensor = 1.0,
         *,
         task_balance: str = "equal",
+        on_power_weight: float = 1.0,
+        lambda_tv: float = 0.0,
         lambda_domain: float = 0.0,
         domain_method: str = "coral",
         domain_mu: float = 0.4,
@@ -242,6 +244,8 @@ class MultiNILMLoss(nn.Module):
         super().__init__()
         self.lambda_state = float(lambda_state)
         self.task_balance = str(task_balance or "none").lower()
+        self.on_power_weight = float(on_power_weight)
+        self.lambda_tv = float(lambda_tv)
         self.lambda_domain = float(lambda_domain)
         self.domain_method = str(domain_method or "coral").lower()
         self.domain_mu = float(domain_mu)
@@ -252,6 +256,10 @@ class MultiNILMLoss(nn.Module):
         self.domain_scale = str(domain_scale or "none").lower()
         if self.domain_scale not in {"none", "equal"}:
             raise ValueError(f"domain_scale must be none|equal, got {domain_scale!r}")
+        if self.on_power_weight < 1.0:
+            raise ValueError(f"on_power_weight must be >= 1, got {self.on_power_weight}")
+        if self.lambda_tv < 0.0:
+            raise ValueError(f"lambda_tv must be >= 0, got {self.lambda_tv}")
 
         # MAE logging scale (watts / std); not used in the training objective.
         self.register_buffer("power_scale", torch.as_tensor(power_scale, dtype=torch.float32))
@@ -266,9 +274,30 @@ class MultiNILMLoss(nn.Module):
         self,
         power_pred: torch.Tensor,
         power_true: torch.Tensor,
+        state_true: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """MSE_i = mean_{b,t} (ŷ − y)²  → vector length A."""
-        return torch.mean((power_pred - power_true) ** 2, dim=(0, 1))
+        """MSE_i over batch×time → vector length A.
+
+        If ``on_power_weight > 1`` and ``state_true`` is given, ON timesteps are
+        up-weighted so the model cannot ignore amplitude by fitting OFF zeros.
+        """
+        err2 = (power_pred - power_true) ** 2
+        if (
+            state_true is not None
+            and self.on_power_weight > 1.0
+            and state_true.shape == err2.shape
+        ):
+            on = state_true.float().clamp(0.0, 1.0)
+            # OFF weight=1, ON weight=on_power_weight
+            w = 1.0 + (self.on_power_weight - 1.0) * on
+            err2 = err2 * w
+        return torch.mean(err2, dim=(0, 1))
+
+    def _temporal_tv(self, power_pred: torch.Tensor) -> torch.Tensor:
+        """Mean |p_t - p_{t-1}| over batch/time/apps (encourages smoother waveforms)."""
+        if power_pred.shape[1] < 2:
+            return power_pred.new_zeros(())
+        return torch.mean(torch.abs(power_pred[:, 1:, :] - power_pred[:, :-1, :]))
 
     def _per_appliance_state_loss(
         self,
@@ -358,9 +387,13 @@ class MultiNILMLoss(nn.Module):
         state_true = state_true.float()
 
         # --- supervised NILM ---
-        loss_power_per_app = self._per_appliance_power_loss(power_pred, power_true)
+        loss_power_per_app = self._per_appliance_power_loss(
+            power_pred, power_true, state_true=state_true
+        )
         loss_state_per_app = self._per_appliance_state_loss(state_logits, state_true)
         loss_power = loss_power_per_app.sum()
+        if self.lambda_tv > 0.0:
+            loss_power = loss_power + self.lambda_tv * self._temporal_tv(power_pred)
         loss_state = loss_state_per_app.sum()
         loss_state_term = self._balanced_state_term(loss_power, loss_state)
         loss_nilm = loss_power + loss_state_term
