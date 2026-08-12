@@ -634,14 +634,15 @@ def build_val_test_comparison_frame(
             "val_MAE": float(v["mae"]),
             "test_MAE": float(t["mae"]),
             "MAE_gap": float(t["mae"] - v["mae"]),
+            "val_SAE": float(v["sae"]),
+            "test_SAE": float(t["sae"]),
+            "SAE_gap": float(t["sae"] - v["sae"]),
             "val_maF1": v_ma,
             "test_maF1": t_ma,
             "maF1_gap": float(t_ma - v_ma),
             "val_miF1": v_mi,
             "test_miF1": t_mi,
             "miF1_gap": None if v_mi is None or t_mi is None else float(t_mi - v_mi),
-            "val_SAE": float(v["sae"]),
-            "test_SAE": float(t["sae"]),
             # Backward-compatible aliases used by older notes/code.
             "val_F1": v_ma,
             "test_F1": t_ma,
@@ -659,7 +660,7 @@ def save_val_test_comparison_figure(
     title: str | None = None,
     dpi: int = 200,
 ) -> Path:
-    """Compact val/test table: MAE + per-app F1; maF1/miF1 summarized below."""
+    """Compact val/test table: MAE + SAE + per-app F1; overall maF1/miF1 below."""
     compare = build_val_test_comparison_frame(val_metrics, test_metrics)
     output_path = _ensure_parent(output_path)
     if compare.empty:
@@ -670,8 +671,19 @@ def save_val_test_comparison_figure(
         apps = [a for a in compare["appliance"] if a != "overall"] + ["overall"]
         compare = compare.set_index("appliance").loc[apps].reset_index()
 
-    # Narrow table only (no miF1 columns — those are overall-only, shown under the table).
-    col_labels = ["appliance", "val_MAE", "test_MAE", "MAE_gap", "val_F1", "test_F1", "F1_gap"]
+    # Narrow table: MAE/SAE/per-app F1. Overall maF1/miF1 go in the footer.
+    col_labels = [
+        "appliance",
+        "val_MAE",
+        "test_MAE",
+        "MAE_gap",
+        "val_SAE",
+        "test_SAE",
+        "SAE_gap",
+        "val_F1",
+        "test_F1",
+        "F1_gap",
+    ]
 
     def _fmt_f1(x) -> str:
         if x is None or (isinstance(x, float) and np.isnan(x)):
@@ -691,6 +703,9 @@ def save_val_test_comparison_figure(
             f"{r['val_MAE']:.2f}",
             f"{r['test_MAE']:.2f}",
             f"{r['MAE_gap']:+.2f}",
+            f"{r['val_SAE']:.2f}",
+            f"{r['test_SAE']:.2f}",
+            f"{r['SAE_gap']:+.2f}",
             _fmt_f1(r["val_maF1"]),
             _fmt_f1(r["test_maF1"]),
             _fmt_gap(r["maF1_gap"]),
@@ -723,7 +738,7 @@ def save_val_test_comparison_figure(
     title_inch = 0.28
     footer_inch = 0.22 * n_footer + (0.10 if n_footer else 0.0)
     fig_h = title_inch + row_inch * (n_rows + 1) + footer_inch + 0.10
-    fig, ax = plt.subplots(figsize=(9.2, fig_h))
+    fig, ax = plt.subplots(figsize=(10.5, fig_h))
     ax.axis("off")
     if title is None:
         title = f"ep{epoch} val vs test" if epoch is not None else "val vs test"
@@ -753,14 +768,19 @@ def save_val_test_comparison_figure(
             for j in range(len(col_labels)):
                 table[i, j].set_facecolor("#f7f7f7")
 
-    for gap_col, key in (("MAE_gap", "MAE_gap"), ("F1_gap", "maF1_gap")):
+    for gap_col, key in (
+        ("MAE_gap", "MAE_gap"),
+        ("SAE_gap", "SAE_gap"),
+        ("F1_gap", "maF1_gap"),
+    ):
         j = col_labels.index(gap_col)
         for i, (_, r) in enumerate(compare.iterrows(), start=1):
             val = r[key]
             if val is None or (isinstance(val, float) and np.isnan(val)):
                 continue
-            worse = val > 0 if gap_col == "MAE_gap" else val < 0
-            better = val < 0 if gap_col == "MAE_gap" else val > 0
+            # MAE/SAE: test>val is worse; F1: test<val is worse
+            worse = val > 0 if gap_col in {"MAE_gap", "SAE_gap"} else val < 0
+            better = val < 0 if gap_col in {"MAE_gap", "SAE_gap"} else val > 0
             if worse:
                 table[i, j].set_text_props(color="#b00020")
             elif better:

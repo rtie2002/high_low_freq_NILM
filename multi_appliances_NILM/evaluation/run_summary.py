@@ -259,51 +259,74 @@ def print_val_test_comparison(run_dir: Path) -> None:
         title="best ckpt val vs test",
     )
 
-    width = 110
+    width = 108
     top, _, bot = _box("VALIDATION vs TEST  (transfer / house gap)", width)
     print(f"\n{top}", flush=True)
+    # MAE + SAE + per-app F1 in table; overall maF1/miF1 printed under the box.
     hdr = (
         f"{'appliance':<16}"
         f"{'val_MAE':>9}{'test_MAE':>10}{'MAE_gap':>9}"
-        f"{'val_maF1':>10}{'test_maF1':>10}{'maF1_gap':>10}"
-        f"{'val_miF1':>10}{'test_miF1':>10}{'miF1_gap':>10}"
+        f"{'val_SAE':>9}{'test_SAE':>10}{'SAE_gap':>9}"
+        f"{'val_F1':>9}{'test_F1':>9}{'F1_gap':>9}"
     )
     print(_row(width, hdr), flush=True)
-    print(_row(width, "-" * 98), flush=True)
+    print(_row(width, "-" * 96), flush=True)
 
     def _f1(x) -> str:
         if x is None or (isinstance(x, float) and pd.isna(x)):
-            return f"{'—':>10}"
-        return f"{float(x):>10.4f}"
+            return f"{'—':>9}"
+        return f"{float(x):>9.4f}"
 
-    def _gap(x) -> str:
+    def _gap_f1(x) -> str:
         if x is None or (isinstance(x, float) and pd.isna(x)):
-            return f"{'—':>10}"
-        return f"{float(x):>+10.4f}"
+            return f"{'—':>9}"
+        return f"{float(x):>+9.4f}"
 
     for _, r in compare_df.iterrows():
         if str(r["appliance"]) == "overall":
-            print(_row(width, "-" * 98), flush=True)
+            print(_row(width, "-" * 96), flush=True)
         line = (
             f"{str(r['appliance']):<16}"
             f"{float(r['val_MAE']):>9.2f}{float(r['test_MAE']):>10.2f}{float(r['MAE_gap']):>+9.2f}"
-            f"{_f1(r['val_maF1'])}{_f1(r['test_maF1'])}{_gap(r['maF1_gap'])}"
-            f"{_f1(r['val_miF1'])}{_f1(r['test_miF1'])}{_gap(r['miF1_gap'])}"
+            f"{float(r['val_SAE']):>9.2f}{float(r['test_SAE']):>10.2f}{float(r['SAE_gap']):>+9.2f}"
+            f"{_f1(r['val_maF1'])}{_f1(r['test_maF1'])}{_gap_f1(r['maF1_gap'])}"
         )
         print(_row(width, line), flush=True)
 
     overall = compare_df[compare_df["appliance"] == "overall"]
-    note = "maF1=macro; miF1=micro (pooled). "
     if not overall.empty:
-        mae_gap = float(overall.iloc[0]["MAE_gap"])
-        f1_gap = float(overall.iloc[0]["maF1_gap"])
+        o = overall.iloc[0]
+
+        def _fmt_f1(x) -> str:
+            if x is None or (isinstance(x, float) and pd.isna(x)):
+                return "—"
+            return f"{float(x):.4f}"
+
+        def _fmt_gap(x) -> str:
+            if x is None or (isinstance(x, float) and pd.isna(x)):
+                return "—"
+            return f"{float(x):+.4f}"
+
+        print(_row(width, "-" * 96), flush=True)
+        print(
+            _row(
+                width,
+                f"maF1  val={_fmt_f1(o['val_maF1'])}  test={_fmt_f1(o['test_maF1'])}  "
+                f"gap={_fmt_gap(o['maF1_gap'])}   "
+                f"miF1  val={_fmt_f1(o['val_miF1'])}  test={_fmt_f1(o['test_miF1'])}  "
+                f"gap={_fmt_gap(o['miF1_gap'])}",
+            ),
+            flush=True,
+        )
+        mae_gap = float(o["MAE_gap"])
+        f1_gap = float(o["maF1_gap"])
         if abs(mae_gap) < 5 and abs(f1_gap) < 0.05:
-            note += "Transfer: val ≈ test."
+            transfer = "transfer: val ≈ test"
         elif mae_gap > 0 or f1_gap < 0:
-            note += "Transfer: test weaker than val — domain/house gap remains."
+            transfer = "transfer: test weaker than val — domain/house gap remains"
         else:
-            note += "Transfer: test better than val — check split/leakage."
-    print(_row(width, note), flush=True)
+            transfer = "transfer: test better than val — check split/leakage"
+        print(_row(width, transfer), flush=True)
     print(bot, flush=True)
     print(f"Saved comparison table: {compare_path}", flush=True)
     print(f"Saved comparison figure: {fig_path}", flush=True)
