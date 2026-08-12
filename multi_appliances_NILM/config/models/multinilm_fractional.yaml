@@ -34,12 +34,12 @@ windowing:
   training_targets: auto            # full_input if in == out
 
 # =============================================================================
-# FRACTIONAL FRONT-END → C = 1 raw + k α
+# FRACTIONAL FRONT-END → C = k + 1 (raw + k α) when include_raw: true
 # =============================================================================
 fractional:
   enabled: true
-  k: 8
-  include_raw: true
+  k: 8                              # number of α channels
+  include_raw: true                 # always keep raw → input_channels = k + 1
   memory: 1024
   channel_normalize: mean_std
 
@@ -48,7 +48,8 @@ fractional:
 # =============================================================================
 architecture:
   # --- width (channels, not kernels) ---
-  input_channels: 9                 # fractional: raw + 8 α
+  # input_channels is NOT set here — build_multinilm_fractional sets it to
+  #   k + 1  (include_raw)  or  k  (include_raw: false)
   channel_schedule: [32, 64, 128]   # stem out → mid → before TCN
   hidden_channels: 128              # TCN + heads stay at 128
 

@@ -25,7 +25,12 @@ from torch.utils.data import DataLoader, Dataset
 import warnings
 
 from adapters.config import resolve_eval_reconstruction, resolve_lr_scheduler_settings
-from adapters.dataloader import NILMDataLoader, _resolve_input_length, _split_key
+from adapters.dataloader import (
+    NILMDataLoader,
+    _resolve_input_length,
+    _split_key,
+    get_state_label_source,
+)
 
 
 @dataclass
@@ -386,6 +391,12 @@ class BaseNILMAdapter(AdapterDataMixin):
 
         y_pred = loader.denorm_to_watts(y_pred)
         y_true = loader.denorm_to_watts(y_true)
+
+        # Strict CSV ground truth when data.state_label_source: csv
+        # (do not use overlap-averaged window states / denorm targets as GT).
+        if get_state_label_source(self.model_cfg) == "csv" and csv_timesteps is not None:
+            y_true = loader.appliance_watts_at_timesteps(split_key, csv_timesteps)
+            z_true = loader.csv_on_labels_at_timesteps(split_key, csv_timesteps)
 
         # Overlap-mean can leave residual watts where averaged state_prob < thr.
         # Re-apply hard gate so plots/metrics match pred ON (eval gate semantics).

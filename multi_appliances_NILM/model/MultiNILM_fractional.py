@@ -101,7 +101,15 @@ def build_multinilm_fractional(
             else "mean_std"
         ),
     )
+    # Always derive backbone width from the front-end: C = k (+1 if include_raw).
+    # Ignore any stale architecture.input_channels in the yaml.
     feature_c = int(frontend.out_channels)
+    expected = len(alphas) + (1 if include_raw else 0)
+    if feature_c != expected:
+        raise ValueError(
+            f"Fractional channel count mismatch: frontend={feature_c}, "
+            f"expected k(+raw)={expected} (k={len(alphas)}, include_raw={include_raw})"
+        )
 
     arch = dict(architecture)
     arch["input_channels"] = feature_c
