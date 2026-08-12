@@ -4,7 +4,7 @@
 # Run folder: runs/<experiment_id>/<model_name>/
 # Pair with config/experiment_ukdale.yaml or experiment_redd.yaml (data only).
 # Change this when switching dataset / DA / multi-domain mix.
-experiment_id: experiment 1
+experiment_id: experiment 2
 model_name: multinilm_fractional
 
 data:
@@ -83,12 +83,12 @@ loss:
   lambda_domain: 0.3
 
 domain_adaptation:
-  enabled: true
+  enabled: false
   target_split: test
 
 training:
   batch_size: 64
-  epochs: 300
+  epochs: 200
   learning_rate: 0.0001
   weight_decay: 0.0001
   num_workers: 0
