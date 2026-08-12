@@ -3,28 +3,39 @@
 #
 # Run folder: runs/<experiment_id>/<model_name>/
 # Pair with config/experiment_ukdale.yaml or experiment_redd.yaml (data only).
-# Change this when switching dataset / DA / multi-domain mix.
+# Change experiment_id when switching dataset / DA / multi-domain mix.
 experiment_id: experiment 2
 model_name: multinilm_fractional
 
+# =============================================================================
+# DATA / EVAL (labels + how ON is scored)
+# =============================================================================
 data:
   mains_column: aggregate
-  state_label_source: csv
+  # csv → train/F1/plots all use CSV *_on (Algorithm-1). Never power>thr shade.
+  # threshold → ON = power > experiment.evaluation.on_thresholds_watts
+  state_label_source: csv           # csv | threshold
 
 evaluation:
-  pred_on_source: state_head
-  # After overlap_mean stitch: zero watts where pred ON is false (align plot/metrics with hard gate)
+  pred_on_source: state_head        # state_head | power_threshold | combined
+  # After overlap_mean stitch: zero watts where pred ON is false
   regate_power_with_pred_on: true
 
+# =============================================================================
+# WINDOWING (6 s samples; 2048 ≈ 3.4 h)
+# =============================================================================
 windowing:
   input_window_length: 2048
   output_window_length: 2048
   output_alignment: end
   input_stride: 1024
   eval_stride: 1024
-  eval_reconstruction: auto
-  training_targets: auto
+  eval_reconstruction: auto         # overlap_mean if stride < out len
+  training_targets: auto            # full_input if in == out
 
+# =============================================================================
+# FRACTIONAL FRONT-END → C = 1 raw + k α
+# =============================================================================
 fractional:
   enabled: true
   k: 8
@@ -32,88 +43,112 @@ fractional:
   memory: 1024
   channel_normalize: mean_std
 
+# =============================================================================
+# ARCHITECTURE
+# =============================================================================
 architecture:
   # --- width (channels, not kernels) ---
   input_channels: 9                 # fractional: raw + 8 α
   channel_schedule: [32, 64, 128]   # stem out → mid → before TCN
   hidden_channels: 128              # TCN + heads stay at 128
 
-  # --- 1) STEM: local waveform shape (first look at aggregate) ---
-  # Multiscale ON: three parallel kernels, then fuse. detail_* are the ones that matter.
+  # --- 1) STEM: local waveform shape ---
   use_multiscale_stem: true
   detail_kernels: [3, 5, 9]         # short / mid / wide local patterns
   detail_branch_channels: 16        # channels per branch before 1x1 fuse
-  stem_kernel_size: 7               # ONLY used if use_multiscale_stem: false
+  stem_kernel_size: 7               # ONLY if use_multiscale_stem: false
 
-  # --- 2) STAGES: widen 32→64→128 (still local, no dilation) ---
+  # --- 2) STAGES: widen 32→64→128 (no dilation) ---
   stage_kernel_size: 5
 
-  # --- 3) TCN: long context on 6 s grid (must use odd kernel_size) ---
-  num_blocks: 5                     # residual blocks; dilations 1,2,4,8,16
-  kernel_size: 9                    # odd only (even → length 2048→2047 crash)
-  max_dilation: 16                  # cap; tap spacing = dilation × 6 s
+  # --- 3) TCN: long context (kernel_size must be odd) ---
+  num_blocks: 5                     # dilations 1,2,4,8,16
+  kernel_size: 9                    # even → length crash (2048→2047)
+  max_dilation: 16
   dropout: 0.15
 
   # --- 4) HEADS: per-appliance power + ON/OFF ---
   head_local_layers: 2
-  head_kernel_size: 3               # odd; small local refine before 1x1 heads
+  head_kernel_size: 3
   head_use_residual: true
-  gate_mode: soft_train_hard_eval   # soft gate in train; hard mask at eval
+  gate_mode: soft_train_hard_eval   # soft in train; hard mask at eval
   gate_threshold: 0.5
 
   # --- 5) extras ---
   cross_appliance:
     enabled: true
-    residual_scale: 0.5             # how strong cross-app mix is
-  # DA hooks (unused while domain_adaptation.enabled: false)
+    residual_scale: 0.5
+  # DA feature hooks (used only if domain_adaptation.enabled)
   domain_feature_layers: [temporal_2, temporal_4, aligned]
 
+# =============================================================================
+# LOSS — task (power + state) then optional domain terms
+# =============================================================================
 loss:
-  task_balance: equal
-  lambda_state: 1
-  pos_weight: auto
-  domain_method: both
-  domain_mu: 0.4
-  domain_mix: convex
-  domain_scale: equal
-  # Warm up task first; then ramp DA
-  da_warmup_epochs: 0
-  da_ramp_epochs: 0
-  da_freeze_patience: 0
+  # --- task: power regression + ON/OFF classification ---
+  task_balance: equal               # equal ≈ match magnitudes; none = raw sum
+  lambda_state: 1                   # with equal, 1 = power ↔ state same weight
+  pos_weight: auto                  # BCE imbalance; auto from train ON rates
+
+  # --- domain (active only if domain_adaptation.enabled AND lambda_domain > 0) ---
+  domain_method: both               # coral | mmd | both
+  domain_mu: 0.4                    # L_domain = μ·MMD² + (1-μ)·CORAL
+  domain_mix: convex                # convex: (1-λ)L_task + λ L_domain
+  domain_scale: equal               # rescale L_domain toward L_task so λ matters
   lambda_domain: 0.3
 
+  # --- DA schedule (0 = off / immediate) ---
+  da_warmup_epochs: 0               # train task only for N epochs
+  da_ramp_epochs: 0                 # then ramp λ over N epochs
+  da_freeze_patience: 0             # freeze DA if no val gain (0 = never)
+
+# =============================================================================
+# DOMAIN ADAPTATION (master switch)
+# Needs enabled: true AND loss.lambda_domain > 0
+# =============================================================================
 domain_adaptation:
   enabled: false
-  target_split: test
+  target_split: test                # unlabeled target (e.g. UK-DALE H2 / REDD H2)
 
+# =============================================================================
+# TRAINING
+# =============================================================================
 training:
+  # --- loop ---
   batch_size: 64
   epochs: 200
   learning_rate: 0.0001
   weight_decay: 0.0001
   num_workers: 0
+  train_shuffle: true
+  gradient_clip: 1.0
+
+  # --- precision / CUDA ---
   use_amp: false
   amp_dtype: bf16
+  cudnn_benchmark: true
+  tf32: true
+
+  # --- checkpoint / early stop ---
+  # score = w * MAE_norm - F1  (MAE_norm≈0.1 vs F1≈0.7 → need w≈7)
   checkpoint_monitor: val_mae_minus_f1
   checkpoint_mae_space: normalized
-  # score = w * MAE_norm - F1. Raw MAE_norm≈0.1 vs F1≈0.7 → F1 dominates unless w≈7.
   checkpoint_mae_weight: 7.0
   early_stop_patience: 50
-  scheduler: none
+
+  # --- LR schedule ---
+  scheduler: none                   # legacy flag; real schedule below
   lr_scheduler:
     type: reduce_on_plateau
     monitor: val_mae_minus_f1
     patience: 5
     factor: 0.5
     min_lr: 0.00001
-  gradient_clip: 1.0
-  train_shuffle: true
-  cudnn_benchmark: true
-  tf32: true
+
+  # --- plots (under run_dir/) ---
   plots:
-    plot_mode: interval
-    # Every N epochs: keep waveforms under epoch_XXXX/ and val/test MAE/SAE/F1 tables
-    plot_interval: 50
+    plot_mode: interval             # interval | every | none
+    plot_interval: 50               # every N epochs: waveforms + tables
     plot_on_periods: 5
     plot_max_batches: 16
     waveform_figsize: 5.5
@@ -121,10 +156,8 @@ training:
     waveform_dynamic_figsize: true
     on_period_margin_min: 40
     on_period_margin_frac: 0.08
-    waveform_context_scale: 10
-    # One-picture dashboards under run_dir/comparisons/
-    # Waveform collages: one PNG per ON-period case (01..plot_on_periods)
-    comparison_dpi: 600
+    waveform_context_scale: 10      # ×10 context PNG; <=1 disables
+    comparison_dpi: 600             # collage dashboards under comparisons/
     feature_maps:
       enabled: false
       max_examples: 2

@@ -1814,7 +1814,8 @@ def evaluate_model(
     )
     if y_true_plot is None:
         y_true_plot = y_true_watts
-    # Match training label source: threshold shade only if state_label_source=threshold.
+    # Match training label source strictly (csv → CSV *_on shade; never power>thr).
+    state_src = get_state_label_source(adapter.model_cfg)
     on_thresholds = _state_eval_thresholds(adapter.model_cfg, adapter.experiment, bundle.appliances)
     saved = save_appliance_on_waveforms(
         waveform_dir,
@@ -1824,6 +1825,7 @@ def evaluate_model(
         y_true_on=waveform_true_on,
         y_pred_on=bundle.y_pred_on,
         on_thresholds_watts=on_thresholds,
+        state_label_source=state_src,
         aggregate=aggregate,
         csv_timesteps=bundle.csv_timesteps,
         n_periods=int(plot_cfg.get("plot_on_periods", 5)),

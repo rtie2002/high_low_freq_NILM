@@ -536,9 +536,10 @@ class LiveTrainingMonitor:
             len(bundle.y_true_watts),
             bundle.csv_timesteps,
         )
+        state_src = get_state_label_source(adapter.model_cfg)
         on_thresholds = (
             resolve_state_thresholds_watts(adapter.experiment, self.appliances)
-            if get_state_label_source(adapter.model_cfg) == "threshold"
+            if state_src == "threshold"
             else None
         )
         # Epoch-stable seed → same ON periods every plot interval (fair collage).
@@ -564,6 +565,7 @@ class LiveTrainingMonitor:
                     y_true_on=waveform_true_on,
                     y_pred_on=bundle.y_pred_on,
                     on_thresholds_watts=on_thresholds,
+                    state_label_source=state_src,
                     aggregate=aggregate,
                     csv_timesteps=bundle.csv_timesteps,
                     n_periods=self.plot_on_periods(),

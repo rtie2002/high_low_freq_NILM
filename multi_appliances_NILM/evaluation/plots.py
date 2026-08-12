@@ -295,6 +295,9 @@ def plot_single_on_period(
     y_true_on: np.ndarray | None = None,
     y_pred_on: np.ndarray | None = None,
     true_on_threshold_watts: float | None = None,
+    # Only when state_label_source=threshold: shade via power>thr.
+    # If False (csv/auto), always use y_true_on — never power>thr flicker.
+    shade_true_on_from_power: bool = False,
     csv_timesteps: np.ndarray | None = None,
     title: str | None = None,
     dpi: int = WAVEFORM_DPI,
@@ -302,8 +305,8 @@ def plot_single_on_period(
     """True vs predicted waveform for one ON period (full event + padding).
 
     Background bands (no focused-crop highlight):
-      - true ON only  (``power > thr`` if ``true_on_threshold_watts`` set,
-        else CSV ``y_true_on``)
+      - true ON: CSV ``y_true_on`` by default; ``power > thr`` only if
+        ``shade_true_on_from_power`` (threshold label mode)
       - pred ON only  (``y_pred_on``)
       - overlap       (true ∩ pred) in purple
 
@@ -345,7 +348,8 @@ def plot_single_on_period(
         mains_label = "aggregate"
     true_v = np.asarray(y_true_watts, dtype=float)[sl]
     pred_v = np.maximum(np.asarray(y_pred_watts, dtype=float)[sl], 0.0)
-    if true_on_threshold_watts is not None:
+    # Strict: csv/auto → y_true_on only. power>thr only when explicitly enabled.
+    if shade_true_on_from_power and true_on_threshold_watts is not None:
         true_on_view = true_v > float(true_on_threshold_watts)
     elif y_true_on is not None:
         true_on_view = np.asarray(y_true_on)[sl].astype(bool)
@@ -415,7 +419,7 @@ def plot_single_on_period(
 
     handles, labels = ax.get_legend_handles_labels()
     if true_on_view is not None:
-        thr_note = " (threshold)" if true_on_threshold_watts is not None else ""
+        thr_note = " (power>thr)" if shade_true_on_from_power else " (csv)"
         handles.append(Patch(facecolor="#6baed6", alpha=0.20, label=f"true ON{thr_note}"))
         labels.append(f"true ON{thr_note}")
     if on_view is not None:
@@ -463,6 +467,7 @@ def save_appliance_on_waveforms(
     y_true_on: np.ndarray | None = None,
     y_pred_on: np.ndarray | None = None,
     on_thresholds_watts: float | np.ndarray | None = None,
+    state_label_source: str = "csv",
     aggregate: np.ndarray | None = None,
     csv_timesteps: np.ndarray | None = None,
     n_periods: int = 5,
@@ -485,10 +490,11 @@ def save_appliance_on_waveforms(
     ``context_scale`` × wider timeline around the same ON event (set
     ``context_scale <= 1`` to disable).
 
-    Period selection uses ``y_true_on`` (typically CSV *_on). True-ON shading:
-    if ``on_thresholds_watts`` is set → ``power > thr`` (threshold label mode);
-    else → ``y_true_on`` (CSV / Algorithm 1). Do not pass thresholds when training
-    with ``state_label_source: csv``, or WM/DW plots will flicker on low-power dips.
+    True-ON shading follows ``state_label_source`` strictly:
+      - ``csv`` / ``auto`` → always ``y_true_on`` (CSV Algorithm-1). Ignores
+        ``on_thresholds_watts`` even if passed (avoids WM flicker on dips).
+      - ``threshold`` → shade with ``power > on_thresholds_watts``.
+    Period selection always uses ``y_true_on``.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -499,8 +505,14 @@ def save_appliance_on_waveforms(
     if y_true_on is None:
         raise ValueError("Waveform plots require dataset CSV ON/OFF labels in y_true_on")
 
+    source = str(state_label_source).lower().strip()
+    shade_from_power = source == "threshold"
     thr = None
-    if on_thresholds_watts is not None:
+    if shade_from_power:
+        if on_thresholds_watts is None:
+            raise ValueError(
+                "state_label_source=threshold requires on_thresholds_watts for true-ON shade"
+            )
         thr = np.asarray(on_thresholds_watts, dtype=np.float32).reshape(-1)
         if thr.size == 1:
             thr = np.full(len(appliances), float(thr[0]), dtype=np.float32)
@@ -554,6 +566,7 @@ def save_appliance_on_waveforms(
                 y_true_on=true_on,
                 y_pred_on=pred_on,
                 true_on_threshold_watts=app_thr,
+                shade_true_on_from_power=shade_from_power,
                 csv_timesteps=csv_timesteps,
                 title=title,
                 dpi=dpi,
@@ -592,6 +605,7 @@ def save_appliance_on_waveforms(
                 y_true_on=true_on,
                 y_pred_on=pred_on,
                 true_on_threshold_watts=app_thr,
+                shade_true_on_from_power=shade_from_power,
                 csv_timesteps=csv_timesteps,
                 title=ctx_title,
                 dpi=dpi,
