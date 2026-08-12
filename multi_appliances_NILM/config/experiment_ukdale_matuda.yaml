@@ -1,4 +1,5 @@
-experiment_id: ukdale_matuda
+# UK-DALE data for MATUDA protocol — run folder name is on the model yaml.
+dataset_id: ukdale_matuda
 seed: 2026
 data_root: datasets/ukdale
 

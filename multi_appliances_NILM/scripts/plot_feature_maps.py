@@ -48,7 +48,7 @@ def main() -> None:
             data_root = ROOT / data_root
 
     adapter = get_adapter(args.model, merged, data_root=str(data_root) if data_root else None)
-    run_dir = args.run_dir or _default_run_dir(experiment["experiment_id"], args.model)
+    run_dir = args.run_dir or _default_run_dir(merged["experiment_id"], args.model)
     ckpt = args.checkpoint or (run_dir / "best.pt")
     if not ckpt.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt}")

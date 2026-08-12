@@ -1,6 +1,7 @@
-# UK-DALE (5 appliances) — normalization follows
-# NILM_model/baseline/transfer_learning_multi-appliance/Arguments.py
-experiment_id: ukdale(20wk source, no DA)
+# UK-DALE (5 appliances) — data / protocol only.
+# Run-folder name lives on the model yaml (config/models/*.yaml → experiment_id).
+# Normalization follows NILM_model/baseline/transfer_learning_multi-appliance/Arguments.py
+dataset_id: ukdale
 seed: 2026
 data_root: datasets/ukdale
 

@@ -97,14 +97,16 @@ def main() -> None:
         f"experiment={args.experiment}, model_config={args.model_config or 'auto'}",
         flush=True,
     )
-    if args.mode == "compare":
-        experiment = load_experiment(args.experiment)
-        print(compare_experiment(ROOT / "runs", experiment["experiment_id"]))
-        return
-
     experiment = load_experiment(args.experiment)
     model_cfg_path = args.model_config or _default_model_config(args.model)
     model_cfg = load_model_config(model_cfg_path)
+
+    if args.mode == "compare":
+        # Run folders are named by model experiment_id (not dataset_id).
+        eid = merge_configs(experiment, model_cfg)["experiment_id"]
+        print(compare_experiment(ROOT / "runs", eid))
+        return
+
     if model_name_from_config(model_cfg) != args.model:
         raise ValueError(
             f"--model {args.model!r} does not match {model_cfg_path} "
@@ -119,7 +121,7 @@ def main() -> None:
             data_root = ROOT / data_root
 
     adapter = get_adapter(args.model, merged, data_root=str(data_root) if data_root else None)
-    run_dir = args.run_dir or _default_run_dir(experiment["experiment_id"], args.model)
+    run_dir = args.run_dir or _default_run_dir(merged["experiment_id"], args.model)
 
     if args.mode in ("train", "train_evaluate"):
         ckpt = train_model(

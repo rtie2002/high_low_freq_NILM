@@ -1,4 +1,5 @@
 # MultiNILM UK-DALE — 600/600 full-sequence supervision (val-first setup).
+experiment_id: ukdale(20wk source, no DA)
 model_name: multinilm
 
 data:

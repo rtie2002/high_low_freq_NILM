@@ -1,5 +1,6 @@
-# REFIT (5 appliances) — update CSV filenames if your export differs
-experiment_id: refit_multi_appliance
+# REFIT (5 appliances) — data / protocol only.
+# Run-folder name: set experiment_id on the model yaml.
+dataset_id: refit
 seed: 2026
 data_root: datasets/refit
 

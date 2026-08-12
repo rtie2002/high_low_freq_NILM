@@ -47,7 +47,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from adapters.config import load_experiment, load_model_config, merge_configs, resolve_training_targets
+from adapters.config import (
+    load_experiment,
+    load_model_config,
+    merge_configs,
+    resolve_experiment_id,
+    resolve_training_targets,
+)
 from adapters.multinilm import MultiNILMAdapter
 from runner import train_model
 
@@ -1193,7 +1199,7 @@ def main() -> None:
         for key in baseline_params
         if key not in tune_set and key not in helper_keys
     }
-    experiment_id = str(experiment["experiment_id"])
+    experiment_id = resolve_experiment_id(experiment, base_model_cfg)
     fast_search = bool(args.fast)
 
     # Epochs are never tuned; constant DEFAULT_EPOCHS unless --epochs overrides.

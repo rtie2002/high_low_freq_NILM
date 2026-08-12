@@ -180,15 +180,54 @@ def resolve_lr_scheduler_settings(train_cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def resolve_experiment_id(experiment: dict[str, Any], model_cfg: dict[str, Any]) -> str:
+    """Run-folder name under ``runs/<experiment_id>/<model_name>/``.
+
+    Split of responsibilities:
+      - ``config/experiment_*.yaml`` → data only (``dataset_id``, CSVs, norms)
+      - ``config/models/*.yaml`` → training setup; set ``experiment_id`` here
+
+    Example::
+
+        # experiment_ukdale.yaml
+        dataset_id: ukdale
+        # multinilm_fractional.yaml
+        experiment_id: ukdale(20wk source, no DA)
+        # -> runs/ukdale(20wk source, no DA)/multinilm_fractional/
+
+    Fallbacks (legacy / quick runs):
+      1. model ``experiment_id`` (preferred)
+      2. ``dataset_id`` (+ optional model ``run_tag``)
+      3. experiment ``experiment_id`` (+ optional ``run_tag``)
+    """
+    if model_cfg.get("experiment_id"):
+        return str(model_cfg["experiment_id"]).strip()
+
+    base = experiment.get("dataset_id") or experiment.get("experiment_id")
+    if not base:
+        raise ValueError(
+            "Set experiment_id in the model yaml (run folder name), "
+            "or dataset_id in the experiment yaml."
+        )
+    base = str(base).strip()
+    tag = model_cfg.get("run_tag")
+    if tag is None or str(tag).strip() == "":
+        return base
+    return f"{base}, {str(tag).strip()}"
+
+
 def merge_configs(experiment: dict[str, Any], model_cfg: dict[str, Any]) -> dict[str, Any]:
     """Single runtime config passed to adapters and runner."""
+    experiment_id = resolve_experiment_id(experiment, model_cfg)
+    # Inject so adapters that read experiment["experiment_id"] stay consistent.
+    experiment_runtime = {**experiment, "experiment_id": experiment_id}
     return {
-        "experiment": experiment,
+        "experiment": experiment_runtime,
         "model": model_cfg,
         "model_name": model_name_from_config(model_cfg),
-        "experiment_id": experiment["experiment_id"],
-        "appliances": appliance_list(experiment, model_cfg),
-        "data_root": experiment.get("data_root"),
-        "evaluation": experiment["evaluation"],
-        "seed": experiment.get("seed"),
+        "experiment_id": experiment_id,
+        "appliances": appliance_list(experiment_runtime, model_cfg),
+        "data_root": experiment_runtime.get("data_root"),
+        "evaluation": experiment_runtime["evaluation"],
+        "seed": experiment_runtime.get("seed"),
     }

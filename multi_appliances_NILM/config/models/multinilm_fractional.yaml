@@ -1,5 +1,10 @@
 # MultiNILM + fractional front-end (baseline MultiNILM.py unchanged).
 # Dataloader stays 1D; model expands to C=9 (raw + 8 α).
+#
+# Run folder: runs/<experiment_id>/<model_name>/
+# Pair with config/experiment_ukdale.yaml or experiment_redd.yaml (data only).
+# Change this when switching dataset / DA / multi-domain mix.
+experiment_id: experiment 1
 model_name: multinilm_fractional
 
 data:
@@ -83,7 +88,7 @@ domain_adaptation:
 
 training:
   batch_size: 64
-  epochs: 200
+  epochs: 300
   learning_rate: 0.0001
   weight_decay: 0.0001
   num_workers: 0
