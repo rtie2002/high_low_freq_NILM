@@ -362,6 +362,7 @@ def select_best_block(
     if best is None:
         print("    WARN: no window passed hard floors; using soft maximin fallback", flush=True)
         soft_best: BlockStats | None = None
+        soft_key: tuple[float, float, float] | None = None
         i = 0
         while i + block_days <= len(days):
             full = _window_from_daily(
@@ -377,7 +378,9 @@ def select_best_block(
                 min_on_minutes={a: 0.0 for a in apps},
                 fridge_min_frac=0.0,
             )
-            if full.coverage < 0.80:
+            # Sparse houses (e.g. REFIT H9 with long gaps) may never hit 80%.
+            # Still require a usable amount of samples (~>=40% of a full 3 weeks).
+            if full.n_rows < int(0.40 * expected_full):
                 i += step
                 continue
             bonus = 0.0
@@ -397,8 +400,10 @@ def select_best_block(
                 )
                 if min(tail.n_events.values()) >= 1:
                     bonus = 100.0
-            scored = full.score + bonus
-            if soft_best is None or scored > soft_best.score:
+            # Prefer: denser window, then active val, then maximin event score.
+            key = (full.coverage, bonus, full.score)
+            if soft_key is None or key > soft_key:
+                soft_key = key
                 soft_best = BlockStats(
                     start=full.start,
                     end=full.end,
@@ -407,13 +412,21 @@ def select_best_block(
                     n_events=full.n_events,
                     on_minutes=full.on_minutes,
                     on_frac=full.on_frac,
-                    score=scored,
+                    score=full.score + bonus,
                     valid=True,
-                    reject_reason="soft_fallback",
+                    reject_reason=f"soft_fallback(cov={full.coverage:.2f})",
                 )
             i += step
         if soft_best is None:
-            raise RuntimeError("Could not find any 3-week window with >=80% coverage")
+            raise RuntimeError(
+                "Could not find any 3-week window with >=40% sample coverage. "
+                "Check that the house CSV is complete (not truncated) and has ON labels."
+            )
+        print(
+            f"    soft pick coverage={soft_best.coverage:.2f} "
+            f"rows={soft_best.n_rows:,} note={soft_best.reject_reason}",
+            flush=True,
+        )
         best = soft_best
 
     print(
