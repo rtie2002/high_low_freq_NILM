@@ -29,7 +29,7 @@ windowing:
   output_window_length: 2048
   output_alignment: end
   input_stride: 1024
-  eval_stride: 2048
+  eval_stride: 1024
   eval_reconstruction: auto         # overlap_mean if stride < out len
   training_targets: auto            # full_input if in == out
 
@@ -72,7 +72,7 @@ architecture:
   head_local_layers: 4
   head_kernel_size: 3
   head_use_residual: true
-  gate_mode: soft_train_hard_eval   # soft in train; hard mask at eval
+  gate_mode: soft   # soft in train; hard mask at eval
   gate_threshold: 0.5
 
   # --- 5) extras ---
