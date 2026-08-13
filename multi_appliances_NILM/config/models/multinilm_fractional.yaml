@@ -117,11 +117,11 @@ domain_adaptation:
 training:
   # --- loop ---
   batch_size: 64
-  epochs: 200
+  epochs: 250
   learning_rate: 0.0001
   weight_decay: 0.0001
   num_workers: 0
-  train_shuffle: true
+  train_shuffle: false
   gradient_clip: 1.0
 
   # --- precision / CUDA ---
