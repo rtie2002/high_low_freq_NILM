@@ -29,7 +29,7 @@ windowing:
   output_window_length: 2048
   output_alignment: end
   input_stride: 1024
-  eval_stride: 1024
+  eval_stride: 2048
   eval_reconstruction: auto         # overlap_mean if stride < out len
   training_targets: auto            # full_input if in == out
 
@@ -38,7 +38,7 @@ windowing:
 # =============================================================================
 fractional:
   enabled: true
-  k: 1                         # number of α channels
+  k: 8                         # number of α channels
   include_raw: true                 # always keep raw → input_channels = k + 1
   memory: 32
   channel_normalize: mean_std
