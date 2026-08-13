@@ -22,15 +22,16 @@ csv:
     washingmachine: {power: washingmachine_power, state: washingmachine_on}
     microwave:      {power: microwave_power,      state: microwave_on}
 
-# Start with UK-DALE baseline stats; recompute later if needed for mixed domain.
+# Shared z-score from mixed TRAIN only (UK+REFIT source houses, 3-week blocks).
+# Fit once on training CSV; apply same stats to val/test (do not refit on test).
 normalization:
-  aggregate: {mean: 400, std: 500}
+  aggregate: {mean: 775, std: 1045}
   appliances:
-    kettle:         {mean: 100, std: 500}
-    fridge:         {mean: 50,  std: 50}
-    dishwasher:     {mean: 700, std: 1000}
-    washingmachine: {mean: 400, std: 700}
-    microwave:      {mean: 60,  std: 300}
+    kettle:         {mean: 20,  std: 214}
+    fridge:         {mean: 39,  std: 68}
+    dishwasher:     {mean: 44,  std: 297}
+    washingmachine: {mean: 27,  std: 190}
+    microwave:      {mean: 14,  std: 99}
 
 evaluation:
   on_thresholds_watts:
