@@ -63,13 +63,13 @@ architecture:
   stage_kernel_size: 5
 
   # --- 3) TCN: long context (kernel_size must be odd) ---
-  num_blocks: 5                     # dilations 1,2,4,8,16
+  num_blocks: 6                     # dilations 1,2,4,8,16
   kernel_size: 9                    # even → length crash (2048→2047)
   max_dilation: 16
   dropout: 0.15
 
   # --- 4) HEADS: per-appliance power + ON/OFF ---
-  head_local_layers: 2
+  head_local_layers: 4
   head_kernel_size: 3
   head_use_residual: true
   gate_mode: soft_train_hard_eval   # soft in train; hard mask at eval
