@@ -11,7 +11,8 @@
 
 paths:
   data_dir: "dataset_preprocess/REFIT"
-  save_path: "dataset_preprocess/created_data/REFIT"
+  # Exported multi-appliance CSVs (same folder the trainer reads under datasets/refit/)
+  save_path: "multi_appliances_NILM/datasets/refit"
   house_filename: "House_{house}.csv"
 
 global_params:
