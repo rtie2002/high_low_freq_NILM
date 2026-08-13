@@ -169,6 +169,11 @@ def parse_args() -> argparse.Namespace:
         default=CREATED_REDD,
         help="Fallback folder with redd_house*_lf_6s.csv from preprocess.",
     )
+    p.add_argument(
+        "--force-copy",
+        action="store_true",
+        help="Overwrite datasets/redd/redd_house*_lf_6s.csv from created_data even if newer.",
+    )
     return p.parse_args()
 
 
@@ -183,7 +188,7 @@ def main() -> None:
     val_frac = float(args.val_frac)
 
     all_houses = sorted(set(train_houses) | {test_house})
-    ensure_house_copies(redd, created, all_houses)
+    ensure_house_copies(redd, created, all_houses, force=bool(args.force_copy))
 
     train_out = redd / "training" / "multi_appliance_training.csv"
     val_out = redd / "validating" / "multi_appliance_validating.csv"
