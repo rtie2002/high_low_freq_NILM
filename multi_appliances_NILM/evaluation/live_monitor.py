@@ -60,6 +60,7 @@ class LiveTrainingMonitor:
         self._loss_file: TextIO | None = None
         self._history_writer: csv.DictWriter | None = None
         self._loss_writer: csv.DictWriter | None = None
+        self.best_epoch: int | None = None
 
     def plot_mode(self) -> str:
         return str(self.plot_cfg.get("plot_mode", "live")).lower()
@@ -211,6 +212,8 @@ class LiveTrainingMonitor:
         getattr(self, file_attr).flush()
 
     def save_loss_plots(self, *, epoch: int, best_epoch: int | None = None) -> None:
+        if best_epoch is not None and int(best_epoch) > 0:
+            self.best_epoch = int(best_epoch)
         if not self.history_path.exists():
             return
         figsize = self.waveform_figsize()
@@ -488,6 +491,7 @@ class LiveTrainingMonitor:
             self.run_dir,
             title="",  # panels already labeled; keep collage compact
             dpi=dpi,
+            best_epoch=self.best_epoch,
         )
         if metrics_all is not None:
             saved.append(metrics_all)
@@ -671,3 +675,11 @@ class LiveTrainingMonitor:
                     appliances=self.appliances,
                     figsize=figsize,
                 )
+        # Refresh metrics collage so the footer shows the final best epoch.
+        self.best_epoch = int(best_epoch) if best_epoch else self.best_epoch
+        save_multi_epoch_metrics_collage(
+            self.run_dir,
+            title="",
+            dpi=int(self.plot_cfg.get("comparison_dpi", 600)),
+            best_epoch=self.best_epoch,
+        )

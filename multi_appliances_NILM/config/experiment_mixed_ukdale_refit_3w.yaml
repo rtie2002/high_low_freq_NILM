@@ -1,0 +1,52 @@
+# Mixed UK-DALE + REFIT (5 appliances) — 3-week active blocks / house.
+# Built by: python scripts/prepare_mixed_ukdale_refit_3week_split.py
+#
+# Protocol:
+#   Source (3 wk each, then 80/20 train/val with active val tail):
+#     UK-DALE 1,5 + REFIT 2,3,5,9,11
+#   Test (3 wk each, maximin active):
+#     UK-DALE 2 + REFIT 20
+dataset_id: mixed_ukdale_refit_3w
+seed: 2026
+data_root: datasets/mixed_ukdale_refit_3w
+
+csv:
+  train_file: training/multi_appliance_training.csv
+  validation_file: validating/multi_appliance_validating.csv
+  test_file: testing/multi_appliance_testing.csv
+  mains_column: aggregate
+  appliances:
+    kettle:         {power: kettle_power,         state: kettle_on}
+    fridge:         {power: fridge_power,         state: fridge_on}
+    dishwasher:     {power: dishwasher_power,     state: dishwasher_on}
+    washingmachine: {power: washingmachine_power, state: washingmachine_on}
+    microwave:      {power: microwave_power,      state: microwave_on}
+
+# Start with UK-DALE baseline stats; recompute later if needed for mixed domain.
+normalization:
+  aggregate: {mean: 400, std: 500}
+  appliances:
+    kettle:         {mean: 100, std: 500}
+    fridge:         {mean: 50,  std: 50}
+    dishwasher:     {mean: 700, std: 1000}
+    washingmachine: {mean: 400, std: 700}
+    microwave:      {mean: 60,  std: 300}
+
+evaluation:
+  on_thresholds_watts:
+    kettle: 40
+    fridge: 50
+    dishwasher: 30
+    washingmachine: 30
+    microwave: 100
+  max_on_power_watts:
+    kettle: 4000
+    fridge: 4000
+    dishwasher: 4000
+    washingmachine: 3999
+    microwave: 4000
+  power_postprocess:
+    enabled: true
+    min_power_watts: 5
+  sae_period: 1200
+  power_unit: watts

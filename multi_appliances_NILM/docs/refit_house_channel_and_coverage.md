@@ -6,13 +6,42 @@ Notes:
 
 1. **Source files** in this repo: `dataset_preprocess/REFIT/House_*.csv` (20 houses present; **House 14 missing**).
 2. **Columns per file:** `Time`, `Unix`, `Aggregate`, `Appliance1` … `Appliance9`.
-   - **1 aggregate channel** + **9 IAM appliance channels** per house.
+   - **1 aggregate channel** + **9 IAM appliance channels** per house (**10** power channels total).
 3. **Sampling:** official REFIT cleaned data is **8 seconds** (these CSVs match that layout).
 4. **Weeks:** computed from the `Time` column. `covered_weeks` subtracts gaps where consecutive samples are more than **30s** apart.
 5. Our multi-appliance trainer expects **5 appliances:** `kettle`, `fridge`, `dishwasher`, `washingmachine`, `microwave` (`config/experiment_refit.yaml`).
 
 Raw summary CSV (machine-readable):  
 `dataset_preprocess/created_data/REFIT/_refit_house_summary.csv`
+
+---
+
+## Selected 6 houses (full 5-appliance set)
+
+Same style as the REDD overview table. These are the only houses we use for the 5-app protocol (`2, 3, 5, 9, 11, 20`).
+
+| REFIT house | meter channels | Calendar weeks |
+| ---: | ---: | ---: |
+| 2 | 10 | 88.20 |
+| 3 | 10 | 87.81 |
+| 5 | 10 | 92.62 |
+| 9 | 10 | 81.15 |
+| 11 | 10 | 56.02 |
+| 20 | 10 | 65.76 |
+
+Notes for this table:
+
+- **meter channels = 10** for every REFIT house: `Aggregate` + `Appliance1`…`Appliance9` (unlike REDD, channel count does not vary by house).
+- Calendar weeks are from the raw `House_*.csv` time span (native ~8 s). After 6 s preprocess + gap trim, usable length is a bit shorter (see covered weeks below).
+
+| REFIT house | covered weeks (gaps >30 s removed) |
+| ---: | ---: |
+| 2 | 65.95 |
+| 3 | 77.41 |
+| 5 | 82.98 |
+| 9 | 68.09 |
+| 11 | 49.35 |
+| 20 | 61.37 |
 
 ---
 
@@ -128,7 +157,7 @@ Config: `config/preprocess/refit.yaml` (`sample_seconds: 6`, houses `2,3,5,9,11,
 Exported CSVs:
 
 ```text
-dataset_preprocess/created_data/REFIT/refit_house{2,3,5,9,11,20}_lf_6s.csv
+multi_appliances_NILM/datasets/refit/refit_house{2,3,5,9,11,20}_lf_6s.csv
 ```
 
 Suggested first split (same spirit as UK-DALE / REDD cross-house):

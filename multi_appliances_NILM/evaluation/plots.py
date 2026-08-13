@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -965,19 +966,131 @@ def _vstack_trimmed_images(
     return np.concatenate(chunks, axis=0)
 
 
+def _overall_from_epoch_comparison(ep_dir: Path) -> dict | None:
+    """Load overall row from an epoch's val/test comparison CSV (if present)."""
+    csv_path = ep_dir / "validation_test_comparison.csv"
+    if not csv_path.is_file():
+        return None
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception:
+        return None
+    if df.empty or "appliance" not in df.columns:
+        return None
+    overall = df[df["appliance"].astype(str) == "overall"]
+    if overall.empty:
+        return None
+    return overall.iloc[0].to_dict()
+
+
+def _resolve_best_epoch_for_collage(
+    run_dir: Path,
+    epoch_dirs: list[tuple[int, Path]],
+    *,
+    best_epoch: int | None = None,
+) -> tuple[int | None, dict | None, str]:
+    """Pick best plotted epoch + overall metrics for the collage footer.
+
+    Preference:
+      1) Explicit ``best_epoch`` if that epoch has a comparison table
+      2) ``training_time.json`` / ``run_manifest.json`` best_epoch
+      3) Among plotted epochs: highest overall val_maF1 (alias val_F1)
+    """
+    by_ep = {ep: d for ep, d in epoch_dirs}
+
+    def _stats(ep: int) -> dict | None:
+        d = by_ep.get(ep)
+        return _overall_from_epoch_comparison(d) if d is not None else None
+
+    if best_epoch is not None and int(best_epoch) > 0:
+        ep = int(best_epoch)
+        st = _stats(ep)
+        if st is not None:
+            return ep, st, "checkpoint"
+        # Checkpoint epoch may fall between plot_interval ticks — still report it.
+        return ep, None, "checkpoint"
+
+    for name in ("training_time.json", "run_manifest.json"):
+        path = run_dir / name
+        if not path.is_file():
+            continue
+        try:
+            meta = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        ep = meta.get("best_epoch")
+        if ep is None:
+            continue
+        ep = int(ep)
+        if ep > 0:
+            st = _stats(ep)
+            if st is not None:
+                return ep, st, "checkpoint"
+            return ep, None, "checkpoint"
+
+    # Fallback: best among plotted epochs by overall validation macro-F1.
+    best_ep: int | None = None
+    best_st: dict | None = None
+    best_f1 = float("-inf")
+    for ep, ep_dir in epoch_dirs:
+        st = _overall_from_epoch_comparison(ep_dir)
+        if st is None:
+            continue
+        f1 = st.get("val_maF1", st.get("val_F1"))
+        if f1 is None or (isinstance(f1, float) and np.isnan(f1)):
+            continue
+        f1 = float(f1)
+        if f1 > best_f1:
+            best_f1 = f1
+            best_ep = ep
+            best_st = st
+    return best_ep, best_st, "max val_F1"
+
+
+def _format_best_epoch_footer(
+    best_epoch: int,
+    stats: dict | None,
+    *,
+    rule: str,
+) -> str:
+    """One-line footer: best epoch + key overall metrics when available."""
+
+    def _f(key_a: str, key_b: str | None = None, *, digits: int = 2) -> str:
+        if stats is None:
+            return "—"
+        val = stats.get(key_a)
+        if val is None and key_b is not None:
+            val = stats.get(key_b)
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            return "—"
+        if digits == 4:
+            return f"{float(val):.4f}"
+        return f"{float(val):.2f}"
+
+    return (
+        f"best epoch: {int(best_epoch)}  "
+        f"val_MAE={_f('val_MAE')}  test_MAE={_f('test_MAE')}  "
+        f"val_F1={_f('val_maF1', 'val_F1', digits=4)}  "
+        f"test_F1={_f('test_maF1', 'test_F1', digits=4)}  "
+        f"({rule})"
+    )
+
+
 def save_multi_epoch_metrics_collage(
     run_dir: str | Path,
     output_path: str | Path | None = None,
     *,
     title: str | None = None,
     dpi: int = 600,
+    best_epoch: int | None = None,
 ) -> Path | None:
-    """Stack every epoch's val/test comparison PNG tightly at native resolution."""
+    """Stack every epoch's val/test comparison PNG; footer shows best epoch."""
     from PIL import Image, ImageDraw, ImageFont
 
     run_dir = Path(run_dir)
+    epoch_dirs = _list_metric_epoch_dirs(run_dir)
     panels: list[tuple[str, np.ndarray]] = []
-    for ep, ep_dir in _list_metric_epoch_dirs(run_dir):
+    for ep, ep_dir in epoch_dirs:
         png = ep_dir / "validation_test_comparison.png"
         if not png.exists():
             continue
@@ -1006,20 +1119,54 @@ def save_multi_epoch_metrics_collage(
         body = np.concatenate([body, np.full(body.shape[:2] + (1,), 255, dtype=np.uint8)], axis=-1)
 
     width = int(body.shape[1])
+    best_ep, best_stats, best_rule = _resolve_best_epoch_for_collage(
+        run_dir, epoch_dirs, best_epoch=best_epoch
+    )
+    footer_text = (
+        _format_best_epoch_footer(best_ep, best_stats, rule=best_rule)
+        if best_ep is not None
+        else ""
+    )
+
+    try:
+        font = ImageFont.truetype("arial.ttf", size=max(14, int(round(0.016 * width))))
+    except OSError:
+        font = ImageFont.load_default()
+
+    title_h = 0
+    title_band = None
     if title:
         title_h = max(36, int(round(0.028 * width)))
         title_band = Image.new("RGBA", (width, title_h), (255, 255, 255, 255))
         draw = ImageDraw.Draw(title_band)
-        try:
-            font = ImageFont.truetype("arial.ttf", size=max(14, title_h // 2))
-        except OSError:
-            font = ImageFont.load_default()
         draw.text((8, title_h // 2), title, fill=(20, 20, 20, 255), font=font, anchor="lm")
-        canvas = Image.new("RGBA", (width, title_h + body.shape[0]), (255, 255, 255, 255))
-        canvas.paste(title_band, (0, 0))
-        canvas.paste(Image.fromarray(body, mode="RGBA"), (0, title_h))
-    else:
-        canvas = Image.fromarray(body, mode="RGBA")
+
+    footer_h = 0
+    footer_band = None
+    if footer_text:
+        footer_h = max(40, int(round(0.032 * width)))
+        footer_band = Image.new("RGBA", (width, footer_h), (232, 238, 245, 255))
+        draw = ImageDraw.Draw(footer_band)
+        # Top rule so the best-epoch line is visually the "last line" of the figure.
+        draw.line([(0, 0), (width, 0)], fill=(47, 62, 78, 255), width=2)
+        draw.text(
+            (width // 2, footer_h // 2 + 1),
+            footer_text,
+            fill=(20, 20, 20, 255),
+            font=font,
+            anchor="mm",
+        )
+
+    total_h = title_h + body.shape[0] + footer_h
+    canvas = Image.new("RGBA", (width, total_h), (255, 255, 255, 255))
+    y = 0
+    if title_band is not None:
+        canvas.paste(title_band, (0, y))
+        y += title_h
+    canvas.paste(Image.fromarray(body, mode="RGBA"), (0, y))
+    y += body.shape[0]
+    if footer_band is not None:
+        canvas.paste(footer_band, (0, y))
     canvas.convert("RGB").save(output_path, format="PNG", dpi=(dpi, dpi), optimize=True)
     return Path(output_path)
 
