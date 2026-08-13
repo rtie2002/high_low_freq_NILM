@@ -4,7 +4,7 @@
 # Run folder: runs/<experiment_id>/<model_name>/
 # Pair with config/experiment_ukdale.yaml or experiment_redd.yaml (data only).
 # Change experiment_id when switching dataset / DA / multi-domain mix.
-experiment_id: mixed_ukdale_refit_3w (domain adaptation)
+experiment_id: mixed_ukdale_refit_3w (domain adaptation, 0.1)
 model_name: multinilm_fractional
 
 # =============================================================================
@@ -39,7 +39,7 @@ windowing:
 fractional:
   enabled: true
   k: 8                         # number of α channels
-  include_raw: true                 # always keep raw → input_channels = k + 1
+  include_raw: true             # always keep raw → input_channels = k + 1
   memory: 32
   channel_normalize: mean_std
 
@@ -96,7 +96,7 @@ loss:
   domain_mu: 0.4                    # L_domain = μ·MMD² + (1-μ)·CORAL
   domain_mix: convex                # convex: (1-λ)L_task + λ L_domain
   domain_scale: equal               # rescale L_domain toward L_task so λ matters
-  lambda_domain: 0.3
+  lambda_domain: 0.1
 
   # --- DA schedule (0 = off / immediate) ---
   da_warmup_epochs: 0               # train task only for N epochs
