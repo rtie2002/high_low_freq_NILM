@@ -108,7 +108,7 @@ loss:
 # Needs enabled: true AND loss.lambda_domain > 0
 # =============================================================================
 domain_adaptation:
-  enabled: false
+  enabled: true
   target_split: test                # unlabeled target (e.g. UK-DALE H2 / REDD H2)
 
 # =============================================================================
