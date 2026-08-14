@@ -19,6 +19,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import importlib
 import os
 import sys
 from pathlib import Path
@@ -27,8 +28,6 @@ import matplotlib
 import numpy as np
 import pandas as pd
 import torch
-from matplotlib.patches import Patch
-from matplotlib.widgets import Button, CheckButtons, RadioButtons, Slider
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -37,14 +36,35 @@ NILM_ROOT = PROJECT_ROOT / "multi_appliances_NILM"
 if str(NILM_ROOT) not in sys.path:
     sys.path.insert(0, str(NILM_ROOT))
 
-for _backend in ("QtAgg", "TkAgg", "WXAgg"):
-    try:
-        matplotlib.use(_backend, force=True)
-        break
-    except Exception:
-        continue
+
+def _select_interactive_backend() -> None:
+    """Pick a GUI backend that is really importable in the active conda env."""
+    candidates = [
+        ("TkAgg", "matplotlib.backends.backend_tkagg"),
+        ("WXAgg", "matplotlib.backends.backend_wxagg"),
+        ("QtAgg", "matplotlib.backends.backend_qtagg"),
+    ]
+    for backend, module_name in candidates:
+        try:
+            importlib.import_module(module_name)
+            matplotlib.use(backend, force=True)
+            return
+        except Exception:
+            continue
+
+
+_select_interactive_backend()
+
+if "agg" in matplotlib.get_backend().lower():
+    print(
+        "[warning] Matplotlib is using a non-interactive backend. "
+        "Install/enable Tk, wxPython, or PyQt/PySide to open the viewer window.",
+        flush=True,
+    )
 
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
+from matplotlib.widgets import Button, CheckButtons, RadioButtons, Slider
 
 from adapters.config import (  # noqa: E402
     load_experiment,
