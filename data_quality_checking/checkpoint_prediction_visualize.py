@@ -23,7 +23,7 @@ import os
 import sys
 from pathlib import Path
 
-import matplotlib.pyplot as plt
+import matplotlib
 import numpy as np
 import pandas as pd
 import torch
@@ -37,6 +37,15 @@ NILM_ROOT = PROJECT_ROOT / "multi_appliances_NILM"
 if str(NILM_ROOT) not in sys.path:
     sys.path.insert(0, str(NILM_ROOT))
 
+for _backend in ("QtAgg", "TkAgg", "WXAgg"):
+    try:
+        matplotlib.use(_backend, force=True)
+        break
+    except Exception:
+        continue
+
+import matplotlib.pyplot as plt
+
 from adapters.config import (  # noqa: E402
     load_experiment,
     load_model_config,
@@ -44,7 +53,35 @@ from adapters.config import (  # noqa: E402
     model_name_from_config,
     resolve_tensor_dtype,
 )
-from main import MODELS, _default_run_dir, get_adapter  # noqa: E402
+from adapters.mat_nilm import MATNILMAdapter  # noqa: E402
+from adapters.matuda import MATUDAAdapter  # noqa: E402
+from adapters.multinilm import MultiNILMAdapter  # noqa: E402
+from adapters.multinilm_fractional import MultiNILMFractionalAdapter  # noqa: E402
+from adapters.multinilm_kle import MultiNILMKLEAdapter  # noqa: E402
+from adapters.multinilm_no_distill import MultiNILMNoDistillAdapter  # noqa: E402
+from adapters.transfer_multi_appliance import TransferMultiApplianceAdapter  # noqa: E402
+
+
+MODELS = {
+    "mat_nilm": MATNILMAdapter,
+    "matuda": MATUDAAdapter,
+    "multinilm": MultiNILMAdapter,
+    "multinilm_fractional": MultiNILMFractionalAdapter,
+    "multinilm_kle": MultiNILMKLEAdapter,
+    "multinilm_no_distill": MultiNILMNoDistillAdapter,
+    "transfer_multi_appliance": TransferMultiApplianceAdapter,
+}
+
+
+def get_adapter(model_name: str, merged_cfg: dict, data_root: str | None = None):
+    if model_name not in MODELS:
+        known = ", ".join(sorted(MODELS))
+        raise ValueError(f"Unknown model {model_name!r}. Available: {known}")
+    return MODELS[model_name](merged_cfg, data_root=data_root)
+
+
+def _default_run_dir(experiment_id: str, model_name: str) -> Path:
+    return NILM_ROOT / "runs" / experiment_id / model_name
 
 
 DEFAULT_MODEL = "multinilm_fractional"
@@ -100,6 +137,38 @@ def _safe_ylim(ax, arrays: list[np.ndarray]) -> None:
     ax.set_ylim(ymin - 0.12 * span, ymax + 0.18 * span)
 
 
+def choose_checkpoint(default_run_dir: Path) -> Path:
+    """Ask user which best.pt to visualize when --checkpoint is omitted."""
+    candidates = sorted(NILM_ROOT.glob("runs/**/best.pt"), key=lambda p: str(p).lower())
+    if default_run_dir.joinpath("best.pt").exists():
+        default_best = default_run_dir / "best.pt"
+        candidates = [default_best] + [p for p in candidates if p != default_best]
+
+    if not candidates:
+        raw = input("No best.pt found under multi_appliances_NILM/runs. Enter checkpoint path: ").strip().strip('"')
+        path = Path(raw)
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        return path
+
+    print("\nAvailable best.pt checkpoints:")
+    for idx, path in enumerate(candidates):
+        try:
+            rel = path.relative_to(NILM_ROOT)
+        except ValueError:
+            rel = path
+        print(f" [{idx:02d}] {rel}")
+
+    raw = input("\nEnter checkpoint index or full path: ").strip().strip('"')
+    if raw.isdigit() and int(raw) < len(candidates):
+        return candidates[int(raw)]
+
+    path = Path(raw)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path
+
+
 def load_prediction_bundle(
     *,
     model_name: str,
@@ -126,7 +195,7 @@ def load_prediction_bundle(
 
     adapter = get_adapter(model_name, merged, data_root=str(data_root) if data_root else None)
     run_dir = _default_run_dir(merged["experiment_id"], model_name)
-    checkpoint = checkpoint_path or (run_dir / "best.pt")
+    checkpoint = checkpoint_path or choose_checkpoint(run_dir)
     if not checkpoint.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
 
