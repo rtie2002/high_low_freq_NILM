@@ -22,13 +22,13 @@ import argparse
 import importlib
 import os
 import sys
-import textwrap
 from pathlib import Path
 
 import matplotlib
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -252,6 +252,133 @@ def _sae_per_app(y_true: np.ndarray, y_pred: np.ndarray, period: int) -> np.ndar
     return vals
 
 
+def _shape_text(value) -> str:
+    if isinstance(value, torch.Tensor):
+        return "x".join(str(dim) for dim in value.shape)
+    if isinstance(value, (tuple, list)) and value:
+        return ", ".join(_shape_text(v) for v in value if isinstance(v, torch.Tensor))
+    return "-"
+
+
+def _module_detail(module: nn.Module) -> str:
+    if isinstance(module, nn.Conv1d):
+        return (
+            f"Conv1d {module.in_channels}->{module.out_channels}, "
+            f"k={module.kernel_size[0]}, stride={module.stride[0]}, "
+            f"pad={module.padding[0]}, dilation={module.dilation[0]}, "
+            f"groups={module.groups}, bias={module.bias is not None}"
+        )
+    if isinstance(module, nn.BatchNorm1d):
+        return f"BatchNorm1d C={module.num_features}"
+    if isinstance(module, nn.ReLU):
+        return "ReLU"
+    if isinstance(module, nn.Dropout):
+        return f"Dropout p={module.p:g}"
+    if isinstance(module, nn.Identity):
+        return "Identity"
+    return module.__class__.__name__
+
+
+def _architecture_report_lines(model: nn.Module, model_cfg: dict, appliances: list[str]) -> list[str]:
+    """Create a readable model architecture trace with tensor dimensions."""
+    w = model_cfg.get("windowing", {})
+    input_len = int(w.get("input_window_length", w.get("output_window_length", 1)))
+    dummy = torch.zeros(1, input_len, 1)
+    device = next(model.parameters()).device
+    dtype = next(model.parameters()).dtype
+    dummy = dummy.to(device=device, dtype=dtype)
+
+    records: list[tuple[str, str, str, str]] = []
+    hook_names: set[str] = set()
+    interesting = (
+        nn.Conv1d,
+        nn.BatchNorm1d,
+        nn.ReLU,
+        nn.Dropout,
+        nn.Identity,
+    )
+
+    for name, module in model.named_modules():
+        if not name:
+            continue
+        keep = isinstance(module, interesting) or module.__class__.__name__ in {
+            "FractionalFrontEnd",
+            "MultiScaleWaveformStem",
+            "StagedFeatureExtractor",
+            "ResidualTemporalBlock",
+            "ApplianceHead",
+            "CrossApplianceDistill",
+        }
+        if keep:
+            hook_names.add(name)
+
+    hooks = []
+
+    def make_hook(name: str):
+        def hook(module, inputs, output):
+            records.append((name, _module_detail(module), _shape_text(inputs), _shape_text(output)))
+
+        return hook
+
+    for name, module in model.named_modules():
+        if name in hook_names:
+            hooks.append(module.register_forward_hook(make_hook(name)))
+
+    was_training = model.training
+    model.eval()
+    try:
+        with torch.no_grad():
+            _ = model(dummy)
+    finally:
+        for hook in hooks:
+            hook.remove()
+        model.train(was_training)
+
+    frac_cfg = model_cfg.get("fractional", {})
+    arch_cfg = model_cfg.get("architecture", {})
+    lines = [
+        "",
+        "Model Architecture Trace",
+        "=" * 96,
+        f"Input from dataloader      : (B, T, 1), T={input_len}",
+        f"Appliance output order     : {', '.join(appliances)}",
+        f"Window output length       : {int(w.get('output_window_length', input_len))}",
+        f"Fractional enabled         : {bool(frac_cfg.get('enabled', False))}",
+        f"Fractional k/include_raw   : {frac_cfg.get('k', 8)} / {frac_cfg.get('include_raw', True)}",
+        f"Fractional memory          : {frac_cfg.get('memory', 'default')}",
+        f"Fractional channel norm    : {frac_cfg.get('channel_normalize', 'mean_std')}",
+        f"TCN blocks/kernel/dilation : {arch_cfg.get('num_blocks')} / {arch_cfg.get('kernel_size')} / max {arch_cfg.get('max_dilation')}",
+        f"Gate mode/threshold        : {arch_cfg.get('gate_mode')} / {arch_cfg.get('gate_threshold')}",
+        f"Cross-appliance residual   : {arch_cfg.get('cross_appliance', {})}",
+        "",
+        "Layer-by-layer forward shapes",
+        "-" * 96,
+        f"{'#':>3s} {'module':44s} {'operation':42s} {'input -> output'}",
+        "-" * 150,
+    ]
+
+    for idx, (name, detail, in_shape, out_shape) in enumerate(records, start=1):
+        if len(name) > 44:
+            name = "..." + name[-41:]
+        if len(detail) > 42:
+            detail = detail[:39] + "..."
+        lines.append(f"{idx:3d} {name:44s} {detail:42s} {in_shape} -> {out_shape}")
+
+    lines.extend(
+        [
+            "",
+            "Architectural Notes",
+            "-" * 96,
+            "FractionalFrontEnd expands one aggregate channel into raw + multi-alpha GL channels.",
+            "MultiScaleWaveformStem uses parallel local Conv1d kernels to catch sharp and wider waveform patterns.",
+            "ResidualTemporalBlock adds its input back to the block output, preserving time length while learning corrections.",
+            "Each ApplianceHead has its own local decoder, power head, state head, and state-gated power output.",
+            "Power gating: P_hat = gate * raw_power + (1 - gate) * normalized_off_level.",
+        ]
+    )
+    return lines
+
+
 def choose_checkpoint(default_run_dir: Path) -> Path:
     """Ask user which best.pt to visualize when --checkpoint is omitted."""
     candidates = sorted(NILM_ROOT.glob("runs/**/best.pt"), key=lambda p: str(p).lower())
@@ -333,12 +460,13 @@ def load_prediction_bundle(
         split=split,
     )
     epoch = int(payload.get("epoch", -1)) if isinstance(payload, dict) else -1
-    return adapter, bundle, checkpoint, epoch
+    return adapter, model, bundle, checkpoint, epoch
 
 
 def interactive_prediction_viewer(
     *,
     adapter,
+    model,
     bundle,
     checkpoint: Path,
     checkpoint_epoch: int,
@@ -582,6 +710,8 @@ def interactive_prediction_viewer(
                     f"pred_peak={float(rec['pred_peak_watts']):>7.1f}W"
                 )
                 lines.append(f"    {rec['start_time']} -> {rec['end_time']}")
+
+        lines.extend(_architecture_report_lines(model, adapter.model_cfg, appliances))
 
         report_dir = PROJECT_ROOT / "data_quality_checking" / "checkpoint_prediction_reports"
         report_dir.mkdir(parents=True, exist_ok=True)
@@ -880,47 +1010,87 @@ def interactive_prediction_viewer(
     def show_report(_=None) -> None:
         lines, report_txt, metrics_csv, failure_csv = build_report()
         print("\n".join(lines))
-        report_fig = plt.figure(figsize=(12.8, 8.4))
-        manager = getattr(report_fig.canvas, "manager", None)
-        if manager is not None:
-            manager.set_window_title("Checkpoint Prediction Report")
-        report_fig.suptitle("Checkpoint Prediction Report", fontsize=13, fontweight="bold")
-        ax_report = report_fig.add_axes([0.035, 0.04, 0.93, 0.90])
-        ax_report.axis("off")
-        max_lines = 48
-        display_lines = lines[:max_lines]
-        if len(lines) > max_lines:
-            display_lines.extend(
-                [
-                    "",
-                    f"... {len(lines) - max_lines} more lines saved in:",
-                    str(report_txt),
-                    "Full metrics table:",
-                    str(metrics_csv),
-                    "Full failed-event table:",
-                    str(failure_csv),
-                ]
+        try:
+            import tkinter as tk
+            from tkinter import ttk
+
+            owns_mainloop = tk._default_root is None
+            root = tk.Tk() if owns_mainloop else tk.Toplevel()
+            root.title("Checkpoint Prediction Report")
+            root.geometry("1280x820")
+            root.configure(bg="#f4f6f8")
+
+            header = ttk.Frame(root, padding=(14, 10, 14, 6))
+            header.pack(fill="x")
+            ttk.Label(
+                header,
+                text="Checkpoint Prediction Report",
+                font=("Segoe UI", 15, "bold"),
+            ).pack(anchor="w")
+            ttk.Label(
+                header,
+                text=f"{checkpoint.name} | epoch {checkpoint_epoch} | {split}",
+                font=("Segoe UI", 9),
+                foreground="#4b5563",
+            ).pack(anchor="w", pady=(2, 0))
+
+            body = ttk.Frame(root, padding=(14, 4, 14, 8))
+            body.pack(fill="both", expand=True)
+            yscroll = ttk.Scrollbar(body, orient="vertical")
+            xscroll = ttk.Scrollbar(body, orient="horizontal")
+            text = tk.Text(
+                body,
+                wrap="none",
+                font=("Consolas", 9),
+                bg="#ffffff",
+                fg="#1f2933",
+                insertbackground="#1f2933",
+                relief="flat",
+                padx=12,
+                pady=10,
+                yscrollcommand=yscroll.set,
+                xscrollcommand=xscroll.set,
             )
-        wrapped = []
-        for line in display_lines:
-            if len(line) <= 118:
-                wrapped.append(line)
-            else:
-                wrapped.extend(textwrap.wrap(line, width=118, subsequent_indent="    "))
-        ax_report.text(
-            0.0,
-            1.0,
-            "\n".join(wrapped),
-            va="top",
-            ha="left",
-            family="monospace",
-            fontsize=8.8,
-            linespacing=1.18,
-        )
-        report_fig.canvas.draw_idle()
-        if manager is not None:
-            manager.show()
-        plt.show(block=False)
+            yscroll.config(command=text.yview)
+            xscroll.config(command=text.xview)
+            text.grid(row=0, column=0, sticky="nsew")
+            yscroll.grid(row=0, column=1, sticky="ns")
+            xscroll.grid(row=1, column=0, sticky="ew")
+            body.rowconfigure(0, weight=1)
+            body.columnconfigure(0, weight=1)
+
+            text.tag_configure("section", foreground="#0f766e", font=("Consolas", 10, "bold"))
+            text.tag_configure("rule", foreground="#94a3b8")
+            text.tag_configure("path", foreground="#2563eb")
+            text.tag_configure("danger", foreground="#b91c1c")
+
+            for line in lines:
+                tag = None
+                if line.endswith("Metrics") or line.endswith("Summary") or line.endswith("Examples") or line.endswith("Trace") or line.endswith("Notes") or line.endswith("Definitions"):
+                    tag = "section"
+                elif set(line.strip()) in ({"="}, {"-"}):
+                    tag = "rule"
+                elif "Saved " in line or "Checkpoint file" in line or "Selected CSV" in line:
+                    tag = "path"
+                elif "false_pred_event" in line or "missed_true_event" in line:
+                    tag = "danger"
+                text.insert("end", line + "\n", tag)
+            text.configure(state="disabled")
+
+            footer = ttk.Frame(root, padding=(14, 0, 14, 12))
+            footer.pack(fill="x")
+            ttk.Label(
+                footer,
+                text=f"Saved: {report_txt}    |    {metrics_csv}    |    {failure_csv}",
+                foreground="#4b5563",
+                font=("Segoe UI", 8),
+            ).pack(side="left")
+            ttk.Button(footer, text="Close", command=root.destroy).pack(side="right")
+            if owns_mainloop:
+                root.mainloop()
+        except Exception as exc:
+            print(f"[warning] Tk report window failed: {exc}")
+            print(f"Open saved report instead: {report_txt}")
 
     control_y = 0.040
     ax_pos = plt.axes([0.075, control_y + 0.050, 0.48, 0.016])
@@ -1029,7 +1199,7 @@ def main() -> None:
         f"experiment={args.experiment}, split={args.split}",
         flush=True,
     )
-    adapter, bundle, checkpoint, epoch = load_prediction_bundle(
+    adapter, model, bundle, checkpoint, epoch = load_prediction_bundle(
         model_name=args.model,
         experiment_path=args.experiment,
         model_config_path=args.model_config,
@@ -1039,6 +1209,7 @@ def main() -> None:
     )
     interactive_prediction_viewer(
         adapter=adapter,
+        model=model,
         bundle=bundle,
         checkpoint=checkpoint,
         checkpoint_epoch=epoch,
