@@ -295,8 +295,8 @@ def interactive_prediction_viewer(
         "sum_pred": "#7E57C2",
         "true_line": "#1F77B4",
         "pred_line": "#E67E22",
-        "true_shade": "#9ECAE1",
-        "pred_shade": "#FDD49E",
+        "correct_on": "#A8E6B1",
+        "wrong_on": "#F6B7B7",
         "status": "#355C7D",
     }
 
@@ -304,8 +304,7 @@ def interactive_prediction_viewer(
         "start": 0,
         "span": min(max(100, int(view_span)), n_points),
         "scale": "raw",
-        "show_true_on": True,
-        "show_pred_on": True,
+        "show_f1_marks": True,
         "visible": {app: True for app in appliances},
         "lines": [],
         "patches": [],
@@ -346,39 +345,65 @@ def interactive_prediction_viewer(
         state["lines"] = []
         state["patches"] = []
 
+    def relayout_axes() -> list[tuple[int, str]]:
+        visible_apps = [
+            (app_i, app)
+            for app_i, app in enumerate(appliances)
+            if state["visible"].get(app, True)
+        ]
+        visible_rows = [(-1, "aggregate"), *visible_apps]
+        left, right = 0.075, 0.84
+        bottom, top = 0.20, 0.91
+        gap = 0.012
+        weights = [1.12] + [1.0] * len(visible_apps)
+        height_total = top - bottom - gap * max(0, len(visible_rows) - 1)
+        weight_total = sum(weights)
+
+        y_top = top
+        for row_idx, (item_idx, name) in enumerate(visible_rows):
+            ax = axes[0] if name == "aggregate" else axes[item_idx + 1]
+            height = height_total * weights[row_idx] / weight_total
+            y0 = y_top - height
+            ax.set_position([left, y0, right - left, height])
+            ax.set_visible(True)
+            y_top = y0 - gap
+
+        visible_app_names = {app for _, app in visible_apps}
+        for app_i, app in enumerate(appliances):
+            if app not in visible_app_names:
+                axes[app_i + 1].set_visible(False)
+        return visible_rows
+
+    def shade_mask(ax, mask: np.ndarray, start: int, color: str, alpha: float) -> int:
+        count = 0
+        for s, e in on_segments(mask):
+            patch = ax.axvspan(
+                start + s,
+                start + e,
+                color=color,
+                alpha=alpha,
+                lw=0,
+                zorder=0,
+            )
+            state["patches"].append(patch)
+            count += 1
+        return count
+
     def shade_segments(ax, app: str, start: int, end: int) -> tuple[int, int]:
-        true_count = 0
-        pred_count = 0
-        if state["show_true_on"]:
-            for s, e in true_segments[app]:
-                if e <= start or s >= end:
-                    continue
-                patch = ax.axvspan(
-                    max(s, start),
-                    min(e, end),
-                    color=palette["true_shade"],
-                    alpha=0.18,
-                    lw=0,
-                )
-                state["patches"].append(patch)
-                true_count += 1
-        if state["show_pred_on"]:
-            for s, e in pred_segments[app]:
-                if e <= start or s >= end:
-                    continue
-                patch = ax.axvspan(
-                    max(s, start),
-                    min(e, end),
-                    color=palette["pred_shade"],
-                    alpha=0.20,
-                    lw=0,
-                )
-                state["patches"].append(patch)
-                pred_count += 1
-        return true_count, pred_count
+        if not state["show_f1_marks"]:
+            return 0, 0
+        app_i = appliances.index(app)
+        t = true_on[start:end, app_i].astype(bool)
+        p = pred_on[start:end, app_i].astype(bool)
+        correct_on = t & p
+        wrong_on = np.logical_xor(t, p)
+        correct_count = shade_mask(ax, correct_on, start, palette["correct_on"], 0.30)
+        wrong_count = shade_mask(ax, wrong_on, start, palette["wrong_on"], 0.32)
+        return correct_count, wrong_count
 
     def redraw(_=None) -> None:
         clear_artists()
+        visible_rows = relayout_axes()
         start, end, x = visible_slice()
         state["start"] = start
         if readable_time is not None and end > start:
@@ -420,8 +445,13 @@ def interactive_prediction_viewer(
         for app_i, app in enumerate(appliances):
             ax = axes[app_i + 1]
             shown = bool(state["visible"].get(app, True))
-            t_count, p_count = shade_segments(ax, app, start, end)
-            summaries.append(f"{app} true={t_count} pred={p_count}")
+            if not shown:
+                legend = ax.get_legend()
+                if legend:
+                    legend.remove()
+                continue
+            correct_count, wrong_count = shade_segments(ax, app, start, end)
+            summaries.append(f"{app} correct={correct_count} wrong={wrong_count}")
             if shown:
                 y_true = transform_values(true_watts[:, app_i], start, end)
                 y_pred = transform_values(pred_watts[:, app_i], start, end)
@@ -446,21 +476,24 @@ def interactive_prediction_viewer(
                 state["lines"].append(line)
                 _safe_ylim(ax, [y_true, y_pred])
                 ax.legend(loc="upper right", fontsize=8, frameon=False)
-            else:
-                ax.set_ylim(-1, 1)
-                legend = ax.get_legend()
-                if legend:
-                    legend.remove()
             ax.set_ylabel(f"{app}\nW" if state["scale"] == "raw" else app, fontsize=9)
             ax.grid(True, axis="x", alpha=0.22)
             ax.grid(True, axis="y", alpha=0.12)
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
 
-        axes[-1].set_xlabel("prediction timeline row")
+        for ax in axes:
+            ax.set_xlabel("")
+        last_axis = axes[0]
+        for item_idx, name in visible_rows:
+            last_axis = axes[0] if name == "aggregate" else axes[item_idx + 1]
+        last_axis.set_xlabel("prediction timeline row")
         for ax in axes:
             ax.set_xlim(start, end)
-        status.set_text("visible ON event count: " + " | ".join(summaries))
+        status.set_text(
+            "F1 ON marks: green=correct ON overlap, red=missed/false ON"
+            + ((" | " + " | ".join(summaries)) if summaries else "")
+        )
         fig.canvas.draw_idle()
 
     def sync_from_sliders(_=None) -> None:
@@ -479,14 +512,9 @@ def interactive_prediction_viewer(
         state["scale"] = label
         redraw()
 
-    def toggle_true(_=None) -> None:
-        state["show_true_on"] = not state["show_true_on"]
-        true_button.label.set_text(f"True ON: {'on' if state['show_true_on'] else 'off'}")
-        redraw()
-
-    def toggle_pred(_=None) -> None:
-        state["show_pred_on"] = not state["show_pred_on"]
-        pred_button.label.set_text(f"Pred ON: {'on' if state['show_pred_on'] else 'off'}")
+    def toggle_f1_marks(_=None) -> None:
+        state["show_f1_marks"] = not state["show_f1_marks"]
+        f1_button.label.set_text(f"F1 marks: {'on' if state['show_f1_marks'] else 'off'}")
         redraw()
 
     def print_stats(_=None) -> None:
@@ -532,18 +560,15 @@ def interactive_prediction_viewer(
     ax_back = plt.axes([0.59, control_y + 0.075, 0.07, 0.035])
     ax_next = plt.axes([0.67, control_y + 0.075, 0.07, 0.035])
     ax_stats = plt.axes([0.75, control_y + 0.075, 0.07, 0.035])
-    ax_true = plt.axes([0.59, control_y + 0.025, 0.10, 0.035])
-    ax_pred = plt.axes([0.71, control_y + 0.025, 0.10, 0.035])
+    ax_f1 = plt.axes([0.59, control_y + 0.025, 0.16, 0.035])
     back_button = Button(ax_back, "Back")
     next_button = Button(ax_next, "Next")
     stats_button = Button(ax_stats, "Stats")
-    true_button = Button(ax_true, "True ON: on")
-    pred_button = Button(ax_pred, "Pred ON: on")
+    f1_button = Button(ax_f1, "F1 marks: on")
     back_button.on_clicked(lambda _: move(-state["span"] // 2))
     next_button.on_clicked(lambda _: move(state["span"] // 2))
     stats_button.on_clicked(print_stats)
-    true_button.on_clicked(toggle_true)
-    pred_button.on_clicked(toggle_pred)
+    f1_button.on_clicked(toggle_f1_marks)
 
     ax_checks = plt.axes([0.855, 0.46, 0.13, 0.34])
     checks = CheckButtons(ax_checks, appliances, [True] * len(appliances))
@@ -557,8 +582,8 @@ def interactive_prediction_viewer(
 
     fig.legend(
         handles=[
-            Patch(facecolor=palette["true_shade"], alpha=0.38, label="true ON region"),
-            Patch(facecolor=palette["pred_shade"], alpha=0.42, label="predicted ON region"),
+            Patch(facecolor=palette["correct_on"], alpha=0.55, label="correct ON overlap"),
+            Patch(facecolor=palette["wrong_on"], alpha=0.58, label="missed / false ON"),
         ],
         loc="upper right",
         bbox_to_anchor=(0.985, 0.94),
@@ -572,8 +597,7 @@ def interactive_prediction_viewer(
         back_button,
         next_button,
         stats_button,
-        true_button,
-        pred_button,
+        f1_button,
         checks,
         scale_radio,
     ]
