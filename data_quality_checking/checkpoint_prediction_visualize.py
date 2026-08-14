@@ -288,7 +288,7 @@ def interactive_prediction_viewer(
     )
     if not isinstance(axes, np.ndarray):
         axes = np.asarray([axes])
-    plt.subplots_adjust(left=0.075, right=0.84, bottom=0.20, top=0.91)
+    plt.subplots_adjust(left=0.065, right=0.905, bottom=0.125, top=0.925)
 
     palette = {
         "aggregate": "#263238",
@@ -314,11 +314,11 @@ def interactive_prediction_viewer(
     title = fig.suptitle("", fontsize=12.5, fontweight="bold")
     status = fig.text(
         0.5,
-        0.012,
+        0.006,
         "",
         ha="center",
         va="bottom",
-        fontsize=9.5,
+        fontsize=8.2,
         color=palette["status"],
     )
 
@@ -352,9 +352,9 @@ def interactive_prediction_viewer(
             if state["visible"].get(app, True)
         ]
         visible_rows = [(-1, "aggregate"), *visible_apps]
-        left, right = 0.075, 0.84
-        bottom, top = 0.20, 0.91
-        gap = 0.012
+        left, right = 0.065, 0.905
+        bottom, top = 0.135, 0.925
+        gap = 0.010
         weights = [1.12] + [1.0] * len(visible_apps)
         height_total = top - bottom - gap * max(0, len(visible_rows) - 1)
         weight_total = sum(weights)
@@ -451,7 +451,7 @@ def interactive_prediction_viewer(
                     legend.remove()
                 continue
             correct_count, wrong_count = shade_segments(ax, app, start, end)
-            summaries.append(f"{app} correct={correct_count} wrong={wrong_count}")
+            summaries.append(f"{app}: ok {correct_count}, err {wrong_count}")
             if shown:
                 y_true = transform_values(true_watts[:, app_i], start, end)
                 y_pred = transform_values(pred_watts[:, app_i], start, end)
@@ -491,7 +491,7 @@ def interactive_prediction_viewer(
         for ax in axes:
             ax.set_xlim(start, end)
         status.set_text(
-            "F1 ON marks: green=correct ON overlap, red=missed/false ON"
+            "F1 marks: green=correct ON, red=missed/false ON"
             + ((" | " + " | ".join(summaries)) if summaries else "")
         )
         fig.canvas.draw_idle()
@@ -538,11 +538,11 @@ def interactive_prediction_viewer(
             )
         print("=" * 100)
 
-    control_y = 0.070
-    ax_pos = plt.axes([0.09, control_y + 0.075, 0.46, 0.026])
+    control_y = 0.040
+    ax_pos = plt.axes([0.075, control_y + 0.050, 0.48, 0.016])
     max_start = max(0, n_points - 1)
     pos_slider = Slider(ax_pos, "Start", 0, max_start, valinit=0, valstep=1, valfmt="%d")
-    ax_span = plt.axes([0.09, control_y + 0.025, 0.46, 0.026])
+    ax_span = plt.axes([0.075, control_y + 0.015, 0.48, 0.016])
     span_slider = Slider(
         ax_span,
         "Span",
@@ -557,10 +557,10 @@ def interactive_prediction_viewer(
     pos_slider.on_changed(sync_from_sliders)
     span_slider.on_changed(sync_from_sliders)
 
-    ax_back = plt.axes([0.59, control_y + 0.075, 0.07, 0.035])
-    ax_next = plt.axes([0.67, control_y + 0.075, 0.07, 0.035])
-    ax_stats = plt.axes([0.75, control_y + 0.075, 0.07, 0.035])
-    ax_f1 = plt.axes([0.59, control_y + 0.025, 0.16, 0.035])
+    ax_back = plt.axes([0.585, control_y + 0.047, 0.055, 0.026])
+    ax_next = plt.axes([0.647, control_y + 0.047, 0.055, 0.026])
+    ax_stats = plt.axes([0.709, control_y + 0.047, 0.055, 0.026])
+    ax_f1 = plt.axes([0.585, control_y + 0.012, 0.125, 0.026])
     back_button = Button(ax_back, "Back")
     next_button = Button(ax_next, "Next")
     stats_button = Button(ax_stats, "Stats")
@@ -570,14 +570,18 @@ def interactive_prediction_viewer(
     stats_button.on_clicked(print_stats)
     f1_button.on_clicked(toggle_f1_marks)
 
-    ax_checks = plt.axes([0.855, 0.46, 0.13, 0.34])
+    ax_checks = plt.axes([0.922, 0.56, 0.072, 0.24])
     checks = CheckButtons(ax_checks, appliances, [True] * len(appliances))
-    ax_checks.set_title("Appliances", fontsize=9)
+    ax_checks.set_title("Apps", fontsize=8)
+    for label in checks.labels:
+        label.set_fontsize(7.5)
     checks.on_clicked(on_check)
 
-    ax_scale = plt.axes([0.855, 0.25, 0.13, 0.14])
+    ax_scale = plt.axes([0.922, 0.38, 0.072, 0.12])
     scale_radio = RadioButtons(ax_scale, ["raw", "zscore", "minmax"], active=0)
-    ax_scale.set_title("Scale", fontsize=9)
+    ax_scale.set_title("Scale", fontsize=8)
+    for label in scale_radio.labels:
+        label.set_fontsize(7.5)
     scale_radio.on_clicked(on_scale)
 
     fig.legend(
@@ -586,8 +590,8 @@ def interactive_prediction_viewer(
             Patch(facecolor=palette["wrong_on"], alpha=0.58, label="missed / false ON"),
         ],
         loc="upper right",
-        bbox_to_anchor=(0.985, 0.94),
-        fontsize=8,
+        bbox_to_anchor=(0.995, 0.925),
+        fontsize=7.5,
         frameon=False,
     )
 
