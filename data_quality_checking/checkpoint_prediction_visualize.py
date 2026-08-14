@@ -22,6 +22,7 @@ import argparse
 import importlib
 import os
 import sys
+import textwrap
 from pathlib import Path
 
 import matplotlib
@@ -157,6 +158,33 @@ def _safe_ylim(ax, arrays: list[np.ndarray]) -> None:
     ax.set_ylim(ymin - 0.12 * span, ymax + 0.18 * span)
 
 
+def _binary_f1_parts(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[int, int, int, int, float]:
+    yt = np.asarray(y_true).astype(bool)
+    yp = np.asarray(y_pred).astype(bool)
+    tp = int(np.logical_and(yt, yp).sum())
+    fp = int(np.logical_and(~yt, yp).sum())
+    fn = int(np.logical_and(yt, ~yp).sum())
+    tn = int(np.logical_and(~yt, ~yp).sum())
+    f1 = 2 * tp / max(2 * tp + fp + fn, 1)
+    return tp, fp, fn, tn, float(f1)
+
+
+def _sae_per_app(y_true: np.ndarray, y_pred: np.ndarray, period: int) -> np.ndarray:
+    n = int(len(y_true))
+    n_periods = n // max(1, int(period))
+    if n_periods <= 0:
+        return np.full(y_true.shape[1], np.nan, dtype=np.float64)
+    vals = np.zeros(y_true.shape[1], dtype=np.float64)
+    for app_i in range(y_true.shape[1]):
+        errors = []
+        for k in range(n_periods):
+            s = k * period
+            e = (k + 1) * period
+            errors.append(abs(y_true[s:e, app_i].sum() - y_pred[s:e, app_i].sum()))
+        vals[app_i] = float(np.mean(errors)) / float(period)
+    return vals
+
+
 def choose_checkpoint(default_run_dir: Path) -> Path:
     """Ask user which best.pt to visualize when --checkpoint is omitted."""
     candidates = sorted(NILM_ROOT.glob("runs/**/best.pt"), key=lambda p: str(p).lower())
@@ -276,6 +304,175 @@ def interactive_prediction_viewer(
 
     true_segments = {app: on_segments(true_on[:, i]) for i, app in enumerate(appliances)}
     pred_segments = {app: on_segments(pred_on[:, i]) for i, app in enumerate(appliances)}
+
+    def event_time(idx: int) -> str:
+        if readable_time is not None and 0 <= idx < len(readable_time):
+            return str(readable_time[idx])
+        if 0 <= idx < len(csv_timesteps):
+            return f"csv_row={int(csv_timesteps[idx])}"
+        return str(idx)
+
+    def failed_event_records() -> list[dict[str, object]]:
+        records: list[dict[str, object]] = []
+        for app_i, app in enumerate(appliances):
+            true_mask = true_on[:, app_i].astype(bool)
+            pred_mask = pred_on[:, app_i].astype(bool)
+            for start_i, end_i in true_segments[app]:
+                span = slice(start_i, end_i)
+                if bool(pred_mask[span].any()):
+                    continue
+                records.append(
+                    {
+                        "appliance": app,
+                        "failure_type": "missed_true_event",
+                        "start_row": start_i,
+                        "end_row": end_i - 1,
+                        "start_time": event_time(start_i),
+                        "end_time": event_time(max(start_i, end_i - 1)),
+                        "duration_samples": end_i - start_i,
+                        "duration_minutes": (end_i - start_i) * 6.0 / 60.0,
+                        "true_peak_watts": float(np.max(true_watts[span, app_i])),
+                        "pred_peak_watts": float(np.max(pred_watts[span, app_i])),
+                        "true_energy_sample_watts": float(np.sum(true_watts[span, app_i])),
+                        "pred_energy_sample_watts": float(np.sum(pred_watts[span, app_i])),
+                    }
+                )
+            for start_i, end_i in pred_segments[app]:
+                span = slice(start_i, end_i)
+                if bool(true_mask[span].any()):
+                    continue
+                records.append(
+                    {
+                        "appliance": app,
+                        "failure_type": "false_pred_event",
+                        "start_row": start_i,
+                        "end_row": end_i - 1,
+                        "start_time": event_time(start_i),
+                        "end_time": event_time(max(start_i, end_i - 1)),
+                        "duration_samples": end_i - start_i,
+                        "duration_minutes": (end_i - start_i) * 6.0 / 60.0,
+                        "true_peak_watts": float(np.max(true_watts[span, app_i])),
+                        "pred_peak_watts": float(np.max(pred_watts[span, app_i])),
+                        "true_energy_sample_watts": float(np.sum(true_watts[span, app_i])),
+                        "pred_energy_sample_watts": float(np.sum(pred_watts[span, app_i])),
+                    }
+                )
+        return records
+
+    def build_report() -> tuple[list[str], Path, Path]:
+        split_key = _split_key(split)
+        try:
+            test_csv = loader._resolve_csv_path(split_key)  # noqa: SLF001
+        except Exception:
+            test_csv = Path("<unknown>")
+
+        mae_vals = np.mean(np.abs(pred_watts - true_watts), axis=0)
+        sae_period = int(adapter.experiment.get("evaluation", {}).get("sae_period", 1200))
+        sae_vals = _sae_per_app(true_watts, pred_watts, sae_period)
+        rows = []
+        total_tp = total_fp = total_fn = total_tn = 0
+        failure_rows = failed_event_records()
+        failure_df = pd.DataFrame(failure_rows)
+
+        lines = [
+            "MultiNILM-Fractional Checkpoint Prediction Report",
+            "=" * 64,
+            f"Model              : {adapter.name}",
+            f"Split              : {split}",
+            f"Checkpoint epoch   : {checkpoint_epoch}",
+            f"Checkpoint file    : {checkpoint}",
+            f"Selected CSV       : {test_csv}",
+            f"Prediction points  : {n_points:,}",
+        ]
+        if readable_time is not None and len(readable_time):
+            lines.append(f"Time range         : {readable_time[0]} -> {readable_time[-1]}")
+
+        lines.extend(["", "Overall Metrics", "-" * 64])
+        for app_i, app in enumerate(appliances):
+            tp, fp, fn, tn, f1 = _binary_f1_parts(true_on[:, app_i], pred_on[:, app_i])
+            total_tp += tp
+            total_fp += fp
+            total_fn += fn
+            total_tn += tn
+            matched_true = sum(
+                1
+                for s, e in true_segments[app]
+                if bool(pred_on[s:e, app_i].astype(bool).any())
+            )
+            missed_true = len(true_segments[app]) - matched_true
+            matched_pred = sum(
+                1
+                for s, e in pred_segments[app]
+                if bool(true_on[s:e, app_i].astype(bool).any())
+            )
+            false_pred = len(pred_segments[app]) - matched_pred
+            rows.append(
+                {
+                    "app": app,
+                    "mae": float(mae_vals[app_i]),
+                    "sae": float(sae_vals[app_i]),
+                    "f1": f1,
+                    "tp": tp,
+                    "fp": fp,
+                    "fn": fn,
+                    "tn": tn,
+                    "true_events": len(true_segments[app]),
+                    "pred_events": len(pred_segments[app]),
+                    "matched_true": matched_true,
+                    "missed_true": missed_true,
+                    "false_pred": false_pred,
+                }
+            )
+
+        macro_f1 = float(np.mean([r["f1"] for r in rows])) if rows else 0.0
+        micro_f1 = 2 * total_tp / max(2 * total_tp + total_fp + total_fn, 1)
+        lines.append(f"MAE macro          : {float(np.mean(mae_vals)):.3f} W")
+        lines.append(f"SAE macro          : {float(np.nanmean(sae_vals)):.3f} W")
+        lines.append(f"F1 macro / micro   : {macro_f1:.4f} / {micro_f1:.4f}")
+        lines.append(f"TP / FP / FN / TN  : {total_tp:,} / {total_fp:,} / {total_fn:,} / {total_tn:,}")
+
+        lines.extend(["", "Per-Appliance Summary", "-" * 64])
+        header = (
+            f"{'appliance':16s} {'MAE(W)':>8s} {'SAE':>8s} {'F1':>7s} "
+            f"{'true_ev':>7s} {'pred_ev':>7s} {'miss':>6s} {'false':>6s}"
+        )
+        lines.append(header)
+        lines.append("-" * len(header))
+        for r in rows:
+            lines.append(
+                f"{r['app']:16s} {r['mae']:8.2f} {r['sae']:8.2f} {r['f1']:7.3f} "
+                f"{r['true_events']:7d} {r['pred_events']:7d} "
+                f"{r['missed_true']:6d} {r['false_pred']:6d}"
+            )
+
+        lines.extend(["", "Largest Failure Examples", "-" * 64])
+        if failure_df.empty:
+            lines.append("No completely missed true events or completely false predicted events.")
+        else:
+            failure_df["severity"] = np.maximum(
+                failure_df["true_peak_watts"].to_numpy(dtype=float),
+                failure_df["pred_peak_watts"].to_numpy(dtype=float),
+            ) * failure_df["duration_minutes"].to_numpy(dtype=float)
+            top_fail = failure_df.sort_values("severity", ascending=False).head(18)
+            for _, rec in top_fail.iterrows():
+                lines.append(
+                    f"{rec['appliance']:16s} {rec['failure_type']:18s} "
+                    f"rows {int(rec['start_row']):>7d}-{int(rec['end_row']):<7d} "
+                    f"{float(rec['duration_minutes']):>6.1f} min "
+                    f"true_peak={float(rec['true_peak_watts']):>7.1f}W "
+                    f"pred_peak={float(rec['pred_peak_watts']):>7.1f}W"
+                )
+                lines.append(f"    {rec['start_time']} -> {rec['end_time']}")
+
+        report_dir = PROJECT_ROOT / "data_quality_checking" / "checkpoint_prediction_reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = checkpoint.parent.parent.name.replace(" ", "_").replace("(", "").replace(")", "")
+        report_txt = report_dir / f"{safe_name}_{split_key}_report.txt"
+        failure_csv = report_dir / f"{safe_name}_{split_key}_failed_events.csv"
+        report_txt.write_text("\n".join(lines), encoding="utf-8")
+        pd.DataFrame(failure_rows).to_csv(failure_csv, index=False)
+        lines.extend(["", f"Saved report       : {report_txt}", f"Saved failures CSV : {failure_csv}"])
+        return lines, report_txt, failure_csv
 
     n_rows = 1 + len(appliances)
     fig_height = min(13.5, max(8.5, 1.75 * n_rows))
@@ -455,6 +652,23 @@ def interactive_prediction_viewer(
             if shown:
                 y_true = transform_values(true_watts[:, app_i], start, end)
                 y_pred = transform_values(pred_watts[:, app_i], start, end)
+                y_bg = transform_values(aggregate, start, end)
+                bg_max = float(np.nanmax(np.abs(y_bg))) if len(y_bg) else 0.0
+                app_max = float(
+                    np.nanmax(np.abs(np.concatenate([y_true, y_pred])))
+                ) if len(y_true) else 0.0
+                if state["scale"] == "raw" and bg_max > 0.0 and app_max > 0.0:
+                    y_bg = y_bg * (app_max / bg_max)
+                line = ax.plot(
+                    x,
+                    y_bg,
+                    color=palette["aggregate"],
+                    lw=1.0,
+                    alpha=0.18,
+                    label="aggregate shape",
+                    zorder=1,
+                )[0]
+                state["lines"].append(line)
                 line = ax.plot(
                     x,
                     y_true,
@@ -462,6 +676,7 @@ def interactive_prediction_viewer(
                     lw=1.55,
                     alpha=0.92,
                     label="true power",
+                    zorder=3,
                 )[0]
                 state["lines"].append(line)
                 line = ax.plot(
@@ -472,9 +687,10 @@ def interactive_prediction_viewer(
                     alpha=0.96,
                     linestyle="--",
                     label="predicted power",
+                    zorder=4,
                 )[0]
                 state["lines"].append(line)
-                _safe_ylim(ax, [y_true, y_pred])
+                _safe_ylim(ax, [y_true, y_pred, y_bg])
                 ax.legend(loc="upper right", fontsize=8, frameon=False)
             ax.set_ylabel(f"{app}\nW" if state["scale"] == "raw" else app, fontsize=9)
             ax.grid(True, axis="x", alpha=0.22)
@@ -538,6 +754,49 @@ def interactive_prediction_viewer(
             )
         print("=" * 100)
 
+    def show_report(_=None) -> None:
+        lines, report_txt, failure_csv = build_report()
+        print("\n".join(lines))
+        report_fig = plt.figure(figsize=(12.8, 8.4))
+        manager = getattr(report_fig.canvas, "manager", None)
+        if manager is not None:
+            manager.set_window_title("Checkpoint Prediction Report")
+        report_fig.suptitle("Checkpoint Prediction Report", fontsize=13, fontweight="bold")
+        ax_report = report_fig.add_axes([0.035, 0.04, 0.93, 0.90])
+        ax_report.axis("off")
+        max_lines = 48
+        display_lines = lines[:max_lines]
+        if len(lines) > max_lines:
+            display_lines.extend(
+                [
+                    "",
+                    f"... {len(lines) - max_lines} more lines saved in:",
+                    str(report_txt),
+                    f"Full failed-event table:",
+                    str(failure_csv),
+                ]
+            )
+        wrapped = []
+        for line in display_lines:
+            if len(line) <= 118:
+                wrapped.append(line)
+            else:
+                wrapped.extend(textwrap.wrap(line, width=118, subsequent_indent="    "))
+        ax_report.text(
+            0.0,
+            1.0,
+            "\n".join(wrapped),
+            va="top",
+            ha="left",
+            family="monospace",
+            fontsize=8.8,
+            linespacing=1.18,
+        )
+        report_fig.canvas.draw_idle()
+        if manager is not None:
+            manager.show()
+        plt.show(block=False)
+
     control_y = 0.040
     ax_pos = plt.axes([0.075, control_y + 0.050, 0.48, 0.016])
     max_start = max(0, n_points - 1)
@@ -560,14 +819,17 @@ def interactive_prediction_viewer(
     ax_back = plt.axes([0.585, control_y + 0.047, 0.055, 0.026])
     ax_next = plt.axes([0.647, control_y + 0.047, 0.055, 0.026])
     ax_stats = plt.axes([0.709, control_y + 0.047, 0.055, 0.026])
+    ax_report = plt.axes([0.771, control_y + 0.047, 0.060, 0.026])
     ax_f1 = plt.axes([0.585, control_y + 0.012, 0.125, 0.026])
     back_button = Button(ax_back, "Back")
     next_button = Button(ax_next, "Next")
     stats_button = Button(ax_stats, "Stats")
+    report_button = Button(ax_report, "Report")
     f1_button = Button(ax_f1, "F1 marks: on")
     back_button.on_clicked(lambda _: move(-state["span"] // 2))
     next_button.on_clicked(lambda _: move(state["span"] // 2))
     stats_button.on_clicked(print_stats)
+    report_button.on_clicked(show_report)
     f1_button.on_clicked(toggle_f1_marks)
 
     ax_checks = plt.axes([0.922, 0.56, 0.072, 0.24])
@@ -601,6 +863,7 @@ def interactive_prediction_viewer(
         back_button,
         next_button,
         stats_button,
+        report_button,
         f1_button,
         checks,
         scale_radio,
