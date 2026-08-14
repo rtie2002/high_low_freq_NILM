@@ -290,8 +290,15 @@ def interactive_prediction_viewer(
         axes = np.asarray([axes])
     plt.subplots_adjust(left=0.075, right=0.84, bottom=0.20, top=0.91)
 
-    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    app_colors = {app: colors[i % len(colors)] for i, app in enumerate(appliances)}
+    palette = {
+        "aggregate": "#263238",
+        "sum_pred": "#7E57C2",
+        "true_line": "#1F77B4",
+        "pred_line": "#E67E22",
+        "true_shade": "#9ECAE1",
+        "pred_shade": "#FDD49E",
+        "status": "#355C7D",
+    }
 
     state = {
         "start": 0,
@@ -306,7 +313,15 @@ def interactive_prediction_viewer(
     }
 
     title = fig.suptitle("", fontsize=12.5, fontweight="bold")
-    status = fig.text(0.5, 0.012, "", ha="center", va="bottom", fontsize=9.5, color="#145c7c")
+    status = fig.text(
+        0.5,
+        0.012,
+        "",
+        ha="center",
+        va="bottom",
+        fontsize=9.5,
+        color=palette["status"],
+    )
 
     def visible_slice() -> tuple[int, int, np.ndarray]:
         start = int(state["start"])
@@ -338,14 +353,26 @@ def interactive_prediction_viewer(
             for s, e in true_segments[app]:
                 if e <= start or s >= end:
                     continue
-                patch = ax.axvspan(max(s, start), min(e, end), color="#5dade2", alpha=0.14, lw=0)
+                patch = ax.axvspan(
+                    max(s, start),
+                    min(e, end),
+                    color=palette["true_shade"],
+                    alpha=0.18,
+                    lw=0,
+                )
                 state["patches"].append(patch)
                 true_count += 1
         if state["show_pred_on"]:
             for s, e in pred_segments[app]:
                 if e <= start or s >= end:
                     continue
-                patch = ax.axvspan(max(s, start), min(e, end), color="#58d68d", alpha=0.16, lw=0)
+                patch = ax.axvspan(
+                    max(s, start),
+                    min(e, end),
+                    color=palette["pred_shade"],
+                    alpha=0.20,
+                    lw=0,
+                )
                 state["patches"].append(patch)
                 pred_count += 1
         return true_count, pred_count
@@ -366,9 +393,23 @@ def interactive_prediction_viewer(
         ax0 = axes[0]
         y_agg = transform_values(aggregate, start, end)
         y_sum = transform_values(pred_watts.sum(axis=1), start, end)
-        line = ax0.plot(x, y_agg, color="#222222", lw=1.7, label="aggregate")[0]
+        line = ax0.plot(
+            x,
+            y_agg,
+            color=palette["aggregate"],
+            lw=1.8,
+            label="aggregate",
+        )[0]
         state["lines"].append(line)
-        line = ax0.plot(x, y_sum, color="#c0392b", lw=1.2, alpha=0.85, label="sum predicted")[0]
+        line = ax0.plot(
+            x,
+            y_sum,
+            color=palette["sum_pred"],
+            lw=1.35,
+            alpha=0.90,
+            linestyle="--",
+            label="sum predicted",
+        )[0]
         state["lines"].append(line)
         ax0.set_ylabel("Aggregate W" if state["scale"] == "raw" else "Aggregate")
         ax0.grid(True, alpha=0.22)
@@ -380,26 +421,27 @@ def interactive_prediction_viewer(
             ax = axes[app_i + 1]
             shown = bool(state["visible"].get(app, True))
             t_count, p_count = shade_segments(ax, app, start, end)
-            summaries.append(f"{app}:T{t_count}/P{p_count}")
+            summaries.append(f"{app} true={t_count} pred={p_count}")
             if shown:
                 y_true = transform_values(true_watts[:, app_i], start, end)
                 y_pred = transform_values(pred_watts[:, app_i], start, end)
                 line = ax.plot(
                     x,
                     y_true,
-                    color=app_colors[app],
-                    lw=1.45,
-                    alpha=0.82,
-                    label=f"{app} true",
+                    color=palette["true_line"],
+                    lw=1.55,
+                    alpha=0.92,
+                    label="true power",
                 )[0]
                 state["lines"].append(line)
                 line = ax.plot(
                     x,
                     y_pred,
-                    color="#d62728",
-                    lw=1.35,
-                    alpha=0.88,
-                    label=f"{app} pred",
+                    color=palette["pred_line"],
+                    lw=1.45,
+                    alpha=0.96,
+                    linestyle="--",
+                    label="predicted power",
                 )[0]
                 state["lines"].append(line)
                 _safe_ylim(ax, [y_true, y_pred])
@@ -418,7 +460,7 @@ def interactive_prediction_viewer(
         axes[-1].set_xlabel("prediction timeline row")
         for ax in axes:
             ax.set_xlim(start, end)
-        status.set_text("visible ON events: " + " | ".join(summaries))
+        status.set_text("visible ON event count: " + " | ".join(summaries))
         fig.canvas.draw_idle()
 
     def sync_from_sliders(_=None) -> None:
@@ -505,7 +547,7 @@ def interactive_prediction_viewer(
 
     ax_checks = plt.axes([0.855, 0.46, 0.13, 0.34])
     checks = CheckButtons(ax_checks, appliances, [True] * len(appliances))
-    ax_checks.set_title("Show", fontsize=9)
+    ax_checks.set_title("Appliances", fontsize=9)
     checks.on_clicked(on_check)
 
     ax_scale = plt.axes([0.855, 0.25, 0.13, 0.14])
@@ -515,8 +557,8 @@ def interactive_prediction_viewer(
 
     fig.legend(
         handles=[
-            Patch(facecolor="#5dade2", alpha=0.24, label="true ON shade"),
-            Patch(facecolor="#58d68d", alpha=0.26, label="pred ON shade"),
+            Patch(facecolor=palette["true_shade"], alpha=0.38, label="true ON region"),
+            Patch(facecolor=palette["pred_shade"], alpha=0.42, label="predicted ON region"),
         ],
         loc="upper right",
         bbox_to_anchor=(0.985, 0.94),
