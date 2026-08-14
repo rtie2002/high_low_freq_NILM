@@ -158,6 +158,26 @@ def _safe_ylim(ax, arrays: list[np.ndarray]) -> None:
     ax.set_ylim(ymin - 0.12 * span, ymax + 0.18 * span)
 
 
+def _context_trace(values: np.ndarray, ymin: float, ymax: float) -> np.ndarray:
+    """Normalize aggregate shape into a thin background band inside an axis.
+
+    The aggregate can be thousands of watts while an appliance may be tens of
+    watts. Plotting it in real watts on each appliance axis is misleading, so
+    this keeps only the shape and places it near the top of the subplot.
+    """
+    y = np.asarray(values, dtype=float)
+    if y.size == 0:
+        return y
+    lo = float(np.nanmin(y))
+    hi = float(np.nanmax(y))
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return np.full_like(y, ymin + 0.88 * (ymax - ymin), dtype=float)
+    scaled = (y - lo) / (hi - lo)
+    band_low = ymin + 0.78 * (ymax - ymin)
+    band_high = ymin + 0.94 * (ymax - ymin)
+    return band_low + scaled * (band_high - band_low)
+
+
 def _binary_f1_parts(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[int, int, int, int, float]:
     yt = np.asarray(y_true).astype(bool)
     yp = np.asarray(y_pred).astype(bool)
@@ -760,20 +780,16 @@ def interactive_prediction_viewer(
             if shown:
                 y_true = transform_values(true_watts[:, app_i], start, end)
                 y_pred = transform_values(pred_watts[:, app_i], start, end)
-                y_bg = transform_values(aggregate, start, end)
-                bg_max = float(np.nanmax(np.abs(y_bg))) if len(y_bg) else 0.0
-                app_max = float(
-                    np.nanmax(np.abs(np.concatenate([y_true, y_pred])))
-                ) if len(y_true) else 0.0
-                if state["scale"] == "raw" and bg_max > 0.0 and app_max > 0.0:
-                    y_bg = y_bg * (app_max / bg_max)
+                _safe_ylim(ax, [y_true, y_pred])
+                ymin, ymax = ax.get_ylim()
+                y_bg = _context_trace(transform_values(aggregate, start, end), ymin, ymax)
                 line = ax.plot(
                     x,
                     y_bg,
                     color=palette["aggregate"],
-                    lw=1.0,
-                    alpha=0.18,
-                    label="aggregate shape",
+                    lw=0.95,
+                    alpha=0.16,
+                    label="aggregate context",
                     zorder=1,
                 )[0]
                 state["lines"].append(line)
@@ -798,7 +814,6 @@ def interactive_prediction_viewer(
                     zorder=4,
                 )[0]
                 state["lines"].append(line)
-                _safe_ylim(ax, [y_true, y_pred, y_bg])
                 ax.legend(loc="upper right", fontsize=8, frameon=False)
             ax.set_ylabel(f"{app}\nW" if state["scale"] == "raw" else app, fontsize=9)
             ax.grid(True, axis="x", alpha=0.22)
