@@ -1,7 +1,7 @@
 # MultiNILM-Fractional + all-appliance residual refinement.
 # Stage 1 predicts all appliances once. Stage 2 builds one residual view per
 # appliance and uses small residual heads to refine every appliance power output.
-experiment_id: mixed_ukdale_refit_3w (fractional residual, beta 0.8)
+experiment_id: mixed_ukdale_refit_3w_residual (no domain adaptation)
 model_name: multinilm_fractional_residual
 
 data:
