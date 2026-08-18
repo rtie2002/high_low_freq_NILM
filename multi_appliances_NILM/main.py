@@ -16,6 +16,7 @@ from adapters.mat_nilm import MATNILMAdapter
 from adapters.matuda import MATUDAAdapter
 from adapters.multinilm import MultiNILMAdapter
 from adapters.multinilm_fractional import MultiNILMFractionalAdapter
+from adapters.multinilm_fractional_residual import MultiNILMFractionalResidualAdapter
 from adapters.multinilm_kle import MultiNILMKLEAdapter
 from adapters.multinilm_no_distill import MultiNILMNoDistillAdapter
 from adapters.transfer_multi_appliance import TransferMultiApplianceAdapter
@@ -29,6 +30,7 @@ MODELS = {
     "matuda": MATUDAAdapter,
     "multinilm": MultiNILMAdapter,
     "multinilm_fractional": MultiNILMFractionalAdapter,
+    "multinilm_fractional_residual": MultiNILMFractionalResidualAdapter,
     "multinilm_kle": MultiNILMKLEAdapter,
     "multinilm_no_distill": MultiNILMNoDistillAdapter,
     "transfer_multi_appliance": TransferMultiApplianceAdapter,
