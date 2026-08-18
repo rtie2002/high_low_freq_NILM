@@ -44,12 +44,12 @@ architecture:
 
   stage_kernel_size: 5
 
-  num_blocks: 6
+  num_blocks: 4
   kernel_size: 9
   max_dilation: 16
   dropout: 0.15
 
-  head_local_layers: 4
+  head_local_layers: 2
   head_kernel_size: 3
   head_use_residual: true
   gate_mode: soft
@@ -83,7 +83,7 @@ domain_adaptation:
 
 training:
   batch_size: 64
-  epochs: 250
+  epochs: 200
   learning_rate: 0.0001
   weight_decay: 0.0001
   num_workers: 0
