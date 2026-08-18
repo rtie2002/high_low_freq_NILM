@@ -88,7 +88,7 @@ loss:
   da_freeze_patience: 0
 
 domain_adaptation:
-  enabled: true
+  enabled: false
   target_split: test
 
 training:
@@ -99,7 +99,7 @@ training:
   base_init_checkpoint:
 
   batch_size: 64
-  epochs: 250
+  epochs: 200
   learning_rate: 0.0001
   weight_decay: 0.0001
   num_workers: 0
