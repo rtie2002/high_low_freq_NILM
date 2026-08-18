@@ -23,7 +23,7 @@ from model.MultiNILM_fractional import MultiNILMFractional, build_multinilm_frac
 
 
 class ResidualRefinerHead(nn.Module):
-    """Small temporal head that refines one appliance from its residual view."""
+    """Small temporal head that refines one appliance's power and state."""
 
     def __init__(
         self,
@@ -34,6 +34,7 @@ class ResidualRefinerHead(nn.Module):
         kernel_size: int = 5,
         dropout: float = 0.05,
         correction_scale: float = 0.5,
+        state_correction_scale: float = 0.5,
     ) -> None:
         super().__init__()
         k = int(kernel_size)
@@ -55,16 +56,31 @@ class ResidualRefinerHead(nn.Module):
                 ]
             )
         self.body = nn.Sequential(*layers)
-        self.delta = nn.Conv1d(hidden, 1, kernel_size=1)
+        self.power_delta = nn.Conv1d(hidden, 1, kernel_size=1)
+        self.state_delta = nn.Conv1d(hidden, 1, kernel_size=1)
         self.correction_scale = float(correction_scale)
+        self.state_correction_scale = float(state_correction_scale)
 
         # Start as "almost baseline": final power begins near initial prediction.
-        nn.init.zeros_(self.delta.weight)
-        nn.init.zeros_(self.delta.bias)
+        nn.init.zeros_(self.power_delta.weight)
+        nn.init.zeros_(self.power_delta.bias)
+        nn.init.zeros_(self.state_delta.weight)
+        nn.init.zeros_(self.state_delta.bias)
 
-    def forward(self, z: torch.Tensor, initial_power: torch.Tensor) -> torch.Tensor:
-        correction = self.delta(self.body(z))
-        return initial_power + self.correction_scale * correction
+    def forward(
+        self,
+        z: torch.Tensor,
+        initial_power: torch.Tensor,
+        initial_state_logits: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        features = self.body(z)
+        power_correction = self.power_delta(features)
+        state_correction = self.state_delta(features)
+        refined_power = initial_power + self.correction_scale * power_correction
+        refined_state_logits = (
+            initial_state_logits + self.state_correction_scale * state_correction
+        )
+        return refined_power, refined_state_logits
 
 
 class MultiNILMFractionalResidual(nn.Module):
@@ -88,6 +104,9 @@ class MultiNILMFractionalResidual(nn.Module):
         refiner_kernel_size: int = 5,
         refiner_dropout: float = 0.05,
         correction_scale: float = 0.5,
+        state_correction_scale: float = 0.5,
+        refine_state: bool = True,
+        freeze_base: bool = False,
     ) -> None:
         super().__init__()
         self.base = base
@@ -115,6 +134,12 @@ class MultiNILMFractionalResidual(nn.Module):
         self.confidence_threshold = float(confidence_threshold)
         self.detach_subtraction = bool(detach_subtraction)
         self.clamp_watts = bool(clamp_watts)
+        self.refine_state = bool(refine_state)
+        self.freeze_base = bool(freeze_base)
+
+        if self.freeze_base:
+            for param in self.base.parameters():
+                param.requires_grad = False
 
         self.refiners = nn.ModuleList(
             [
@@ -125,6 +150,7 @@ class MultiNILMFractionalResidual(nn.Module):
                     kernel_size=int(refiner_kernel_size),
                     dropout=float(refiner_dropout),
                     correction_scale=float(correction_scale),
+                    state_correction_scale=float(state_correction_scale),
                 )
                 for _ in range(self.num_appliances)
             ]
@@ -210,16 +236,24 @@ class MultiNILMFractionalResidual(nn.Module):
         residual_norm = self._aggregate_watts_to_norm(residual_watts)
         return aggregate_norm, residual_norm, torch.sigmoid(state_logits)
 
-    def _refine_power(
+    def _run_base(self, x: torch.Tensor, return_domain_features: bool = False):
+        if not self.freeze_base:
+            return self.base(x, return_domain_features=return_domain_features)
+        self.base.eval()
+        with torch.no_grad():
+            return self.base(x, return_domain_features=return_domain_features)
+
+    def _refine_outputs(
         self,
         x: torch.Tensor,
         power_init: torch.Tensor,
         state_logits: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         aggregate_norm, residual_norm, state_prob = self._build_residual_inputs(
             x, power_init, state_logits
         )
-        refined_parts: list[torch.Tensor] = []
+        refined_power_parts: list[torch.Tensor] = []
+        refined_state_parts: list[torch.Tensor] = []
         for app_i, refiner in enumerate(self.refiners):
             z_i = torch.stack(
                 [
@@ -231,9 +265,12 @@ class MultiNILMFractionalResidual(nn.Module):
                 dim=1,
             )
             initial_i = power_init[:, :, app_i].unsqueeze(1)
-            refined_raw = refiner(z_i, initial_i)
+            initial_state_i = state_logits[:, :, app_i].unsqueeze(1)
+            refined_raw, refined_state_i = refiner(z_i, initial_i, initial_state_i)
+            gate_logits = refined_state_i if self.refine_state else initial_state_i
+            gate_prob = torch.sigmoid(gate_logits)
             gate = state_gate(
-                state_prob[:, :, app_i].unsqueeze(1),
+                gate_prob,
                 mode=self.base.backbone.gate_mode,
                 threshold=self.base.backbone.gate_threshold,
                 training=self.training,
@@ -242,19 +279,24 @@ class MultiNILMFractionalResidual(nn.Module):
                 refined_raw.device, refined_raw.dtype
             )
             refined_i = gate * refined_raw + (1.0 - gate) * off
-            refined_parts.append(refined_i)
-        return torch.cat(refined_parts, dim=1).permute(0, 2, 1)
+            refined_power_parts.append(refined_i)
+            refined_state_parts.append(
+                refined_state_i if self.refine_state else initial_state_i
+            )
+        power_final = torch.cat(refined_power_parts, dim=1).permute(0, 2, 1)
+        state_final = torch.cat(refined_state_parts, dim=1).permute(0, 2, 1)
+        return power_final, state_final
 
     def forward(self, x: torch.Tensor, return_domain_features: bool = False):
         if return_domain_features:
-            power_init, state_logits, feats = self.base(
+            power_init, state_logits, feats = self._run_base(
                 x, return_domain_features=True
             )
-            power_final = self._refine_power(x, power_init, state_logits)
-            return power_final, state_logits, feats
-        power_init, state_logits = self.base(x)
-        power_final = self._refine_power(x, power_init, state_logits)
-        return power_final, state_logits
+            power_final, state_final = self._refine_outputs(x, power_init, state_logits)
+            return power_final, state_final, feats
+        power_init, state_logits = self._run_base(x)
+        power_final, state_final = self._refine_outputs(x, power_init, state_logits)
+        return power_final, state_final
 
 
 def build_multinilm_fractional_residual(
@@ -298,4 +340,7 @@ def build_multinilm_fractional_residual(
         refiner_kernel_size=int(residual_cfg.get("kernel_size", 5)),
         refiner_dropout=float(residual_cfg.get("dropout", 0.05)),
         correction_scale=float(residual_cfg.get("correction_scale", 0.5)),
+        state_correction_scale=float(residual_cfg.get("state_correction_scale", 0.5)),
+        refine_state=bool(residual_cfg.get("refine_state", True)),
+        freeze_base=bool(residual_cfg.get("freeze_base", False)),
     )
