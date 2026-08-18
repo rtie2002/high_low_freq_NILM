@@ -15,6 +15,7 @@ from adapters.config import load_experiment, load_model_config, merge_configs, m
 from adapters.mat_nilm import MATNILMAdapter
 from adapters.matuda import MATUDAAdapter
 from adapters.multinilm import MultiNILMAdapter
+from adapters.multinilm_fractional_cascade import MultiNILMFractionalCascadeAdapter
 from adapters.multinilm_fractional import MultiNILMFractionalAdapter
 from adapters.multinilm_fractional_residual import MultiNILMFractionalResidualAdapter
 from adapters.multinilm_kle import MultiNILMKLEAdapter
@@ -29,6 +30,7 @@ MODELS = {
     "mat_nilm": MATNILMAdapter,
     "matuda": MATUDAAdapter,
     "multinilm": MultiNILMAdapter,
+    "multinilm_fractional_cascade": MultiNILMFractionalCascadeAdapter,
     "multinilm_fractional": MultiNILMFractionalAdapter,
     "multinilm_fractional_residual": MultiNILMFractionalResidualAdapter,
     "multinilm_kle": MultiNILMKLEAdapter,

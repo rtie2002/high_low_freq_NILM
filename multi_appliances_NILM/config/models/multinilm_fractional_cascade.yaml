@@ -1,0 +1,129 @@
+# MultiNILM-Fractional cascade: paper-style one-by-one residual subtraction.
+experiment_id: mixed_ukdale_refit_3w (fractional cascade dishwasher first)
+model_name: multinilm_fractional_cascade
+
+data:
+  mains_column: aggregate
+  state_label_source: csv
+
+evaluation:
+  pred_on_source: state_head
+  regate_power_with_pred_on: true
+
+windowing:
+  input_window_length: 2048
+  output_window_length: 2048
+  output_alignment: end
+  input_stride: 1024
+  eval_stride: 1024
+  eval_reconstruction: auto
+  training_targets: auto
+
+fractional:
+  enabled: true
+  k: 8
+  include_raw: true
+  memory: 32
+  channel_normalize: mean_std
+
+architecture:
+  cascade:
+    order: [dishwasher, kettle, washingmachine, fridge, microwave]
+    beta: 0.8
+    confidence_mode: soft
+    confidence_threshold: 0.5
+    clamp_watts: true
+
+  channel_schedule: [32, 64, 128]
+  hidden_channels: 128
+
+  use_multiscale_stem: true
+  detail_kernels: [3, 5, 9]
+  detail_branch_channels: 16
+  stem_kernel_size: 7
+
+  stage_kernel_size: 5
+
+  num_blocks: 6
+  kernel_size: 9
+  max_dilation: 16
+  dropout: 0.15
+
+  head_local_layers: 4
+  head_kernel_size: 3
+  head_use_residual: true
+  gate_mode: soft
+  gate_threshold: 0.5
+
+  # Disabled inside each cascade stage automatically because each stage predicts
+  # only one appliance.
+  cross_appliance:
+    enabled: false
+
+  domain_feature_layers: [temporal_2, temporal_4, aligned]
+
+loss:
+  task_balance: equal
+  lambda_state: 1
+  pos_weight: auto
+
+  domain_method: both
+  domain_mu: 0.4
+  domain_mix: convex
+  domain_scale: equal
+  lambda_domain: 0.1
+
+  da_warmup_epochs: 0
+  da_ramp_epochs: 0
+  da_freeze_patience: 0
+
+domain_adaptation:
+  enabled: true
+  target_split: test
+
+training:
+  batch_size: 64
+  epochs: 250
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  num_workers: 0
+  train_shuffle: true
+  gradient_clip: 1.0
+
+  use_amp: false
+  amp_dtype: bf16
+  cudnn_benchmark: true
+  tf32: true
+
+  checkpoint_monitor: val_mae_minus_f1
+  checkpoint_mae_space: normalized
+  checkpoint_mae_weight: 7.0
+  early_stop_patience: 50
+
+  scheduler: none
+  lr_scheduler:
+    type: reduce_on_plateau
+    monitor: val_mae_minus_f1
+    patience: 5
+    factor: 0.5
+    min_lr: 0.00001
+
+  plots:
+    plot_mode: interval
+    plot_interval: 50
+    plot_on_periods: 5
+    plot_max_batches: 16
+    waveform_figsize: 5.5
+    waveform_dpi: 300
+    waveform_dynamic_figsize: true
+    on_period_margin_min: 40
+    on_period_margin_frac: 0.08
+    waveform_context_scale: 10
+    comparison_dpi: 600
+    feature_maps:
+      enabled: false
+      max_examples: 2
+      cmap: magma
+      display_activation: relu
+      min_on_duration: 10
+      dpi: 200
