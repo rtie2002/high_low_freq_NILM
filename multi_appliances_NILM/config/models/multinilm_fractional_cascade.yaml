@@ -78,7 +78,7 @@ loss:
   da_freeze_patience: 0
 
 domain_adaptation:
-  enabled: true
+  enabled: false
   target_split: test
 
 training:
