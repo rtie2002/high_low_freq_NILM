@@ -4,7 +4,7 @@
 # Run folder: runs/<experiment_id>/<model_name>/
 # Pair with config/experiment_ukdale.yaml or experiment_redd.yaml (data only).
 # Change experiment_id when switching dataset / DA / multi-domain mix.
-experiment_id: mixed_ukdale_refit_3w (domain adaptation, 0.1)
+experiment_id: mixed_ukdale_refit_3w (extra feature)
 model_name: multinilm_fractional
 
 # =============================================================================
