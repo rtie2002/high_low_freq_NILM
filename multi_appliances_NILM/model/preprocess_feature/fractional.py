@@ -195,6 +195,11 @@ class FractionalFrontEnd(nn.Module):
         max_memory: int = 256,
         channel_normalize: str = "mean_std",
         channel_norm_eps: float = 1e-5,
+        include_delta: bool = False,
+        include_abs_delta: bool = False,
+        rolling_windows: Sequence[int] | None = None,
+        include_rolling_mean: bool = False,
+        include_rolling_std: bool = False,
     ) -> None:
         super().__init__()
         alphas_list = (
@@ -215,8 +220,24 @@ class FractionalFrontEnd(nn.Module):
             raise ValueError(
                 f"channel_normalize must be mean_std|none, got {self.channel_normalize!r}"
             )
+        self.include_delta = bool(include_delta)
+        self.include_abs_delta = bool(include_abs_delta)
+        self.rolling_windows = [int(w) for w in (rolling_windows or [])]
+        if any(w < 1 for w in self.rolling_windows):
+            raise ValueError(f"rolling_windows must be positive, got {self.rolling_windows}")
+        self.include_rolling_mean = bool(include_rolling_mean)
+        self.include_rolling_std = bool(include_rolling_std)
 
-        self.out_channels = (1 if self.include_raw else 0) + len(self.alphas)
+        engineered_channels = int(self.include_delta) + int(self.include_abs_delta)
+        if self.include_rolling_mean:
+            engineered_channels += len(self.rolling_windows)
+        if self.include_rolling_std:
+            engineered_channels += len(self.rolling_windows)
+        self.out_channels = (
+            (1 if self.include_raw else 0)
+            + len(self.alphas)
+            + engineered_channels
+        )
 
         if self.alphas:
             kernels = []
@@ -253,8 +274,33 @@ class FractionalFrontEnd(nn.Module):
         return (
             f"alphas={self.alphas}, include_raw={self.include_raw}, "
             f"memory={self.memory}, out_channels={self.out_channels}, "
-            f"channel_normalize={self.channel_normalize!r}, gl_weight={w_shape}"
+            f"channel_normalize={self.channel_normalize!r}, "
+            f"delta={self.include_delta}, abs_delta={self.include_abs_delta}, "
+            f"rolling_windows={self.rolling_windows}, "
+            f"rolling_mean={self.include_rolling_mean}, "
+            f"rolling_std={self.include_rolling_std}, gl_weight={w_shape}"
         )
+
+    @staticmethod
+    def _delta(x: torch.Tensor) -> torch.Tensor:
+        first = torch.zeros_like(x[..., :1])
+        return torch.cat([first, x[..., 1:] - x[..., :-1]], dim=-1)
+
+    @staticmethod
+    def _rolling_mean(x: torch.Tensor, window: int) -> torch.Tensor:
+        if window <= 1:
+            return x
+        pad = window - 1
+        x_pad = F.pad(x, (pad, 0), mode="replicate")
+        return F.avg_pool1d(x_pad, kernel_size=window, stride=1)
+
+    def _rolling_std(self, x: torch.Tensor, window: int) -> torch.Tensor:
+        if window <= 1:
+            return torch.zeros_like(x)
+        mean = self._rolling_mean(x, window)
+        mean_sq = self._rolling_mean(x * x, window)
+        var = (mean_sq - mean * mean).clamp_min(0.0)
+        return torch.sqrt(var + self.channel_norm_eps)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() != 3:
@@ -267,6 +313,19 @@ class FractionalFrontEnd(nn.Module):
         parts: list[torch.Tensor] = []
         if self.include_raw:
             parts.append(x)
+
+        if self.include_delta or self.include_abs_delta:
+            delta = self._delta(x)
+            if self.include_delta:
+                parts.append(delta)
+            if self.include_abs_delta:
+                parts.append(delta.abs())
+
+        for window in self.rolling_windows:
+            if self.include_rolling_mean:
+                parts.append(self._rolling_mean(x, window))
+            if self.include_rolling_std:
+                parts.append(self._rolling_std(x, window))
 
         if self.alphas:
             assert self.gl_conv is not None

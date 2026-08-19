@@ -100,15 +100,41 @@ def build_multinilm_fractional(
             if isinstance(architecture.get("fractional"), dict)
             else "mean_std"
         ),
+        include_delta=bool(
+            (architecture.get("fractional") or {}).get("include_delta", False)
+            if isinstance(architecture.get("fractional"), dict)
+            else False
+        ),
+        include_abs_delta=bool(
+            (architecture.get("fractional") or {}).get("include_abs_delta", False)
+            if isinstance(architecture.get("fractional"), dict)
+            else False
+        ),
+        rolling_windows=(
+            (architecture.get("fractional") or {}).get("rolling_windows", [])
+            if isinstance(architecture.get("fractional"), dict)
+            else []
+        ),
+        include_rolling_mean=bool(
+            (architecture.get("fractional") or {}).get("include_rolling_mean", False)
+            if isinstance(architecture.get("fractional"), dict)
+            else False
+        ),
+        include_rolling_std=bool(
+            (architecture.get("fractional") or {}).get("include_rolling_std", False)
+            if isinstance(architecture.get("fractional"), dict)
+            else False
+        ),
     )
     # Always derive backbone width from the front-end: C = k (+1 if include_raw).
     # Ignore any stale architecture.input_channels in the yaml.
     feature_c = int(frontend.out_channels)
-    expected = len(alphas) + (1 if include_raw else 0)
+    expected = int(frontend.out_channels)
     if feature_c != expected:
         raise ValueError(
             f"Fractional channel count mismatch: frontend={feature_c}, "
-            f"expected k(+raw)={expected} (k={len(alphas)}, include_raw={include_raw})"
+            f"expected configured channels={expected} "
+            f"(k={len(alphas)}, include_raw={include_raw})"
         )
 
     arch = dict(architecture)

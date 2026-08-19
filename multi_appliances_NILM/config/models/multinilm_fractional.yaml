@@ -38,8 +38,13 @@ windowing:
 # =============================================================================
 fractional:
   enabled: true
-  k: 8                         # number of α channels
+  k: 4                         # number of alpha channels
   include_raw: true             # always keep raw → input_channels = k + 1
+  include_delta: false          # alpha=1.0 already approximates first difference
+  include_abs_delta: true       # event strength regardless of rise/drop direction
+  include_rolling_mean: true    # local aggregate baseline
+  include_rolling_std: true     # local fluctuation / stability
+  rolling_windows: [5, 7]       # paper-style local context windows
   memory: 32
   channel_normalize: mean_std
 
@@ -63,13 +68,13 @@ architecture:
   stage_kernel_size: 5
 
   # --- 3) TCN: long context (kernel_size must be odd) ---
-  num_blocks: 6                     # dilations 1,2,4,8,16
+  num_blocks: 4                    # dilations 1,2,4,8,16
   kernel_size: 9                    # even → length crash (2048→2047)
   max_dilation: 16
   dropout: 0.15
 
   # --- 4) HEADS: per-appliance power + ON/OFF ---
-  head_local_layers: 4
+  head_local_layers: 2
   head_kernel_size: 3
   head_use_residual: true
   gate_mode: soft   # soft in train; hard mask at eval
@@ -117,7 +122,7 @@ domain_adaptation:
 training:
   # --- loop ---
   batch_size: 64
-  epochs: 250
+  epochs: 200
   learning_rate: 0.0001
   weight_decay: 0.0001
   num_workers: 0
