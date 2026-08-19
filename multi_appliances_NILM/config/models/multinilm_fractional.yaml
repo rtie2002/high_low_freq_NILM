@@ -1,5 +1,6 @@
 # MultiNILM + fractional front-end (baseline MultiNILM.py unchanged).
-# Dataloader stays 1D; model expands to C=9 (raw + 8 α).
+# Dataloader stays 1D; model expands to C=12
+# (raw + abs_delta + rolling mean/std + 4 fractional alpha channels).
 #
 # Run folder: runs/<experiment_id>/<model_name>/
 # Pair with config/experiment_ukdale.yaml or experiment_redd.yaml (data only).
@@ -34,7 +35,7 @@ windowing:
   training_targets: auto            # full_input if in == out
 
 # =============================================================================
-# FRACTIONAL FRONT-END → C = k + 1 (raw + k α) when include_raw: true
+# FRACTIONAL / AGGREGATE FEATURE FRONT-END
 # =============================================================================
 fractional:
   enabled: true
@@ -44,9 +45,9 @@ fractional:
   include_abs_delta: true       # event strength regardless of rise/drop direction
   include_rolling_mean: true    # local aggregate baseline
   include_rolling_std: true     # local fluctuation / stability
-  rolling_windows: [5, 7]       # paper-style local context windows
+  rolling_windows: [10, 30, 60] # 6s data: 1 min, 3 min, 6 min local context
   memory: 32
-  channel_normalize: mean_std
+  channel_normalize: none       # keep aggregate amplitude/baseline information
 
 # =============================================================================
 # ARCHITECTURE
@@ -71,7 +72,7 @@ architecture:
   num_blocks: 4                    # dilations 1,2,4,8,16
   kernel_size: 9                    # even → length crash (2048→2047)
   max_dilation: 16
-  dropout: 0.15
+  dropout: 0.25
 
   # --- 4) HEADS: per-appliance power + ON/OFF ---
   head_local_layers: 2
@@ -85,7 +86,7 @@ architecture:
     enabled: true
     residual_scale: 0.5
   # DA feature hooks (used only if domain_adaptation.enabled)
-  domain_feature_layers: [temporal_2, temporal_4, aligned]
+  domain_feature_layers: [temporal_1, temporal_3, aligned]
 
 # =============================================================================
 # LOSS — task (power + state) then optional domain terms
@@ -101,7 +102,7 @@ loss:
   domain_mu: 0.4                    # L_domain = μ·MMD² + (1-μ)·CORAL
   domain_mix: convex                # convex: (1-λ)L_task + λ L_domain
   domain_scale: equal               # rescale L_domain toward L_task so λ matters
-  lambda_domain: 0.1
+  lambda_domain: 0.0
 
   # --- DA schedule (0 = off / immediate) ---
   da_warmup_epochs: 0               # train task only for N epochs
@@ -122,7 +123,7 @@ domain_adaptation:
 training:
   # --- loop ---
   batch_size: 64
-  epochs: 200
+  epochs: 120
   learning_rate: 0.0001
   weight_decay: 0.0001
   num_workers: 0
@@ -140,10 +141,10 @@ training:
   checkpoint_monitor: val_mae_minus_f1
   checkpoint_mae_space: normalized
   checkpoint_mae_weight: 7.0
-  early_stop_patience: 50
+  early_stop_patience: 15
 
   # --- LR schedule ---
-  scheduler: none                   # legacy flag; real schedule below
+  scheduler: reduce_on_plateau
   lr_scheduler:
     type: reduce_on_plateau
     monitor: val_mae_minus_f1
