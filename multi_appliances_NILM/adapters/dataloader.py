@@ -171,7 +171,7 @@ def _count_windows(n_timesteps: int, windowing: dict[str, Any], stride: int) -> 
     seq_len = _resolve_input_length(windowing)
     if n_timesteps < seq_len:
         return 0
-    return len(np.arange(0, n_timesteps - seq_len, max(1, stride)))
+    return len(np.arange(0, n_timesteps - seq_len + 1, max(1, stride)))
 
 
 def _target_mode(windowing: dict[str, Any], split: str) -> TargetMode:
@@ -221,7 +221,7 @@ class WindowDataset(Dataset):
         self.target_mode = target_mode
         self.seq_len = _resolve_input_length(windowing)
         self.stride = max(1, stride)
-        self.indices = np.arange(0, len(inputs) - self.seq_len, self.stride)
+        self.indices = np.arange(0, len(inputs) - self.seq_len + 1, self.stride)
 
     def __len__(self) -> int:
         return len(self.indices)

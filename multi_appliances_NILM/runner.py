@@ -993,9 +993,13 @@ def _run_epoch(
     # Convert accumulated batch values to one average value per epoch.
     logs = _aggregate_logs(log_keys, n_batches, totals)
 
-    # Per-batch validation metrics averaged across batches (baseline trainer.py style).
-    if collect_states and batch_val_metrics:
-        logs.update(_mean_batch_validation_logs(batch_val_metrics))
+    # Validation metrics must be computed over the whole epoch, not by averaging
+    # per-batch F1. F1 is nonlinear in TP/FP/FN, and batch averaging can pick the
+    # wrong checkpoint for rare appliances.
+    if collect_states and aux_batches["pred_state"]:
+        z_true_epoch, z_pred_epoch = _epoch_state_arrays(adapter, aux_batches)
+        logs.update(_state_f1_logs(z_true_epoch, z_pred_epoch))
+        logs.update(_epoch_power_mae_logs(adapter, aux_batches))
         if monitor_key := str(adapter.model_cfg.get("training", {}).get("checkpoint_monitor", "")).lower():
             if monitor_key in {"val_mae_minus_f1", "mae_minus_f1"}:
                 train_cfg = adapter.model_cfg.get("training", {})
