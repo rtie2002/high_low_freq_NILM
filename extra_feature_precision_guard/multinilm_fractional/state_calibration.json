@@ -9,11 +9,11 @@
     "microwave"
   ],
   "thresholds": {
-    "kettle": 0.9600000000000002,
-    "fridge": 0.4700000000000001,
-    "dishwasher": 0.9300000000000002,
-    "washingmachine": 0.8400000000000002,
-    "microwave": 0.9700000000000002
+    "kettle": 0.9300000000000002,
+    "fridge": 0.31000000000000005,
+    "dishwasher": 0.8500000000000002,
+    "washingmachine": 0.9100000000000003,
+    "microwave": 0.4600000000000001
   },
   "postprocess": {
     "enabled": true,
@@ -33,11 +33,11 @@
     }
   },
   "validation_f1": {
-    "kettle": 0.7262268138060578,
-    "fridge": 0.6490421824043383,
-    "dishwasher": 0.653222550415436,
-    "washingmachine": 0.8043530092986818,
-    "microwave": 0.3227561196736174
+    "kettle": 0.7466462246071291,
+    "fridge": 0.6592155989515565,
+    "dishwasher": 0.6614238255222508,
+    "washingmachine": 0.8252226133775109,
+    "microwave": 0.38516590761223163
   },
-  "validation_macro_f1": 0.6311201351196262
+  "validation_macro_f1": 0.6555348340141358
 }

@@ -164,8 +164,15 @@ def build_multinilm_fractional(
         use_multiscale_stem=cfg.use_multiscale_stem,
         detail_kernels=cfg.detail_kernels,
         detail_branch_channels=cfg.detail_branch_channels,
+        stem_norm_type=cfg.stem_norm_type,
+        temporal_norm_type=cfg.temporal_norm_type,
+        head_norm_type=cfg.head_norm_type,
+        task_attention_enabled=cfg.task_attention_enabled,
+        task_attention_reduction=cfg.task_attention_reduction,
         cross_appliance_enabled=cfg.cross_appliance_enabled,
+        cross_appliance_mode=cfg.cross_appliance_mode,
         cross_appliance_residual_scale=cfg.cross_appliance_residual_scale,
         cross_appliance_mid_channels=cfg.cross_appliance_mid_channels,
+        cross_appliance_attention_channels=cfg.cross_appliance_attention_channels,
     )
     return MultiNILMFractional(backbone=backbone, frontend=frontend)

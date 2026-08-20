@@ -153,9 +153,10 @@ class LiveTrainingMonitor:
         def _nilm_objective(logs: dict[str, float]) -> float:
             p = float(logs.get("loss_power", float("nan")))
             s = float(logs.get("loss_state_term", logs.get("loss_state", float("nan"))))
+            a = float(logs.get("loss_aggregate_term", 0.0))
             if p != p or s != s:
                 return float("nan")
-            return p + s
+            return p + s + a
 
         train_nilm = _nilm_objective(train_logs)
         val_nilm = _nilm_objective(val_logs)

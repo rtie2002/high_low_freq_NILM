@@ -18,6 +18,7 @@ Important:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from typing import Any
 
 import torch
@@ -32,6 +33,54 @@ DOMAIN_FEATURE_LAYER_ALIASES = {
     "encoder": "temporal",
     "aggregate": "stem",
 }
+
+
+class IBN1d(nn.Module):
+    """Split channels between InstanceNorm and BatchNorm (IBN-Net style)."""
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        channels = int(channels)
+        self.instance_channels = channels // 2
+        self.batch_channels = channels - self.instance_channels
+        self.instance_norm = nn.InstanceNorm1d(
+            self.instance_channels,
+            affine=True,
+        )
+        self.batch_norm = nn.BatchNorm1d(self.batch_channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x_instance, x_batch = torch.split(
+            x,
+            [self.instance_channels, self.batch_channels],
+            dim=1,
+        )
+        return torch.cat(
+            [self.instance_norm(x_instance), self.batch_norm(x_batch)],
+            dim=1,
+        )
+
+
+def make_norm_1d(channels: int, norm_type: str = "batch") -> nn.Module:
+    """Build a 1D normalization layer while keeping old checkpoints compatible."""
+    kind = str(norm_type or "batch").lower()
+    if kind in {"batch", "batchnorm", "bn"}:
+        return nn.BatchNorm1d(int(channels))
+    if kind in {"instance", "instancenorm", "in"}:
+        return nn.InstanceNorm1d(int(channels), affine=True)
+    if kind in {"ibn", "ibn1d"}:
+        if int(channels) < 2:
+            return nn.BatchNorm1d(int(channels))
+        return IBN1d(int(channels))
+    if kind in {"group", "groupnorm", "gn"}:
+        groups = min(8, int(channels))
+        while groups > 1 and int(channels) % groups != 0:
+            groups -= 1
+        return nn.GroupNorm(groups, int(channels))
+    raise ValueError(
+        "norm_type must be batch|instance|ibn|group, "
+        f"got {norm_type!r}"
+    )
 
 
 def normalize_domain_feature_layers(layers: list[str] | None) -> list[str]:
@@ -124,6 +173,7 @@ class ResidualTemporalBlock(nn.Module):
         kernel_size: int,
         dilation: int,
         dropout: float,
+        norm_type: str = "batch",
     ) -> None:
         super().__init__()
 
@@ -144,7 +194,7 @@ class ResidualTemporalBlock(nn.Module):
             padding=padding,
             dilation=dilation,
         )
-        self.norm = nn.BatchNorm1d(channels)
+        self.norm = make_norm_1d(channels, norm_type)
         self.activation = nn.ReLU(inplace=True)
         self.dropout = nn.Dropout(dropout)
 
@@ -173,6 +223,7 @@ class MultiScaleWaveformStem(nn.Module):
         out_channels: int,
         kernels: list[int] | tuple[int, ...] = (3, 5, 9),
         branch_channels: int = 12,
+        norm_type: str = "batch",
     ) -> None:
         super().__init__()
         if not kernels:
@@ -186,20 +237,23 @@ class MultiScaleWaveformStem(nn.Module):
             branches.append(
                 nn.Sequential(
                     nn.Conv1d(in_ch, branch_ch, kernel_size=k, padding=k // 2),
-                    nn.BatchNorm1d(branch_ch),
+                    make_norm_1d(branch_ch, norm_type),
                     nn.ReLU(inplace=True),
                 )
             )
         self.branches = nn.ModuleList(branches)
         self.fuse = nn.Sequential(
             nn.Conv1d(branch_ch * len(branches), out_ch, kernel_size=1),
-            nn.BatchNorm1d(out_ch),
+            make_norm_1d(out_ch, norm_type),
             nn.ReLU(inplace=True),
         )
         self.skip = (
             nn.Identity()
             if in_ch == out_ch
-            else nn.Sequential(nn.Conv1d(in_ch, out_ch, 1), nn.BatchNorm1d(out_ch))
+            else nn.Sequential(
+                nn.Conv1d(in_ch, out_ch, 1),
+                make_norm_1d(out_ch, norm_type),
+            )
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -221,6 +275,7 @@ class StagedFeatureExtractor(nn.Module):
         channel_schedule: list[int],
         stem_kernel_size: int = 7,
         stage_kernel_size: int = 5,
+        norm_type: str = "batch",
     ) -> None:
         super().__init__()
         if not channel_schedule:
@@ -239,7 +294,7 @@ class StagedFeatureExtractor(nn.Module):
                         kernel_size=kernel_size,
                         padding=padding,
                     ),
-                    nn.BatchNorm1d(int(out_channels)),
+                    make_norm_1d(int(out_channels), norm_type),
                     nn.ReLU(inplace=True),
                 ]
             )
@@ -272,11 +327,30 @@ class ApplianceHead(nn.Module):
         head_local_layers: int = 2,
         head_kernel_size: int = 3,
         head_use_residual: bool = True,
+        norm_type: str = "batch",
+        use_task_attention: bool = False,
+        task_attention_reduction: int = 4,
     ) -> None:
         super().__init__()
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
         self.register_buffer("off_norm", torch.tensor(float(off_norm), dtype=torch.float32))
+
+        if use_task_attention:
+            attention_channels = max(
+                4,
+                int(hidden_channels) // max(int(task_attention_reduction), 1),
+            )
+            self.task_attention: nn.Module | None = nn.Sequential(
+                nn.Conv1d(hidden_channels, attention_channels, kernel_size=1),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(attention_channels, hidden_channels, kernel_size=1),
+                nn.Sigmoid(),
+            )
+            nn.init.zeros_(self.task_attention[2].weight)
+            nn.init.constant_(self.task_attention[2].bias, 2.0)
+        else:
+            self.task_attention = None
 
         n_local = int(head_local_layers)
         self.head_use_residual = bool(head_use_residual) and n_local > 0
@@ -284,7 +358,7 @@ class ApplianceHead(nn.Module):
             # Legacy pointwise refine (no local temporal context).
             self.local_decoder = nn.Sequential(
                 nn.Conv1d(hidden_channels, hidden_channels, kernel_size=1),
-                nn.BatchNorm1d(hidden_channels),
+                make_norm_1d(hidden_channels, norm_type),
                 nn.ReLU(inplace=True),
             )
         else:
@@ -301,7 +375,7 @@ class ApplianceHead(nn.Module):
                             kernel_size=k,
                             padding=k // 2,
                         ),
-                        nn.BatchNorm1d(hidden_channels),
+                        make_norm_1d(hidden_channels, norm_type),
                         nn.ReLU(inplace=True),
                     ]
                 )
@@ -315,9 +389,12 @@ class ApplianceHead(nn.Module):
 
     def encode_features(self, shared_features: torch.Tensor) -> torch.Tensor:
         """Head body only: shared TCN map → per-appliance features ``F`` (B, C, T)."""
-        features = self.local_decoder(shared_features)
+        attended = shared_features
+        if self.task_attention is not None:
+            attended = attended * self.task_attention(attended)
+        features = self.local_decoder(attended)
         if self.head_use_residual:
-            features = features + shared_features
+            features = features + attended
         return self.dropout(features)
 
     def decode_from_features(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -385,6 +462,92 @@ class CrossApplianceDistill(nn.Module):
         return [features[k] + alpha * mixed[:, k] for k in range(self.num_appliances)]
 
 
+class CrossApplianceRelationAttention(nn.Module):
+    """Attention-gated message passing across appliances at every timestep.
+
+    TCN blocks already model the time axis. This module treats the appliance
+    heads as a short token sequence (K is normally 5), so it can learn dynamic
+    co-occurrence and confusion relations without quadratic attention over the
+    2048-sample time window.
+    """
+
+    def __init__(
+        self,
+        num_appliances: int,
+        channels: int,
+        *,
+        residual_scale: float = 0.5,
+        dropout: float = 0.0,
+        attention_channels: int = 16,
+    ) -> None:
+        super().__init__()
+        self.num_appliances = int(num_appliances)
+        self.channels = int(channels)
+        self.residual_scale = float(residual_scale)
+        relation_channels = max(4, min(int(attention_channels), self.channels))
+
+        self.query = nn.Conv1d(self.channels, relation_channels, kernel_size=1)
+        self.key = nn.Conv1d(self.channels, relation_channels, kernel_size=1)
+        self.value = nn.Conv1d(self.channels, relation_channels, kernel_size=1)
+        self.out = nn.Conv1d(relation_channels, self.channels, kernel_size=1)
+        self.message_gate = nn.Sequential(
+            nn.Conv1d(2 * self.channels, self.channels, kernel_size=1),
+            nn.Sigmoid(),
+        )
+        self.dropout = nn.Dropout(float(dropout))
+        self.scale = math.sqrt(float(relation_channels))
+
+    def _project(self, layer: nn.Module, stacked: torch.Tensor) -> torch.Tensor:
+        batch, appliances, channels, time_len = stacked.shape
+        flat = stacked.reshape(batch * appliances, channels, time_len)
+        projected = layer(flat)
+        relation_channels = projected.shape[1]
+        return projected.reshape(
+            batch,
+            appliances,
+            relation_channels,
+            time_len,
+        ).permute(0, 3, 1, 2)
+
+    def forward(self, features: list[torch.Tensor]) -> list[torch.Tensor]:
+        if len(features) != self.num_appliances:
+            raise ValueError(
+                "CrossApplianceRelationAttention expected "
+                f"{self.num_appliances} maps, got {len(features)}"
+            )
+
+        stacked = torch.stack(features, dim=1)  # (B, K, C, T)
+        query = self._project(self.query, stacked)  # (B, T, K, D)
+        key = self._project(self.key, stacked)
+        value = self._project(self.value, stacked)
+        scores = torch.einsum("btkd,btjd->btkj", query, key) / self.scale
+        weights = torch.softmax(scores, dim=-1)
+        context = torch.einsum("btkj,btjd->btkd", weights, value)
+
+        batch, time_len, appliances, relation_channels = context.shape
+        context = context.permute(0, 2, 3, 1).reshape(
+            batch * appliances,
+            relation_channels,
+            time_len,
+        )
+        message = self.out(context).reshape(
+            batch,
+            appliances,
+            self.channels,
+            time_len,
+        )
+
+        outputs: list[torch.Tensor] = []
+        for app_i, feature in enumerate(features):
+            message_i = message[:, app_i]
+            gate_i = self.message_gate(torch.cat([feature, message_i], dim=1))
+            outputs.append(
+                feature
+                + self.residual_scale * gate_i * self.dropout(message_i)
+            )
+        return outputs
+
+
 class MultiNILM(nn.Module):
     """Simple CNN/TCN model for multi-appliance NILM.
 
@@ -447,9 +610,16 @@ class MultiNILM(nn.Module):
         use_multiscale_stem: bool = False,
         detail_kernels: list[int] | None = None,
         detail_branch_channels: int = 12,
+        stem_norm_type: str = "batch",
+        temporal_norm_type: str = "batch",
+        head_norm_type: str = "batch",
+        task_attention_enabled: bool = False,
+        task_attention_reduction: int = 4,
         cross_appliance_enabled: bool = False,
+        cross_appliance_mode: str = "bottleneck",
         cross_appliance_residual_scale: float = 0.5,
         cross_appliance_mid_channels: int | None = None,
+        cross_appliance_attention_channels: int = 16,
     ) -> None:
         super().__init__()
 
@@ -485,6 +655,7 @@ class MultiNILM(nn.Module):
                         out_channels=stem_out,
                         kernels=detail_ks,
                         branch_channels=int(detail_branch_channels),
+                        norm_type=stem_norm_type,
                     )
                 ]
                 rest = schedule[1:]
@@ -495,6 +666,7 @@ class MultiNILM(nn.Module):
                             channel_schedule=rest,
                             stem_kernel_size=int(stage_kernel_size),
                             stage_kernel_size=int(stage_kernel_size),
+                            norm_type=stem_norm_type,
                         )
                     )
                 self.aggregate_feature_extractor = nn.Sequential(*stages)
@@ -504,6 +676,7 @@ class MultiNILM(nn.Module):
                     channel_schedule=schedule,
                     stem_kernel_size=int(stem_kernel_size),
                     stage_kernel_size=int(stage_kernel_size),
+                    norm_type=stem_norm_type,
                 )
         elif use_multiscale_stem:
             self.aggregate_feature_extractor = MultiScaleWaveformStem(
@@ -511,6 +684,7 @@ class MultiNILM(nn.Module):
                 out_channels=self.hidden_channels,
                 kernels=detail_ks,
                 branch_channels=int(detail_branch_channels),
+                norm_type=stem_norm_type,
             )
         else:
             self.aggregate_feature_extractor = nn.Sequential(
@@ -520,7 +694,7 @@ class MultiNILM(nn.Module):
                     kernel_size=int(stem_kernel_size),
                     padding=int(stem_kernel_size) // 2,
                 ),
-                nn.BatchNorm1d(self.hidden_channels),
+                make_norm_1d(self.hidden_channels, stem_norm_type),
                 nn.ReLU(inplace=True),
             )
 
@@ -537,6 +711,7 @@ class MultiNILM(nn.Module):
                     kernel_size=kernel_size,
                     dilation=dilation,
                     dropout=dropout,
+                    norm_type=temporal_norm_type,
                 )
             )
         self.temporal_encoder = nn.Sequential(*temporal_blocks)
@@ -553,6 +728,9 @@ class MultiNILM(nn.Module):
                     head_local_layers=int(head_local_layers),
                     head_kernel_size=int(head_kernel_size),
                     head_use_residual=bool(head_use_residual),
+                    norm_type=head_norm_type,
+                    use_task_attention=bool(task_attention_enabled),
+                    task_attention_reduction=int(task_attention_reduction),
                 )
                 for app_i in range(self.num_appliances)
             ]
@@ -560,13 +738,30 @@ class MultiNILM(nn.Module):
 
         # Optional PAD-lite: mix head-body features across appliances, then final 1×1.
         if cross_appliance_enabled:
-            self.cross_appliance_distill: CrossApplianceDistill | None = CrossApplianceDistill(
-                num_appliances=self.num_appliances,
-                channels=self.hidden_channels,
-                residual_scale=float(cross_appliance_residual_scale),
-                dropout=float(dropout),
-                mid_channels=cross_appliance_mid_channels,
-            )
+            cross_mode = str(cross_appliance_mode or "bottleneck").lower()
+            if cross_mode in {"relation_attention", "attention", "relational"}:
+                self.cross_appliance_distill: nn.Module | None = (
+                    CrossApplianceRelationAttention(
+                        num_appliances=self.num_appliances,
+                        channels=self.hidden_channels,
+                        residual_scale=float(cross_appliance_residual_scale),
+                        dropout=float(dropout),
+                        attention_channels=int(cross_appliance_attention_channels),
+                    )
+                )
+            elif cross_mode in {"bottleneck", "distill", "pad_lite"}:
+                self.cross_appliance_distill = CrossApplianceDistill(
+                    num_appliances=self.num_appliances,
+                    channels=self.hidden_channels,
+                    residual_scale=float(cross_appliance_residual_scale),
+                    dropout=float(dropout),
+                    mid_channels=cross_appliance_mid_channels,
+                )
+            else:
+                raise ValueError(
+                    "cross_appliance.mode must be bottleneck|relation_attention, "
+                    f"got {cross_appliance_mode!r}"
+                )
         else:
             self.cross_appliance_distill = None
 
@@ -805,33 +1000,49 @@ class MultiNILMConfig:
     use_multiscale_stem: bool = False
     detail_kernels: list[int] = field(default_factory=lambda: [3, 5, 9])
     detail_branch_channels: int = 12
+    stem_norm_type: str = "batch"
+    temporal_norm_type: str = "batch"
+    head_norm_type: str = "batch"
+    task_attention_enabled: bool = False
+    task_attention_reduction: int = 4
     # PAD-lite cross-appliance distill (off = skip mix, still encode→decode).
     cross_appliance_enabled: bool = False
+    cross_appliance_mode: str = "bottleneck"
     cross_appliance_residual_scale: float = 0.5
     cross_appliance_mid_channels: int | None = None
+    cross_appliance_attention_channels: int = 16
     # Lin-style multi-layer DA hooks (late TCN + pre-head), analogous to fc6–fc8.
     domain_feature_layers: list[str] = field(
         default_factory=lambda: ["temporal_2", "temporal_4", "aligned"]
     )
 
 
-def _parse_cross_appliance(architecture: dict[str, Any]) -> tuple[bool, float, int | None]:
+def _parse_cross_appliance(
+    architecture: dict[str, Any],
+) -> tuple[bool, str, float, int | None, int]:
     """Read ``architecture.cross_appliance`` from model yaml."""
     block = architecture.get("cross_appliance")
     if not isinstance(block, dict):
-        return False, 0.5, None
+        return False, "bottleneck", 0.5, None, 16
     enabled = bool(block.get("enabled", False))
+    mode = str(block.get("mode", "bottleneck"))
     scale = float(block.get("residual_scale", 0.5))
     mid = block.get("mid_channels", None)
     mid_i = None if mid is None else int(mid)
-    return enabled, scale, mid_i
+    attention_channels = int(block.get("attention_channels", 16))
+    return enabled, mode, scale, mid_i, attention_channels
 
 
 def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
     """Read MultiNILM settings from the model YAML architecture section."""
 
     detail_kernels = architecture.get("detail_kernels", [3, 5, 9])
-    ca_enabled, ca_scale, ca_mid = _parse_cross_appliance(architecture)
+    ca_enabled, ca_mode, ca_scale, ca_mid, ca_attention = _parse_cross_appliance(
+        architecture
+    )
+    task_attention = architecture.get("task_attention", {})
+    if not isinstance(task_attention, dict):
+        task_attention = {}
     return MultiNILMConfig(
         input_channels=int(architecture.get("input_channels", architecture.get("input_size", 1))),
         num_appliances=int(architecture.get("num_appliances", 5)),
@@ -852,9 +1063,16 @@ def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
         use_multiscale_stem=bool(architecture.get("use_multiscale_stem", False)),
         detail_kernels=[int(k) for k in detail_kernels],
         detail_branch_channels=int(architecture.get("detail_branch_channels", 12)),
+        stem_norm_type=str(architecture.get("stem_norm_type", "batch")),
+        temporal_norm_type=str(architecture.get("temporal_norm_type", "batch")),
+        head_norm_type=str(architecture.get("head_norm_type", "batch")),
+        task_attention_enabled=bool(task_attention.get("enabled", False)),
+        task_attention_reduction=int(task_attention.get("reduction", 4)),
         cross_appliance_enabled=ca_enabled,
+        cross_appliance_mode=ca_mode,
         cross_appliance_residual_scale=ca_scale,
         cross_appliance_mid_channels=ca_mid,
+        cross_appliance_attention_channels=ca_attention,
         domain_feature_layers=normalize_domain_feature_layers(
             architecture.get("domain_feature_layers")
         ),

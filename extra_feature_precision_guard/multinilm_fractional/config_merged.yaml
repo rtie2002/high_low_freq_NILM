@@ -61,9 +61,9 @@ experiment:
       min_power_watts: 5
     sae_period: 1200
     power_unit: watts
-  experiment_id: extra_feature_statecal_onloss_long
+  experiment_id: extra_feature_precision_guard
 model:
-  experiment_id: extra_feature_statecal_onloss_long
+  experiment_id: extra_feature_precision_guard
   model_name: multinilm_fractional
   data:
     mains_column: aggregate
@@ -139,21 +139,23 @@ model:
     gate_mode: soft
     gate_threshold: 0.5
     cross_appliance:
-      enabled: false
-      residual_scale: 0.5
+      enabled: true
+      residual_scale: 0.25
     domain_feature_layers:
     - temporal_1
     - temporal_3
     - aligned
   loss:
     task_balance: equal
-    lambda_state: 1
+    lambda_state: 0.8
     pos_weight: auto
-    pos_weight_cap: 30
-    power_on_weight: 2.0
-    power_delta_weight: 0.25
+    pos_weight_cap: 12
+    state_fp_weight: 1.0
+    power_on_weight: 1.0
+    power_off_weight: 0.5
+    power_delta_weight: 0.15
     power_delta_on_only: true
-    power_energy_weight: 0.1
+    power_energy_weight: 0.03
     domain_method: both
     domain_mu: 0.4
     domain_mix: convex
@@ -209,7 +211,7 @@ model:
         min_on_duration: 10
         dpi: 200
 model_name: multinilm_fractional
-experiment_id: extra_feature_statecal_onloss_long
+experiment_id: extra_feature_precision_guard
 appliances:
 - kettle
 - fridge

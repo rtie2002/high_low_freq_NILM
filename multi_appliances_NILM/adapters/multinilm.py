@@ -92,9 +92,16 @@ class MultiNILMAdapter(BaseNILMAdapter):
             use_multiscale_stem=cfg.use_multiscale_stem,
             detail_kernels=cfg.detail_kernels,
             detail_branch_channels=cfg.detail_branch_channels,
+            stem_norm_type=cfg.stem_norm_type,
+            temporal_norm_type=cfg.temporal_norm_type,
+            head_norm_type=cfg.head_norm_type,
+            task_attention_enabled=cfg.task_attention_enabled,
+            task_attention_reduction=cfg.task_attention_reduction,
             cross_appliance_enabled=cfg.cross_appliance_enabled,
+            cross_appliance_mode=cfg.cross_appliance_mode,
             cross_appliance_residual_scale=cfg.cross_appliance_residual_scale,
             cross_appliance_mid_channels=cfg.cross_appliance_mid_channels,
+            cross_appliance_attention_channels=cfg.cross_appliance_attention_channels,
         )
 
         # Move model to GPU if available, otherwise CPU.
@@ -103,6 +110,8 @@ class MultiNILMAdapter(BaseNILMAdapter):
     def build_loss(self) -> MultiNILMLoss:
         # Read loss settings from config/models/multinilm.yaml.
         loss_cfg = self.model_cfg.get("loss", {})
+        loader = self._data_loader()
+        norm = loader.norm
 
         # Create loss:
         #   L_NILM = L_power + balanced(L_state); see task_balance in yaml
@@ -116,7 +125,13 @@ class MultiNILMAdapter(BaseNILMAdapter):
 
             # Used only for MAE logging. This comes from dataset normalization
             # stats when available, otherwise from legacy scalar power_scale.
-            power_scale=self._data_loader().loss_scale,
+            power_scale=loader.loss_scale,
+            target_mean=norm.target_mean,
+            input_mean=norm.input_mean,
+            input_std=norm.input_std,
+            output_alignment=str(
+                self.model_cfg.get("windowing", {}).get("output_alignment", "end")
+            ),
 
             # Domain adaptation (Lin-style).
             lambda_domain=float(loss_cfg.get("lambda_domain", 0.0)),
@@ -130,12 +145,124 @@ class MultiNILMAdapter(BaseNILMAdapter):
             power_delta_on_only=bool(loss_cfg.get("power_delta_on_only", True)),
             power_energy_weight=float(loss_cfg.get("power_energy_weight", 0.0)),
             state_fp_weight=float(loss_cfg.get("state_fp_weight", 0.0)),
+            state_transition_weight=float(
+                loss_cfg.get("state_transition_weight", 0.0)
+            ),
+            power_energy_relative_weight=float(
+                loss_cfg.get("power_energy_relative_weight", 0.0)
+            ),
+            energy_floor_watts=float(loss_cfg.get("energy_floor_watts", 10.0)),
+            aggregate_consistency_weight=float(
+                loss_cfg.get("aggregate_consistency_weight", 0.0)
+            ),
+            aggregate_tolerance_watts=float(
+                loss_cfg.get("aggregate_tolerance_watts", 20.0)
+            ),
+            aggregate_loss_scale_watts=float(
+                loss_cfg.get("aggregate_loss_scale_watts", 1000.0)
+            ),
             mmd_sigma=(
                 None
                 if loss_cfg.get("mmd_sigma", None) in (None, "", "auto")
                 else float(loss_cfg["mmd_sigma"])
             ),
         )
+
+    def _augment_training_mixture(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Physically rebuild a training mixture after random power scaling."""
+        cfg = self.model_cfg.get("training", {}).get("augmentation", {})
+        if not isinstance(cfg, dict) or not bool(cfg.get("enabled", False)):
+            return x, y
+        probability = float(cfg.get("probability", 1.0))
+        if probability < 1.0 and float(torch.rand((), device=x.device)) > probability:
+            return x, y
+
+        norm = self._data_loader().norm
+        if (
+            norm.target_mean is None
+            or norm.target_std is None
+            or norm.input_mean is None
+            or norm.input_std is None
+        ):
+            return x, y
+
+        def _gain_range(name: str, default: tuple[float, float]) -> tuple[float, float]:
+            raw = cfg.get(name, default)
+            if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+                raise ValueError(f"training.augmentation.{name} must be [min, max]")
+            low, high = float(raw[0]), float(raw[1])
+            if low <= 0.0 or high < low:
+                raise ValueError(
+                    f"training.augmentation.{name} must satisfy 0 < min <= max"
+                )
+            return low, high
+
+        app_low, app_high = _gain_range("appliance_gain", (0.85, 1.15))
+        residual_low, residual_high = _gain_range("residual_gain", (0.7, 1.2))
+
+        target_mean = torch.as_tensor(
+            norm.target_mean,
+            dtype=y.dtype,
+            device=y.device,
+        ).view(1, 1, -1)
+        target_std = torch.as_tensor(
+            norm.target_std,
+            dtype=y.dtype,
+            device=y.device,
+        ).view(1, 1, -1)
+        y_watts = (y * target_std + target_mean).clamp_min(0.0)
+
+        if x.dim() == 3 and x.shape[-1] == 1:
+            aggregate_norm = x[..., 0]
+            restore = "last"
+        elif x.dim() == 3 and x.shape[1] == 1:
+            aggregate_norm = x[:, 0, :]
+            restore = "channel"
+        elif x.dim() == 2:
+            aggregate_norm = x
+            restore = "flat"
+        else:
+            raise ValueError(f"Unsupported aggregate shape for augmentation: {tuple(x.shape)}")
+
+        aggregate_watts = (
+            aggregate_norm * float(norm.input_std) + float(norm.input_mean)
+        ).clamp_min(0.0)
+        residual_watts = (
+            aggregate_watts - y_watts.sum(dim=-1)
+        ).clamp_min(0.0)
+
+        batch, _, appliances = y_watts.shape
+        appliance_gain = torch.empty(
+            (batch, 1, appliances),
+            device=y.device,
+            dtype=y.dtype,
+        ).uniform_(app_low, app_high)
+        residual_gain = torch.empty(
+            (batch, 1),
+            device=x.device,
+            dtype=x.dtype,
+        ).uniform_(residual_low, residual_high)
+
+        y_aug_watts = y_watts * appliance_gain
+        aggregate_aug_watts = (
+            residual_watts * residual_gain + y_aug_watts.sum(dim=-1)
+        )
+        y_aug = (y_aug_watts - target_mean) / target_std
+        aggregate_aug = (
+            aggregate_aug_watts - float(norm.input_mean)
+        ) / float(norm.input_std)
+
+        if restore == "last":
+            x_aug = aggregate_aug.unsqueeze(-1)
+        elif restore == "channel":
+            x_aug = aggregate_aug.unsqueeze(1)
+        else:
+            x_aug = aggregate_aug
+        return x_aug, y_aug
 
     def step(
         self,
@@ -163,6 +290,8 @@ class MultiNILMAdapter(BaseNILMAdapter):
         """
         x, y, z = batch
         z = z.float()
+        if model.training:
+            x, y = self._augment_training_mixture(x, y)
 
         use_domain = (
             target_batch is not None
@@ -178,12 +307,19 @@ class MultiNILMAdapter(BaseNILMAdapter):
                 state_logits,
                 y,
                 z,
+                aggregate_input=x,
                 domain_feats_S=feats_s,
                 domain_feats_T=feats_t,
             )
         else:
             power_pred, state_logits = model(x)
-            out = loss_fn(power_pred, state_logits, y, z)
+            out = loss_fn(
+                power_pred,
+                state_logits,
+                y,
+                z,
+                aggregate_input=x,
+            )
 
         state_prob = torch.sigmoid(state_logits)
 
@@ -207,6 +343,17 @@ class MultiNILMAdapter(BaseNILMAdapter):
                 "loss_power": float(out.loss_power.detach()),
                 "loss_state": float(out.loss_state.detach()),
                 "loss_state_term": float(out.loss_state_term.detach()),
+                "loss_state_transition": float(out.loss_state_transition.detach()),
+                "loss_energy_relative": float(out.loss_energy_relative.detach()),
+                "loss_aggregate_consistency": float(
+                    out.loss_aggregate_consistency.detach()
+                ),
+                "loss_aggregate_term": float(
+                    (
+                        out.loss_aggregate_consistency
+                        * loss_fn.aggregate_consistency_weight
+                    ).detach()
+                ),
                 "loss_domain": float(out.loss_domain.detach()),
                 "loss_domain_term": float(out.loss_domain_term.detach()),
                 "mae": float(out.mae.detach()),

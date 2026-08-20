@@ -215,6 +215,9 @@ class MultiNILMLossOutput:
     loss_power: torch.Tensor           # Σ_i MSE_i  (raw)
     loss_state: torch.Tensor           # Σ_i BCE_i  (raw)
     loss_state_term: torch.Tensor      # balanced state contribution into L_NILM
+    loss_state_transition: torch.Tensor
+    loss_energy_relative: torch.Tensor
+    loss_aggregate_consistency: torch.Tensor
     loss_domain: torch.Tensor          # raw L_domain (0 if DA off)
     loss_domain_term: torch.Tensor     # domain contribution before mix weights
     mae: torch.Tensor                  # logging only (often denorm scale)
@@ -244,6 +247,16 @@ class MultiNILMLoss(nn.Module):
         power_delta_on_only: bool = True,
         power_energy_weight: float = 0.0,
         state_fp_weight: float = 0.0,
+        state_transition_weight: float = 0.0,
+        power_energy_relative_weight: float = 0.0,
+        energy_floor_watts: float = 10.0,
+        aggregate_consistency_weight: float = 0.0,
+        aggregate_tolerance_watts: float = 20.0,
+        aggregate_loss_scale_watts: float = 1000.0,
+        target_mean: torch.Tensor | list[float] | None = None,
+        input_mean: float | None = None,
+        input_std: float | None = None,
+        output_alignment: str = "end",
     ) -> None:
         super().__init__()
         self.lambda_state = float(lambda_state)
@@ -264,9 +277,38 @@ class MultiNILMLoss(nn.Module):
         self.power_delta_on_only = bool(power_delta_on_only)
         self.power_energy_weight = float(power_energy_weight)
         self.state_fp_weight = float(state_fp_weight)
+        self.state_transition_weight = float(state_transition_weight)
+        self.power_energy_relative_weight = float(power_energy_relative_weight)
+        self.energy_floor_watts = float(energy_floor_watts)
+        self.aggregate_consistency_weight = float(aggregate_consistency_weight)
+        self.aggregate_tolerance_watts = float(aggregate_tolerance_watts)
+        self.aggregate_loss_scale_watts = max(
+            float(aggregate_loss_scale_watts),
+            1e-6,
+        )
+        self.output_alignment = str(output_alignment or "end").lower()
 
         # MAE logging scale (watts / std); not used in the training objective.
         self.register_buffer("power_scale", torch.as_tensor(power_scale, dtype=torch.float32))
+        target_mean_tensor = (
+            torch.as_tensor(target_mean, dtype=torch.float32)
+            if target_mean is not None
+            else torch.zeros_like(self.power_scale)
+        )
+        self.register_buffer("target_mean", target_mean_tensor)
+        self.register_buffer(
+            "input_mean",
+            torch.tensor(0.0 if input_mean is None else float(input_mean)),
+        )
+        self.register_buffer(
+            "input_std",
+            torch.tensor(1.0 if input_std is None else float(input_std)),
+        )
+        self.has_physical_stats = (
+            target_mean is not None
+            and input_mean is not None
+            and input_std is not None
+        )
 
         # BCE ON-class weight: pos_weight_i = (1−p_i)/p_i from train ON rate.
         if pos_weight is not None:
@@ -342,6 +384,107 @@ class MultiNILMLoss(nn.Module):
             losses.append(loss_i)
         return torch.stack(losses)
 
+    def _state_transition_loss(
+        self,
+        state_logits: torch.Tensor,
+        state_true: torch.Tensor,
+    ) -> torch.Tensor:
+        """Balanced start/stop boundary loss for event width and continuity."""
+        if state_logits.shape[1] <= 1:
+            return state_logits.new_zeros(state_logits.shape[-1])
+
+        prob = torch.sigmoid(state_logits)
+        previous = prob[:, :-1, :]
+        current = prob[:, 1:, :]
+        # Probability that two adjacent Bernoulli states are different.
+        boundary_prob = (
+            previous * (1.0 - current)
+            + (1.0 - previous) * current
+        ).clamp(1e-6, 1.0 - 1e-6)
+        boundary_true = torch.abs(
+            state_true[:, 1:, :] - state_true[:, :-1, :]
+        ).float()
+
+        positive = -torch.log(boundary_prob) * boundary_true
+        negative = -torch.log1p(-boundary_prob) * (1.0 - boundary_true)
+        positive_loss = positive.sum(dim=(0, 1)) / boundary_true.sum(
+            dim=(0, 1)
+        ).clamp_min(1.0)
+        negative_mask = 1.0 - boundary_true
+        negative_loss = negative.sum(dim=(0, 1)) / negative_mask.sum(
+            dim=(0, 1)
+        ).clamp_min(1.0)
+        has_boundary = (boundary_true.sum(dim=(0, 1)) > 0).float()
+        return 0.5 * positive_loss * has_boundary + 0.5 * negative_loss
+
+    def _to_watts(self, power: torch.Tensor) -> torch.Tensor:
+        scale = self.power_scale.to(device=power.device, dtype=power.dtype)
+        mean = self.target_mean.to(device=power.device, dtype=power.dtype)
+        return (power * scale + mean).clamp_min(0.0)
+
+    def _relative_energy_loss(
+        self,
+        power_pred: torch.Tensor,
+        power_true: torch.Tensor,
+    ) -> torch.Tensor:
+        """Per-window relative energy error in physical watt-samples."""
+        pred_watts = self._to_watts(power_pred)
+        true_watts = self._to_watts(power_true)
+        pred_energy = pred_watts.sum(dim=1)
+        true_energy = true_watts.sum(dim=1)
+        floor = self.energy_floor_watts * max(float(power_pred.shape[1]), 1.0)
+        return (
+            torch.abs(pred_energy - true_energy) / (true_energy + floor)
+        ).mean(dim=0)
+
+    def _align_aggregate(
+        self,
+        aggregate_input: torch.Tensor,
+        output_length: int,
+    ) -> torch.Tensor:
+        aggregate = aggregate_input.float()
+        if aggregate.dim() == 3 and aggregate.shape[-1] == 1:
+            aggregate = aggregate[..., 0]
+        elif aggregate.dim() == 3 and aggregate.shape[1] == 1:
+            aggregate = aggregate[:, 0, :]
+        if aggregate.dim() != 2:
+            raise ValueError(
+                "aggregate_input must be (B,T), (B,T,1), or (B,1,T); "
+                f"got {tuple(aggregate_input.shape)}"
+            )
+
+        time_len = aggregate.shape[1]
+        if time_len == output_length:
+            return aggregate
+        if time_len < output_length:
+            return F.pad(aggregate, (output_length - time_len, 0))
+        if self.output_alignment == "center":
+            offset = (time_len - output_length) // 2
+            return aggregate[:, offset : offset + output_length]
+        return aggregate[:, -output_length:]
+
+    def _aggregate_consistency_loss(
+        self,
+        power_pred: torch.Tensor,
+        aggregate_input: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Penalize only impossible over-allocation; unknown load may remain."""
+        if aggregate_input is None or not self.has_physical_stats:
+            return power_pred.new_zeros(())
+        aggregate = self._align_aggregate(aggregate_input, power_pred.shape[1])
+        aggregate_watts = (
+            aggregate
+            * self.input_std.to(device=aggregate.device, dtype=aggregate.dtype)
+            + self.input_mean.to(device=aggregate.device, dtype=aggregate.dtype)
+        ).clamp_min(0.0)
+        predicted_watts = self._to_watts(power_pred).sum(dim=-1)
+        excess = F.relu(
+            predicted_watts
+            - aggregate_watts
+            - self.aggregate_tolerance_watts
+        )
+        return torch.mean((excess / self.aggregate_loss_scale_watts) ** 2)
+
     def _balanced_state_term(
         self,
         loss_power: torch.Tensor,
@@ -382,6 +525,7 @@ class MultiNILMLoss(nn.Module):
         power_true: torch.Tensor,
         state_true: torch.Tensor,
         *,
+        aggregate_input: torch.Tensor | None = None,
         domain_feats_S: Mapping[str, torch.Tensor] | None = None,
         domain_feats_T: Mapping[str, torch.Tensor] | None = None,
     ) -> MultiNILMLossOutput:
@@ -409,11 +553,35 @@ class MultiNILMLoss(nn.Module):
 
         # --- supervised NILM ---
         loss_power_per_app = self._per_appliance_power_loss(power_pred, power_true, state_true)
+        loss_energy_relative_per_app = self._relative_energy_loss(
+            power_pred,
+            power_true,
+        )
+        loss_power_per_app = (
+            loss_power_per_app
+            + self.power_energy_relative_weight * loss_energy_relative_per_app
+        )
+
         loss_state_per_app = self._per_appliance_state_loss(state_logits, state_true)
+        loss_state_transition_per_app = self._state_transition_loss(
+            state_logits,
+            state_true,
+        )
+        loss_state_per_app = (
+            loss_state_per_app
+            + self.state_transition_weight * loss_state_transition_per_app
+        )
         loss_power = loss_power_per_app.sum()
         loss_state = loss_state_per_app.sum()
         loss_state_term = self._balanced_state_term(loss_power, loss_state)
-        loss_nilm = loss_power + loss_state_term
+        loss_aggregate_consistency = self._aggregate_consistency_loss(
+            power_pred,
+            aggregate_input,
+        )
+        loss_aggregate_term = (
+            self.aggregate_consistency_weight * loss_aggregate_consistency
+        )
+        loss_nilm = loss_power + loss_state_term + loss_aggregate_term
 
         # --- optional domain adaptation ---
         use_da = (
@@ -459,6 +627,9 @@ class MultiNILMLoss(nn.Module):
             loss_power=loss_power,
             loss_state=loss_state,
             loss_state_term=loss_state_term.detach(),
+            loss_state_transition=loss_state_transition_per_app.sum().detach(),
+            loss_energy_relative=loss_energy_relative_per_app.sum().detach(),
+            loss_aggregate_consistency=loss_aggregate_consistency.detach(),
             loss_domain=loss_domain.detach(),
             loss_domain_term=domain_term.detach(),
             mae=mae,
