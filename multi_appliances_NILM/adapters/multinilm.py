@@ -124,6 +124,10 @@ class MultiNILMAdapter(BaseNILMAdapter):
             domain_mu=float(loss_cfg.get("domain_mu", 0.4)),
             domain_mix=str(loss_cfg.get("domain_mix", "convex")),
             domain_scale=str(loss_cfg.get("domain_scale", "none")),
+            power_on_weight=float(loss_cfg.get("power_on_weight", 0.0)),
+            power_delta_weight=float(loss_cfg.get("power_delta_weight", 0.0)),
+            power_delta_on_only=bool(loss_cfg.get("power_delta_on_only", True)),
+            power_energy_weight=float(loss_cfg.get("power_energy_weight", 0.0)),
             mmd_sigma=(
                 None
                 if loss_cfg.get("mmd_sigma", None) in (None, "", "auto")

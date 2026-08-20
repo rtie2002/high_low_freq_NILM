@@ -59,6 +59,7 @@ from evaluation.live_monitor import LiveTrainingMonitor
 from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
 from evaluation.metrics import _macro_mae_norm, evaluate_bundle
 from evaluation.power_postprocess import apply_power_postprocess_pair, resolve_power_postprocess
+from evaluation.state_postprocess import maybe_calibrate_and_apply
 from evaluation.plots import (
     bundle_aggregate_watts,
     bundle_csv_appliance_watts,
@@ -1751,8 +1752,21 @@ def evaluate_model(
     loader = adapter.build_dataloader(split)
     bundle = adapter.predict_dataloader(model, loader, device, split=split)
 
+    bundle, state_calibration = maybe_calibrate_and_apply(
+        bundle,
+        adapter.model_cfg,
+        run_dir,
+        split,
+    )
+    if state_calibration is not None:
+        thresholds = state_calibration.get("thresholds", {})
+        summary = ", ".join(
+            f"{app}={float(thresholds.get(app, 0.5)):.2f}" for app in bundle.appliances
+        )
+        print(f"State calibration applied ({split}): {summary}", flush=True)
+
     # Step 5:
-    # Save the raw predictions so later code can reload them without rerunning the model.
+    # Save final predictions so later code can reload them without rerunning the model.
     run_dir.mkdir(parents=True, exist_ok=True)
     pred_path = run_dir / f"{split}_predictions.npz"
     bundle.save(pred_path)

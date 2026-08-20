@@ -5,7 +5,7 @@
 # Run folder: runs/<experiment_id>/<model_name>/
 # Pair with config/experiment_ukdale.yaml or experiment_redd.yaml (data only).
 # Change experiment_id when switching dataset / DA / multi-domain mix.
-experiment_id: extra_feature_cap30_nocross
+experiment_id: extra_feature_statecal_onloss
 model_name: multinilm_fractional
 
 # =============================================================================
@@ -21,6 +21,27 @@ evaluation:
   pred_on_source: state_head        # state_head | power_threshold | combined
   # After overlap_mean stitch: zero watts where pred ON is false
   regate_power_with_pred_on: true
+  # Learn each appliance ON threshold from validation, then reuse it on test.
+  # This fixes the heavy false-ON problem caused by one shared 0.5 threshold.
+  state_calibration:
+    enabled: true
+    split: validation
+    threshold_grid: [0.05, 0.98, 0.01]
+    apply_to_power: true
+    postprocess:
+      enabled: true
+      min_on_samples:
+        kettle: 5
+        fridge: 20
+        dishwasher: 160
+        washingmachine: 300
+        microwave: 10
+      merge_gap_samples:
+        kettle: 0
+        fridge: 40
+        dishwasher: 300
+        washingmachine: 160
+        microwave: 3
 
 # =============================================================================
 # WINDOWING (6 s samples; 2048 ≈ 3.4 h)
@@ -97,6 +118,10 @@ loss:
   lambda_state: 1                   # with equal, 1 = power ↔ state same weight
   pos_weight: auto                  # BCE imbalance; auto from train ON rates
   pos_weight_cap: 30                # cap rare-appliance BCE weight to reduce false ON spam
+  power_on_weight: 2.0              # extra MSE on true-ON samples; helps amplitude
+  power_delta_weight: 0.25          # match rise/fall shape, not only average level
+  power_delta_on_only: true
+  power_energy_weight: 0.10         # reduce under-estimated appliance energy
 
   # --- domain (active only if domain_adaptation.enabled AND lambda_domain > 0) ---
   domain_method: both               # coral | mmd | both
@@ -138,17 +163,17 @@ training:
   tf32: true
 
   # --- checkpoint / early stop ---
-  # score = w * MAE_norm - F1  (MAE_norm≈0.1 vs F1≈0.7 → need w≈7)
-  checkpoint_monitor: val_mae_minus_f1
+  # Final F1 is threshold-calibrated after training, so checkpoint by val_loss.
+  checkpoint_monitor: val_loss
   checkpoint_mae_space: normalized
   checkpoint_mae_weight: 7.0
-  early_stop_patience: 15
+  early_stop_patience: 20
 
   # --- LR schedule ---
   scheduler: reduce_on_plateau
   lr_scheduler:
     type: reduce_on_plateau
-    monitor: val_mae_minus_f1
+    monitor: val_loss
     patience: 5
     factor: 0.5
     min_lr: 0.00001

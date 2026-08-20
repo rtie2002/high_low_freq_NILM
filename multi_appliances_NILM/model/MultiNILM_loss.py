@@ -238,6 +238,10 @@ class MultiNILMLoss(nn.Module):
         mmd_sigma: float | None = None,
         domain_mix: str = "convex",
         domain_scale: str = "none",
+        power_on_weight: float = 0.0,
+        power_delta_weight: float = 0.0,
+        power_delta_on_only: bool = True,
+        power_energy_weight: float = 0.0,
     ) -> None:
         super().__init__()
         self.lambda_state = float(lambda_state)
@@ -252,6 +256,10 @@ class MultiNILMLoss(nn.Module):
         self.domain_scale = str(domain_scale or "none").lower()
         if self.domain_scale not in {"none", "equal"}:
             raise ValueError(f"domain_scale must be none|equal, got {domain_scale!r}")
+        self.power_on_weight = float(power_on_weight)
+        self.power_delta_weight = float(power_delta_weight)
+        self.power_delta_on_only = bool(power_delta_on_only)
+        self.power_energy_weight = float(power_energy_weight)
 
         # MAE logging scale (watts / std); not used in the training objective.
         self.register_buffer("power_scale", torch.as_tensor(power_scale, dtype=torch.float32))
@@ -266,9 +274,36 @@ class MultiNILMLoss(nn.Module):
         self,
         power_pred: torch.Tensor,
         power_true: torch.Tensor,
+        state_true: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """MSE_i = mean_{b,t} (ŷ − y)²  → vector length A."""
-        return torch.mean((power_pred - power_true) ** 2, dim=(0, 1))
+        err2 = (power_pred - power_true) ** 2
+        loss = torch.mean(err2, dim=(0, 1))
+
+        if state_true is not None and self.power_on_weight > 0.0:
+            on = state_true.float()
+            denom = on.sum(dim=(0, 1)).clamp_min(1.0)
+            on_mse = (err2 * on).sum(dim=(0, 1)) / denom
+            loss = loss + self.power_on_weight * on_mse
+
+        if power_pred.shape[1] > 1 and self.power_delta_weight > 0.0:
+            d_pred = power_pred[:, 1:, :] - power_pred[:, :-1, :]
+            d_true = power_true[:, 1:, :] - power_true[:, :-1, :]
+            d_err2 = (d_pred - d_true) ** 2
+            if state_true is not None and self.power_delta_on_only:
+                on_delta = torch.maximum(state_true[:, 1:, :], state_true[:, :-1, :]).float()
+                denom = on_delta.sum(dim=(0, 1)).clamp_min(1.0)
+                delta_loss = (d_err2 * on_delta).sum(dim=(0, 1)) / denom
+            else:
+                delta_loss = d_err2.mean(dim=(0, 1))
+            loss = loss + self.power_delta_weight * delta_loss
+
+        if self.power_energy_weight > 0.0:
+            energy_err = torch.abs(power_pred.sum(dim=1) - power_true.sum(dim=1))
+            energy_loss = energy_err.mean(dim=0) / max(float(power_pred.shape[1]), 1.0)
+            loss = loss + self.power_energy_weight * energy_loss
+
+        return loss
 
     def _per_appliance_state_loss(
         self,
@@ -358,7 +393,7 @@ class MultiNILMLoss(nn.Module):
         state_true = state_true.float()
 
         # --- supervised NILM ---
-        loss_power_per_app = self._per_appliance_power_loss(power_pred, power_true)
+        loss_power_per_app = self._per_appliance_power_loss(power_pred, power_true, state_true)
         loss_state_per_app = self._per_appliance_state_loss(state_logits, state_true)
         loss_power = loss_power_per_app.sum()
         loss_state = loss_state_per_app.sum()

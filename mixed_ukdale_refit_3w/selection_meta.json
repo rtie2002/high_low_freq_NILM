@@ -1,0 +1,36 @@
+{
+  "block_weeks": 3.0,
+  "step_days": 1.0,
+  "train_val_ratio": "80/20",
+  "ukdale_source": [
+    1,
+    5
+  ],
+  "ukdale_test": [
+    2
+  ],
+  "refit_source": [
+    2,
+    3,
+    5,
+    9,
+    11
+  ],
+  "refit_test": [
+    20
+  ],
+  "full_min_events": {
+    "kettle": 6,
+    "microwave": 6,
+    "dishwasher": 2,
+    "washingmachine": 2,
+    "fridge": 30
+  },
+  "full_min_on_minutes": {
+    "kettle": 10.0,
+    "microwave": 10.0,
+    "dishwasher": 60.0,
+    "washingmachine": 60.0,
+    "fridge": 0.0
+  }
+}
