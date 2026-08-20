@@ -208,7 +208,10 @@ def _print_training_data_summary(
     else:
         sched_text = "off"
     _summary_line("Scheduler", sched_text)
-    _summary_line("Early stop", str(train_cfg.get("early_stop_patience", 0)))
+    early_stop_text = str(train_cfg.get("early_stop_patience", 0))
+    if int(train_cfg.get("early_stop_min_epochs", 0)) > 0:
+        early_stop_text += f" after epoch {train_cfg.get('early_stop_min_epochs')}"
+    _summary_line("Early stop", early_stop_text)
     _summary_line("Train shuffle", str(train_cfg.get("train_shuffle", True)))
     _summary_line("Tensor dtype", str(train_cfg.get("tensor_dtype", "float32")))
 
@@ -1365,6 +1368,7 @@ def train_model(
     )
     grad_clip = float(train_cfg.get("gradient_clip", 0.0))
     early_stop_patience = int(train_cfg.get("early_stop_patience", 0))
+    early_stop_min_epochs = int(train_cfg.get("early_stop_min_epochs", 0))
     epochs_without_improvement = 0
     training_started = time.perf_counter()
 
@@ -1632,7 +1636,12 @@ def train_model(
                 epochs_without_improvement += 1
 
             # 6h. Optional early stopping.
-            if early_stop_patience > 0 and epochs_without_improvement >= early_stop_patience:
+            can_early_stop = early_stop_min_epochs <= 0 or epoch_no >= early_stop_min_epochs
+            if (
+                can_early_stop
+                and early_stop_patience > 0
+                and epochs_without_improvement >= early_stop_patience
+            ):
                 monitor_label = str(train_cfg.get("checkpoint_monitor", monitor_key))
                 tqdm.write(
                     f"{epoch_tag} | early stop — no {monitor_label} improvement "

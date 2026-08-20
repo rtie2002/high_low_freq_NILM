@@ -5,7 +5,7 @@
 # Run folder: runs/<experiment_id>/<model_name>/
 # Pair with config/experiment_ukdale.yaml or experiment_redd.yaml (data only).
 # Change experiment_id when switching dataset / DA / multi-domain mix.
-experiment_id: extra_feature_statecal_onloss
+experiment_id: extra_feature_statecal_onloss_long
 model_name: multinilm_fractional
 
 # =============================================================================
@@ -149,7 +149,7 @@ domain_adaptation:
 training:
   # --- loop ---
   batch_size: 64
-  epochs: 120
+  epochs: 160
   learning_rate: 0.0001
   weight_decay: 0.0001
   num_workers: 0
@@ -163,18 +163,20 @@ training:
   tf32: true
 
   # --- checkpoint / early stop ---
-  # Final F1 is threshold-calibrated after training, so checkpoint by val_loss.
-  checkpoint_monitor: val_loss
+  # val_loss is too sensitive after ON/shape-aware power loss. Select best.pt
+  # with validation MAE + state F1, and never early-stop before min_epochs.
+  checkpoint_monitor: val_mae_minus_f1
   checkpoint_mae_space: normalized
   checkpoint_mae_weight: 7.0
-  early_stop_patience: 20
+  early_stop_patience: 45
+  early_stop_min_epochs: 80
 
   # --- LR schedule ---
   scheduler: reduce_on_plateau
   lr_scheduler:
     type: reduce_on_plateau
-    monitor: val_loss
-    patience: 5
+    monitor: val_mae_minus_f1
+    patience: 10
     factor: 0.5
     min_lr: 0.00001
 
