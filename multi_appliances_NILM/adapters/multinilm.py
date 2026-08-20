@@ -24,7 +24,11 @@ def _resolve_pos_weight(adapter: "MultiNILMAdapter", loss_cfg: dict) -> list[flo
     configured = loss_cfg.get("pos_weight")
     if configured is not None and str(configured).lower() not in {"auto", "null", "none"}:
         return configured
-    return adapter._data_loader().estimate_state_pos_weights("train").tolist()
+    weights = adapter._data_loader().estimate_state_pos_weights("train")
+    cap = loss_cfg.get("pos_weight_cap", None)
+    if cap not in (None, "", "none", "null"):
+        weights = np.minimum(weights, float(cap))
+    return weights.tolist()
 
 
 def _pred_on_from_config(

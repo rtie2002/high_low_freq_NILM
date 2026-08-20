@@ -51,6 +51,7 @@ class PredictionBundle:
         y_pred_watts : (N, A)
         y_true_on    : (N, A)
         y_pred_on    : (N, A)
+        y_pred_state_prob : (N, A), optional raw sigmoid probabilities
 
     where:
 
@@ -67,6 +68,7 @@ class PredictionBundle:
     y_pred_watts: np.ndarray
     y_true_on: np.ndarray | None = None
     y_pred_on: np.ndarray | None = None
+    y_pred_state_prob: np.ndarray | None = None
     csv_timesteps: np.ndarray | None = None
 
     def save(self, path: Path) -> None:
@@ -87,6 +89,9 @@ class PredictionBundle:
             y_pred_watts=self.y_pred_watts,
             y_true_on=self.y_true_on if self.y_true_on is not None else np.array([]),
             y_pred_on=self.y_pred_on if self.y_pred_on is not None else np.array([]),
+            y_pred_state_prob=(
+                self.y_pred_state_prob if self.y_pred_state_prob is not None else np.array([])
+            ),
             csv_timesteps=self.csv_timesteps if self.csv_timesteps is not None else np.array([]),
         )
 
@@ -99,6 +104,7 @@ class PredictionBundle:
             appliances = appliances.tolist()
         y_true_on = data["y_true_on"]
         y_pred_on = data["y_pred_on"]
+        y_pred_state_prob = data["y_pred_state_prob"] if "y_pred_state_prob" in data else np.array([])
         csv_ts = data["csv_timesteps"] if "csv_timesteps" in data else np.array([])
         return cls(
             experiment_id=str(data["experiment_id"]),
@@ -110,6 +116,7 @@ class PredictionBundle:
             y_pred_watts=data["y_pred_watts"],
             y_true_on=None if y_true_on.size == 0 else y_true_on,
             y_pred_on=None if y_pred_on.size == 0 else y_pred_on,
+            y_pred_state_prob=None if y_pred_state_prob.size == 0 else y_pred_state_prob,
             csv_timesteps=None if csv_ts.size == 0 else csv_ts,
         )
 
@@ -377,6 +384,7 @@ class BaseNILMAdapter(AdapterDataMixin):
             # State windows may be probabilities (MultiNILM/MATUDA) or already binary.
             # Casting floats in (0,1) to int32 truncates to 0 and destroys F1 — threshold first.
             z_pred_raw = state_windows.reshape(-1, len(appliances))
+            state_prob = z_pred_raw.astype(np.float64)
             z_true_raw = true_state_windows.reshape(-1, len(appliances))
             on_thr = float(self.model_cfg.get("architecture", {}).get("gate_threshold", 0.5))
             if np.issubdtype(z_pred_raw.dtype, np.floating) and float(np.nanmax(z_pred_raw)) <= 1.0 + 1e-6:
@@ -414,6 +422,7 @@ class BaseNILMAdapter(AdapterDataMixin):
             y_pred_watts=y_pred,
             y_true_on=z_true,
             y_pred_on=z_pred,
+            y_pred_state_prob=state_prob,
             csv_timesteps=csv_timesteps,
         )
 
@@ -429,6 +438,7 @@ def build_prediction_bundle(
     y_pred_watts: np.ndarray,
     y_true_on: np.ndarray,
     y_pred_on: np.ndarray,
+    y_pred_state_prob: np.ndarray | None = None,
     csv_timesteps: np.ndarray | None = None,
 ) -> PredictionBundle:
     """Create a PredictionBundle with consistent dtype handling.
@@ -447,5 +457,6 @@ def build_prediction_bundle(
         y_pred_watts=y_pred_watts,
         y_true_on=y_true_on.astype(np.int32),
         y_pred_on=y_pred_on.astype(np.int32),
+        y_pred_state_prob=y_pred_state_prob,
         csv_timesteps=csv_timesteps,
     )

@@ -5,7 +5,7 @@
 # Run folder: runs/<experiment_id>/<model_name>/
 # Pair with config/experiment_ukdale.yaml or experiment_redd.yaml (data only).
 # Change experiment_id when switching dataset / DA / multi-domain mix.
-experiment_id: (extra feature) small fix
+experiment_id: extra_feature_cap30_nocross
 model_name: multinilm_fractional
 
 # =============================================================================
@@ -83,7 +83,7 @@ architecture:
 
   # --- 5) extras ---
   cross_appliance:
-    enabled: true
+    enabled: false
     residual_scale: 0.5
   # DA feature hooks (used only if domain_adaptation.enabled)
   domain_feature_layers: [temporal_1, temporal_3, aligned]
@@ -96,6 +96,7 @@ loss:
   task_balance: equal               # equal ≈ match magnitudes; none = raw sum
   lambda_state: 1                   # with equal, 1 = power ↔ state same weight
   pos_weight: auto                  # BCE imbalance; auto from train ON rates
+  pos_weight_cap: 30                # cap rare-appliance BCE weight to reduce false ON spam
 
   # --- domain (active only if domain_adaptation.enabled AND lambda_domain > 0) ---
   domain_method: both               # coral | mmd | both
