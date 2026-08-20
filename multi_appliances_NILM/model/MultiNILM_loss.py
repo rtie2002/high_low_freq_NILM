@@ -239,9 +239,11 @@ class MultiNILMLoss(nn.Module):
         domain_mix: str = "convex",
         domain_scale: str = "none",
         power_on_weight: float = 0.0,
+        power_off_weight: float = 0.0,
         power_delta_weight: float = 0.0,
         power_delta_on_only: bool = True,
         power_energy_weight: float = 0.0,
+        state_fp_weight: float = 0.0,
     ) -> None:
         super().__init__()
         self.lambda_state = float(lambda_state)
@@ -257,9 +259,11 @@ class MultiNILMLoss(nn.Module):
         if self.domain_scale not in {"none", "equal"}:
             raise ValueError(f"domain_scale must be none|equal, got {domain_scale!r}")
         self.power_on_weight = float(power_on_weight)
+        self.power_off_weight = float(power_off_weight)
         self.power_delta_weight = float(power_delta_weight)
         self.power_delta_on_only = bool(power_delta_on_only)
         self.power_energy_weight = float(power_energy_weight)
+        self.state_fp_weight = float(state_fp_weight)
 
         # MAE logging scale (watts / std); not used in the training objective.
         self.register_buffer("power_scale", torch.as_tensor(power_scale, dtype=torch.float32))
@@ -285,6 +289,12 @@ class MultiNILMLoss(nn.Module):
             denom = on.sum(dim=(0, 1)).clamp_min(1.0)
             on_mse = (err2 * on).sum(dim=(0, 1)) / denom
             loss = loss + self.power_on_weight * on_mse
+
+        if state_true is not None and self.power_off_weight > 0.0:
+            off = (1.0 - state_true.float()).clamp_min(0.0)
+            denom = off.sum(dim=(0, 1)).clamp_min(1.0)
+            off_mse = (err2 * off).sum(dim=(0, 1)) / denom
+            loss = loss + self.power_off_weight * off_mse
 
         if power_pred.shape[1] > 1 and self.power_delta_weight > 0.0:
             d_pred = power_pred[:, 1:, :] - power_pred[:, :-1, :]
@@ -312,19 +322,24 @@ class MultiNILMLoss(nn.Module):
     ) -> torch.Tensor:
         """BCEWithLogits per appliance (optional pos_weight) → vector length A."""
         losses: list[torch.Tensor] = []
+        state_prob = torch.sigmoid(state_logits)
         for app_i in range(state_logits.shape[-1]):
             weight_i = None
             if self.pos_weight is not None:
                 weight_i = (
                     self.pos_weight[app_i] if self.pos_weight.ndim > 0 else self.pos_weight
                 )
-            losses.append(
-                F.binary_cross_entropy_with_logits(
-                    state_logits[..., app_i],
-                    state_true[..., app_i],
-                    pos_weight=weight_i,
-                )
+            loss_i = F.binary_cross_entropy_with_logits(
+                state_logits[..., app_i],
+                state_true[..., app_i],
+                pos_weight=weight_i,
             )
+            if self.state_fp_weight > 0.0:
+                off_i = (1.0 - state_true[..., app_i]).clamp_min(0.0)
+                denom = off_i.sum().clamp_min(1.0)
+                fp_i = (state_prob[..., app_i].pow(2) * off_i).sum() / denom
+                loss_i = loss_i + self.state_fp_weight * fp_i
+            losses.append(loss_i)
         return torch.stack(losses)
 
     def _balanced_state_term(

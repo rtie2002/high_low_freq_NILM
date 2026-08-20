@@ -1,0 +1,43 @@
+{
+  "source_split": "validation",
+  "threshold_source": "validation_sweep",
+  "appliances": [
+    "kettle",
+    "fridge",
+    "dishwasher",
+    "washingmachine",
+    "microwave"
+  ],
+  "thresholds": {
+    "kettle": 0.9600000000000002,
+    "fridge": 0.4700000000000001,
+    "dishwasher": 0.9300000000000002,
+    "washingmachine": 0.8400000000000002,
+    "microwave": 0.9700000000000002
+  },
+  "postprocess": {
+    "enabled": true,
+    "min_on_samples": {
+      "kettle": 5,
+      "fridge": 20,
+      "dishwasher": 160,
+      "washingmachine": 300,
+      "microwave": 10
+    },
+    "merge_gap_samples": {
+      "kettle": 0,
+      "fridge": 40,
+      "dishwasher": 300,
+      "washingmachine": 160,
+      "microwave": 3
+    }
+  },
+  "validation_f1": {
+    "kettle": 0.7262268138060578,
+    "fridge": 0.6490421824043383,
+    "dishwasher": 0.653222550415436,
+    "washingmachine": 0.8043530092986818,
+    "microwave": 0.3227561196736174
+  },
+  "validation_macro_f1": 0.6311201351196262
+}

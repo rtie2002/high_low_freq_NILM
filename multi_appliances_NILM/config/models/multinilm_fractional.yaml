@@ -5,7 +5,7 @@
 # Run folder: runs/<experiment_id>/<model_name>/
 # Pair with config/experiment_ukdale.yaml or experiment_redd.yaml (data only).
 # Change experiment_id when switching dataset / DA / multi-domain mix.
-experiment_id: extra_feature_statecal_onloss_long
+experiment_id: extra_feature_precision_guard
 model_name: multinilm_fractional
 
 # =============================================================================
@@ -104,8 +104,8 @@ architecture:
 
   # --- 5) extras ---
   cross_appliance:
-    enabled: false
-    residual_scale: 0.5
+    enabled: true
+    residual_scale: 0.25
   # DA feature hooks (used only if domain_adaptation.enabled)
   domain_feature_layers: [temporal_1, temporal_3, aligned]
 
@@ -115,13 +115,15 @@ architecture:
 loss:
   # --- task: power regression + ON/OFF classification ---
   task_balance: equal               # equal ≈ match magnitudes; none = raw sum
-  lambda_state: 1                   # with equal, 1 = power ↔ state same weight
+  lambda_state: 0.8                 # less recall pressure on rare loads
   pos_weight: auto                  # BCE imbalance; auto from train ON rates
-  pos_weight_cap: 30                # cap rare-appliance BCE weight to reduce false ON spam
-  power_on_weight: 2.0              # extra MSE on true-ON samples; helps amplitude
-  power_delta_weight: 0.25          # match rise/fall shape, not only average level
+  pos_weight_cap: 12                # lower rare-appliance BCE pressure
+  state_fp_weight: 1.0              # punish high-confidence false ON
+  power_on_weight: 1.0              # learn ON amplitude without over-explaining
+  power_off_weight: 0.5             # punish watts when appliance is truly OFF
+  power_delta_weight: 0.15          # match rise/fall shape, not only average level
   power_delta_on_only: true
-  power_energy_weight: 0.10         # reduce under-estimated appliance energy
+  power_energy_weight: 0.03         # weak energy term; avoid hallucinated load
 
   # --- domain (active only if domain_adaptation.enabled AND lambda_domain > 0) ---
   domain_method: both               # coral | mmd | both

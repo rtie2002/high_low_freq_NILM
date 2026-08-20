@@ -30,6 +30,7 @@ from evaluation.plots import (
     save_val_test_comparison_figure,
 )
 from evaluation.power_postprocess import resolve_power_postprocess
+from evaluation.state_postprocess import maybe_calibrate_and_apply
 
 
 class LiveTrainingMonitor:
@@ -607,6 +608,12 @@ class LiveTrainingMonitor:
             device,
             split=split,
             max_batches=None,
+        )
+        bundle, _ = maybe_calibrate_and_apply(
+            bundle,
+            adapter.model_cfg,
+            self.run_dir,
+            split,
         )
         saved = self._write_waveforms_for_bundle(
             adapter, bundle, split=split, epoch=epoch, tag=tag
