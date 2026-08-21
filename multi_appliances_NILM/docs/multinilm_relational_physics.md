@@ -59,11 +59,8 @@ flowchart LR
 flowchart LR
     X[Aggregate window] --> FE[Fractional + delta + rolling features]
     FE --> IBN[Multi-scale CNN + early IBN]
-    IBN --> T4[TCN blocks 1-4<br/>short RF 121]
-    T4 --> T7[TCN blocks 5-7<br/>long RF 1017]
-    T4 --> TS[Per-appliance temporal-scale gate]
-    T7 --> TS
-    TS --> TA[Per-appliance task attention]
+    IBN --> TCN[7-block dilated TCN<br/>RF about 1017 samples]
+    TCN --> TA[Per-appliance task attention]
     TA --> RA[Cross-appliance relation attention]
     RA --> PH[Power heads]
     RA --> SH[ON/OFF heads]
@@ -92,44 +89,6 @@ R = 1 + (k-1)\sum_l d_l
 $$
 
 在 6 秒采样下约为 101.7 分钟。旧的 4-block TCN 只有 121 点，约 12.1 分钟，无法完整观察很多 dishwasher 或 washing-machine cycle。
-
-### 1.1 Task-adaptive short/long temporal fusion
-
-4-block ablation 显示 microwave 的 test F1 提升到约 0.48，但 washing-machine F1 明显下降。这说明五个电器共享单一 receptive field 会产生 temporal-scale conflict。新模型不复制第二套 TCN，而是在同一次 7-block forward 中保留两个 feature map：
-
-$$
-F_S=\operatorname{TCN}_{1:4}(F_{stem}),\qquad RF_S=121,
-$$
-
-$$
-F_L=\operatorname{TCN}_{5:7}(F_S),\qquad RF_L=1017.
-$$
-
-对每个电器 $i$，使用独立的轻量 `1x1 Conv -> ReLU -> 1x1 Conv -> Sigmoid` 产生逐时刻 long-context gate：
-
-$$
-g_i(t)=\sigma\left(G_i([F_S(t),F_L(t)])\right).
-$$
-
-融合使用稳定的 interpolation form：
-
-$$
-F_i^{scale}(t)=F_S(t)+g_i(t)(F_L(t)-F_S(t)).
-$$
-
-因此 $g_i(t)=0$ 时完全使用 short feature，$g_i(t)=1$ 时完全使用 long feature。`gate_init=0.5` 令所有电器从等比例融合开始，而不是预先硬编码 microwave 或 washing machine 应该使用哪一种尺度。
-
-Scale gate 只在时间尺度之间选择，并对所有 feature channels 使用同一个逐时刻权重。后续 task attention 再负责 channel selection，所以两者职责不同：
-
-```text
-temporal scale gate : short context vs long context
-task attention      : which feature channels matter to this appliance
-relation attention  : which other appliance messages matter now
-```
-
-每个 batch 都会计算 `temporal_long_gate_<appliance>`，表示该电器在全部 timestep 上的平均 $g_i$。epoch history 同时保存 `train_temporal_long_gate_<appliance>` 和 `val_temporal_long_gate_<appliance>`。接近 0 表示偏向 short feature，接近 1 表示偏向 long feature。这些值用于解释模型是否真正学到 appliance-specific temporal scale，不能单独作为性能指标。
-
-这个设计结合了三类已有思路：[MMoE](https://dl.acm.org/doi/10.1145/3219819.3220007) 使用 task-specific gate 处理多任务之间对 shared experts 的不同需求；[InceptionTime](https://arxiv.org/abs/1909.04939) 说明多时间尺度特征对 time-series classification 有效；NILM 中的 [multi-scale residual network](https://arxiv.org/abs/2009.12355) 也使用多尺度时域特征。本实现的不同点是：不为每个电器复制完整 encoder，而是共享一次 7-block TCN 计算，只学习轻量的 per-appliance scale gate。
 
 ## 2. Task-specific feature attention
 

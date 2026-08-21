@@ -19,14 +19,6 @@ def _to_numpy(t: torch.Tensor) -> np.ndarray:
     return t.detach().float().cpu().numpy()
 
 
-def _temporal_scale_gate_means(model: torch.nn.Module) -> torch.Tensor | None:
-    """Read per-appliance long-context gate means from wrapped MultiNILM."""
-    core = getattr(model, "module", model)
-    backbone = getattr(core, "backbone", core)
-    means = getattr(backbone, "last_temporal_scale_gate_means", None)
-    return means if isinstance(means, torch.Tensor) else None
-
-
 def _resolve_pos_weight(adapter: "MultiNILMAdapter", loss_cfg: dict) -> list[float] | None:
     """Use yaml pos_weight, or auto-balance rare ON events from the train split."""
     configured = loss_cfg.get("pos_weight")
@@ -105,10 +97,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
             head_norm_type=cfg.head_norm_type,
             task_attention_enabled=cfg.task_attention_enabled,
             task_attention_reduction=cfg.task_attention_reduction,
-            temporal_scale_fusion_enabled=cfg.temporal_scale_fusion_enabled,
-            temporal_scale_short_block=cfg.temporal_scale_short_block,
-            temporal_scale_gate_hidden_channels=cfg.temporal_scale_gate_hidden_channels,
-            temporal_scale_gate_init=cfg.temporal_scale_gate_init,
             cross_appliance_enabled=cfg.cross_appliance_enabled,
             cross_appliance_mode=cfg.cross_appliance_mode,
             cross_appliance_residual_scale=cfg.cross_appliance_residual_scale,
@@ -215,7 +203,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
         if use_domain:
             x_t = target_batch[0] if isinstance(target_batch, (tuple, list)) else target_batch
             power_pred, state_logits, feats_s = model(x, return_domain_features=True)
-            temporal_scale_means = _temporal_scale_gate_means(model)
             _, _, feats_t = model(x_t, return_domain_features=True)
             out = loss_fn(
                 power_pred,
@@ -228,7 +215,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
             )
         else:
             power_pred, state_logits = model(x)
-            temporal_scale_means = _temporal_scale_gate_means(model)
             out = loss_fn(
                 power_pred,
                 state_logits,
@@ -251,13 +237,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
         for app_i, app in enumerate(self.cfg["appliances"]):
             app_logs[f"loss_power_{app}"] = float(out.loss_power_per_appliance[app_i].detach())
             app_logs[f"loss_state_{app}"] = float(out.loss_state_per_appliance[app_i].detach())
-            if (
-                temporal_scale_means is not None
-                and app_i < int(temporal_scale_means.numel())
-            ):
-                app_logs[f"temporal_long_gate_{app}"] = float(
-                    temporal_scale_means[app_i].detach()
-                )
 
         return StepOutput(
             loss=out.loss,

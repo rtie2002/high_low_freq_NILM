@@ -1511,11 +1511,6 @@ def train_model(
                 {
                     "epoch": epoch_no,
                     **{f"train_{k}": v for k, v in train_logs.items() if k != "elapsed_sec"},
-                    **{
-                        f"val_{k}": v
-                        for k, v in val_logs.items()
-                        if k.startswith("temporal_long_gate_")
-                    },
                     "val_loss": val_loss,
                     "val_f1": val_f1,
                     "val_mae_norm": float(val_logs.get("mae_norm", 0.0)),
