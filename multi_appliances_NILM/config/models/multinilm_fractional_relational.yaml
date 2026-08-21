@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: extra_feature_relational_physics (stable, no aug, no task attention)
+experiment_id: extra_feature_relational_physics (stable, no aug, no cross-appliance relation attention)
 model_name: multinilm_fractional
 
 data:
@@ -79,14 +79,14 @@ architecture:
   head_kernel_size: 3
   head_use_residual: true
   task_attention:
-    enabled: false
+    enabled: true
     reduction: 4
 
   gate_mode: soft
   gate_threshold: 0.5
 
   cross_appliance:
-    enabled: true
+    enabled: false
     mode: relation_attention
     attention_channels: 16
     residual_scale: 0.25
