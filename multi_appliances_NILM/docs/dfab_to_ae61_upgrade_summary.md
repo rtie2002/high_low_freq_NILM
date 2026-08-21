@@ -12,7 +12,7 @@
 
 ## 一句话总结
 
-`dfab4cc` 主要依靠共享 TCN、普通跨电器 bottleneck 和每个电器独立的 power/state head；`ae61d62` 在保留原有 12 通道输入的基础上，引入更长时间感受野、早期 IBN、每电器任务注意力、动态跨电器关系注意力、事件边界/相对能量/aggregate 物理约束，以及物理一致的数据增强和 validation 状态校准。
+`dfab4cc` 主要依靠共享 TCN、普通跨电器 bottleneck 和每个电器独立的 power/state head；当前 relational 版本在保留原有 12 通道输入的基础上，引入更长时间感受野、早期 IBN、每电器任务注意力、动态跨电器关系注意力、事件边界/相对能量/aggregate 物理约束，以及 validation 状态校准。
 
 ## 整体结构变化
 
@@ -28,8 +28,7 @@ flowchart LR
     end
 
     subgraph NEW["ae61d62 relational"]
-        X2[Aggregate window] --> A2[Physical mixture augmentation]
-        A2 --> F2[Same 12-channel fractional features]
+        X2[Aggregate window] --> F2[Same 12-channel fractional features]
         F2 --> S2[Multi-scale CNN stem + IBN]
         S2 --> T2[7-block residual TCN]
         T2 --> H2[Per-appliance task attention + local head]
@@ -188,30 +187,10 @@ L_{state}^{balanced}=0.8L_{state}
 | Minimum epochs before early stop | 无 | 100 |
 | ReduceLROnPlateau patience | 5 | 12 |
 | State positive-weight cap | 无 | 12 |
-| Data augmentation | 无 | 80% batch probability |
-| Appliance gain | 无 | `[0.80, 1.25]` |
-| Unknown residual gain | 无 | `[0.50, 1.25]` |
 
 旧版容易在 validation 暂时波动时过早停止。新版至少训练 100 epochs，并给 scheduler 和 early stopping 更长观察期。
 
-## 4. 物理一致的数据增强
-
-先从 aggregate 中估算未建模背景负载：
-
-\[
-r=\max\left(x-\sum_i y_i,0\right).
-\]
-
-然后独立改变每个目标电器和 residual 的幅值，并重新构造 aggregate：
-
-\[
-y'_i=g_i y_i,\qquad
-x'=g_r r+\sum_i y'_i.
-\]
-
-这不是直接给 aggregate 加随机噪声。输入 `x'` 与监督目标 `y'` 始终保持物理一致，目的是模拟不同房屋的 appliance amplitude 和未知背景负载变化。
-
-## 5. Validation 校准与后处理
+## 4. Validation 校准与后处理
 
 旧版默认使用统一 `0.5` ON threshold。新版：
 
@@ -230,7 +209,7 @@ Relational 配置中的最短 ON samples 是 `3/20/160/300/3`，最大 merge gap
 
 这次升级的核心并不是单纯“加深网络”，而是同时处理三个 NILM 问题：
 
-1. **Cross-house feature shift**：使用早期 IBN 和物理 mixture augmentation。
+1. **Cross-house feature shift**：使用早期 IBN。
 2. **事件宽度与波形不合理**：增加长 TCN、delta loss、transition loss 和 relative-energy loss。
 3. **多电器之间互相混淆与总功率不合理**：增加 cross-appliance relation attention、false-positive penalty 和 one-sided aggregate consistency。
 
@@ -240,6 +219,6 @@ Relational 配置中的最短 ON samples 是 `3/20/160/300/3`，最大 merge gap
 
 - `model/MultiNILM.py`：IBN、task attention、cross-appliance relation attention。
 - `model/MultiNILM_loss.py`：structured power/state loss、relative energy、aggregate consistency。
-- `adapters/multinilm.py`：物理 mixture augmentation 及新增 loss 接线。
+- `adapters/multinilm.py`：新增 loss 参数与训练流程接线。
 - `evaluation/state_postprocess.py`：validation threshold calibration 与事件后处理。
 - `config/models/multinilm_fractional_relational.yaml`：完整升级实验参数。

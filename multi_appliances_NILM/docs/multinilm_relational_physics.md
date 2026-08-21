@@ -57,8 +57,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    X[Aggregate window] --> AUG[Physical mixture augmentation<br/>train only]
-    AUG --> FE[Fractional + delta + rolling features]
+    X[Aggregate window] --> FE[Fractional + delta + rolling features]
     FE --> IBN[Multi-scale CNN + early IBN]
     IBN --> TCN[7-block dilated TCN<br/>RF about 1017 samples]
     TCN --> TA[Per-appliance task attention]
@@ -173,27 +172,7 @@ $$
 
 它不会强迫五个目标电器解释未知负载。非负与 sum constraint 的思想也可见 [Non-Intrusive Energy Disaggregation Using NMF With Sum-to-k Constraint](https://www.ornl.gov/publication/non-intrusive-energy-disaggregation-using-non-negative-matrix-factorization-sum-k)。
 
-## 6. 跨域 mixture augmentation
-
-先从真实 aggregate 中分离未建模残差：
-
-$$
-R(t)=\max(X(t)-\sum_iP_i(t),0).
-$$
-
-对每个 appliance profile 使用一个窗口内恒定的随机 gain $g_i$，对 residual 使用 $g_R$：
-
-$$
-P'_i(t)=g_iP_i(t),
-$$
-
-$$
-X'(t)=g_RR(t)+\sum_iP'_i(t).
-$$
-
-这样 amplitude 会变化，但 ON/OFF、event width 与 waveform shape 不被破坏，而且输入与 label 仍满足物理关系。它是对 MATNilm sample augmentation 思想的保守实现，专门针对当前 UK-DALE/REFIT 的 amplitude shift。
-
-## 7. Early IBN
+## 6. Early IBN
 
 新模型只在前端使用 IBN：一半 channel 使用 InstanceNorm 学较少依赖 house style 的特征，另一半保留 BatchNorm 以保存绝对功率信息。后面的 TCN 和 appliance head 仍用 BatchNorm。依据来自 [IBN-Net](https://openaccess.thecvf.com/content_ECCV_2018/html/Xingang_Pan_Two_at_Once_ECCV_2018_paper.html)。
 
@@ -225,4 +204,4 @@ $$
 5. `sum(pred) > aggregate` 的比例与平均超额功率。
 6. 相同真实事件的 focused waveform 与 10x context waveform。
 
-这版是有依据的实验设计，不保证一次训练就对所有电器同时达到最优。最重要的消融顺序是：relational attention、transition loss、augmentation、IBN，逐项关掉确认收益来源。
+这版是有依据的实验设计，不保证一次训练就对所有电器同时达到最优。最重要的消融顺序是：relational attention、transition loss、IBN，逐项关掉确认收益来源。

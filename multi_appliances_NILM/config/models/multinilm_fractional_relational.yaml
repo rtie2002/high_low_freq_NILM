@@ -138,14 +138,6 @@ training:
   train_shuffle: true
   gradient_clip: 1.0
 
-  # MATNilm-inspired, physically consistent profile scaling. The unknown
-  # residual is kept as a separate component when rebuilding aggregate.
-  augmentation:
-    enabled: false
-    probability: 0.8
-    appliance_gain: [0.80, 1.25]
-    residual_gain: [0.50, 1.25]
-
   use_amp: false
   amp_dtype: bf16
   cudnn_benchmark: true

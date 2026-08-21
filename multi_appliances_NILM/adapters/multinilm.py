@@ -168,102 +168,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
             ),
         )
 
-    def _augment_training_mixture(
-        self,
-        x: torch.Tensor,
-        y: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Physically rebuild a training mixture after random power scaling."""
-        cfg = self.model_cfg.get("training", {}).get("augmentation", {})
-        if not isinstance(cfg, dict) or not bool(cfg.get("enabled", False)):
-            return x, y
-        probability = float(cfg.get("probability", 1.0))
-        if probability < 1.0 and float(torch.rand((), device=x.device)) > probability:
-            return x, y
-
-        norm = self._data_loader().norm
-        if (
-            norm.target_mean is None
-            or norm.target_std is None
-            or norm.input_mean is None
-            or norm.input_std is None
-        ):
-            return x, y
-
-        def _gain_range(name: str, default: tuple[float, float]) -> tuple[float, float]:
-            raw = cfg.get(name, default)
-            if not isinstance(raw, (list, tuple)) or len(raw) != 2:
-                raise ValueError(f"training.augmentation.{name} must be [min, max]")
-            low, high = float(raw[0]), float(raw[1])
-            if low <= 0.0 or high < low:
-                raise ValueError(
-                    f"training.augmentation.{name} must satisfy 0 < min <= max"
-                )
-            return low, high
-
-        app_low, app_high = _gain_range("appliance_gain", (0.85, 1.15))
-        residual_low, residual_high = _gain_range("residual_gain", (0.7, 1.2))
-
-        target_mean = torch.as_tensor(
-            norm.target_mean,
-            dtype=y.dtype,
-            device=y.device,
-        ).view(1, 1, -1)
-        target_std = torch.as_tensor(
-            norm.target_std,
-            dtype=y.dtype,
-            device=y.device,
-        ).view(1, 1, -1)
-        y_watts = (y * target_std + target_mean).clamp_min(0.0)
-
-        if x.dim() == 3 and x.shape[-1] == 1:
-            aggregate_norm = x[..., 0]
-            restore = "last"
-        elif x.dim() == 3 and x.shape[1] == 1:
-            aggregate_norm = x[:, 0, :]
-            restore = "channel"
-        elif x.dim() == 2:
-            aggregate_norm = x
-            restore = "flat"
-        else:
-            raise ValueError(f"Unsupported aggregate shape for augmentation: {tuple(x.shape)}")
-
-        aggregate_watts = (
-            aggregate_norm * float(norm.input_std) + float(norm.input_mean)
-        ).clamp_min(0.0)
-        residual_watts = (
-            aggregate_watts - y_watts.sum(dim=-1)
-        ).clamp_min(0.0)
-
-        batch, _, appliances = y_watts.shape
-        appliance_gain = torch.empty(
-            (batch, 1, appliances),
-            device=y.device,
-            dtype=y.dtype,
-        ).uniform_(app_low, app_high)
-        residual_gain = torch.empty(
-            (batch, 1),
-            device=x.device,
-            dtype=x.dtype,
-        ).uniform_(residual_low, residual_high)
-
-        y_aug_watts = y_watts * appliance_gain
-        aggregate_aug_watts = (
-            residual_watts * residual_gain + y_aug_watts.sum(dim=-1)
-        )
-        y_aug = (y_aug_watts - target_mean) / target_std
-        aggregate_aug = (
-            aggregate_aug_watts - float(norm.input_mean)
-        ) / float(norm.input_std)
-
-        if restore == "last":
-            x_aug = aggregate_aug.unsqueeze(-1)
-        elif restore == "channel":
-            x_aug = aggregate_aug.unsqueeze(1)
-        else:
-            x_aug = aggregate_aug
-        return x_aug, y_aug
-
     def step(
         self,
         model: torch.nn.Module,
@@ -290,8 +194,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
         """
         x, y, z = batch
         z = z.float()
-        if model.training:
-            x, y = self._augment_training_mixture(x, y)
 
         use_domain = (
             target_batch is not None
