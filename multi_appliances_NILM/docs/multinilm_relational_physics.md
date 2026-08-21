@@ -152,46 +152,290 @@ transition loss 分别平均真实边界和非边界的 BCE，避免大量稳定
 
 ## 5. 能量与 aggregate 物理约束
 
-每个窗口、每个电器的相对能量误差为
+### 5.1 Relative-energy loss
+
+设 batch index 为 $b$，电器 index 为 $i$，窗口长度为 $T$。代码先把 normalized power 转回非负 watts，然后计算每个窗口、每个电器的相对能量误差：
 
 $$
-L_E=\frac{1}{A}\sum_i
-\frac{|\sum_t\hat P_i(t)-\sum_tP_i(t)|}
-{\sum_tP_i(t)+T P_{floor}}.
+L_{E,i}=\frac{1}{B}\sum_b
+\frac{\left|\sum_t\hat P_{b,t,i}-\sum_tP_{b,t,i}\right|}
+{\sum_tP_{b,t,i}+T P_{floor}}.
 $$
 
-`P_floor=10 W` 防止全 OFF 窗口分母为零，同时让 false power 仍受惩罚。
+当前 `P_floor=10 W`。它有两个作用：
+
+1. 当真实窗口全 OFF 时避免分母为零。
+2. 全 OFF 窗口中的 false power 仍然产生 loss。例如预测平均为 10 W，则预测总量约为 $10T$，相对能量项约为 1。
+
+由于采样间隔固定为 6 秒，严格能量应把 watt-samples 乘以 6 秒；但分子和分母都会乘相同常数，因此该无量纲比例不变。
+
+代码最后对五个电器求和，而不是除以电器数：
+
+$$
+L_E=\sum_{i=1}^{A}L_{E,i}.
+$$
+
+Relative-energy loss 只检查窗口总量，不检查事件发生位置。两个时间位置完全不同、但总能量相同的 waveform 仍可能得到 $L_E=0$，因此它不能替代 pointwise MSE、state 或 transition loss。
+
+### 5.2 Aggregate consistency loss
 
 Aggregate 只使用单边约束：
 
 $$
-L_{agg}=\operatorname{mean}_t\left[
-\frac{\operatorname{ReLU}(\sum_i\hat P_i(t)-X(t)-\epsilon)}{1000}
+L_{agg}=\operatorname{mean}_{b,t}\left[
+\frac{\operatorname{ReLU}(\sum_i\hat P_{b,t,i}-X_{b,t}-\epsilon)}{S_{agg}}
 \right]^2.
 $$
 
-它不会强迫五个目标电器解释未知负载。非负与 sum constraint 的思想也可见 [Non-Intrusive Energy Disaggregation Using NMF With Sum-to-k Constraint](https://www.ornl.gov/publication/non-intrusive-energy-disaggregation-using-non-negative-matrix-factorization-sum-k)。
+当前设置为：
+
+```yaml
+aggregate_tolerance_watts: 30
+aggregate_loss_scale_watts: 1000
+aggregate_consistency_weight: 1.0
+```
+
+因此只有当五个预测电器之和超过 `aggregate + 30 W` 时才产生惩罚。若 aggregate 为 500 W：
+
+| 五个电器预测之和 | Excess | 单点约束值 |
+|---:|---:|---:|
+| 450 W | 0 W | 0 |
+| 520 W | 0 W | 0 |
+| 800 W | 270 W | $(270/1000)^2=0.0729$ |
+
+它不会强迫五个目标电器解释未知负载，因为真实 aggregate 还包含灯、电视和其他未建模电器。正确的关系是
+
+$$
+\sum_i\hat P_i(t)\le X(t)+\epsilon,
+$$
+
+而不是 $\sum_i\hat P_i(t)=X(t)$。非负与 sum constraint 的思想也可见 [Non-Intrusive Energy Disaggregation Using NMF With Sum-to-k Constraint](https://www.ornl.gov/publication/non-intrusive-energy-disaggregation-using-non-negative-matrix-factorization-sum-k)。
 
 ## 6. Early IBN
 
 新模型只在前端使用 IBN：一半 channel 使用 InstanceNorm 学较少依赖 house style 的特征，另一半保留 BatchNorm 以保存绝对功率信息。后面的 TCN 和 appliance head 仍用 BatchNorm。依据来自 [IBN-Net](https://openaccess.thecvf.com/content_ECCV_2018/html/Xingang_Pan_Two_at_Once_ECCV_2018_paper.html)。
 
-## 总 loss
+## 7. 总 loss：与当前代码完全对应
+
+### 7.1 Loss 之前的 state-gated power
+
+每个 appliance head 输出 raw power regression $\hat R_i$ 和 state logit $s_i$：
 
 $$
-L_{power}=L_{MSE}+\lambda_{on}L_{on}+\lambda_{off}L_{off}
-+\lambda_{\Delta}L_{\Delta}+\lambda_E L_E,
+p_i=\sigma(s_i).
+$$
+
+当前 `gate_mode: soft`，所以在 normalized target space 中送入 power loss 的预测为
+
+$$
+\hat y_i=p_i\hat R_i+(1-p_i)y_{off,i},
+$$
+
+其中 $y_{off,i}$ 是 `0 W` 在该电器 normalization 下对应的值。反归一化到 watts 后等价于用 $p_i$ 对 raw watt prediction 做 soft gate。这样 power loss 的梯度不仅更新 regression head，也会通过 $p_i$ 更新 state head。
+
+### 7.2 每个电器的 pointwise power loss
+
+设 normalized power error 为
+
+$$
+e_{b,t,i}=\hat y_{b,t,i}-y_{b,t,i},
+$$
+
+CSV state label 为 $z_{b,t,i}\in\{0,1\}$。基础 MSE 覆盖所有 timestep：
+
+$$
+L_{MSE,i}=\operatorname{mean}_{b,t}(e_{b,t,i}^2).
+$$
+
+ON-MSE 只在真实 ON 样本中计算：
+
+$$
+L_{on,i}=
+\frac{\sum_{b,t}z_{b,t,i}e_{b,t,i}^2}
+{\max(\sum_{b,t}z_{b,t,i},1)}.
+$$
+
+OFF-MSE 只在真实 OFF 样本中计算：
+
+$$
+L_{off,i}=
+\frac{\sum_{b,t}(1-z_{b,t,i})e_{b,t,i}^2}
+{\max(\sum_{b,t}(1-z_{b,t,i}),1)}.
+$$
+
+注意 `ON-MSE` 和 `OFF-MSE` 不是取代基础 MSE；它们是在全时段 MSE 之上额外加强 ON waveform 和 OFF false power。
+
+相邻 timestep 的 normalized power difference 为
+
+$$
+\Delta\hat y_{b,t,i}=\hat y_{b,t,i}-\hat y_{b,t-1,i},
 $$
 
 $$
-L_{state}=L_{BCE}+\lambda_{FP}L_{FP}
-+\lambda_{transition}L_{transition},
+\Delta y_{b,t,i}=y_{b,t,i}-y_{b,t-1,i}.
+$$
+
+当前 `power_delta_on_only: true`，所以 delta loss 只在两个相邻点至少一个为 ON 时计算：
+
+$$
+m^{\Delta}_{b,t,i}=\max(z_{b,t,i},z_{b,t-1,i}),
 $$
 
 $$
-L=L_{power}+\operatorname{balance}(L_{state})
-+\lambda_{agg}L_{agg}.
+L_{\Delta,i}=
+\frac{\sum_{b,t}m^{\Delta}_{b,t,i}\,
+(\Delta\hat y_{b,t,i}-\Delta y_{b,t,i})^2}
+{\max(\sum_{b,t}m^{\Delta}_{b,t,i},1)}.
 $$
+
+加入第 5 节的 relative-energy term 后，每个电器的完整 power loss 是
+
+$$
+L_{power,i}=L_{MSE,i}
++1.0L_{on,i}
++0.5L_{off,i}
++0.15L_{\Delta,i}
++0.25L_{E,i}.
+$$
+
+五个电器直接求和：
+
+$$
+L_{power}=\sum_{i=1}^{A}L_{power,i}.
+$$
+
+其中 MSE、ON/OFF-MSE 和 delta loss 在 normalized target space 计算；relative-energy loss 先反归一化到 watts 再计算。旧的 `power_energy_weight` 当前为 `0.0`，不参与最终 loss。
+
+### 7.3 每个电器的 state loss
+
+基础 state loss 使用 `BCEWithLogitsLoss`：
+
+$$
+L_{BCE,i}=\operatorname{BCEWithLogits}(s_i,z_i;w_i^+).
+$$
+
+正类权重由训练集 ON rate 自动计算：
+
+$$
+w_i^+=\min\left(\frac{1-r_i}{r_i},12\right),
+$$
+
+其中 $r_i$ 是电器 $i$ 的训练 ON rate，`12` 来自 `pos_weight_cap: 12`。它提高 rare ON 样本的重要性，但避免极稀有电器产生无限大的 ON 压力。
+
+False-positive penalty 只在真实 OFF 位置惩罚高 ON probability：
+
+$$
+L_{FP,i}=
+\frac{\sum_{b,t}(1-z_{b,t,i})p_{b,t,i}^{2}}
+{\max(\sum_{b,t}(1-z_{b,t,i}),1)}.
+$$
+
+Transition probability 和真实边界分别为
+
+$$
+q_{b,t,i}=p_{b,t-1,i}(1-p_{b,t,i})
++(1-p_{b,t-1,i})p_{b,t,i},
+$$
+
+$$
+q^*_{b,t,i}=|z_{b,t,i}-z_{b,t-1,i}|.
+$$
+
+代码分别平均真实 boundary 和 non-boundary 的 negative log-likelihood，再各占一半，防止大量稳定 OFF 点淹没少量 start/stop edge。每个电器的完整 state loss 是
+
+$$
+L_{state,i}=L_{BCE,i}+1.0L_{FP,i}+0.20L_{transition,i},
+$$
+
+$$
+L_{state}=\sum_{i=1}^{A}L_{state,i}.
+$$
+
+### 7.4 Power/state 动态 balance
+
+Power MSE 与 state BCE 的原始数值尺度不同，所以当前 `task_balance: equal` 不直接计算 $L_{power}+0.8L_{state}$。代码先构造一个不参与反向传播的动态尺度：
+
+$$
+s_{balance}=\operatorname{stopgrad}\left(
+\frac{L_{power}}{\max(L_{state},10^{-8})}
+\right).
+$$
+
+真正进入总 loss 的 state contribution 是
+
+$$
+L_{state\_term}=0.8L_{state}s_{balance}.
+$$
+
+因此 forward 数值上通常有
+
+$$
+L_{state\_term}\approx0.8L_{power},
+$$
+
+但梯度仍从 $L_{state}$ 流入 state head。`stopgrad` 只让该比例充当 magnitude ruler，不让模型通过修改比例本身投机降低 loss。
+
+### 7.5 当前最终训练目标
+
+当前 `lambda_domain: 0.0`，domain adaptation 没有参与。因此实际优化目标是
+
+$$
+\boxed{
+L_{NILM}
+=L_{power}
++0.8L_{state}\operatorname{stopgrad}\left(
+\frac{L_{power}}{\max(L_{state},10^{-8})}
+\right)
++1.0L_{agg}
+}
+$$
+
+对应配置为：
+
+```yaml
+loss:
+  task_balance: equal
+  lambda_state: 0.8
+  pos_weight: auto
+  pos_weight_cap: 12
+
+  state_fp_weight: 1.0
+  state_transition_weight: 0.20
+
+  power_on_weight: 1.0
+  power_off_weight: 0.5
+  power_delta_weight: 0.15
+  power_delta_on_only: true
+  power_energy_weight: 0.0
+  power_energy_relative_weight: 0.25
+  energy_floor_watts: 10
+
+  aggregate_consistency_weight: 1.0
+  aggregate_tolerance_watts: 30
+  aggregate_loss_scale_watts: 1000
+```
+
+### 7.6 训练日志如何对应公式
+
+| Log key | 含义 | 是否已乘权重 |
+|---|---|---|
+| `loss_power` | 五个电器完整 power loss 之和，已经包含 ON/OFF、delta、relative energy | 是 |
+| `loss_state` | 五个电器完整 raw state loss 之和，已经包含 FP 和 transition | 子项权重已乘，但尚未做动态 balance |
+| `loss_state_term` | 真正加入 $L_{NILM}$ 的 balanced state contribution | 是 |
+| `loss_energy_relative` | 五个电器原始 relative-energy loss 之和 | 否，尚未乘 0.25 |
+| `loss_state_transition` | 五个电器原始 transition loss 之和 | 否，尚未乘 0.20 |
+| `loss_aggregate_consistency` | 原始单边 aggregate loss | 否，尚未乘 aggregate weight |
+| `loss_aggregate_term` | 真正加入总 loss 的 aggregate contribution | 是 |
+
+因此重建当前非 DA 总 loss 时，应使用
+
+$$
+L_{NILM}=\texttt{loss\_power}
++\texttt{loss\_state\_term}
++\texttt{loss\_aggregate\_term},
+$$
+
+不能把 `loss_state`、`loss_energy_relative` 或 `loss_state_transition` 再直接相加，否则会重复计算。
 
 ## 如何判断新方法是否真的更好
 

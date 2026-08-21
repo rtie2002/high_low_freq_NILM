@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: extra_feature_relational_physics (stable, no aug, no cross-appliance relation attention)
+experiment_id: extra_feature_relational_physics (stable, no aug, low-depth TCN)
 model_name: multinilm_fractional
 
 data:
@@ -69,10 +69,10 @@ architecture:
   temporal_norm_type: batch
   head_norm_type: batch
 
-  # k=9 and dilations 1..64 give a 1017-sample (~102 min) receptive field.
-  num_blocks: 7
+  # TCN depth ablation: k=9 with dilations 1,2,4,8 gives a 121-sample RF.
+  num_blocks: 4
   kernel_size: 9
-  max_dilation: 64
+  max_dilation: 8
   dropout: 0.25
 
   head_local_layers: 2
@@ -86,7 +86,7 @@ architecture:
   gate_threshold: 0.5
 
   cross_appliance:
-    enabled: false
+    enabled: true
     mode: relation_attention
     attention_channels: 16
     residual_scale: 0.25
