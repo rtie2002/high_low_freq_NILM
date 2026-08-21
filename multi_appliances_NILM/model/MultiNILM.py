@@ -420,6 +420,78 @@ class ApplianceHead(nn.Module):
         return self.decode_from_features(self.encode_features(shared_features))
 
 
+class TaskTemporalScaleFusion(nn.Module):
+    """Fuse short- and long-context TCN maps with one gate per appliance.
+
+    The gate is scalar across feature channels but varies over time. Channel
+    selection remains the responsibility of each appliance's task attention.
+
+        gate_i = sigmoid(G_i([F_short, F_long]))       # (B, 1, T)
+        F_i    = F_short + gate_i * (F_long - F_short) # (B, C, T)
+    """
+
+    def __init__(
+        self,
+        num_appliances: int,
+        channels: int,
+        *,
+        hidden_channels: int = 16,
+        gate_init: float = 0.5,
+    ) -> None:
+        super().__init__()
+        self.num_appliances = int(num_appliances)
+        self.channels = int(channels)
+        hidden = max(1, int(hidden_channels))
+        initial_gate = float(gate_init)
+        if not 0.0 < initial_gate < 1.0:
+            raise ValueError(
+                "temporal_scale_fusion.gate_init must satisfy 0 < value < 1, "
+                f"got {gate_init}."
+            )
+        initial_bias = math.log(initial_gate / (1.0 - initial_gate))
+
+        gates: list[nn.Module] = []
+        for _ in range(self.num_appliances):
+            gate = nn.Sequential(
+                nn.Conv1d(2 * self.channels, hidden, kernel_size=1),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(hidden, 1, kernel_size=1),
+                nn.Sigmoid(),
+            )
+            # Begin as a stable fixed interpolation. The final projection then
+            # learns whether each appliance needs more short or long context.
+            nn.init.zeros_(gate[2].weight)
+            nn.init.constant_(gate[2].bias, initial_bias)
+            gates.append(gate)
+        self.gates = nn.ModuleList(gates)
+
+    def forward(
+        self,
+        short_features: torch.Tensor,
+        long_features: torch.Tensor,
+    ) -> tuple[list[torch.Tensor], torch.Tensor]:
+        if short_features.shape != long_features.shape:
+            raise ValueError(
+                "Temporal scale maps must have identical shapes, got "
+                f"{tuple(short_features.shape)} and {tuple(long_features.shape)}."
+            )
+        if short_features.dim() != 3 or short_features.shape[1] != self.channels:
+            raise ValueError(
+                "TaskTemporalScaleFusion expected (B,C,T) with "
+                f"C={self.channels}, got {tuple(short_features.shape)}."
+            )
+
+        joined = torch.cat([short_features, long_features], dim=1)
+        delta = long_features - short_features
+        fused: list[torch.Tensor] = []
+        gate_values: list[torch.Tensor] = []
+        for gate_layer in self.gates:
+            gate = gate_layer(joined)
+            fused.append(short_features + gate * delta)
+            gate_values.append(gate)
+        return fused, torch.cat(gate_values, dim=1)  # (B, A, T)
+
+
 class CrossApplianceDistill(nn.Module):
     """PAD-lite residual mix: ``F_k^dist = F_k + α · Mix_k(F_1..F_K)``.
 
@@ -575,7 +647,12 @@ class MultiNILM(nn.Module):
             matches the same CSV timestep as the dataloader center targets.
             Output: (B, hidden_channels, output_length)
 
-        5. appliance_heads (one per appliance)
+        5. optional task temporal-scale fusion
+            Preserve block-4 short features and final long features, align both
+            to the output timeline, then learn one interpolation gate per
+            appliance and timestep.
+
+        6. appliance_heads (one per appliance)
             Optional local temporal decoder (k=3 x N) + residual → F_k.
             Optional CrossApplianceDistill (PAD-lite): F → F^dist across appliances.
             Then 1x1 power/state heads with state-gated power.
@@ -615,6 +692,10 @@ class MultiNILM(nn.Module):
         head_norm_type: str = "batch",
         task_attention_enabled: bool = False,
         task_attention_reduction: int = 4,
+        temporal_scale_fusion_enabled: bool = False,
+        temporal_scale_short_block: int = 4,
+        temporal_scale_gate_hidden_channels: int = 16,
+        temporal_scale_gate_init: float = 0.5,
         cross_appliance_enabled: bool = False,
         cross_appliance_mode: str = "bottleneck",
         cross_appliance_residual_scale: float = 0.5,
@@ -716,7 +797,28 @@ class MultiNILM(nn.Module):
             )
         self.temporal_encoder = nn.Sequential(*temporal_blocks)
 
-        # Step 3: one decoder head per appliance (dynamic count from experiment).
+        self.temporal_scale_short_block = int(temporal_scale_short_block)
+        self.last_temporal_scale_gate_means: torch.Tensor | None = None
+        if temporal_scale_fusion_enabled:
+            if not 1 <= self.temporal_scale_short_block < len(self.temporal_encoder):
+                raise ValueError(
+                    "temporal_scale_fusion.short_block must leave at least one "
+                    "later TCN block for long context; expected "
+                    f"1 <= short_block < {len(self.temporal_encoder)}, got "
+                    f"{self.temporal_scale_short_block}."
+                )
+            self.temporal_scale_fusion: TaskTemporalScaleFusion | None = (
+                TaskTemporalScaleFusion(
+                    num_appliances=self.num_appliances,
+                    channels=self.hidden_channels,
+                    hidden_channels=int(temporal_scale_gate_hidden_channels),
+                    gate_init=float(temporal_scale_gate_init),
+                )
+            )
+        else:
+            self.temporal_scale_fusion = None
+
+        # Step 6: one decoder head per appliance (dynamic count from experiment).
         self.appliance_heads = nn.ModuleList(
             [
                 ApplianceHead(
@@ -911,10 +1013,11 @@ class MultiNILM(nn.Module):
             aggregate input
             -> aggregate_feature_extractor          # hook: stem
             -> temporal_encoder blocks              # hooks: temporal_i, temporal
-            -> _align_output_time                   # hook: aligned  ★ default DA Z
-            -> per-appliance head bodies → F_k
-            -> optional CrossApplianceDistill → F_k^dist
-            -> final 1×1 + gate
+            -> _align_output_time                   # hook: aligned, default DA Z
+            -> optional per-appliance temporal-scale fusion
+            -> per-appliance head bodies
+            -> optional cross-appliance relation module
+            -> final 1x1 + state gate
             -> (B, output_length, num_appliances)
         """
         collect_layers: list[str] = []
@@ -935,10 +1038,17 @@ class MultiNILM(nn.Module):
         if "stem" in want:
             domain_feats["stem"] = features
 
-        # Step 3: dilated residual temporal stack.
-        if need_block or "temporal" in want:
+        # Step 3: dilated residual temporal stack. Scale fusion also needs the
+        # exact map after ``short_block`` while retaining the final long map.
+        short_features: torch.Tensor | None = None
+        if need_block or "temporal" in want or self.temporal_scale_fusion is not None:
             for block_index, block in enumerate(self.temporal_encoder):
                 features = block(features)
+                if (
+                    self.temporal_scale_fusion is not None
+                    and block_index + 1 == self.temporal_scale_short_block
+                ):
+                    short_features = features
                 key = f"temporal_{block_index}"
                 if key in want:
                     domain_feats[key] = features
@@ -952,8 +1062,27 @@ class MultiNILM(nn.Module):
         if "aligned" in want:
             domain_feats["aligned"] = output_features
 
-        # Step 5: head bodies → optional PAD-lite distill → final 1×1 + gate.
-        head_feats = [head.encode_features(output_features) for head in self.appliance_heads]
+        # Step 5: optionally choose short/long context per appliance, then run
+        # the existing task attention and local appliance decoders.
+        if self.temporal_scale_fusion is not None:
+            if short_features is None:
+                raise RuntimeError("Temporal scale fusion did not capture short features.")
+            short_output_features = self._align_output_time(short_features)
+            head_inputs, scale_gates = self.temporal_scale_fusion(
+                short_output_features,
+                output_features,
+            )
+            self.last_temporal_scale_gate_means = scale_gates.detach().mean(
+                dim=(0, 2)
+            )
+        else:
+            head_inputs = [output_features] * self.num_appliances
+            self.last_temporal_scale_gate_means = None
+
+        head_feats = [
+            head.encode_features(head_input)
+            for head, head_input in zip(self.appliance_heads, head_inputs)
+        ]
         if self.cross_appliance_distill is not None:
             head_feats = self.cross_appliance_distill(head_feats)
 
@@ -1005,6 +1134,11 @@ class MultiNILMConfig:
     head_norm_type: str = "batch"
     task_attention_enabled: bool = False
     task_attention_reduction: int = 4
+    # Per-appliance interpolation between an intermediate and final TCN map.
+    temporal_scale_fusion_enabled: bool = False
+    temporal_scale_short_block: int = 4
+    temporal_scale_gate_hidden_channels: int = 16
+    temporal_scale_gate_init: float = 0.5
     # PAD-lite cross-appliance distill (off = skip mix, still encode→decode).
     cross_appliance_enabled: bool = False
     cross_appliance_mode: str = "bottleneck"
@@ -1043,6 +1177,9 @@ def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
     task_attention = architecture.get("task_attention", {})
     if not isinstance(task_attention, dict):
         task_attention = {}
+    temporal_scale_fusion = architecture.get("temporal_scale_fusion", {})
+    if not isinstance(temporal_scale_fusion, dict):
+        temporal_scale_fusion = {}
     return MultiNILMConfig(
         input_channels=int(architecture.get("input_channels", architecture.get("input_size", 1))),
         num_appliances=int(architecture.get("num_appliances", 5)),
@@ -1068,6 +1205,18 @@ def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
         head_norm_type=str(architecture.get("head_norm_type", "batch")),
         task_attention_enabled=bool(task_attention.get("enabled", False)),
         task_attention_reduction=int(task_attention.get("reduction", 4)),
+        temporal_scale_fusion_enabled=bool(
+            temporal_scale_fusion.get("enabled", False)
+        ),
+        temporal_scale_short_block=int(
+            temporal_scale_fusion.get("short_block", 4)
+        ),
+        temporal_scale_gate_hidden_channels=int(
+            temporal_scale_fusion.get("gate_hidden_channels", 16)
+        ),
+        temporal_scale_gate_init=float(
+            temporal_scale_fusion.get("gate_init", 0.5)
+        ),
         cross_appliance_enabled=ca_enabled,
         cross_appliance_mode=ca_mode,
         cross_appliance_residual_scale=ca_scale,

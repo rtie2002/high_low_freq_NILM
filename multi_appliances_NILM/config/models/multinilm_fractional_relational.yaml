@@ -1,7 +1,6 @@
 # Multi-appliance relational NILM experiment.
-# Keeps the precision_guard baseline reproducible while testing:
-#   task attention + cross-appliance relation attention + physical losses.
-experiment_id: extra_feature_relational_physics (stable, no aug, low-depth TCN)
+# Task-adaptive short/long TCN fusion with relational and physical constraints.
+experiment_id: extra_feature_relational_temporal_fusion
 model_name: multinilm_fractional
 
 data:
@@ -69,11 +68,19 @@ architecture:
   temporal_norm_type: batch
   head_norm_type: batch
 
-  # TCN depth ablation: k=9 with dilations 1,2,4,8 gives a 121-sample RF.
-  num_blocks: 4
+  # Blocks 1-4 provide RF=121; all 7 blocks provide RF=1017.
+  num_blocks: 7
   kernel_size: 9
-  max_dilation: 8
+  max_dilation: 64
   dropout: 0.25
+
+  # Each appliance learns a time-wise interpolation between the block-4
+  # short map and block-7 long map before task attention.
+  temporal_scale_fusion:
+    enabled: true
+    short_block: 4
+    gate_hidden_channels: 16
+    gate_init: 0.5
 
   head_local_layers: 2
   head_kernel_size: 3
