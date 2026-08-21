@@ -1,0 +1,48 @@
+{
+  "experiment_id": "extra_feature_relational_physics",
+  "model_name": "multinilm_fractional",
+  "seed": 2026,
+  "batch_size": 64,
+  "epochs_configured": 200,
+  "checkpoint_monitor": "val_mae_minus_f1",
+  "checkpoint_mae_space": "normalized",
+  "windowing": {
+    "input_window_length": 2048,
+    "output_window_length": 2048,
+    "output_alignment": "end",
+    "input_stride": 1024,
+    "eval_stride": 1024,
+    "eval_reconstruction": "auto",
+    "training_targets": "auto"
+  },
+  "appliances": [
+    "kettle",
+    "fridge",
+    "dishwasher",
+    "washingmachine",
+    "microwave"
+  ],
+  "domain_adaptation": {
+    "enabled": false,
+    "target_split": null,
+    "lambda_domain": 0.0,
+    "domain_method": "both"
+  },
+  "parameters_total": 1671982,
+  "parameters_trainable": 1671850,
+  "parameters_total_millions": 1.672,
+  "parameters_trainable_millions": 1.672,
+  "device": "cuda",
+  "torch_version": "2.6.0+cu124",
+  "gpu_name": "NVIDIA GeForce RTX 4090",
+  "gpu_total_memory_gb": 23.99,
+  "total_seconds": 1125.3562433000188,
+  "total_formatted": "18m 45s",
+  "epochs_completed": 200,
+  "best_epoch": 187,
+  "best_score": 0.5575876041940244,
+  "avg_epoch_seconds": 5.6267812165000946,
+  "avg_epoch_formatted": "6s",
+  "checkpoint_file": "best.pt",
+  "checkpoint_size_mb": 6.483
+}
