@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: extra_feature_relational_physics (stable, no aug, no ibn)
+experiment_id: extra_feature_relational_physics (stable, no aug, no task attention)
 model_name: multinilm_fractional
 
 data:
@@ -63,8 +63,9 @@ architecture:
   stem_kernel_size: 7
   stage_kernel_size: 5
 
-  # IBN ablation: use BatchNorm in every CNN stem channel.
-  stem_norm_type: batch
+  # IBN in the early feature extractor improves cross-house robustness while
+  # retaining amplitude-sensitive BatchNorm channels for appliance identity.
+  stem_norm_type: ibn
   temporal_norm_type: batch
   head_norm_type: batch
 
@@ -78,7 +79,7 @@ architecture:
   head_kernel_size: 3
   head_use_residual: true
   task_attention:
-    enabled: true
+    enabled: false
     reduction: 4
 
   gate_mode: soft
