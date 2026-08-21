@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: extra_feature_relational_physics (stable)
+experiment_id: extra_feature_relational_physics (stable, no aug)
 model_name: multinilm_fractional
 
 data:
@@ -141,7 +141,7 @@ training:
   # MATNilm-inspired, physically consistent profile scaling. The unknown
   # residual is kept as a separate component when rebuilding aggregate.
   augmentation:
-    enabled: true
+    enabled: false
     probability: 0.8
     appliance_gain: [0.80, 1.25]
     residual_gain: [0.50, 1.25]
