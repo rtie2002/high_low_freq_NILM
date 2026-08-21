@@ -1,41 +1,41 @@
-# MultiNILM Relational Physics 设计说明
+# MultiNILM Relational Physics Design Notes
 
-## 一句话结论
+## Executive Summary
 
-`precision_guard` 已经减少了盲目预测，但剩余问题不是一个 threshold 可以解决：模型同时存在跨域尺度偏移、跨电器混淆、事件边界不准，以及缺少物理功率约束。新实验把这四类问题分开处理。
+`precision_guard` has reduced indiscriminate predictions, but the remaining errors cannot be solved by a single threshold. The model simultaneously exhibits cross-domain scale shift, cross-appliance confusion, inaccurate event boundaries, and insufficient physical power constraints. The new experiment addresses these four problems separately.
 
-新配置：`config/models/multinilm_fractional_relational.yaml`
+New configuration: `config/models/multinilm_fractional_relational.yaml`
 
-## 当前结果诊断
+## Diagnosis of the Current Results
 
-从 `extra_feature_precision_guard/multinilm_fractional/test_predictions.npz` 计算得到：
+The following values were calculated from `extra_feature_precision_guard/multinilm_fractional/test_predictions.npz`:
 
-| 项目 | 结果 | 含义 |
+| Item | Result | Interpretation |
 |---|---:|---|
-| Test macro F1 | 0.641 | 整体已比前一版好 |
-| Microwave F1 | 0.301 | P=0.227，R=0.449，仍有明显混淆 |
-| REFIT H20 预测/真实目标电器能量 | 1.288 | REFIT 明显过预测 |
-| UK-DALE H2 预测/真实目标电器能量 | 0.604 | UK-DALE 明显少预测 |
-| 真实目标电器能量/aggregate | 0.293 | aggregate 中约 71% 是未建模电器和背景功率 |
-| `sum(pred) > aggregate` 比例 | 0.276% | 物理超额不是主要错误，但仍应被禁止 |
+| Test macro F1 | 0.641 | Overall performance is better than the previous version |
+| Microwave F1 | 0.301 | P=0.227 and R=0.449; substantial confusion remains |
+| REFIT H20 predicted/true target-appliance energy | 1.288 | Clear overprediction on REFIT |
+| UK-DALE H2 predicted/true target-appliance energy | 0.604 | Clear underprediction on UK-DALE |
+| True target-appliance energy/aggregate energy | 0.293 | About 71% of aggregate energy belongs to unmodelled appliances and background load |
+| Proportion where `sum(pred) > aggregate` | 0.276% | Physical over-allocation is not the dominant error, but it should still be prevented |
 
-因此不能强制 `sum(predicted appliances) = aggregate`。五个目标电器并不覆盖全屋负载。正确约束是：
+Therefore, the model must not enforce `sum(predicted appliances) = aggregate`. The five target appliances do not cover the complete household load. The correct constraint is
 
 $$
 \sum_{i=1}^{A}\hat P_i(t) \leq X(t) + \epsilon,
 $$
 
-同时允许
+while allowing
 
 $$
 P_{other}(t) = \max\left(X(t)-\sum_i \hat P_i(t),0\right)
 $$
 
-保留为未知负载。
+to remain as unknown load.
 
-另一个确定的问题来自 post-processing。一个采样点是 6 秒，测试集中约 33.3% 的真实 microwave 事件短于 10 个点。旧配置 `min_on_samples: 10` 会删除这些短事件的预测，新配置改为 3。
+Another confirmed problem comes from post-processing. One sample represents 6 seconds, and approximately 33.3% of the true microwave events in the test set are shorter than 10 samples. The old setting `min_on_samples: 10` removed predictions for these short events; the new configuration reduces it to 3.
 
-## 改造前
+## Architecture Before the Changes
 
 ```mermaid
 flowchart LR
@@ -51,15 +51,15 @@ flowchart LR
     MIX --> G[State-gated power outputs]
 ```
 
-旧的 cross-appliance mixing 会把所有 head feature concatenate 后做固定的 `1x1` 混合。它可以交换信息，但不知道在当前时刻应该听哪一个电器，也不能明确抑制不相关信息。
+The old cross-appliance mixing concatenated all head features and applied a fixed `1x1` mixing operation. It allowed information exchange, but it could not decide which appliance should be trusted at the current timestep or explicitly suppress irrelevant messages.
 
-## 改造后
+## Architecture After the Changes
 
 ```mermaid
 flowchart LR
     X[Aggregate window] --> FE[Fractional + delta + rolling features]
     FE --> IBN[Multi-scale CNN + early IBN]
-    IBN --> TCN[7-block dilated TCN<br/>RF about 1017 samples]
+    IBN --> TCN[4-block dilated TCN<br/>RF 121 samples]
     TCN --> TA[Per-appliance task attention]
     TA --> RA[Cross-appliance relation attention]
     RA --> PH[Power heads]
@@ -72,27 +72,27 @@ flowchart LR
     SH --> L3[BCE / false-ON / transition loss]
 ```
 
-## 1. 更长的 TCN 时间范围
+## 1. TCN Temporal Context
 
-当前 residual block 每层有一个 dilated convolution。kernel size 为 9，dilation 为
+Each residual block contains one dilated convolution. The kernel size is 9 and the dilation sequence is
 
 $$
-[1,2,4,8,16,32,64].
+[1,2,4,8].
 $$
 
-主干 receptive field 是
+The receptive field of the shared backbone is
 
 $$
 R = 1 + (k-1)\sum_l d_l
-  = 1 + 8(1+2+4+8+16+32+64)
-  = 1017.
+  = 1 + 8(1+2+4+8)
+  = 121.
 $$
 
-在 6 秒采样下约为 101.7 分钟。旧的 4-block TCN 只有 121 点，约 12.1 分钟，无法完整观察很多 dishwasher 或 washing-machine cycle。
+At a 6-second sampling interval, this receptive field covers approximately 12.1 minutes. This low-depth TCN is the active ablation setting in `multinilm_fractional_relational.yaml`.
 
 ## 2. Task-specific feature attention
 
-每个电器先对 shared feature 产生自己的 soft mask：
+Each appliance first produces its own soft mask over the shared features:
 
 $$
 M_i = \sigma(A_i(F_{shared})),
@@ -102,11 +102,11 @@ $$
 F_i = D_i(F_{shared}\odot M_i).
 $$
 
-Microwave head 可以强调短、高功率脉冲；fridge head 可以强调低功率、周期性的模式。这个思路来自 [MTAN: End-To-End Multi-Task Learning With Attention](https://openaccess.thecvf.com/content_CVPR_2019/html/Liu_End-To-End_Multi-Task_Learning_With_Attention_CVPR_2019_paper.html)。
+The microwave head can emphasize short, high-power pulses, while the refrigerator head can emphasize low-power periodic patterns. This idea is based on [MTAN: End-To-End Multi-Task Learning With Attention](https://openaccess.thecvf.com/content_CVPR_2019/html/Liu_End-To-End_Multi-Task_Learning_With_Attention_CVPR_2019_paper.html).
 
 ## 3. Cross-appliance relation attention
 
-在每一个时间点，把五个 appliance head 当成五个 token：
+At each timestep, the five appliance heads are treated as five tokens:
 
 $$
 \alpha_{ij}(t)=\operatorname{softmax}_j\left(
@@ -122,39 +122,39 @@ $$
 F'_i=F_i+\rho\,G_i\odot W_o C_i.
 $$
 
-`G_i` 是 learned message gate。模型可以在一个高功率事件发生时比较 kettle、dishwasher、washing machine 与 microwave 的证据，而不是五个 head 完全独立判断。
+`G_i` is a learned message gate. When a high-power event occurs, the model can compare the evidence from the kettle, dishwasher, washing machine, and microwave heads instead of making five completely independent decisions.
 
-该设计是对 [MATNilm](https://arxiv.org/abs/2307.14778) 的 appliance/time correlation attention，以及 [PAD-Net](https://openaccess.thecvf.com/content_cvpr_2018/papers/Xu_PAD-Net_Multi-Tasks_Guided_CVPR_2018_paper.pdf) attention-guided message passing 的轻量 1D 改写。时间关系由 TCN 处理，attention 只在五个电器之间计算，避免对 2048 个时间点做昂贵的全局 $O(T^2)$ attention。
+This design is a lightweight 1D adaptation of the appliance/time correlation attention in [MATNilm](https://arxiv.org/abs/2307.14778) and attention-guided message passing in [PAD-Net](https://openaccess.thecvf.com/content_cvpr_2018/papers/Xu_PAD-Net_Multi-Tasks_Guided_CVPR_2018_paper.pdf). Temporal relationships are handled by the TCN, while attention is computed only among the five appliances. This avoids expensive global $O(T^2)$ attention over 2,048 timesteps.
 
-## 4. State gate 与 event-boundary loss
+## 4. State Gate and Event-Boundary Loss
 
-最终功率仍保留 SGN 结构：
+The final power prediction retains the SGN structure:
 
 $$
 \hat P_i(t)=\hat R_i(t)\cdot\sigma(s_i(t)).
 $$
 
-它对应 [Subtask Gated Networks for NILM](https://ojs.aaai.org/index.php/AAAI/article/view/3908)。
+This follows [Subtask Gated Networks for NILM](https://ojs.aaai.org/index.php/AAAI/article/view/3908).
 
-此外，两个相邻 Bernoulli state 不同的概率定义为
+In addition, the probability that two adjacent Bernoulli states differ is defined as
 
 $$
 b_i(t)=p_i(t-1)(1-p_i(t))+(1-p_i(t-1))p_i(t).
 $$
 
-真实边界为
+The true event boundary is
 
 $$
 b_i^*(t)=|z_i(t)-z_i(t-1)|.
 $$
 
-transition loss 分别平均真实边界和非边界的 BCE，避免大量稳定 OFF 点淹没少量 ON/OFF edge。它直接训练“何时开”和“何时关”，所以针对的是 waveform width、碎片和延迟，不只是平均功率。
+The transition loss averages BCE separately over true-boundary and non-boundary positions. This prevents the large number of stable OFF samples from overwhelming the small number of ON/OFF edges. It directly trains when an appliance should switch on and off, so it targets waveform width, fragmentation, and boundary delay rather than only average power.
 
-## 5. 能量与 aggregate 物理约束
+## 5. Energy and Aggregate Physical Constraints
 
 ### 5.1 Relative-energy loss
 
-设 batch index 为 $b$，电器 index 为 $i$，窗口长度为 $T$。代码先把 normalized power 转回非负 watts，然后计算每个窗口、每个电器的相对能量误差：
+Let $b$ denote the batch index, $i$ the appliance index, and $T$ the window length. The implementation first converts normalized power back to non-negative watts and then calculates the relative energy error for every window and appliance:
 
 $$
 L_{E,i}=\frac{1}{B}\sum_b
@@ -162,24 +162,24 @@ L_{E,i}=\frac{1}{B}\sum_b
 {\sum_tP_{b,t,i}+T P_{floor}}.
 $$
 
-当前 `P_floor=10 W`。它有两个作用：
+The current setting is `P_floor=10 W`. It has two purposes:
 
-1. 当真实窗口全 OFF 时避免分母为零。
-2. 全 OFF 窗口中的 false power 仍然产生 loss。例如预测平均为 10 W，则预测总量约为 $10T$，相对能量项约为 1。
+1. It prevents division by zero when the true window is entirely OFF.
+2. False power in an all-OFF window still produces a loss. For example, if the mean prediction is 10 W, the predicted total is approximately $10T$ and the relative-energy term is approximately 1.
 
-由于采样间隔固定为 6 秒，严格能量应把 watt-samples 乘以 6 秒；但分子和分母都会乘相同常数，因此该无量纲比例不变。
+Strictly, energy should multiply each watt-sample by the fixed 6-second sampling interval. However, the numerator and denominator would both be multiplied by the same constant, so this dimensionless ratio is unchanged.
 
-代码最后对五个电器求和，而不是除以电器数：
+The implementation sums over the five appliances rather than dividing by the appliance count:
 
 $$
 L_E=\sum_{i=1}^{A}L_{E,i}.
 $$
 
-Relative-energy loss 只检查窗口总量，不检查事件发生位置。两个时间位置完全不同、但总能量相同的 waveform 仍可能得到 $L_E=0$，因此它不能替代 pointwise MSE、state 或 transition loss。
+Relative-energy loss checks only the total amount within a window, not when the event occurs. Two waveforms with completely different temporal positions but identical total energy can still obtain $L_E=0$. It therefore cannot replace pointwise MSE, state loss, or transition loss.
 
 ### 5.2 Aggregate consistency loss
 
-Aggregate 只使用单边约束：
+The aggregate uses a one-sided constraint:
 
 $$
 L_{agg}=\operatorname{mean}_{b,t}\left[
@@ -187,7 +187,7 @@ L_{agg}=\operatorname{mean}_{b,t}\left[
 \right]^2.
 $$
 
-当前设置为：
+The current settings are:
 
 ```yaml
 aggregate_tolerance_watts: 30
@@ -195,59 +195,281 @@ aggregate_loss_scale_watts: 1000
 aggregate_consistency_weight: 1.0
 ```
 
-因此只有当五个预测电器之和超过 `aggregate + 30 W` 时才产生惩罚。若 aggregate 为 500 W：
+Consequently, a penalty is produced only when the sum of the five predicted appliances exceeds `aggregate + 30 W`. For an aggregate value of 500 W:
 
-| 五个电器预测之和 | Excess | 单点约束值 |
+| Sum of five appliance predictions | Excess | Per-timestep constraint value |
 |---:|---:|---:|
 | 450 W | 0 W | 0 |
 | 520 W | 0 W | 0 |
 | 800 W | 270 W | $(270/1000)^2=0.0729$ |
 
-它不会强迫五个目标电器解释未知负载，因为真实 aggregate 还包含灯、电视和其他未建模电器。正确的关系是
+This loss does not force the five target appliances to explain unknown load because the true aggregate also contains lighting, televisions, and other unmodelled appliances. The correct relationship is
 
 $$
 \sum_i\hat P_i(t)\le X(t)+\epsilon,
 $$
 
-而不是 $\sum_i\hat P_i(t)=X(t)$。非负与 sum constraint 的思想也可见 [Non-Intrusive Energy Disaggregation Using NMF With Sum-to-k Constraint](https://www.ornl.gov/publication/non-intrusive-energy-disaggregation-using-non-negative-matrix-factorization-sum-k)。
+rather than $\sum_i\hat P_i(t)=X(t)$. Related non-negativity and sum-constraint ideas appear in [Non-Intrusive Energy Disaggregation Using NMF With Sum-to-k Constraint](https://www.ornl.gov/publication/non-intrusive-energy-disaggregation-using-non-negative-matrix-factorization-sum-k).
 
 ## 6. Early IBN
 
-新模型只在前端使用 IBN：一半 channel 使用 InstanceNorm 学较少依赖 house style 的特征，另一半保留 BatchNorm 以保存绝对功率信息。后面的 TCN 和 appliance head 仍用 BatchNorm。依据来自 [IBN-Net](https://openaccess.thecvf.com/content_ECCV_2018/html/Xingang_Pan_Two_at_Once_ECCV_2018_paper.html)。
+### 6.1 Purpose
 
-## 7. 总 loss：与当前代码完全对应
+IBN means **Instance-Batch Normalization**. It was introduced by [IBN-Net: Two at Once - Enhancing Learning and Generalization Capacities via IBN-Net](https://openaccess.thecvf.com/content_ECCV_2018/html/Xingang_Pan_Two_at_Once_ECCV_2018_paper.html). The central idea is that a network needs two different kinds of information:
 
-### 7.1 Loss 之前的 state-gated power
+1. **Domain-invariant information.** Some features should be insensitive to the style of an individual house, such as its background load, sensor scale, voltage condition, typical appliance mixture, or dataset-specific distribution.
+2. **Domain-discriminative information.** NILM still needs amplitude-sensitive evidence. For example, a 100 W refrigerator event and a 2,500 W kettle event should not become indistinguishable after normalization.
 
-每个 appliance head 输出 raw power regression $\hat R_i$ 和 state logit $s_i$：
+Using InstanceNorm on every channel can improve invariance but remove too much amplitude information. Using BatchNorm on every channel keeps population-level amplitude differences, but the learned features can remain strongly coupled to the source houses. IBN keeps both paths by assigning part of the channels to InstanceNorm and the remaining channels to BatchNorm.
+
+The purpose in this model is therefore:
+
+> Reduce early feature dependence on UK-DALE/REFIT house style without discarding all absolute-power evidence needed for appliance identification and waveform regression.
+
+IBN is not a domain-adaptation loss. It does not compare source and target samples, and it does not require target-house labels. It changes how intermediate feature maps are normalized during an ordinary forward pass.
+
+### 6.2 Mathematical operation
+
+```mermaid
+flowchart LR
+    X[Early feature map<br/>B x C x T] --> S[Split along channels]
+    S --> XI[First half of channels]
+    S --> XB[Second half of channels]
+    XI --> IN[InstanceNorm1d<br/>statistics per sample and channel]
+    XB --> BN[BatchNorm1d<br/>statistics per channel over batch and time]
+    IN --> CAT[Concatenate along channels]
+    BN --> CAT
+    CAT --> Y[IBN output<br/>B x C x T]
+```
+
+Let an early convolutional feature map be
+
+$$
+X\in\mathbb{R}^{B\times C\times T},
+$$
+
+where $B$ is batch size, $C$ is feature-channel count, and $T$ is the temporal length. The implementation divides $X$ along the channel dimension:
+
+$$
+X_{IN}=X[:,0:C_{IN},:],\qquad
+X_{BN}=X[:,C_{IN}:C,:],
+$$
+
+with
+
+$$
+C_{IN}=\left\lfloor\frac{C}{2}\right\rfloor,\qquad
+C_{BN}=C-C_{IN}.
+$$
+
+For the InstanceNorm half, the mean and variance are calculated separately for every sample $n$ and channel $c$ over that sample's time axis:
+
+$$
+\mu^{IN}_{n,c}=\frac{1}{T}\sum_{t=1}^{T}X_{n,c,t},
+$$
+
+$$
+(\sigma^{IN}_{n,c})^2
+=\frac{1}{T}\sum_{t=1}^{T}
+\left(X_{n,c,t}-\mu^{IN}_{n,c}\right)^2.
+$$
+
+The normalized output is
+
+$$
+\operatorname{IN}(X_{n,c,t})
+=\gamma^{IN}_c
+\frac{X_{n,c,t}-\mu^{IN}_{n,c}}
+{\sqrt{(\sigma^{IN}_{n,c})^2+\epsilon}}
++\beta^{IN}_c.
+$$
+
+Because each window uses its own statistics, this path suppresses window-specific offset and scale in the learned convolutional channel. The trainable $\gamma^{IN}$ and $\beta^{IN}$ parameters still allow the network to restore a useful range after normalization.
+
+For the BatchNorm half, statistics are shared over the batch and temporal positions:
+
+$$
+\mu^{BN}_{c}=\frac{1}{BT}\sum_{n=1}^{B}\sum_{t=1}^{T}X_{n,c,t},
+$$
+
+$$
+(\sigma^{BN}_{c})^2
+=\frac{1}{BT}\sum_{n=1}^{B}\sum_{t=1}^{T}
+\left(X_{n,c,t}-\mu^{BN}_{c}\right)^2,
+$$
+
+$$
+\operatorname{BN}(X_{n,c,t})
+=\gamma^{BN}_c
+\frac{X_{n,c,t}-\mu^{BN}_{c}}
+{\sqrt{(\sigma^{BN}_{c})^2+\epsilon}}
++\beta^{BN}_c.
+$$
+
+BatchNorm uses running statistics during evaluation. Since all windows are normalized relative to shared population statistics rather than their own statistics, differences between low- and high-amplitude windows remain available to the model more strongly than in the InstanceNorm path.
+
+The final IBN output concatenates both channel groups in their original order:
+
+$$
+\operatorname{IBN}(X)
+=\operatorname{Concat}_{channel}
+\left(\operatorname{IN}(X_{IN}),\operatorname{BN}(X_{BN})\right).
+$$
+
+IBN does not add or average the two outputs. The total channel count and temporal length remain unchanged:
+
+$$
+(B,C,T)\rightarrow(B,C,T).
+$$
+
+### 6.3 Exact implementation in MultiNILM
+
+The implementation is `IBN1d` in `model/MultiNILM.py`. It uses:
+
+```python
+self.instance_channels = channels // 2
+self.batch_channels = channels - self.instance_channels
+self.instance_norm = nn.InstanceNorm1d(
+    self.instance_channels,
+    affine=True,
+)
+self.batch_norm = nn.BatchNorm1d(self.batch_channels)
+```
+
+The forward pass is conceptually:
+
+```python
+x_instance, x_batch = torch.split(
+    x,
+    [self.instance_channels, self.batch_channels],
+    dim=1,
+)
+x = torch.cat(
+    [self.instance_norm(x_instance), self.batch_norm(x_batch)],
+    dim=1,
+)
+```
+
+PyTorch defaults are used: both normalizers use $\epsilon=10^{-5}$; BatchNorm tracks running statistics with momentum 0.1; InstanceNorm has trainable affine parameters and does not track running statistics. Consequently, the IN branch remains sample-specific during both training and evaluation, while the BN branch uses learned running statistics at evaluation time.
+
+The relational configuration enables IBN with:
+
+```yaml
+architecture:
+  stem_norm_type: ibn
+  temporal_norm_type: batch
+  head_norm_type: batch
+```
+
+`stem_norm_type: ibn` is passed to every normalization layer in the early multi-scale feature extractor. With the current configuration, the exact path is:
+
+| Front-end location | Convolution output | IBN split |
+|---|---:|---:|
+| Detail branch, kernel 3 | 16 channels | 8 IN + 8 BN |
+| Detail branch, kernel 5 | 16 channels | 8 IN + 8 BN |
+| Detail branch, kernel 9 | 16 channels | 8 IN + 8 BN |
+| Multi-scale branch fusion | 32 channels | 16 IN + 16 BN |
+| Stem skip projection, when required | 32 channels | 16 IN + 16 BN |
+| Staged convolution 32 -> 64 | 64 channels | 32 IN + 32 BN |
+| Staged convolution 64 -> 128 | 128 channels | 64 IN + 64 BN |
+
+Within each detail branch and staged layer, the operation order is `Conv1d -> IBN1d -> ReLU`. The three detail branches are concatenated, projected by a `1x1 Conv1d`, normalized by IBN, and activated. The stem skip path is also projected and normalized when its channel dimension does not already match 32. The normalized main and skip paths are then added.
+
+Therefore, IBN is applied to learned early feature maps, **not directly to the raw aggregate watts or the target appliance power**. The model's input feature construction and target normalization are unchanged.
+
+After the front end, all four residual TCN blocks use BatchNorm because `temporal_norm_type: batch`. The appliance-specific local decoders also use BatchNorm because `head_norm_type: batch`. The resulting normalization flow is:
+
+```text
+aggregate/features
+    -> multi-scale early CNN: IBN
+    -> shared residual TCN: BatchNorm
+    -> task-specific appliance heads: BatchNorm
+    -> power and state outputs
+```
+
+### 6.4 Why IBN is used only in the early extractor
+
+Early convolutional layers mainly describe local waveform appearance: baseline changes, slopes, short pulses, local variation, and frequency-like patterns. These are useful but can also encode dataset or house style. Applying IN to half of these channels encourages the shared encoder to represent a pulse by its relative local pattern rather than only by the source house's absolute distribution.
+
+Deeper TCN and appliance-head features have a different role. They must represent appliance identity, event duration, long-range context, and power magnitude. Applying InstanceNorm throughout those layers could normalize away information such as:
+
+- whether an event is approximately 100 W or 2,000 W;
+- whether a predicted ON section has the correct consumption level;
+- whether the long-duration waveform preserves its energy;
+- whether several appliance predictions exceed the aggregate power.
+
+For this reason, the current design follows the early-IBN principle: improve invariance near the input, then retain BatchNorm in the semantic and regression layers.
+
+### 6.5 Expected benefit and limitations
+
+The expected benefit is a smaller cross-house or cross-dataset performance gap, especially when the target house has a different background-load distribution. IBN may help the model recognize similar local appliance patterns even when their surrounding aggregate signal differs.
+
+However, IBN cannot solve every transfer problem:
+
+- It does not align label distributions or appliance usage frequency.
+- It cannot create target-domain waveform patterns missing from training.
+- It does not correct wrong ON/OFF thresholds or event post-processing.
+- It may hurt amplitude-sensitive regression if too many channels use IN.
+- It does not guarantee that REFIT and UK-DALE have compatible appliance definitions.
+
+The 50/50 split is a conservative fixed design inherited from the IBN idea. It is not guaranteed to be optimal for NILM. A future experiment could expose the IN ratio as a hyperparameter, but that should be tested separately after the on/off IBN ablation.
+
+### 6.6 Correct ablation procedure
+
+IBN can be disabled without changing the rest of the architecture:
+
+```yaml
+architecture:
+  stem_norm_type: batch
+  temporal_norm_type: batch
+  head_norm_type: batch
+```
+
+For a valid ablation, keep the same seed, train/validation/test files, feature configuration, TCN depth, losses, sampler, optimizer, and post-processing thresholds. Change only `stem_norm_type` and use a different `experiment_id` so checkpoints are not overwritten.
+
+The comparison should report more than overall MAE. At minimum, compare:
+
+1. Per-appliance test MAE, SAE, sample F1, and event F1.
+2. Validation-to-test F1 and MAE gaps.
+3. UK-DALE and REFIT results separately.
+4. False-ON and missed-event counts for each appliance.
+5. Predicted/true energy ratio and waveform examples.
+
+Do not resume a BatchNorm-only run from an IBN checkpoint, or an IBN run from a BatchNorm-only checkpoint. Their normalization modules have different parameter and running-statistic structures, so the ablation should train each variant from a fresh initialization.
+
+## 7. Complete Loss: Exact Correspondence With the Current Code
+
+### 7.1 State-Gated Power Before the Loss
+
+Each appliance head outputs a raw power regression $\hat R_i$ and a state logit $s_i$:
 
 $$
 p_i=\sigma(s_i).
 $$
 
-当前 `gate_mode: soft`，所以在 normalized target space 中送入 power loss 的预测为
+The current setting is `gate_mode: soft`, so the prediction passed to the power loss in normalized target space is
 
 $$
 \hat y_i=p_i\hat R_i+(1-p_i)y_{off,i},
 $$
 
-其中 $y_{off,i}$ 是 `0 W` 在该电器 normalization 下对应的值。反归一化到 watts 后等价于用 $p_i$ 对 raw watt prediction 做 soft gate。这样 power loss 的梯度不仅更新 regression head，也会通过 $p_i$ 更新 state head。
+Here, $y_{off,i}$ is the normalized value corresponding to `0 W` for appliance $i$. After inverse normalization to watts, this is equivalent to applying $p_i$ as a soft gate to the raw watt prediction. Consequently, gradients from the power loss update both the regression head and, through $p_i$, the state head.
 
-### 7.2 每个电器的 pointwise power loss
+### 7.2 Per-Appliance Pointwise Power Loss
 
-设 normalized power error 为
+Define the normalized power error as
 
 $$
 e_{b,t,i}=\hat y_{b,t,i}-y_{b,t,i},
 $$
 
-CSV state label 为 $z_{b,t,i}\in\{0,1\}$。基础 MSE 覆盖所有 timestep：
+Let the CSV state label be $z_{b,t,i}\in\{0,1\}$. The base MSE covers all timesteps:
 
 $$
 L_{MSE,i}=\operatorname{mean}_{b,t}(e_{b,t,i}^2).
 $$
 
-ON-MSE 只在真实 ON 样本中计算：
+ON-MSE is calculated only over true ON samples:
 
 $$
 L_{on,i}=
@@ -255,7 +477,7 @@ L_{on,i}=
 {\max(\sum_{b,t}z_{b,t,i},1)}.
 $$
 
-OFF-MSE 只在真实 OFF 样本中计算：
+OFF-MSE is calculated only over true OFF samples:
 
 $$
 L_{off,i}=
@@ -263,9 +485,9 @@ L_{off,i}=
 {\max(\sum_{b,t}(1-z_{b,t,i}),1)}.
 $$
 
-注意 `ON-MSE` 和 `OFF-MSE` 不是取代基础 MSE；它们是在全时段 MSE 之上额外加强 ON waveform 和 OFF false power。
+`ON-MSE` and `OFF-MSE` do not replace the base MSE. They provide additional emphasis on the ON waveform and OFF-state false power on top of the all-timestep MSE.
 
-相邻 timestep 的 normalized power difference 为
+The normalized power differences between adjacent timesteps are
 
 $$
 \Delta\hat y_{b,t,i}=\hat y_{b,t,i}-\hat y_{b,t-1,i},
@@ -275,7 +497,7 @@ $$
 \Delta y_{b,t,i}=y_{b,t,i}-y_{b,t-1,i}.
 $$
 
-当前 `power_delta_on_only: true`，所以 delta loss 只在两个相邻点至少一个为 ON 时计算：
+With `power_delta_on_only: true`, the delta loss is calculated only when at least one of two adjacent samples is ON:
 
 $$
 m^{\Delta}_{b,t,i}=\max(z_{b,t,i},z_{b,t-1,i}),
@@ -288,7 +510,7 @@ L_{\Delta,i}=
 {\max(\sum_{b,t}m^{\Delta}_{b,t,i},1)}.
 $$
 
-加入第 5 节的 relative-energy term 后，每个电器的完整 power loss 是
+After adding the relative-energy term from Section 5, the complete power loss for each appliance is
 
 $$
 L_{power,i}=L_{MSE,i}
@@ -298,31 +520,31 @@ L_{power,i}=L_{MSE,i}
 +0.25L_{E,i}.
 $$
 
-五个电器直接求和：
+The five appliance losses are summed directly:
 
 $$
 L_{power}=\sum_{i=1}^{A}L_{power,i}.
 $$
 
-其中 MSE、ON/OFF-MSE 和 delta loss 在 normalized target space 计算；relative-energy loss 先反归一化到 watts 再计算。旧的 `power_energy_weight` 当前为 `0.0`，不参与最终 loss。
+MSE, ON/OFF-MSE, and delta loss are calculated in normalized target space. Relative-energy loss is calculated after inverse normalization to watts. The legacy `power_energy_weight` is currently `0.0` and does not contribute to the final loss.
 
-### 7.3 每个电器的 state loss
+### 7.3 Per-Appliance State Loss
 
-基础 state loss 使用 `BCEWithLogitsLoss`：
+The base state loss uses `BCEWithLogitsLoss`:
 
 $$
 L_{BCE,i}=\operatorname{BCEWithLogits}(s_i,z_i;w_i^+).
 $$
 
-正类权重由训练集 ON rate 自动计算：
+The positive-class weight is calculated automatically from the training-set ON rate:
 
 $$
 w_i^+=\min\left(\frac{1-r_i}{r_i},12\right),
 $$
 
-其中 $r_i$ 是电器 $i$ 的训练 ON rate，`12` 来自 `pos_weight_cap: 12`。它提高 rare ON 样本的重要性，但避免极稀有电器产生无限大的 ON 压力。
+Here, $r_i$ is the training ON rate for appliance $i$, and `12` comes from `pos_weight_cap: 12`. This increases the importance of rare ON samples while preventing an extremely rare appliance from producing unbounded positive-class pressure.
 
-False-positive penalty 只在真实 OFF 位置惩罚高 ON probability：
+The false-positive penalty suppresses high ON probability only at true OFF positions:
 
 $$
 L_{FP,i}=
@@ -330,7 +552,7 @@ L_{FP,i}=
 {\max(\sum_{b,t}(1-z_{b,t,i}),1)}.
 $$
 
-Transition probability 和真实边界分别为
+The transition probability and true boundary are respectively
 
 $$
 q_{b,t,i}=p_{b,t-1,i}(1-p_{b,t,i})
@@ -341,7 +563,7 @@ $$
 q^*_{b,t,i}=|z_{b,t,i}-z_{b,t-1,i}|.
 $$
 
-代码分别平均真实 boundary 和 non-boundary 的 negative log-likelihood，再各占一半，防止大量稳定 OFF 点淹没少量 start/stop edge。每个电器的完整 state loss 是
+The implementation averages negative log-likelihood separately over true-boundary and non-boundary positions and gives each group half of the transition loss. This prevents the large number of stable OFF samples from overwhelming the small number of start/stop edges. The complete state loss for each appliance is
 
 $$
 L_{state,i}=L_{BCE,i}+1.0L_{FP,i}+0.20L_{transition,i},
@@ -351,9 +573,9 @@ $$
 L_{state}=\sum_{i=1}^{A}L_{state,i}.
 $$
 
-### 7.4 Power/state 动态 balance
+### 7.4 Dynamic Power/State Balancing
 
-Power MSE 与 state BCE 的原始数值尺度不同，所以当前 `task_balance: equal` 不直接计算 $L_{power}+0.8L_{state}$。代码先构造一个不参与反向传播的动态尺度：
+Raw power MSE and state BCE have different numerical scales. Therefore, with `task_balance: equal`, the implementation does not directly calculate $L_{power}+0.8L_{state}$. It first constructs a dynamic scale that does not participate in backpropagation:
 
 $$
 s_{balance}=\operatorname{stopgrad}\left(
@@ -361,23 +583,23 @@ s_{balance}=\operatorname{stopgrad}\left(
 \right).
 $$
 
-真正进入总 loss 的 state contribution 是
+The state contribution that actually enters the total loss is
 
 $$
 L_{state\_term}=0.8L_{state}s_{balance}.
 $$
 
-因此 forward 数值上通常有
+Therefore, the forward values usually satisfy
 
 $$
 L_{state\_term}\approx0.8L_{power},
 $$
 
-但梯度仍从 $L_{state}$ 流入 state head。`stopgrad` 只让该比例充当 magnitude ruler，不让模型通过修改比例本身投机降低 loss。
+However, gradients still flow from $L_{state}$ into the state head. `stopgrad` allows the ratio to act only as a magnitude ruler and prevents the model from reducing the loss by manipulating the ratio itself.
 
-### 7.5 当前最终训练目标
+### 7.5 Current Final Training Objective
 
-当前 `lambda_domain: 0.0`，domain adaptation 没有参与。因此实际优化目标是
+The current setting is `lambda_domain: 0.0`, so domain adaptation does not contribute. The actual optimization objective is therefore
 
 $$
 \boxed{
@@ -390,7 +612,7 @@ L_{NILM}
 }
 $$
 
-对应配置为：
+The corresponding configuration is
 
 ```yaml
 loss:
@@ -415,19 +637,19 @@ loss:
   aggregate_loss_scale_watts: 1000
 ```
 
-### 7.6 训练日志如何对应公式
+### 7.6 Correspondence Between Training Logs and the Formula
 
-| Log key | 含义 | 是否已乘权重 |
+| Log key | Meaning | Is the weight already applied? |
 |---|---|---|
-| `loss_power` | 五个电器完整 power loss 之和，已经包含 ON/OFF、delta、relative energy | 是 |
-| `loss_state` | 五个电器完整 raw state loss 之和，已经包含 FP 和 transition | 子项权重已乘，但尚未做动态 balance |
-| `loss_state_term` | 真正加入 $L_{NILM}$ 的 balanced state contribution | 是 |
-| `loss_energy_relative` | 五个电器原始 relative-energy loss 之和 | 否，尚未乘 0.25 |
-| `loss_state_transition` | 五个电器原始 transition loss 之和 | 否，尚未乘 0.20 |
-| `loss_aggregate_consistency` | 原始单边 aggregate loss | 否，尚未乘 aggregate weight |
-| `loss_aggregate_term` | 真正加入总 loss 的 aggregate contribution | 是 |
+| `loss_power` | Sum of the complete power losses for five appliances, including ON/OFF, delta, and relative-energy terms | Yes |
+| `loss_state` | Sum of the complete raw state losses for five appliances, including FP and transition terms | Subterm weights are applied, but dynamic balancing is not |
+| `loss_state_term` | Balanced state contribution actually added to $L_{NILM}$ | Yes |
+| `loss_energy_relative` | Sum of the raw relative-energy losses for five appliances | No; it has not yet been multiplied by 0.25 |
+| `loss_state_transition` | Sum of the raw transition losses for five appliances | No; it has not yet been multiplied by 0.20 |
+| `loss_aggregate_consistency` | Raw one-sided aggregate loss | No; it has not yet been multiplied by the aggregate weight |
+| `loss_aggregate_term` | Aggregate contribution actually added to the total loss | Yes |
 
-因此重建当前非 DA 总 loss 时，应使用
+Therefore, the current non-DA total loss should be reconstructed as
 
 $$
 L_{NILM}=\texttt{loss\_power}
@@ -435,17 +657,17 @@ L_{NILM}=\texttt{loss\_power}
 +\texttt{loss\_aggregate\_term},
 $$
 
-不能把 `loss_state`、`loss_energy_relative` 或 `loss_state_transition` 再直接相加，否则会重复计算。
+Do not add `loss_state`, `loss_energy_relative`, or `loss_state_transition` again, because doing so would double-count terms already included in the weighted contributions.
 
-## 如何判断新方法是否真的更好
+## How to Determine Whether the New Method Is Actually Better
 
-不要只看 overall MAE。至少同时比较：
+Do not examine only overall MAE. At minimum, compare all of the following:
 
-1. 每个电器的 precision、recall、sample F1 和 event F1。
-2. ON-period MAE、OFF false-power mean、event duration error。
-3. 每个电器的 predicted/true energy ratio。
-4. UK-DALE H2 与 REFIT H20 分开报告，检查一个域过预测、另一个域少预测的问题是否缩小。
-5. `sum(pred) > aggregate` 的比例与平均超额功率。
-6. 相同真实事件的 focused waveform 与 10x context waveform。
+1. Precision, recall, sample F1, and event F1 for every appliance.
+2. ON-period MAE, mean OFF-state false power, and event-duration error.
+3. Predicted/true energy ratio for every appliance.
+4. UK-DALE H2 and REFIT H20 separately, to determine whether overprediction in one domain and underprediction in the other have been reduced.
+5. The proportion where `sum(pred) > aggregate` and the mean excess power.
+6. Focused and 10x-context waveforms for the same true events.
 
-这版是有依据的实验设计，不保证一次训练就对所有电器同时达到最优。最重要的消融顺序是：relational attention、transition loss、IBN，逐项关掉确认收益来源。
+This is an evidence-based experimental design, but one training run is not guaranteed to optimize every appliance simultaneously. The most important ablation order is relational attention, transition loss, and IBN. Disable them one at a time to identify the source of each improvement.
