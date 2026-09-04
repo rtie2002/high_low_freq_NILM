@@ -20,10 +20,29 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import matplotlib.pyplot as plt
+import matplotlib
 import numpy as np
 import pandas as pd
-from matplotlib.widgets import Button, CheckButtons, RadioButtons, Slider, TextBox
+
+
+def configure_interactive_backend() -> None:
+    for backend in ("TkAgg", "QtAgg", "Qt5Agg"):
+        try:
+            matplotlib.use(backend, force=True)
+            return
+        except Exception:
+            continue
+    print(
+        "Warning: no interactive Matplotlib backend found. "
+        "Install tkinter/Qt or use this script on a machine with GUI support.",
+        flush=True,
+    )
+
+
+configure_interactive_backend()
+
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Button, RadioButtons, Slider, TextBox
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -44,8 +63,6 @@ from adapters.multinilm_fractional_residual import MultiNILMFractionalResidualAd
 from adapters.multinilm_kle import MultiNILMKLEAdapter
 from adapters.multinilm_no_distill import MultiNILMNoDistillAdapter
 from adapters.transfer_multi_appliance import TransferMultiApplianceAdapter
-from evaluation.plots import bundle_aggregate_watts, bundle_csv_appliance_watts
-from runner import evaluate_model
 
 
 MODELS = {
@@ -147,7 +164,12 @@ def prediction_path(args: argparse.Namespace, run_dir: Path) -> Path:
     return run_dir / f"{args.split}_predictions.npz"
 
 
-def load_or_create_bundle(args: argparse.Namespace, adapter: Any, run_dir: Path) -> PredictionBundle:
+def load_or_create_bundle(
+    args: argparse.Namespace,
+    adapter: Any,
+    run_dir: Path,
+    checkpoint: Path,
+) -> PredictionBundle:
     pred_path = prediction_path(args, run_dir)
     if pred_path.is_file():
         print(f"Loading predictions: {pred_path}", flush=True)
@@ -155,9 +177,11 @@ def load_or_create_bundle(args: argparse.Namespace, adapter: Any, run_dir: Path)
     if args.no_evaluate:
         raise FileNotFoundError(f"Missing predictions and --no-evaluate is set: {pred_path}")
     print(f"Predictions not found. Running checkpoint inference for split={args.split}...", flush=True)
+    from runner import evaluate_model
+
     pred_path = evaluate_model(
         adapter,
-        checkpoint=resolve_path(args.checkpoint),
+        checkpoint=checkpoint,
         run_dir=run_dir,
         split=args.split,
         show_cost_summary=False,
@@ -184,15 +208,51 @@ def load_time_axis(adapter: Any, bundle: PredictionBundle, split: str) -> np.nda
     return times.iloc[indices].to_numpy()
 
 
+def bundle_aggregate_watts_local(
+    data_loader: Any,
+    split: str,
+    *,
+    n_points: int,
+    csv_timesteps: np.ndarray | None,
+) -> np.ndarray | None:
+    if csv_timesteps is None:
+        return None
+    ts = np.asarray(csv_timesteps, dtype=np.int64).reshape(-1)
+    if len(ts) < int(n_points):
+        return None
+    try:
+        return data_loader.mains_watts_at_timesteps(split, ts[: int(n_points)])
+    except Exception:
+        return None
+
+
+def bundle_csv_appliance_watts_local(
+    data_loader: Any,
+    split: str,
+    *,
+    n_points: int,
+    csv_timesteps: np.ndarray | None,
+) -> np.ndarray | None:
+    if csv_timesteps is None:
+        return None
+    ts = np.asarray(csv_timesteps, dtype=np.int64).reshape(-1)
+    if len(ts) < int(n_points):
+        return None
+    try:
+        return data_loader.appliance_watts_at_timesteps(split, ts[: int(n_points)])
+    except Exception:
+        return None
+
+
 def aligned_arrays(adapter: Any, bundle: PredictionBundle, split: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     n = len(bundle.y_pred_watts)
-    aggregate = bundle_aggregate_watts(
+    aggregate = bundle_aggregate_watts_local(
         adapter._data_loader(),
         split,
         n_points=n,
         csv_timesteps=bundle.csv_timesteps,
     )
-    true_watts = bundle_csv_appliance_watts(
+    true_watts = bundle_csv_appliance_watts_local(
         adapter._data_loader(),
         split,
         n_points=n,
@@ -497,7 +557,7 @@ def main() -> None:
     out_dir = resolve_path(args.out_dir) if args.out_dir else run_dir / "paper_waveforms"
 
     adapter, _, _ = build_adapter(experiment, model_config, data_path)
-    bundle = load_or_create_bundle(args, adapter, run_dir)
+    bundle = load_or_create_bundle(args, adapter, run_dir, checkpoint)
     aggregate, y_true, y_pred, time_axis = aligned_arrays(adapter, bundle, args.split)
 
     print("Viewer ready.", flush=True)
