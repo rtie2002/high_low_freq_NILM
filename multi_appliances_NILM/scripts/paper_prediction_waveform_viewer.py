@@ -335,6 +335,29 @@ def style_axes(ax: plt.Axes, ax_bg: plt.Axes | None = None) -> None:
         ax_bg.tick_params(axis="y", labelsize=8, colors="#6f6f6f")
 
 
+def plot_background_area(ax: plt.Axes, x: np.ndarray, bg: np.ndarray, *, label: str) -> None:
+    """Draw aggregate/background as a soft gray context area."""
+    bg = np.maximum(np.asarray(bg, dtype=float), 0.0)
+    ax.fill_between(
+        x,
+        0,
+        bg,
+        color="#b8c4cc",
+        alpha=0.28,
+        linewidth=0,
+        label=label,
+        zorder=1,
+    )
+    ax.plot(
+        x,
+        bg,
+        color="#7f8c8d",
+        linewidth=0.9,
+        alpha=0.65,
+        zorder=2,
+    )
+
+
 def find_balanced_windows(true_power: np.ndarray, span: int, limit: int = 20) -> list[int]:
     """Suggest starts containing both active and inactive samples."""
     y = np.asarray(true_power, dtype=float).reshape(-1)
@@ -423,19 +446,10 @@ def draw_waveform(
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
     if bg is not None:
-        ax.plot(
-            x,
-            bg,
-            color="#9a9a9a",
-            linewidth=1.15,
-            alpha=0.62,
-            linestyle="-",
-            label="Aggregate/background power",
-            zorder=1,
-        )
+        plot_background_area(ax, x, bg, label="Aggregate/background power")
 
-    ax.plot(x, real, color="#1f4e79", linewidth=1.75, label="Real power", zorder=3)
-    ax.plot(x, pred, color="#d62728", linewidth=1.65, linestyle="--", label="Predicted power", zorder=4)
+    ax.plot(x, real, color="#2f80c9", linewidth=1.85, label="Real power", zorder=4)
+    ax.plot(x, pred, color="#c83e3a", linewidth=1.7, linestyle="--", label="Predicted power", zorder=5)
     ax.set_ylabel("Power (W)", fontsize=10)
     ax.set_xlabel(xlabel, fontsize=10)
     ax.set_title(f"{title_prefix}{app}", fontsize=11, pad=8)
@@ -488,9 +502,9 @@ def save_all_appliance_grid(
         pred = y_pred[sl, app_idx]
         bg = background_power(aggregate, y_true, app_idx)[sl] if len(aggregate) >= end else None
         if bg is not None:
-            ax.plot(x, bg, color="#9a9a9a", linewidth=0.95, alpha=0.55, label="Aggregate/background")
-        ax.plot(x, real, color="#1f4e79", linewidth=1.35, label="Real")
-        ax.plot(x, pred, color="#d62728", linewidth=1.2, linestyle="--", label="Predicted")
+            plot_background_area(ax, x, bg, label="Aggregate")
+        ax.plot(x, real, color="#2f80c9", linewidth=1.35, label="Real")
+        ax.plot(x, pred, color="#c83e3a", linewidth=1.2, linestyle="--", label="Predicted")
         ax.set_xlabel(xlabel, fontsize=9)
         ax.set_ylabel("Power (W)", fontsize=9)
         ax.set_title(f"{panel_letter(app_idx)} {app}", fontsize=20, fontfamily="serif", y=-0.34)
@@ -590,9 +604,9 @@ def interactive_viewer(
         bg = background_power(aggregate, y_true, app_idx)[sl] if len(aggregate) >= end else None
 
         if bg is not None:
-            ax.plot(x, bg, color="#9a9a9a", linewidth=1.1, alpha=0.58, label="Aggregate/background power")
-        ax.plot(x, real, color="#1f4e79", linewidth=1.75, label="Real power")
-        ax.plot(x, pred, color="#d62728", linewidth=1.65, linestyle="--", label="Predicted power")
+            plot_background_area(ax, x, bg, label="Aggregate/background power")
+        ax.plot(x, real, color="#2f80c9", linewidth=1.85, label="Real power")
+        ax.plot(x, pred, color="#c83e3a", linewidth=1.7, linestyle="--", label="Predicted power")
         ax.set_title(f"{bundle.model_name} {bundle.split} | {app} | samples {start}:{end}", fontsize=11)
         ax.set_ylabel("Power (W)", fontsize=10)
         ax.set_xlabel(xlabel, fontsize=10)
