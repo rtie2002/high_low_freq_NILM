@@ -113,6 +113,42 @@ def load_config(path: Path) -> dict[str, Any]:
         return yaml.safe_load(handle)
 
 
+def resolve_existing_path(path: Path) -> Path:
+    """Resolve relative paths against cwd first, then project root."""
+    if path.is_absolute():
+        return path
+    cwd_path = (Path.cwd() / path).resolve()
+    if cwd_path.exists():
+        return cwd_path
+    return (PROJECT_DIR / path).resolve()
+
+
+def resolve_raw_dir(raw_dir: Path) -> Path:
+    """Accept both UK_DALE/UKDALE2017 and UK_DALE raw layouts."""
+    base = resolve_existing_path(raw_dir)
+    candidates = [
+        base,
+        base / "UKDALE2017",
+        PROJECT_DIR / "dataset_preprocess" / "UK_DALE" / "UKDALE2017",
+        PROJECT_DIR / "dataset_preprocess" / "UK_DALE",
+    ]
+    tried: list[Path] = []
+    for candidate in candidates:
+        candidate = candidate.resolve()
+        if candidate in tried:
+            continue
+        tried.append(candidate)
+        if (candidate / "house_1" / "mains.dat").is_file() and (
+            candidate / "house_2" / "mains.dat"
+        ).is_file():
+            return candidate
+    raise FileNotFoundError(
+        "Could not find raw UK-DALE mains files. Tried:\n  - "
+        + "\n  - ".join(str(path) for path in tried)
+        + "\nExpected a folder containing house_1\\mains.dat and house_2\\mains.dat."
+    )
+
+
 def selected_appliances(config: dict[str, Any], appliances_arg: str | None) -> list[str]:
     if appliances_arg:
         appliances = [item.strip() for item in appliances_arg.split(",") if item.strip()]
@@ -466,18 +502,21 @@ def write_split(df: pd.DataFrame, path: Path) -> None:
 
 def main() -> None:
     args = parse_args()
-    config = load_config(args.config)
+    config_path = resolve_existing_path(args.config)
+    raw_dir = resolve_raw_dir(args.raw_dir)
+    out_dir = resolve_existing_path(args.out_dir)
+    config = load_config(config_path)
     appliances = selected_appliances(config, args.appliances)
     trim_common_start = not args.no_trim_to_common_start
 
     print("Raw UK-DALE 1-minute cross-house preparation", flush=True)
-    print(f"config    : {args.config}", flush=True)
-    print(f"raw_dir   : {args.raw_dir}", flush=True)
-    print(f"out_dir   : {args.out_dir}", flush=True)
+    print(f"config    : {config_path}", flush=True)
+    print(f"raw_dir   : {raw_dir}", flush=True)
+    print(f"out_dir   : {out_dir}", flush=True)
     print(f"appliances: {appliances}", flush=True)
 
     house1 = build_house_raw_1min(
-        args.raw_dir,
+        raw_dir,
         1,
         appliances,
         config,
@@ -486,7 +525,7 @@ def main() -> None:
         trim_common_start=trim_common_start,
     )
     house2 = build_house_raw_1min(
-        args.raw_dir,
+        raw_dir,
         2,
         appliances,
         config,
@@ -498,9 +537,9 @@ def main() -> None:
     train, val = split_house1(house1, args.val_fraction)
     test = house2.reset_index(drop=True)
 
-    train_path = args.out_dir / "training" / "multi_appliance_training.csv"
-    val_path = args.out_dir / "validating" / "multi_appliance_validating.csv"
-    test_path = args.out_dir / "testing" / "multi_appliance_testing.csv"
+    train_path = out_dir / "training" / "multi_appliance_training.csv"
+    val_path = out_dir / "validating" / "multi_appliance_validating.csv"
+    test_path = out_dir / "testing" / "multi_appliance_testing.csv"
 
     write_split(train, train_path)
     write_split(val, val_path)
@@ -511,8 +550,8 @@ def main() -> None:
         "resolution": "1min",
         "source": "raw_dat",
         "protocol": "train house 1, test house 2",
-        "raw_dir": str(args.raw_dir),
-        "config": str(args.config),
+        "raw_dir": str(raw_dir),
+        "config": str(config_path),
         "appliances": appliances,
         "train_file": str(train_path),
         "validation_file": str(val_path),
@@ -524,7 +563,7 @@ def main() -> None:
             "test": int(len(test)),
         },
     }
-    meta_path = args.out_dir / "split_meta.json"
+    meta_path = out_dir / "split_meta.json"
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     print(f"Wrote {meta_path}", flush=True)
