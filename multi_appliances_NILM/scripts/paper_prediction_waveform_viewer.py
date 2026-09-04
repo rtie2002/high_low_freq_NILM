@@ -98,7 +98,13 @@ def parse_args() -> argparse.Namespace:
         help="Do not run checkpoint inference if predictions are missing.",
     )
     parser.add_argument("--start", type=int, default=0, help="Initial prediction timeline index.")
-    parser.add_argument("--span", type=int, default=1200, help="Initial visible samples.")
+    parser.add_argument("--span", type=int, default=120, help="Initial visible samples after display resampling.")
+    parser.add_argument(
+        "--display-resolution",
+        choices=["1min", "native"],
+        default="1min",
+        help="Resolution shown in the viewer/export. Default: 1min.",
+    )
     parser.add_argument("--dpi", type=int, default=600, help="Export DPI.")
     parser.add_argument("--fig-width", type=float, default=7.2, help="Export figure width in inches.")
     parser.add_argument("--fig-height", type=float, default=3.2, help="Export figure height in inches.")
@@ -266,6 +272,56 @@ def aligned_arrays(adapter: Any, bundle: PredictionBundle, split: str) -> tuple[
         np.maximum(np.asarray(bundle.y_pred_watts, dtype=float), 0.0),
         load_time_axis(adapter, bundle, split),
     )
+
+
+def resample_display_arrays(
+    aggregate: np.ndarray,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    time_axis: np.ndarray | None,
+    *,
+    resolution: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+    if resolution == "native":
+        return aggregate, y_true, y_pred, time_axis
+
+    n = min(len(aggregate), len(y_true), len(y_pred))
+    aggregate = np.asarray(aggregate[:n], dtype=float)
+    y_true = np.asarray(y_true[:n], dtype=float)
+    y_pred = np.asarray(y_pred[:n], dtype=float)
+
+    if time_axis is not None and len(time_axis) >= n:
+        times = pd.to_datetime(pd.Series(time_axis[:n]), errors="coerce")
+        frame = pd.DataFrame({"aggregate": aggregate})
+        for idx in range(y_true.shape[1]):
+            frame[f"true_{idx}"] = y_true[:, idx]
+            frame[f"pred_{idx}"] = y_pred[:, idx]
+        frame["time"] = times
+        frame = frame.dropna(subset=["time"]).set_index("time").sort_index()
+        if frame.empty:
+            return aggregate, y_true, y_pred, time_axis
+        minute = frame.resample("1min").mean().dropna(subset=["aggregate"])
+        agg_1m = minute["aggregate"].to_numpy(dtype=float)
+        true_1m = np.stack(
+            [minute[f"true_{idx}"].fillna(0.0).to_numpy(dtype=float) for idx in range(y_true.shape[1])],
+            axis=1,
+        )
+        pred_1m = np.stack(
+            [minute[f"pred_{idx}"].fillna(0.0).to_numpy(dtype=float) for idx in range(y_pred.shape[1])],
+            axis=1,
+        )
+        return agg_1m, true_1m, pred_1m, minute.index.to_numpy()
+
+    sample_seconds = infer_sample_seconds(time_axis)
+    samples_per_min = int(round(60.0 / sample_seconds)) if sample_seconds and sample_seconds > 0 else 10
+    samples_per_min = max(1, samples_per_min)
+    usable = (n // samples_per_min) * samples_per_min
+    if usable <= 0:
+        return aggregate, y_true, y_pred, time_axis
+    agg_1m = aggregate[:usable].reshape(-1, samples_per_min).mean(axis=1)
+    true_1m = y_true[:usable].reshape(-1, samples_per_min, y_true.shape[1]).mean(axis=1)
+    pred_1m = y_pred[:usable].reshape(-1, samples_per_min, y_pred.shape[1]).mean(axis=1)
+    return agg_1m, true_1m, pred_1m, None
 
 
 def style_axes(ax: plt.Axes, ax_bg: plt.Axes | None = None) -> None:
@@ -655,10 +711,18 @@ def main() -> None:
     adapter, _, _ = build_adapter(experiment, model_config, data_path)
     bundle = load_or_create_bundle(args, adapter, run_dir, checkpoint)
     aggregate, y_true, y_pred, time_axis = aligned_arrays(adapter, bundle, args.split)
+    aggregate, y_true, y_pred, time_axis = resample_display_arrays(
+        aggregate,
+        y_true,
+        y_pred,
+        time_axis,
+        resolution=args.display_resolution,
+    )
 
     print("Viewer ready.", flush=True)
     print(f"checkpoint : {checkpoint}", flush=True)
     print(f"split      : {args.split}", flush=True)
+    print(f"display    : {args.display_resolution}", flush=True)
     print(f"samples    : {len(y_pred):,}", flush=True)
     print(f"appliances : {', '.join(bundle.appliances)}", flush=True)
     print(f"exports    : {out_dir}", flush=True)
