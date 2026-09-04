@@ -271,7 +271,7 @@ def aligned_arrays(adapter: Any, bundle: PredictionBundle, split: str) -> tuple[
 def style_axes(ax: plt.Axes, ax_bg: plt.Axes | None = None) -> None:
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.grid(True, axis="y", color="#d9d9d9", linewidth=0.6, alpha=0.75)
+    ax.grid(True, color="#bfbfbf", linewidth=0.65, alpha=0.55)
     ax.tick_params(axis="both", labelsize=9)
     if ax_bg is not None:
         ax_bg.spines["top"].set_visible(False)
@@ -299,6 +299,39 @@ def find_balanced_windows(true_power: np.ndarray, span: int, limit: int = 20) ->
     return starts or list(range(0, min(n - span + 1, step * limit), step))
 
 
+def infer_sample_seconds(time_axis: np.ndarray | None) -> float | None:
+    if time_axis is None or len(time_axis) < 2:
+        return None
+    times = pd.to_datetime(pd.Series(time_axis), errors="coerce")
+    deltas = times.diff().dt.total_seconds().dropna()
+    deltas = deltas[np.isfinite(deltas) & (deltas > 0)]
+    if deltas.empty:
+        return None
+    return float(deltas.median())
+
+
+def relative_time_axis(start: int, end: int, sample_seconds: float | None) -> tuple[np.ndarray, str]:
+    points = np.arange(0, max(1, end - start), dtype=float)
+    if sample_seconds is None:
+        return points, "Sample"
+    seconds = points * float(sample_seconds)
+    if seconds[-1] >= 900:
+        return seconds / 60.0, "Time (min)"
+    return seconds, "Time (s)"
+
+
+def background_power(aggregate: np.ndarray, true_power: np.ndarray, app_idx: int) -> np.ndarray:
+    """Non-target load for one appliance: aggregate minus its real power."""
+    if len(aggregate) != len(true_power):
+        return np.zeros(len(true_power), dtype=float)
+    bg = np.asarray(aggregate, dtype=float) - np.asarray(true_power[:, app_idx], dtype=float)
+    return np.maximum(bg, 0.0)
+
+
+def panel_letter(idx: int) -> str:
+    return f"({chr(ord('a') + idx)})"
+
+
 def draw_waveform(
     *,
     output_path: Path | None,
@@ -321,55 +354,43 @@ def draw_waveform(
     end = max(start + 1, min(n, start + int(span)))
     sl = slice(start, end)
 
-    if time_axis is not None:
-        x = time_axis[sl]
-        xlabel = "Time"
-    elif len(aggregate) == n:
-        x = np.arange(start, end)
-        xlabel = "Prediction timeline index"
-    else:
-        x = np.arange(start, end)
-        xlabel = "Prediction timeline index"
+    x, xlabel = relative_time_axis(start, end, infer_sample_seconds(time_axis))
 
     app = appliances[app_idx]
     real = y_true[sl, app_idx]
     pred = y_pred[sl, app_idx]
-    bg = aggregate[sl] if len(aggregate) >= end else None
+    bg = background_power(aggregate, y_true, app_idx)[sl] if len(aggregate) >= end else None
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
-    ax_bg = ax.twinx() if bg is not None else None
 
-    if bg is not None and ax_bg is not None:
-        ax_bg.plot(
+    if bg is not None:
+        ax.plot(
             x,
             bg,
-            color="#7f7f7f",
-            linewidth=1.0,
-            alpha=0.42,
+            color="#9a9a9a",
+            linewidth=1.15,
+            alpha=0.62,
             linestyle="-",
-            label="Aggregate/background power",
+            label="Background power",
             zorder=1,
         )
-        ax_bg.set_ylabel("Aggregate power (W)", fontsize=9, color="#6f6f6f")
 
-    ax.plot(x, real, color="#1f4e79", linewidth=1.7, label="Real appliance power", zorder=3)
-    ax.plot(x, pred, color="#b22222", linewidth=1.55, linestyle="--", label="Predicted appliance power", zorder=4)
-    ax.set_ylabel(f"{app} power (W)", fontsize=10)
+    ax.plot(x, real, color="#1f4e79", linewidth=1.75, label="Real power", zorder=3)
+    ax.plot(x, pred, color="#d62728", linewidth=1.65, linestyle="--", label="Predicted power", zorder=4)
+    ax.set_ylabel("Power (W)", fontsize=10)
     ax.set_xlabel(xlabel, fontsize=10)
-    ax.set_title(f"{title_prefix}{app}: real vs predicted power", fontsize=11, pad=8)
-    style_axes(ax, ax_bg)
+    ax.set_title(f"{title_prefix}{app}", fontsize=11, pad=8)
+    style_axes(ax)
 
-    ymax = max(1.0, float(np.nanmax(real)), float(np.nanmax(pred)))
-    ymin = min(0.0, float(np.nanmin(real)), float(np.nanmin(pred)))
+    candidates = [real, pred]
+    if bg is not None:
+        candidates.append(bg)
+    ymax = max(1.0, *(float(np.nanmax(v)) for v in candidates if len(v)))
+    ymin = min(0.0, *(float(np.nanmin(v)) for v in candidates if len(v)))
     pad = max(1.0, 0.12 * (ymax - ymin))
     ax.set_ylim(ymin - pad, ymax + pad)
 
-    lines, labels = ax.get_legend_handles_labels()
-    if ax_bg is not None:
-        bg_lines, bg_labels = ax_bg.get_legend_handles_labels()
-        lines += bg_lines
-        labels += bg_labels
-    ax.legend(lines, labels, loc="upper center", bbox_to_anchor=(0.5, 1.18), ncol=3, frameon=False, fontsize=9)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.18), ncol=3, frameon=False, fontsize=9)
     fig.tight_layout(pad=0.8)
 
     if output_path is not None:
@@ -379,6 +400,61 @@ def draw_waveform(
     if not show:
         plt.close(fig)
     return fig, ax
+
+
+def save_all_appliance_grid(
+    *,
+    output_path: Path,
+    appliances: list[str],
+    start: int,
+    span: int,
+    aggregate: np.ndarray,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    time_axis: np.ndarray | None,
+    dpi: int,
+    title_prefix: str,
+) -> Path:
+    n = len(y_pred)
+    start = max(0, min(int(start), max(0, n - 1)))
+    end = max(start + 1, min(n, start + int(span)))
+    sl = slice(start, end)
+    x, xlabel = relative_time_axis(start, end, infer_sample_seconds(time_axis))
+
+    fig, axes = plt.subplots(2, 3, figsize=(12.8, 7.2))
+    axes_flat = axes.reshape(-1)
+    for app_idx, app in enumerate(appliances):
+        ax = axes_flat[app_idx]
+        real = y_true[sl, app_idx]
+        pred = y_pred[sl, app_idx]
+        bg = background_power(aggregate, y_true, app_idx)[sl] if len(aggregate) >= end else None
+        if bg is not None:
+            ax.plot(x, bg, color="#9a9a9a", linewidth=0.95, alpha=0.55, label="Background")
+        ax.plot(x, real, color="#1f4e79", linewidth=1.35, label="Real")
+        ax.plot(x, pred, color="#d62728", linewidth=1.2, linestyle="--", label="Predicted")
+        ax.set_xlabel(xlabel, fontsize=9)
+        ax.set_ylabel("Power (W)", fontsize=9)
+        ax.set_title(f"{panel_letter(app_idx)} {app}", fontsize=20, fontfamily="serif", y=-0.34)
+        style_axes(ax)
+        candidates = [real, pred]
+        if bg is not None:
+            candidates.append(bg)
+        ymax = max(1.0, *(float(np.nanmax(v)) for v in candidates if len(v)))
+        ymin = min(0.0, *(float(np.nanmin(v)) for v in candidates if len(v)))
+        pad = max(1.0, 0.10 * (ymax - ymin))
+        ax.set_ylim(ymin - pad, ymax + pad)
+        ax.legend(loc="upper left", frameon=True, framealpha=0.85, fontsize=8)
+
+    for ax in axes_flat[len(appliances) :]:
+        ax.axis("off")
+
+    fig.suptitle(f"{title_prefix}samples {start}:{end}", fontsize=12, y=0.98)
+    fig.tight_layout(rect=[0, 0.03, 1, 0.96], h_pad=3.0, w_pad=2.4)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {output_path}", flush=True)
+    return output_path
 
 
 def interactive_viewer(
@@ -407,7 +483,6 @@ def interactive_viewer(
 
     fig = plt.figure(figsize=(10.8, 6.2))
     ax = fig.add_axes([0.08, 0.24, 0.68, 0.62])
-    ax_bg = ax.twinx()
 
     ax_app = fig.add_axes([0.80, 0.45, 0.17, 0.38])
     radios = RadioButtons(ax_app, appliances, active=0)
@@ -427,15 +502,16 @@ def interactive_viewer(
     ax_prev = fig.add_axes([0.80, 0.26, 0.075, 0.045])
     ax_next = fig.add_axes([0.895, 0.26, 0.075, 0.045])
     ax_suggest = fig.add_axes([0.80, 0.19, 0.17, 0.045])
-    ax_save = fig.add_axes([0.80, 0.11, 0.17, 0.052])
+    ax_save = fig.add_axes([0.80, 0.12, 0.17, 0.045])
+    ax_save_grid = fig.add_axes([0.80, 0.055, 0.17, 0.045])
     prev_btn = Button(ax_prev, "Back")
     next_btn = Button(ax_next, "Next")
     suggest_btn = Button(ax_suggest, "Fair window")
-    save_btn = Button(ax_save, "Save high-DPI")
+    save_btn = Button(ax_save, "Save panel")
+    save_grid_btn = Button(ax_save_grid, "Save all apps")
 
     def clear_axes() -> None:
         ax.clear()
-        ax_bg.clear()
 
     def redraw(_=None) -> None:
         state["start"] = int(start_slider.val)
@@ -449,27 +525,27 @@ def interactive_viewer(
         sl = slice(start, end)
         app_idx = state["app_idx"]
         app = appliances[app_idx]
-        x = time_axis[sl] if time_axis is not None else np.arange(start, end)
+        x, xlabel = relative_time_axis(start, end, infer_sample_seconds(time_axis))
         real = y_true[sl, app_idx]
         pred = y_pred[sl, app_idx]
-        bg = aggregate[sl] if len(aggregate) >= end else None
+        bg = background_power(aggregate, y_true, app_idx)[sl] if len(aggregate) >= end else None
 
         if bg is not None:
-            ax_bg.plot(x, bg, color="#7f7f7f", linewidth=1.0, alpha=0.42, label="Aggregate/background power")
-            ax_bg.set_ylabel("Aggregate power (W)", fontsize=9, color="#6f6f6f")
-        ax.plot(x, real, color="#1f4e79", linewidth=1.7, label="Real appliance power")
-        ax.plot(x, pred, color="#b22222", linewidth=1.55, linestyle="--", label="Predicted appliance power")
+            ax.plot(x, bg, color="#9a9a9a", linewidth=1.1, alpha=0.58, label="Background power")
+        ax.plot(x, real, color="#1f4e79", linewidth=1.75, label="Real power")
+        ax.plot(x, pred, color="#d62728", linewidth=1.65, linestyle="--", label="Predicted power")
         ax.set_title(f"{bundle.model_name} {bundle.split} | {app} | samples {start}:{end}", fontsize=11)
-        ax.set_ylabel(f"{app} power (W)", fontsize=10)
-        ax.set_xlabel("Time" if time_axis is not None else "Prediction timeline index", fontsize=10)
-        style_axes(ax, ax_bg)
-        ymax = max(1.0, float(np.nanmax(real)), float(np.nanmax(pred)))
-        ymin = min(0.0, float(np.nanmin(real)), float(np.nanmin(pred)))
+        ax.set_ylabel("Power (W)", fontsize=10)
+        ax.set_xlabel(xlabel, fontsize=10)
+        style_axes(ax)
+        candidates = [real, pred]
+        if bg is not None:
+            candidates.append(bg)
+        ymax = max(1.0, *(float(np.nanmax(v)) for v in candidates if len(v)))
+        ymin = min(0.0, *(float(np.nanmin(v)) for v in candidates if len(v)))
         pad = max(1.0, 0.12 * (ymax - ymin))
         ax.set_ylim(ymin - pad, ymax + pad)
-        lines, labels = ax.get_legend_handles_labels()
-        bg_lines, bg_labels = ax_bg.get_legend_handles_labels()
-        ax.legend(lines + bg_lines, labels + bg_labels, loc="upper center", bbox_to_anchor=(0.5, 1.16), ncol=3, frameon=False, fontsize=9)
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.16), ncol=3, frameon=False, fontsize=9)
         fig.canvas.draw_idle()
 
     def set_app(label: str) -> None:
@@ -522,6 +598,21 @@ def interactive_viewer(
             show=False,
         )
 
+    def save_grid(_=None) -> None:
+        path = out_dir / f"{bundle.split}_all_appliances_{state['start']:07d}_{state['start'] + state['span']:07d}.png"
+        save_all_appliance_grid(
+            output_path=path,
+            appliances=appliances,
+            start=state["start"],
+            span=state["span"],
+            aggregate=aggregate,
+            y_true=y_true,
+            y_pred=y_pred,
+            time_axis=time_axis,
+            dpi=dpi,
+            title_prefix=f"{bundle.model_name} {bundle.split} | ",
+        )
+
     radios.on_clicked(set_app)
     start_slider.on_changed(redraw)
     span_slider.on_changed(redraw)
@@ -531,6 +622,7 @@ def interactive_viewer(
     next_btn.on_clicked(lambda _: move(int(span_slider.val // 2)))
     suggest_btn.on_clicked(fair_window)
     save_btn.on_clicked(save_current)
+    save_grid_btn.on_clicked(save_grid)
 
     state["widget_refs"] = [
         radios,
@@ -542,6 +634,7 @@ def interactive_viewer(
         next_btn,
         suggest_btn,
         save_btn,
+        save_grid_btn,
     ]
     redraw()
     plt.show()
