@@ -321,11 +321,14 @@ def relative_time_axis(start: int, end: int, sample_seconds: float | None) -> tu
 
 
 def background_power(aggregate: np.ndarray, true_power: np.ndarray, app_idx: int) -> np.ndarray:
-    """Non-target load for one appliance: aggregate minus its real power."""
-    if len(aggregate) != len(true_power):
-        return np.zeros(len(true_power), dtype=float)
-    bg = np.asarray(aggregate, dtype=float) - np.asarray(true_power[:, app_idx], dtype=float)
-    return np.maximum(bg, 0.0)
+    """Aggregate/background input power aligned to the prediction timeline.
+
+    For the paper figure we show the model input context, i.e. the aggregate
+    household power from the test CSV. Do not subtract the selected appliance:
+    that makes the gray line a residual load and can sit below the appliance.
+    """
+    del true_power, app_idx
+    return np.maximum(np.asarray(aggregate, dtype=float), 0.0)
 
 
 def panel_letter(idx: int) -> str:
@@ -371,7 +374,7 @@ def draw_waveform(
             linewidth=1.15,
             alpha=0.62,
             linestyle="-",
-            label="Background power",
+            label="Aggregate/background power",
             zorder=1,
         )
 
@@ -429,7 +432,7 @@ def save_all_appliance_grid(
         pred = y_pred[sl, app_idx]
         bg = background_power(aggregate, y_true, app_idx)[sl] if len(aggregate) >= end else None
         if bg is not None:
-            ax.plot(x, bg, color="#9a9a9a", linewidth=0.95, alpha=0.55, label="Background")
+            ax.plot(x, bg, color="#9a9a9a", linewidth=0.95, alpha=0.55, label="Aggregate/background")
         ax.plot(x, real, color="#1f4e79", linewidth=1.35, label="Real")
         ax.plot(x, pred, color="#d62728", linewidth=1.2, linestyle="--", label="Predicted")
         ax.set_xlabel(xlabel, fontsize=9)
@@ -531,7 +534,7 @@ def interactive_viewer(
         bg = background_power(aggregate, y_true, app_idx)[sl] if len(aggregate) >= end else None
 
         if bg is not None:
-            ax.plot(x, bg, color="#9a9a9a", linewidth=1.1, alpha=0.58, label="Background power")
+            ax.plot(x, bg, color="#9a9a9a", linewidth=1.1, alpha=0.58, label="Aggregate/background power")
         ax.plot(x, real, color="#1f4e79", linewidth=1.75, label="Real power")
         ax.plot(x, pred, color="#d62728", linewidth=1.65, linestyle="--", label="Predicted power")
         ax.set_title(f"{bundle.model_name} {bundle.split} | {app} | samples {start}:{end}", fontsize=11)
