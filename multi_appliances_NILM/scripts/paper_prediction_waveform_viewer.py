@@ -63,7 +63,12 @@ MODELS = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Journal-style NILM prediction waveform viewer.")
-    parser.add_argument("--checkpoint", type=Path, required=True, help="Checkpoint .pt to evaluate/plot.")
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help="Checkpoint .pt to evaluate/plot. If omitted, the script asks you to paste one.",
+    )
     parser.add_argument("--experiment", type=Path, required=True, help="Experiment dataset YAML.")
     parser.add_argument("--model-config", type=Path, required=True, help="Model YAML used by the checkpoint.")
     parser.add_argument("--split", choices=["validation", "test"], default="test")
@@ -91,6 +96,24 @@ def resolve_path(path: Path) -> Path:
     if cwd_path.exists():
         return cwd_path
     return (PROJECT_DIR / path).resolve()
+
+
+def prompt_checkpoint(path: Path | None) -> Path:
+    if path is not None and str(path).strip() and "YOUR_CHECKPOINT" not in str(path):
+        resolved = resolve_path(path)
+        if resolved.is_file():
+            return resolved
+        print(f"Checkpoint not found: {resolved}", flush=True)
+
+    while True:
+        raw = input("Paste checkpoint path (.pt): ").strip().strip('"').strip("'")
+        if not raw:
+            print("Please paste a checkpoint path.", flush=True)
+            continue
+        resolved = resolve_path(Path(raw))
+        if resolved.is_file():
+            return resolved
+        print(f"File not found: {resolved}", flush=True)
 
 
 def default_run_dir(checkpoint: Path) -> Path:
@@ -466,7 +489,7 @@ def interactive_viewer(
 
 def main() -> None:
     args = parse_args()
-    checkpoint = resolve_path(args.checkpoint)
+    checkpoint = prompt_checkpoint(args.checkpoint)
     experiment = resolve_path(args.experiment)
     model_config = resolve_path(args.model_config)
     data_path = resolve_path(args.data_path) if args.data_path else None
