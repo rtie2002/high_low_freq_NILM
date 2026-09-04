@@ -102,6 +102,41 @@ $$
 F_i = D_i(F_{shared}\odot M_i).
 $$
 
+The exact structure of one appliance head is:
+
+```mermaid
+flowchart LR
+    S[Shared TCN feature<br/>B x 128 x T] --> C1[1x1 Conv<br/>128 to 32]
+    C1 --> R1[ReLU]
+    R1 --> C2[1x1 Conv<br/>32 to 128]
+    C2 --> SIG[Sigmoid mask Mi<br/>B x 128 x T]
+
+    S --> MUL[Element-wise multiply]
+    SIG --> MUL
+    MUL --> A[Attended feature<br/>B x 128 x T]
+
+    A --> D1[3x1 Conv<br/>128 to 128]
+    D1 --> N1[BatchNorm + ReLU]
+    N1 --> D2[3x1 Conv<br/>128 to 128]
+    D2 --> N2[BatchNorm + ReLU]
+
+    A --> ADD[Residual add]
+    N2 --> ADD
+    ADD --> DROP[Dropout]
+    DROP --> FI[Appliance feature Fi<br/>B x 128 x T]
+```
+
+This module is repeated independently for kettle, refrigerator, dishwasher, washing machine, and microwave. The mask uses `Sigmoid`, not `Softmax`, so multiple feature channels can be emphasized simultaneously at each timestep.
+
+| Task-attention item | Current value |
+|---|---:|
+| Shared feature channels | 128 |
+| Reduction ratio | 4 |
+| Attention bottleneck channels | 32 |
+| Local decoder layers | 2 |
+| Local decoder kernel | 3 |
+| Output shape per appliance | $B\times128\times T$ |
+
 The microwave head can emphasize short, high-power pulses, while the refrigerator head can emphasize low-power periodic patterns. This idea is based on [MTAN: End-To-End Multi-Task Learning With Attention](https://openaccess.thecvf.com/content_CVPR_2019/html/Liu_End-To-End_Multi-Task_Learning_With_Attention_CVPR_2019_paper.html).
 
 ## 3. Cross-appliance relation attention
@@ -121,6 +156,53 @@ $$
 $$
 F'_i=F_i+\rho\,G_i\odot W_o C_i.
 $$
+
+The current relation-attention structure is:
+
+```mermaid
+flowchart TB
+    F[Five appliance features<br/>5 x B x 128 x T] --> ST[Stack appliances<br/>B x 5 x 128 x T]
+
+    ST --> Q[Q projection<br/>1x1 Conv: 128 to 16]
+    ST --> K[K projection<br/>1x1 Conv: 128 to 16]
+    ST --> V[V projection<br/>1x1 Conv: 128 to 16]
+
+    Q --> QT[Q: B x T x 5 x 16]
+    K --> KT[K: B x T x 5 x 16]
+    V --> VT[V: B x T x 5 x 16]
+
+    QT --> SCORE[Scaled dot product<br/>Q times K transpose / sqrt 16]
+    KT --> SCORE
+    SCORE --> SM[Softmax over source appliance j<br/>B x T x 5 x 5]
+    SM --> CTX[Weighted sum of V]
+    VT --> CTX
+    CTX --> C[Context<br/>B x T x 5 x 16]
+    C --> OUT[Output projection<br/>1x1 Conv: 16 to 128]
+    OUT --> MSG[Message for appliance i<br/>B x 128 x T]
+
+    ST --> FI[Original feature Fi<br/>B x 128 x T]
+    FI --> CAT[Concatenate Fi and message<br/>B x 256 x T]
+    MSG --> CAT
+    CAT --> G[1x1 Conv: 256 to 128<br/>Sigmoid message gate Gi]
+
+    MSG --> GM[Gate message]
+    G --> GM
+    GM --> SCALE[Dropout and scale by rho 0.25]
+    SCALE --> RES[Residual add]
+    FI --> RES
+    RES --> FO[Related feature Fi prime<br/>B x 128 x T]
+```
+
+Attention is computed independently at each timestep. Its attention matrix is only $5\times5$, because the tokens are appliances rather than the full temporal sequence.
+
+| Relation-attention item | Current value |
+|---|---:|
+| Appliance tokens | 5 |
+| Input/output channels | 128 |
+| Query/key/value channels | 16 |
+| Attention matrix per timestep | $5\times5$ |
+| Residual message scale $\rho$ | 0.25 |
+| Output shape per appliance | $B\times128\times T$ |
 
 `G_i` is a learned message gate. When a high-power event occurs, the model can compare the evidence from the kettle, dishwasher, washing machine, and microwave heads instead of making five completely independent decisions.
 
@@ -372,6 +454,40 @@ architecture:
 | Stem skip projection, when required | 32 channels | 16 IN + 16 BN |
 | Staged convolution 32 -> 64 | 64 channels | 32 IN + 32 BN |
 | Staged convolution 64 -> 128 | 128 channels | 64 IN + 64 BN |
+
+The complete early-IBN feature extractor can be used as the following implementation reference:
+
+```mermaid
+flowchart TB
+    X[Input feature window<br/>B x Cin x T]
+
+    X --> K3[Conv1d kernel 3<br/>Cin to 16]
+    X --> K5[Conv1d kernel 5<br/>Cin to 16]
+    X --> K9[Conv1d kernel 9<br/>Cin to 16]
+
+    K3 --> I3[IBN: 8 IN + 8 BN<br/>ReLU]
+    K5 --> I5[IBN: 8 IN + 8 BN<br/>ReLU]
+    K9 --> I9[IBN: 8 IN + 8 BN<br/>ReLU]
+
+    I3 --> CAT[Concatenate branches<br/>B x 48 x T]
+    I5 --> CAT
+    I9 --> CAT
+    CAT --> FUSE[1x1 Conv<br/>48 to 32]
+    FUSE --> IF[IBN: 16 IN + 16 BN<br/>ReLU]
+
+    X --> SKIP[Skip 1x1 Conv<br/>Cin to 32]
+    SKIP --> IS[IBN: 16 IN + 16 BN]
+    IF --> ADD[Residual add]
+    IS --> ADD
+
+    ADD --> S32[Stem output<br/>B x 32 x T]
+    S32 --> C64[Conv1d kernel 5<br/>32 to 64]
+    C64 --> I64[IBN: 32 IN + 32 BN<br/>ReLU]
+    I64 --> C128[Conv1d kernel 5<br/>64 to 128]
+    C128 --> I128[IBN: 64 IN + 64 BN<br/>ReLU]
+    I128 --> OUT[Early feature output<br/>B x 128 x T]
+    OUT --> TCN[4-block TCN<br/>BatchNorm only]
+```
 
 Within each detail branch and staged layer, the operation order is `Conv1d -> IBN1d -> ReLU`. The three detail branches are concatenated, projected by a `1x1 Conv1d`, normalized by IBN, and activated. The stem skip path is also projected and normalized when its channel dimension does not already match 32. The normalized main and skip paths are then added.
 
