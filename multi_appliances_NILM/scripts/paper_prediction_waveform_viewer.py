@@ -86,12 +86,22 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Checkpoint .pt to evaluate/plot. If omitted, the script asks you to paste one.",
     )
+    parser.add_argument(
+        "--checkpoint-b",
+        type=Path,
+        default=None,
+        help="Optional second checkpoint .pt for waveform comparison.",
+    )
     parser.add_argument("--experiment", type=Path, required=True, help="Experiment dataset YAML.")
     parser.add_argument("--model-config", type=Path, required=True, help="Model YAML used by the checkpoint.")
     parser.add_argument("--split", choices=["validation", "test"], default="test")
     parser.add_argument("--data-path", type=Path, default=None, help="Optional override for experiment data_root.")
     parser.add_argument("--run-dir", type=Path, default=None, help="Run directory. Default: checkpoint parent.")
+    parser.add_argument("--run-dir-b", type=Path, default=None, help="Run directory for checkpoint-b.")
     parser.add_argument("--predictions", type=Path, default=None, help="Existing *_predictions.npz to load.")
+    parser.add_argument("--predictions-b", type=Path, default=None, help="Existing *_predictions.npz for checkpoint-b.")
+    parser.add_argument("--label-a", type=str, default="Baseline (0%)", help="Legend label for first checkpoint.")
+    parser.add_argument("--label-b", type=str, default="Injection Ratio (100%)", help="Legend label for second checkpoint.")
     parser.add_argument(
         "--no-evaluate",
         action="store_true",
@@ -139,6 +149,26 @@ def prompt_checkpoint(path: Path | None) -> Path:
         print(f"File not found: {resolved}", flush=True)
 
 
+def prompt_optional_checkpoint(path: Path | None) -> Path | None:
+    if path is not None and str(path).strip() and "YOUR_CHECKPOINT" not in str(path):
+        resolved = resolve_path(path)
+        if resolved.is_file():
+            return resolved
+        print(f"Second checkpoint not found: {resolved}", flush=True)
+
+    raw = input("Paste second checkpoint path (.pt), or press Enter to skip: ").strip().strip('"').strip("'")
+    if not raw:
+        return None
+    while True:
+        resolved = resolve_path(Path(raw))
+        if resolved.is_file():
+            return resolved
+        print(f"File not found: {resolved}", flush=True)
+        raw = input("Paste second checkpoint path (.pt), or press Enter to skip: ").strip().strip('"').strip("'")
+        if not raw:
+            return None
+
+
 def default_run_dir(checkpoint: Path) -> Path:
     return checkpoint.resolve().parent
 
@@ -164,7 +194,13 @@ def build_adapter(
     return adapter, experiment, model_cfg
 
 
-def prediction_path(args: argparse.Namespace, run_dir: Path) -> Path:
+def prediction_path(predictions: Path | None, run_dir: Path, split: str) -> Path:
+    if predictions:
+        return resolve_path(predictions)
+    return run_dir / f"{split}_predictions.npz"
+
+
+def arg_prediction_path(args: argparse.Namespace, run_dir: Path) -> Path:
     if args.predictions:
         return resolve_path(args.predictions)
     return run_dir / f"{args.split}_predictions.npz"
@@ -175,8 +211,9 @@ def load_or_create_bundle(
     adapter: Any,
     run_dir: Path,
     checkpoint: Path,
+    predictions: Path | None = None,
 ) -> PredictionBundle:
-    pred_path = prediction_path(args, run_dir)
+    pred_path = prediction_path(predictions, run_dir, args.split)
     if pred_path.is_file():
         print(f"Loading predictions: {pred_path}", flush=True)
         return PredictionBundle.load(pred_path)
@@ -322,6 +359,28 @@ def resample_display_arrays(
     true_1m = y_true[:usable].reshape(-1, samples_per_min, y_true.shape[1]).mean(axis=1)
     pred_1m = y_pred[:usable].reshape(-1, samples_per_min, y_pred.shape[1]).mean(axis=1)
     return agg_1m, true_1m, pred_1m, None
+
+
+def trim_for_comparison(
+    aggregate: np.ndarray,
+    y_true: np.ndarray,
+    y_pred_a: np.ndarray,
+    y_pred_b: np.ndarray | None,
+    time_axis: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    lengths = [len(aggregate), len(y_true), len(y_pred_a)]
+    if y_pred_b is not None:
+        lengths.append(len(y_pred_b))
+    if time_axis is not None:
+        lengths.append(len(time_axis))
+    n = min(lengths)
+    return (
+        aggregate[:n],
+        y_true[:n],
+        y_pred_a[:n],
+        y_pred_b[:n] if y_pred_b is not None else None,
+        time_axis[:n] if time_axis is not None else None,
+    )
 
 
 def style_axes(ax: plt.Axes, ax_bg: plt.Axes | None = None) -> None:
@@ -474,11 +533,14 @@ def draw_waveform(
     aggregate: np.ndarray,
     y_true: np.ndarray,
     y_pred: np.ndarray,
+    y_pred_b: np.ndarray | None,
     time_axis: np.ndarray | None,
     dpi: int,
     fig_width: float,
     fig_height: float,
     title_prefix: str,
+    pred_label_a: str,
+    pred_label_b: str,
     show: bool,
 ) -> tuple[plt.Figure, plt.Axes]:
     n = len(y_pred)
@@ -491,6 +553,7 @@ def draw_waveform(
     app = appliances[app_idx]
     real = y_true[sl, app_idx]
     pred = y_pred[sl, app_idx]
+    pred_b = y_pred_b[sl, app_idx] if y_pred_b is not None else None
     bg = background_power(aggregate, y_true, app_idx)[sl] if len(aggregate) >= end else None
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
@@ -499,13 +562,17 @@ def draw_waveform(
         plot_background_area(ax, x, bg, label="Aggregate power")
 
     ax.plot(x, real, color="#2f80c9", linewidth=1.85, label="Ground truth", zorder=4)
-    ax.plot(x, pred, color="#c83e3a", linewidth=1.7, linestyle="--", label="Prediction", zorder=5)
+    ax.plot(x, pred, color="#c83e3a", linewidth=1.7, linestyle="--", label=pred_label_a, zorder=5)
+    if pred_b is not None:
+        ax.plot(x, pred_b, color="#3b5bdb", linewidth=1.55, linestyle="-.", label=pred_label_b, zorder=6)
     ax.set_ylabel("Power (W)", fontsize=10)
     ax.set_xlabel(xlabel, fontsize=10)
     ax.set_title(f"{title_prefix}{app}", fontsize=10.5, pad=7)
     style_axes(ax)
 
     candidates = [real, pred]
+    if pred_b is not None:
+        candidates.append(pred_b)
     if bg is not None:
         candidates.append(bg)
     ymax = max(1.0, *(float(np.nanmax(v)) for v in candidates if len(v)))
@@ -534,9 +601,12 @@ def save_all_appliance_grid(
     aggregate: np.ndarray,
     y_true: np.ndarray,
     y_pred: np.ndarray,
+    y_pred_b: np.ndarray | None,
     time_axis: np.ndarray | None,
     dpi: int,
     title_prefix: str,
+    pred_label_a: str,
+    pred_label_b: str,
 ) -> Path:
     n = len(y_pred)
     start = max(0, min(int(start), max(0, n - 1)))
@@ -550,16 +620,21 @@ def save_all_appliance_grid(
         ax = axes_flat[app_idx]
         real = y_true[sl, app_idx]
         pred = y_pred[sl, app_idx]
+        pred_b = y_pred_b[sl, app_idx] if y_pred_b is not None else None
         bg = background_power(aggregate, y_true, app_idx)[sl] if len(aggregate) >= end else None
         if bg is not None:
             plot_background_area(ax, x, bg, label="Aggregate")
         ax.plot(x, real, color="#2f80c9", linewidth=1.35, label="Truth")
-        ax.plot(x, pred, color="#c83e3a", linewidth=1.2, linestyle="--", label="Prediction")
+        ax.plot(x, pred, color="#c83e3a", linewidth=1.2, linestyle="--", label=pred_label_a)
+        if pred_b is not None:
+            ax.plot(x, pred_b, color="#3b5bdb", linewidth=1.1, linestyle="-.", label=pred_label_b)
         ax.set_xlabel(xlabel, fontsize=9)
         ax.set_ylabel("Power (W)", fontsize=9)
         ax.set_title(f"{panel_letter(app_idx)} {app}", fontsize=20, fontfamily="serif", y=-0.34)
         style_axes(ax)
         candidates = [real, pred]
+        if pred_b is not None:
+            candidates.append(pred_b)
         if bg is not None:
             candidates.append(bg)
         ymax = max(1.0, *(float(np.nanmax(v)) for v in candidates if len(v)))
@@ -586,6 +661,7 @@ def interactive_viewer(
     aggregate: np.ndarray,
     y_true: np.ndarray,
     y_pred: np.ndarray,
+    y_pred_b: np.ndarray | None,
     time_axis: np.ndarray | None,
     out_dir: Path,
     initial_start: int,
@@ -593,6 +669,8 @@ def interactive_viewer(
     dpi: int,
     fig_width: float,
     fig_height: float,
+    pred_label_a: str,
+    pred_label_b: str,
 ) -> None:
     appliances = bundle.appliances
     n = len(y_pred)
@@ -652,17 +730,22 @@ def interactive_viewer(
         x, xlabel = relative_time_axis(start, end, infer_sample_seconds(time_axis))
         real = y_true[sl, app_idx]
         pred = y_pred[sl, app_idx]
+        pred_b = y_pred_b[sl, app_idx] if y_pred_b is not None else None
         bg = background_power(aggregate, y_true, app_idx)[sl] if len(aggregate) >= end else None
 
         if bg is not None:
             plot_background_area(ax, x, bg, label="Aggregate power")
         ax.plot(x, real, color="#2f80c9", linewidth=1.85, label="Ground truth")
-        ax.plot(x, pred, color="#c83e3a", linewidth=1.7, linestyle="--", label="Prediction")
+        ax.plot(x, pred, color="#c83e3a", linewidth=1.7, linestyle="--", label=pred_label_a)
+        if pred_b is not None:
+            ax.plot(x, pred_b, color="#3b5bdb", linewidth=1.55, linestyle="-.", label=pred_label_b)
         ax.set_title(f"{bundle.model_name} {bundle.split} | {app} | samples {start}:{end}", fontsize=10.5, pad=7)
         ax.set_ylabel("Power (W)", fontsize=10)
         ax.set_xlabel(xlabel, fontsize=10)
         style_axes(ax)
         candidates = [real, pred]
+        if pred_b is not None:
+            candidates.append(pred_b)
         if bg is not None:
             candidates.append(bg)
         ymax = max(1.0, *(float(np.nanmax(v)) for v in candidates if len(v)))
@@ -721,11 +804,14 @@ def interactive_viewer(
             aggregate=aggregate,
             y_true=y_true,
             y_pred=y_pred,
+            y_pred_b=y_pred_b,
             time_axis=time_axis,
             dpi=dpi,
             fig_width=fig_width,
             fig_height=fig_height,
             title_prefix=f"{bundle.model_name} {bundle.split} | ",
+            pred_label_a=pred_label_a,
+            pred_label_b=pred_label_b,
             show=False,
         )
 
@@ -746,9 +832,12 @@ def interactive_viewer(
             aggregate=aggregate,
             y_true=y_true,
             y_pred=y_pred,
+            y_pred_b=y_pred_b,
             time_axis=time_axis,
             dpi=dpi,
             title_prefix=f"{bundle.model_name} {bundle.split} | ",
+            pred_label_a=pred_label_a,
+            pred_label_b=pred_label_b,
         )
 
     radios.on_clicked(set_app)
@@ -781,14 +870,20 @@ def interactive_viewer(
 def main() -> None:
     args = parse_args()
     checkpoint = prompt_checkpoint(args.checkpoint)
+    checkpoint_b = prompt_optional_checkpoint(args.checkpoint_b)
     experiment = resolve_path(args.experiment)
     model_config = resolve_path(args.model_config)
     data_path = resolve_path(args.data_path) if args.data_path else None
     run_dir = resolve_path(args.run_dir) if args.run_dir else default_run_dir(checkpoint)
+    run_dir_b = (
+        resolve_path(args.run_dir_b)
+        if args.run_dir_b
+        else (default_run_dir(checkpoint_b) if checkpoint_b is not None else None)
+    )
     out_dir = resolve_path(args.out_dir) if args.out_dir else run_dir / "paper_waveforms"
 
     adapter, _, _ = build_adapter(experiment, model_config, data_path)
-    bundle = load_or_create_bundle(args, adapter, run_dir, checkpoint)
+    bundle = load_or_create_bundle(args, adapter, run_dir, checkpoint, args.predictions)
     aggregate, y_true, y_pred, time_axis = aligned_arrays(adapter, bundle, args.split)
     aggregate, y_true, y_pred, time_axis = resample_display_arrays(
         aggregate,
@@ -797,9 +892,32 @@ def main() -> None:
         time_axis,
         resolution=args.display_resolution,
     )
+    y_pred_b = None
+    if checkpoint_b is not None:
+        if run_dir_b is None:
+            raise ValueError("Internal error: run_dir_b was not resolved.")
+        bundle_b = load_or_create_bundle(args, adapter, run_dir_b, checkpoint_b, args.predictions_b)
+        _, _, y_pred_b_raw, time_axis_b = aligned_arrays(adapter, bundle_b, args.split)
+        _, _, y_pred_b, _ = resample_display_arrays(
+            aggregate=np.zeros(len(y_pred_b_raw), dtype=float),
+            y_true=np.zeros_like(y_pred_b_raw),
+            y_pred=y_pred_b_raw,
+            time_axis=time_axis_b,
+            resolution=args.display_resolution,
+        )
+
+    aggregate, y_true, y_pred, y_pred_b, time_axis = trim_for_comparison(
+        aggregate,
+        y_true,
+        y_pred,
+        y_pred_b,
+        time_axis,
+    )
 
     print("Viewer ready.", flush=True)
     print(f"checkpoint : {checkpoint}", flush=True)
+    if checkpoint_b is not None:
+        print(f"checkpointB: {checkpoint_b}", flush=True)
     print(f"split      : {args.split}", flush=True)
     print(f"display    : {args.display_resolution}", flush=True)
     print(f"samples    : {len(y_pred):,}", flush=True)
@@ -811,6 +929,7 @@ def main() -> None:
         aggregate=aggregate,
         y_true=y_true,
         y_pred=y_pred,
+        y_pred_b=y_pred_b,
         time_axis=time_axis,
         out_dir=out_dir,
         initial_start=args.start,
@@ -818,6 +937,8 @@ def main() -> None:
         dpi=args.dpi,
         fig_width=args.fig_width,
         fig_height=args.fig_height,
+        pred_label_a=args.label_a,
+        pred_label_b=args.label_b,
     )
 
 
