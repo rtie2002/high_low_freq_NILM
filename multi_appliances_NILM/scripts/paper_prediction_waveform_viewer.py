@@ -401,8 +401,8 @@ def plot_background_area(ax: plt.Axes, x: np.ndarray, bg: np.ndarray, *, label: 
         x,
         0,
         bg,
-        color="#b8c4cc",
-        alpha=0.28,
+        color="#d9dee3",
+        alpha=0.34,
         linewidth=0,
         label=label,
         zorder=1,
@@ -410,9 +410,9 @@ def plot_background_area(ax: plt.Axes, x: np.ndarray, bg: np.ndarray, *, label: 
     ax.plot(
         x,
         bg,
-        color="#7f8c8d",
-        linewidth=0.9,
-        alpha=0.65,
+        color="#9aa5ad",
+        linewidth=0.85,
+        alpha=0.72,
         zorder=2,
     )
 
@@ -561,10 +561,10 @@ def draw_waveform(
     if bg is not None:
         plot_background_area(ax, x, bg, label="Aggregate power")
 
-    ax.plot(x, real, color="#2f80c9", linewidth=1.85, label="Ground truth", zorder=4)
-    ax.plot(x, pred, color="#c83e3a", linewidth=1.7, linestyle="--", label=pred_label_a, zorder=5)
+    ax.plot(x, real, color="#111111", linewidth=1.95, label="Ground truth", zorder=4)
+    ax.plot(x, pred, color="#d55e00", linewidth=1.75, linestyle="--", label=pred_label_a, zorder=5)
     if pred_b is not None:
-        ax.plot(x, pred_b, color="#3b5bdb", linewidth=1.55, linestyle="-.", label=pred_label_b, zorder=6)
+        ax.plot(x, pred_b, color="#0072b2", linewidth=1.65, linestyle="-.", label=pred_label_b, zorder=6)
     ax.set_ylabel("Power (W)", fontsize=10)
     ax.set_xlabel(xlabel, fontsize=10)
     ax.set_title(f"{title_prefix}{app}", fontsize=10.5, pad=7)
@@ -624,10 +624,10 @@ def save_all_appliance_grid(
         bg = background_power(aggregate, y_true, app_idx)[sl] if len(aggregate) >= end else None
         if bg is not None:
             plot_background_area(ax, x, bg, label="Aggregate")
-        ax.plot(x, real, color="#2f80c9", linewidth=1.35, label="Truth")
-        ax.plot(x, pred, color="#c83e3a", linewidth=1.2, linestyle="--", label=pred_label_a)
+        ax.plot(x, real, color="#111111", linewidth=1.4, label="Truth")
+        ax.plot(x, pred, color="#d55e00", linewidth=1.25, linestyle="--", label=pred_label_a)
         if pred_b is not None:
-            ax.plot(x, pred_b, color="#3b5bdb", linewidth=1.1, linestyle="-.", label=pred_label_b)
+            ax.plot(x, pred_b, color="#0072b2", linewidth=1.18, linestyle="-.", label=pred_label_b)
         ax.set_xlabel(xlabel, fontsize=9)
         ax.set_ylabel("Power (W)", fontsize=9)
         ax.set_title(f"{panel_letter(app_idx)} {app}", fontsize=20, fontfamily="serif", y=-0.34)
@@ -735,10 +735,10 @@ def interactive_viewer(
 
         if bg is not None:
             plot_background_area(ax, x, bg, label="Aggregate power")
-        ax.plot(x, real, color="#2f80c9", linewidth=1.85, label="Ground truth")
-        ax.plot(x, pred, color="#c83e3a", linewidth=1.7, linestyle="--", label=pred_label_a)
+        ax.plot(x, real, color="#111111", linewidth=1.95, label="Ground truth")
+        ax.plot(x, pred, color="#d55e00", linewidth=1.75, linestyle="--", label=pred_label_a)
         if pred_b is not None:
-            ax.plot(x, pred_b, color="#3b5bdb", linewidth=1.55, linestyle="-.", label=pred_label_b)
+            ax.plot(x, pred_b, color="#0072b2", linewidth=1.65, linestyle="-.", label=pred_label_b)
         ax.set_title(f"{bundle.model_name} {bundle.split} | {app} | samples {start}:{end}", fontsize=10.5, pad=7)
         ax.set_ylabel("Power (W)", fontsize=10)
         ax.set_xlabel(xlabel, fontsize=10)
