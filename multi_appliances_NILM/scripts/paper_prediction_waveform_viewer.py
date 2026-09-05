@@ -358,6 +358,23 @@ def plot_background_area(ax: plt.Axes, x: np.ndarray, bg: np.ndarray, *, label: 
     )
 
 
+def clean_legend(ax: plt.Axes, *, loc: str = "upper left", ncol: int = 1) -> None:
+    legend = ax.legend(
+        loc=loc,
+        ncol=ncol,
+        frameon=True,
+        framealpha=0.92,
+        facecolor="white",
+        edgecolor="#d6d6d6",
+        fontsize=8.5,
+        handlelength=2.6,
+        borderpad=0.45,
+        labelspacing=0.35,
+        columnspacing=1.1,
+    )
+    legend.set_zorder(10)
+
+
 def find_balanced_windows(true_power: np.ndarray, span: int, limit: int = 20) -> list[int]:
     """Suggest starts containing both active and inactive samples."""
     y = np.asarray(true_power, dtype=float).reshape(-1)
@@ -485,7 +502,7 @@ def draw_waveform(
     ax.plot(x, pred, color="#c83e3a", linewidth=1.7, linestyle="--", label="Predicted power", zorder=5)
     ax.set_ylabel("Power (W)", fontsize=10)
     ax.set_xlabel(xlabel, fontsize=10)
-    ax.set_title(f"{title_prefix}{app}", fontsize=11, pad=8)
+    ax.set_title(f"{title_prefix}{app}", fontsize=10.5, pad=7)
     style_axes(ax)
 
     candidates = [real, pred]
@@ -496,7 +513,7 @@ def draw_waveform(
     pad = max(1.0, 0.12 * (ymax - ymin))
     ax.set_ylim(ymin - pad, ymax + pad)
 
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.18), ncol=3, frameon=False, fontsize=9)
+    clean_legend(ax, loc="upper left", ncol=1)
     fig.tight_layout(pad=0.8)
 
     if output_path is not None:
@@ -549,13 +566,13 @@ def save_all_appliance_grid(
         ymin = min(0.0, *(float(np.nanmin(v)) for v in candidates if len(v)))
         pad = max(1.0, 0.10 * (ymax - ymin))
         ax.set_ylim(ymin - pad, ymax + pad)
-        ax.legend(loc="upper left", frameon=True, framealpha=0.85, fontsize=8)
+        clean_legend(ax, loc="upper left", ncol=1)
 
     for ax in axes_flat[len(appliances) :]:
         ax.axis("off")
 
-    fig.suptitle(f"{title_prefix}samples {start}:{end}", fontsize=12, y=0.98)
-    fig.tight_layout(rect=[0, 0.03, 1, 0.96], h_pad=3.0, w_pad=2.4)
+    fig.suptitle(f"{title_prefix}samples {start}:{end}", fontsize=11, y=0.995)
+    fig.tight_layout(rect=[0, 0.03, 1, 0.94], h_pad=3.0, w_pad=2.4)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
@@ -641,7 +658,7 @@ def interactive_viewer(
             plot_background_area(ax, x, bg, label="Aggregate/background power")
         ax.plot(x, real, color="#2f80c9", linewidth=1.85, label="Real power")
         ax.plot(x, pred, color="#c83e3a", linewidth=1.7, linestyle="--", label="Predicted power")
-        ax.set_title(f"{bundle.model_name} {bundle.split} | {app} | samples {start}:{end}", fontsize=11)
+        ax.set_title(f"{bundle.model_name} {bundle.split} | {app} | samples {start}:{end}", fontsize=10.5, pad=7)
         ax.set_ylabel("Power (W)", fontsize=10)
         ax.set_xlabel(xlabel, fontsize=10)
         style_axes(ax)
@@ -652,7 +669,7 @@ def interactive_viewer(
         ymin = min(0.0, *(float(np.nanmin(v)) for v in candidates if len(v)))
         pad = max(1.0, 0.12 * (ymax - ymin))
         ax.set_ylim(ymin - pad, ymax + pad)
-        ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.16), ncol=3, frameon=False, fontsize=9)
+        clean_legend(ax, loc="upper left", ncol=1)
         fig.canvas.draw_idle()
 
     def set_app(label: str) -> None:
