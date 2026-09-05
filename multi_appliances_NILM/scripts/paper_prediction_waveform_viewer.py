@@ -399,6 +399,39 @@ def relative_time_axis(start: int, end: int, sample_seconds: float | None) -> tu
     return seconds, "Time (s)"
 
 
+def axis_units_per_sample(span: int, sample_seconds: float | None) -> float:
+    if sample_seconds is None:
+        return 1.0
+    points = np.arange(0, max(1, int(span)), dtype=float)
+    seconds = points * float(sample_seconds)
+    if len(seconds) and seconds[-1] >= 900:
+        return float(sample_seconds) / 60.0
+    return float(sample_seconds)
+
+
+def visible_window_from_axis(
+    ax: plt.Axes,
+    *,
+    state_start: int,
+    state_span: int,
+    sample_seconds: float | None,
+    total_points: int,
+) -> tuple[int, int]:
+    """Convert the currently visible x-axis limits back to data indices."""
+    xmin, xmax = ax.get_xlim()
+    lo, hi = sorted((float(xmin), float(xmax)))
+    units = axis_units_per_sample(state_span, sample_seconds)
+    if units <= 0:
+        units = 1.0
+    offset_start = int(np.floor(lo / units))
+    offset_end = int(np.ceil(hi / units)) + 1
+    offset_start = max(0, min(offset_start, max(0, state_span - 1)))
+    offset_end = max(offset_start + 1, min(offset_end, state_span))
+    abs_start = max(0, min(state_start + offset_start, max(0, total_points - 1)))
+    abs_end = max(abs_start + 1, min(state_start + offset_end, total_points))
+    return abs_start, abs_end
+
+
 def background_power(aggregate: np.ndarray, true_power: np.ndarray, app_idx: int) -> np.ndarray:
     """Aggregate/background input power aligned to the prediction timeline.
 
@@ -546,6 +579,7 @@ def interactive_viewer(
 ) -> None:
     appliances = bundle.appliances
     n = len(y_pred)
+    sample_seconds = infer_sample_seconds(time_axis)
     state = {
         "app_idx": 0,
         "start": max(0, min(initial_start, max(0, n - 1))),
@@ -653,13 +687,20 @@ def interactive_viewer(
 
     def save_current(_=None) -> None:
         app = appliances[state["app_idx"]]
-        path = out_dir / f"{bundle.split}_{app}_{state['start']:07d}_{state['start'] + state['span']:07d}.png"
+        save_start, save_end = visible_window_from_axis(
+            ax,
+            state_start=state["start"],
+            state_span=state["span"],
+            sample_seconds=sample_seconds,
+            total_points=n,
+        )
+        path = out_dir / f"{bundle.split}_{app}_{save_start:07d}_{save_end:07d}.png"
         draw_waveform(
             output_path=path,
             appliances=appliances,
             app_idx=state["app_idx"],
-            start=state["start"],
-            span=state["span"],
+            start=save_start,
+            span=save_end - save_start,
             aggregate=aggregate,
             y_true=y_true,
             y_pred=y_pred,
@@ -672,12 +713,19 @@ def interactive_viewer(
         )
 
     def save_grid(_=None) -> None:
-        path = out_dir / f"{bundle.split}_all_appliances_{state['start']:07d}_{state['start'] + state['span']:07d}.png"
+        save_start, save_end = visible_window_from_axis(
+            ax,
+            state_start=state["start"],
+            state_span=state["span"],
+            sample_seconds=sample_seconds,
+            total_points=n,
+        )
+        path = out_dir / f"{bundle.split}_all_appliances_{save_start:07d}_{save_end:07d}.png"
         save_all_appliance_grid(
             output_path=path,
             appliances=appliances,
-            start=state["start"],
-            span=state["span"],
+            start=save_start,
+            span=save_end - save_start,
             aggregate=aggregate,
             y_true=y_true,
             y_pred=y_pred,
