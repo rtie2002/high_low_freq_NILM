@@ -358,19 +358,19 @@ def plot_background_area(ax: plt.Axes, x: np.ndarray, bg: np.ndarray, *, label: 
     )
 
 
-def clean_legend(ax: plt.Axes, *, loc: str = "upper left", ncol: int = 1) -> None:
+def clean_legend(ax: plt.Axes, *, loc: str = "upper right", ncol: int = 1) -> None:
     legend = ax.legend(
         loc=loc,
         ncol=ncol,
         frameon=True,
-        framealpha=0.92,
+        framealpha=0.88,
         facecolor="white",
         edgecolor="#d6d6d6",
-        fontsize=8.5,
-        handlelength=2.6,
-        borderpad=0.45,
-        labelspacing=0.35,
-        columnspacing=1.1,
+        fontsize=7.2,
+        handlelength=2.2,
+        borderpad=0.35,
+        labelspacing=0.28,
+        columnspacing=0.9,
     )
     legend.set_zorder(10)
 
@@ -496,10 +496,10 @@ def draw_waveform(
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
     if bg is not None:
-        plot_background_area(ax, x, bg, label="Aggregate/background power")
+        plot_background_area(ax, x, bg, label="Aggregate power")
 
-    ax.plot(x, real, color="#2f80c9", linewidth=1.85, label="Real power", zorder=4)
-    ax.plot(x, pred, color="#c83e3a", linewidth=1.7, linestyle="--", label="Predicted power", zorder=5)
+    ax.plot(x, real, color="#2f80c9", linewidth=1.85, label="Ground truth", zorder=4)
+    ax.plot(x, pred, color="#c83e3a", linewidth=1.7, linestyle="--", label="Prediction", zorder=5)
     ax.set_ylabel("Power (W)", fontsize=10)
     ax.set_xlabel(xlabel, fontsize=10)
     ax.set_title(f"{title_prefix}{app}", fontsize=10.5, pad=7)
@@ -513,7 +513,7 @@ def draw_waveform(
     pad = max(1.0, 0.12 * (ymax - ymin))
     ax.set_ylim(ymin - pad, ymax + pad)
 
-    clean_legend(ax, loc="upper left", ncol=1)
+    clean_legend(ax, loc="upper right", ncol=1)
     fig.tight_layout(pad=0.8)
 
     if output_path is not None:
@@ -553,8 +553,8 @@ def save_all_appliance_grid(
         bg = background_power(aggregate, y_true, app_idx)[sl] if len(aggregate) >= end else None
         if bg is not None:
             plot_background_area(ax, x, bg, label="Aggregate")
-        ax.plot(x, real, color="#2f80c9", linewidth=1.35, label="Real")
-        ax.plot(x, pred, color="#c83e3a", linewidth=1.2, linestyle="--", label="Predicted")
+        ax.plot(x, real, color="#2f80c9", linewidth=1.35, label="Truth")
+        ax.plot(x, pred, color="#c83e3a", linewidth=1.2, linestyle="--", label="Prediction")
         ax.set_xlabel(xlabel, fontsize=9)
         ax.set_ylabel("Power (W)", fontsize=9)
         ax.set_title(f"{panel_letter(app_idx)} {app}", fontsize=20, fontfamily="serif", y=-0.34)
@@ -566,7 +566,7 @@ def save_all_appliance_grid(
         ymin = min(0.0, *(float(np.nanmin(v)) for v in candidates if len(v)))
         pad = max(1.0, 0.10 * (ymax - ymin))
         ax.set_ylim(ymin - pad, ymax + pad)
-        clean_legend(ax, loc="upper left", ncol=1)
+        clean_legend(ax, loc="upper right", ncol=1)
 
     for ax in axes_flat[len(appliances) :]:
         ax.axis("off")
@@ -655,9 +655,9 @@ def interactive_viewer(
         bg = background_power(aggregate, y_true, app_idx)[sl] if len(aggregate) >= end else None
 
         if bg is not None:
-            plot_background_area(ax, x, bg, label="Aggregate/background power")
-        ax.plot(x, real, color="#2f80c9", linewidth=1.85, label="Real power")
-        ax.plot(x, pred, color="#c83e3a", linewidth=1.7, linestyle="--", label="Predicted power")
+            plot_background_area(ax, x, bg, label="Aggregate power")
+        ax.plot(x, real, color="#2f80c9", linewidth=1.85, label="Ground truth")
+        ax.plot(x, pred, color="#c83e3a", linewidth=1.7, linestyle="--", label="Prediction")
         ax.set_title(f"{bundle.model_name} {bundle.split} | {app} | samples {start}:{end}", fontsize=10.5, pad=7)
         ax.set_ylabel("Power (W)", fontsize=10)
         ax.set_xlabel(xlabel, fontsize=10)
@@ -669,7 +669,7 @@ def interactive_viewer(
         ymin = min(0.0, *(float(np.nanmin(v)) for v in candidates if len(v)))
         pad = max(1.0, 0.12 * (ymax - ymin))
         ax.set_ylim(ymin - pad, ymax + pad)
-        clean_legend(ax, loc="upper left", ncol=1)
+        clean_legend(ax, loc="upper right", ncol=1)
         fig.canvas.draw_idle()
 
     def set_app(label: str) -> None:
