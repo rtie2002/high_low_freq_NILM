@@ -46,8 +46,14 @@ from matplotlib.widgets import Button, RadioButtons, Slider, TextBox
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-ROOT = SCRIPT_DIR.parents[0]
-PROJECT_DIR = SCRIPT_DIR.parents[1]
+# Script may live under data_quality_checking/ or multi_appliances_NILM/scripts/.
+if (SCRIPT_DIR.parent / "adapters").is_dir():
+    ROOT = SCRIPT_DIR.parent
+elif (SCRIPT_DIR.parent / "multi_appliances_NILM" / "adapters").is_dir():
+    ROOT = SCRIPT_DIR.parent / "multi_appliances_NILM"
+else:
+    ROOT = SCRIPT_DIR.parents[0]
+PROJECT_DIR = ROOT.parent
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -90,7 +96,7 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint-b",
         type=Path,
         default=None,
-        help="Optional second checkpoint .pt for waveform comparison.",
+        help="Optional second checkpoint .pt for comparison. Omit to show a single prediction.",
     )
     parser.add_argument("--experiment", type=Path, required=True, help="Experiment dataset YAML.")
     parser.add_argument("--model-config", type=Path, required=True, help="Model YAML used by the checkpoint.")
@@ -100,8 +106,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-dir-b", type=Path, default=None, help="Run directory for checkpoint-b.")
     parser.add_argument("--predictions", type=Path, default=None, help="Existing *_predictions.npz to load.")
     parser.add_argument("--predictions-b", type=Path, default=None, help="Existing *_predictions.npz for checkpoint-b.")
-    parser.add_argument("--label-a", type=str, default="Baseline (0%)", help="Legend label for first checkpoint.")
-    parser.add_argument("--label-b", type=str, default="Injection Ratio (100%)", help="Legend label for second checkpoint.")
+    parser.add_argument(
+        "--label-a",
+        type=str,
+        default="Prediction",
+        help="Legend label for the first checkpoint (default: Prediction).",
+    )
+    parser.add_argument(
+        "--label-b",
+        type=str,
+        default="Prediction B",
+        help="Legend label for the second checkpoint when --checkpoint-b is set.",
+    )
+    parser.add_argument(
+        "--ask-checkpoint-b",
+        action="store_true",
+        help="Interactively ask for a second checkpoint (Enter skips). Default: no prompt.",
+    )
     parser.add_argument(
         "--no-evaluate",
         action="store_true",
@@ -143,12 +164,20 @@ def prompt_checkpoint(path: Path | None) -> Path:
         print(f"File not found: {resolved}", flush=True)
 
 
-def prompt_optional_checkpoint(path: Path | None) -> Path | None:
+def resolve_optional_checkpoint(path: Path | None, *, ask: bool = False) -> Path | None:
+    """Return a second checkpoint only when provided (or interactively requested).
+
+    Single-checkpoint mode is the default: omitting ``--checkpoint-b`` skips
+    comparison and plots one prediction curve.
+    """
     if path is not None and str(path).strip() and "YOUR_CHECKPOINT" not in str(path):
         resolved = resolve_path(path)
         if resolved.is_file():
             return resolved
-        print(f"Second checkpoint not found: {resolved}", flush=True)
+        raise FileNotFoundError(f"Second checkpoint not found: {resolved}")
+
+    if not ask:
+        return None
 
     raw = input("Paste second checkpoint path (.pt), or press Enter to skip: ").strip().strip('"').strip("'")
     if not raw:
@@ -814,7 +843,7 @@ def interactive_viewer(
 def main() -> None:
     args = parse_args()
     checkpoint = prompt_checkpoint(args.checkpoint)
-    checkpoint_b = prompt_optional_checkpoint(args.checkpoint_b)
+    checkpoint_b = resolve_optional_checkpoint(args.checkpoint_b, ask=bool(args.ask_checkpoint_b))
     experiment = resolve_path(args.experiment)
     model_config = resolve_path(args.model_config)
     data_path = resolve_path(args.data_path) if args.data_path else None
@@ -848,6 +877,9 @@ def main() -> None:
     print(f"checkpoint : {checkpoint}", flush=True)
     if checkpoint_b is not None:
         print(f"checkpointB: {checkpoint_b}", flush=True)
+        print("mode       : comparison (2 predictions)", flush=True)
+    else:
+        print("mode       : single prediction", flush=True)
     print(f"split      : {args.split}", flush=True)
     print(f"samples    : {len(y_pred):,}", flush=True)
     print(f"appliances : {', '.join(bundle.appliances)}", flush=True)
