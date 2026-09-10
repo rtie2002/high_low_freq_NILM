@@ -4,8 +4,10 @@ Low-frequency-only multi-appliance UK-DALE preprocessing.
 This script creates one aligned CSV containing:
 
     readable_time
+    unix_time, house, sequence_id
     aggregate
     <appliance>_power for each selected appliance
+    aggregate_observed, <appliance>_observed
     <appliance>_on for each selected appliance
 
 It is the low-frequency equivalent of:
@@ -26,7 +28,12 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from ukdale_processing import apply_algorithm1_labeling, resolve_appliance_setting
+from ukdale_processing import (
+    apply_algorithm1_labeling,
+    contiguous_segment_ids,
+    fill_complete_short_gaps,
+    resolve_appliance_setting,
+)
 
 
 def get_arguments() -> argparse.Namespace:
@@ -105,20 +112,20 @@ def get_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--house_filename",
         type=str,
-        default="multi_appliance_house{house}_lf.csv",
+        default="ukdale_house{house}_lf_8s.csv",
         help="Per-house filename for --split_houses. Use {house} placeholder.",
     )
     parser.add_argument(
         "--trim_to_common_start",
         action="store_true",
         default=True,
-        help="Drop leading rows until every appliance has non-zero power (default: on).",
+        help="Drop leading rows until every available meter has reported (default: on).",
     )
     parser.add_argument(
         "--no_trim_to_common_start",
         action="store_false",
         dest="trim_to_common_start",
-        help="Keep leading rows where some appliances are still all-zero.",
+        help="Keep leading rows before every available meter has reported.",
     )
     return parser.parse_args()
 
@@ -244,12 +251,18 @@ def load_mains(data_dir: str, house: int, start_ts: float | None, end_ts: float 
     if not chunks:
         raise ValueError(f"No mains rows found for house {house} in the selected time range.")
     mains_df = pd.concat(chunks, ignore_index=True)
-    if house == 2:
-        mains_df["aggregate"] = mains_df[1]
-    elif mains_df.shape[1] >= 3:
-        mains_df["aggregate"] = mains_df[1] + mains_df[2]
-    else:
-        mains_df["aggregate"] = mains_df[1]
+    # SoundCardPowerMeter mains.dat columns (NILMTK meter_devices.yaml):
+    #   0=timestamp, 1=active (W), 2=apparent (VA), 3=voltage
+    # Always use active power only. Never sum col1+col2 (that mixes W+VA and
+    # artificially inflates H1/H5 vs H2 / REFIT active aggregates).
+    n_raw_cols = int(mains_df.shape[1])
+    if n_raw_cols < 2:
+        raise ValueError(f"mains.dat for house {house} has no power column: {mains_path}")
+    mains_df["aggregate"] = pd.to_numeric(mains_df[1], errors="coerce")
+    print(
+        f"      mains raw columns={n_raw_cols} "
+        f"(SoundCard expects 4: time/active/apparent/V); using col1=active only"
+    )
 
     mains_df = mains_df[[0, "aggregate"]]
     mains_df.columns = ["time", "aggregate"]
@@ -308,26 +321,25 @@ def load_appliance(
 def trim_to_common_appliance_start(
     combined: pd.DataFrame,
     appliances: list[str],
-    *,
-    min_power_w: float = 0.0,
 ) -> tuple[pd.DataFrame, pd.Timestamp | None]:
-    """Drop leading timeline where any appliance is still all-zero (meter not active yet).
-
-    UK-DALE mains often starts before submeters report real load. Those rows get
-    false OFF labels and confuse training (e.g. fridge OFF while channel is dead).
-    """
+    """Trim to the common start of all available appliance meters."""
     starts: list[pd.Timestamp] = []
     for app in appliances:
         col = f"{app}_power"
         if col not in combined.columns:
             continue
-        active = combined[col] > min_power_w
-        if not active.any():
-            raise ValueError(
-                f"{app}_power has no values above {min_power_w} W; "
-                "cannot determine common appliance start."
-            )
-        starts.append(combined.index[active][0])
+        observed_col = f"{app}_observed"
+        observed = (
+            combined[observed_col].astype(bool)
+            if observed_col in combined.columns
+            else combined[col].notna()
+        )
+        if not observed.any():
+            # ``--allow_missing_appliances`` deliberately creates an all-zero,
+            # unobserved channel. It must not prevent the observed meters from
+            # defining their common start.
+            continue
+        starts.append(combined.index[observed][0])
 
     if not starts:
         return combined, None
@@ -337,32 +349,35 @@ def trim_to_common_appliance_start(
     return trimmed, common_start
 
 
-def fill_short_appliance_gaps(series: pd.Series, limit: int = 3) -> pd.Series:
-    """Bridge brief NaN bins after 6 s resampling (UK-DALE packet gaps).
-
-    Raw meters often skip one packet (~6–13 s). Without this, empty resample bins
-    become 0 W and split otherwise-continuous ON labels (common on house-5 fridge).
-    """
-    if series.empty:
-        return series
-    filled = series.interpolate(method="linear", limit=limit, limit_area="inside")
-    return filled.ffill(limit=1).bfill(limit=1)
-
-
 def make_labels(
     power: np.ndarray,
     appliance_cfg: dict,
     algorithm_cfg: dict,
     house: int,
 ) -> np.ndarray:
+    remove_spikes = bool(
+        resolve_appliance_setting(
+            appliance_cfg,
+            "remove_spikes",
+            house,
+            algorithm_cfg.get("remove_spikes", True),
+        )
+    )
     return apply_algorithm1_labeling(
         power,
         x_threshold=resolve_appliance_setting(appliance_cfg, "on_power_threshold", house, 50),
         l_window=algorithm_cfg.get("window_length", 0),
         x_noise=algorithm_cfg.get("x_noise", 0),
-        remove_spikes=algorithm_cfg.get("remove_spikes", True),
-        spike_window=algorithm_cfg.get("spike_window", 5),
-        spike_threshold=algorithm_cfg.get("spike_threshold", 3.0),
+        remove_spikes=remove_spikes,
+        spike_window=resolve_appliance_setting(
+            appliance_cfg, "spike_window", house, algorithm_cfg.get("spike_window", 5)
+        ),
+        spike_threshold=resolve_appliance_setting(
+            appliance_cfg,
+            "spike_threshold",
+            house,
+            algorithm_cfg.get("spike_threshold", 3.0),
+        ),
         background_threshold=algorithm_cfg.get("background_threshold", 50),
         min_off_duration=resolve_appliance_setting(appliance_cfg, "min_off_duration", house, 1),
         min_on_duration=resolve_appliance_setting(appliance_cfg, "min_on_duration", house, 1),
@@ -421,7 +436,16 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
         print(f"time range : {start_label} to {end_label}")
 
     mains = load_mains(paths["data_dir"], house, start_ts, end_ts, tz, sample_period)
+    agg_gap_limit = int(algorithm_cfg.get("resample_gap_fill", 3))
     combined = mains.copy()
+    combined["aggregate_observed"] = combined["aggregate"].notna().astype(np.int8)
+    combined["aggregate"] = fill_complete_short_gaps(
+        combined["aggregate"], agg_gap_limit
+    )
+    print(
+        f"      aggregate bins={len(combined):,} "
+        f"missing_after_short_fill={int(combined['aggregate'].isna().sum()):,}"
+    )
 
     print("[2/3] Loading appliance channels and aligning to mains")
     for app in appliances:
@@ -436,7 +460,7 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
                 )
             print(f"      skip {app}: {message}")
             combined[f"{app}_power"] = 0.0
-            combined[f"{app}_on"] = 0
+            combined[f"{app}_observed"] = 0
             continue
 
         app_resampled = load_appliance(
@@ -449,7 +473,8 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
             tz,
             sample_period,
         )
-        aligned = combined[["aggregate"]].join(app_resampled, how="left")
+        app_series = app_resampled[app].reindex(combined.index)
+        observed = app_series.notna()
         gap_limit = int(
             resolve_appliance_setting(
                 app_cfg,
@@ -458,30 +483,13 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
                 algorithm_cfg.get("resample_gap_fill", 3),
             )
         )
-        aligned[app] = fill_short_appliance_gaps(aligned[app], limit=gap_limit)
-        aligned = aligned.dropna(subset=["aggregate"]).copy()
-        aligned[app] = aligned[app].fillna(0.0)
-
-        power = np.minimum(aligned[app].to_numpy(dtype=np.float32), aligned["aggregate"].to_numpy(dtype=np.float32))
-        threshold = resolve_appliance_setting(app_cfg, "on_power_threshold", house, 50)
-        label = make_labels(power.copy(), app_cfg, algorithm_cfg, house)
-        app_frame = pd.DataFrame(
-            {
-                f"{app}_power": power,
-                f"{app}_on": label.astype(int),
-            },
-            index=aligned.index,
-        )
-        combined = combined.join(app_frame, how="left")
+        combined[f"{app}_power"] = fill_complete_short_gaps(app_series, gap_limit)
+        combined[f"{app}_observed"] = observed.astype(np.int8)
         print(
-            f"      {app:<15} channel={channel_id:<3} thresh={threshold:<4}W "
-            f"rows={len(app_frame):,} ON rows={int(label.sum()):,}"
+            f"      {app:<15} channel={channel_id:<3} "
+            f"missing_after_short_fill="
+            f"{int(combined[f'{app}_power'].isna().sum()):,}"
         )
-
-    combined = combined.dropna(subset=["aggregate"]).copy()
-    for app in appliances:
-        combined[f"{app}_power"] = pd.to_numeric(combined[f"{app}_power"], errors="coerce").fillna(0.0)
-        combined[f"{app}_on"] = pd.to_numeric(combined[f"{app}_on"], errors="coerce").fillna(0).astype(int)
 
     if args.trim_to_common_start:
         before_rows = len(combined)
@@ -489,25 +497,65 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
         dropped = before_rows - len(combined)
         if common_start is not None and dropped > 0:
             print(
-                f"[trim] dropped {dropped:,} leading rows before all appliances active "
+                f"[trim] dropped {dropped:,} leading rows before all meters reported "
                 f"(common start {common_start.tz_convert(tz).strftime('%Y-%m-%d %H:%M:%S')})"
             )
         elif common_start is not None:
             print(f"[trim] common appliance start: {common_start.tz_convert(tz).strftime('%Y-%m-%d %H:%M:%S')}")
 
+    power_cols = [f"{app}_power" for app in appliances]
+    required = ["aggregate", *power_cols]
+    before_valid = len(combined)
+    combined = combined.dropna(subset=required).copy()
+    print(
+        f"[segments] dropped {before_valid - len(combined):,} rows with unresolved "
+        "meter gaps"
+    )
+    if combined.empty:
+        raise ValueError(f"No fully observed rows remain for UK-DALE house {house}.")
+
+    combined["sequence_id"] = contiguous_segment_ids(combined.index, sample_period)
+    aggregate = combined["aggregate"].to_numpy(dtype=np.float32)
+    for app in appliances:
+        power = combined[f"{app}_power"].to_numpy(dtype=np.float32)
+        labels = np.zeros(len(combined), dtype=np.int8)
+        for positions in combined.groupby("sequence_id", sort=False).indices.values():
+            positions = np.asarray(positions, dtype=np.int64)
+            labels[positions] = make_labels(
+                power[positions].copy(), config["appliances"][app], algorithm_cfg, house
+            )
+        combined[f"{app}_on"] = labels
+        threshold = resolve_appliance_setting(
+            config["appliances"][app], "on_power_threshold", house, 50
+        )
+        above_mains = int(np.sum(power > aggregate))
+        print(
+            f"      {app:<15} thresh={threshold:<4}W ON rows={int(labels.sum()):,} "
+            f"power>aggregate rows={above_mains:,} (kept, not clipped)"
+        )
+
+    print(f"[segments] contiguous sequences={combined['sequence_id'].nunique():,}")
     combined.reset_index(inplace=True)
+    combined["unix_time"] = (combined["time"].astype("int64") // 10**9).astype(np.int64)
     combined["readable_time"] = combined["time"].dt.tz_convert(tz).dt.strftime("%Y-%m-%d %H:%M:%S")
     combined.drop(columns=["time"], inplace=True)
-    combined.insert(1, "house", house)
+    combined.insert(2, "house", house)
 
-    power_cols = [f"{app}_power" for app in appliances]
+    metadata_cols = ["readable_time", "unix_time", "house", "sequence_id"]
+    observed_cols = ["aggregate_observed", *[f"{app}_observed" for app in appliances]]
     on_cols = [f"{app}_on" for app in appliances]
-    ordered = ["readable_time", "house", "aggregate", *power_cols, *on_cols]
+    ordered = [*metadata_cols, "aggregate", *power_cols, *observed_cols, *on_cols]
     combined = combined[ordered]
 
     if args.output_mode == "zscore":
         z = add_zscore_columns(combined, config, appliances)
-        keep = ["readable_time", "house", "aggregate_zscore", *[f"{app}_power_zscore" for app in appliances], *on_cols]
+        keep = [
+            *metadata_cols,
+            "aggregate_zscore",
+            *[f"{app}_power_zscore" for app in appliances],
+            *observed_cols,
+            *on_cols,
+        ]
         combined = z[keep].rename(columns={"aggregate_zscore": "aggregate"})
         for app in appliances:
             combined.rename(columns={f"{app}_power_zscore": f"{app}_power"}, inplace=True)

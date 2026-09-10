@@ -32,7 +32,7 @@ def get_arguments():
 def load_dataframe(directory, building, channel, col_names=['time', 'data'], nrows=None):
     file_path = os.path.join(directory, 'house_' + str(building), 'channel_' + str(channel) + '.dat')
     df = pd.read_table(file_path,
-                       sep="\s+",
+                       sep=r"\s+",
                        nrows=nrows,
                        usecols=[0, 1],
                        names=col_names,
@@ -87,6 +87,44 @@ def resolve_appliance_setting(appliance_cfg, key, house, default=None):
     return default
 
 
+def fill_complete_short_gaps(series, max_gap):
+    """Interpolate only missing runs whose complete length is at most ``max_gap``.
+
+    Pandas ``interpolate(limit=N)`` can partially fill a gap longer than ``N``.
+    For NILM that silently turns a long meter outage into a partly synthetic
+    appliance event. This helper first measures each complete NaN run and only
+    copies interpolated values into genuinely short, interior gaps.
+    """
+    result = series.copy()
+    max_gap = int(max_gap)
+    missing = result.isna()
+    if max_gap <= 0 or not bool(missing.any()):
+        return result
+
+    run_id = missing.ne(missing.shift(fill_value=False)).cumsum()
+    run_length = missing.groupby(run_id).transform("sum")
+    short_gap = missing & (run_length <= max_gap)
+    method = "time" if isinstance(result.index, pd.DatetimeIndex) else "linear"
+    interpolated = result.interpolate(method=method, limit_area="inside")
+    result.loc[short_gap] = interpolated.loc[short_gap]
+    return result
+
+
+def contiguous_segment_ids(index, sample_period):
+    """Return integer IDs for runs separated by a wall-clock time gap.
+
+    A sequence model may only treat adjacent rows as adjacent samples when their
+    timestamp difference equals the configured sampling period.
+    """
+    if len(index) == 0:
+        return np.zeros(0, dtype=np.int64)
+    expected = pd.Timedelta(sample_period)
+    delta = index.to_series().diff()
+    starts = delta.ne(expected)
+    starts.iloc[0] = True
+    return (starts.cumsum().to_numpy(dtype=np.int64) - 1)
+
+
 def apply_algorithm1_labeling(power_sequence, x_threshold, l_window=100, x_noise=0,
                              remove_spikes=True, spike_window=5, spike_threshold=3.0,
                              background_threshold=50, min_off_duration=1, min_on_duration=1):
@@ -110,9 +148,9 @@ def apply_algorithm1_labeling(power_sequence, x_threshold, l_window=100, x_noise
     if np.any(is_on):
         on_indices = np.where(is_on)[0]
         for i in range(len(on_indices) - 1):
-            gap = on_indices[i+1] - on_indices[i]
-            if gap > 1 and gap <= min_off_duration:
-                is_on[on_indices[i]:on_indices[i+1]] = 1
+            off_length = on_indices[i + 1] - on_indices[i] - 1
+            if 0 < off_length <= min_off_duration:
+                is_on[on_indices[i] + 1:on_indices[i + 1]] = 1
 
     # Step 5: Filter Short Activations
     if np.any(is_on):
@@ -228,18 +266,12 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance, c
         print(f"  -> [Step 1/4] Loading Mains datastream... (This file is massive, might take 10-60s. Please wait.)")
         t0 = time.time()
         
-        mains_df = pd.read_csv(mains_path, sep='\s+', header=None, engine='c')
+        mains_df = pd.read_csv(mains_path, sep=r'\s+', header=None, engine='c')
         
-        # House 1/5 have 2 separate mains branches. 
-        # House 2 mains.dat has Col 1=Active, Col 2=Apparent (per NILMTK metadata).
-        if h == 2:
-            print(f"  -> [House 2 Mode] Selecting Column 1 (Active Power) as aggregate.")
-            mains_df['aggregate'] = mains_df[1]
-        elif mains_df.shape[1] >= 3:
-            print(f"  -> [Multi-Branch Mode] Summing Columns 1 and 2 as aggregate.")
-            mains_df['aggregate'] = mains_df[1] + mains_df[2]
-        else:
-            mains_df['aggregate'] = mains_df[1]
+        # SoundCardPowerMeter mains.dat: timestamp, active (W), apparent (VA), voltage.
+        # Use active only for all houses. Do not sum active+apparent (fake domain shift).
+        print(f"  -> Selecting Column 1 (Active Power) as aggregate for house {h}.")
+        mains_df['aggregate'] = mains_df[1]
             
         mains_df = mains_df[[0, 'aggregate']]
         mains_df.columns = ['time', 'aggregate']
@@ -264,7 +296,7 @@ def _process_appliance(appliance_name, paths, global_params, params_appliance, c
         print(f"  -> [Step 2/4] Loading Appliance submeter: channel_{channel_id}.dat...")
         t1 = time.time()
         
-        app_df = pd.read_csv(app_path, sep='\s+', header=None,
+        app_df = pd.read_csv(app_path, sep=r'\s+', header=None,
                              usecols=[0, 1],
                              dtype={0: np.float64, 1: np.float32},
                              engine='c')

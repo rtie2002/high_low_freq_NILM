@@ -5,17 +5,18 @@ Same idea as redd_processing_multi_appliance.py / ukdale_processing_multi_applia
 build one aligned whole-house CSV with
 
     readable_time
-    house
+    unix_time, house, sequence_id
     aggregate
     <appliance>_power
+    aggregate_observed, <appliance>_observed
     <appliance>_on
 
 Input:
     dataset_preprocess/REFIT/House_{N}.csv
     columns: Time, Unix, Aggregate, Appliance1..Appliance9
 
-Native REFIT is ~8 s. Default config resamples to 6 s so the grid matches
-UK-DALE / REDD for multi-domain transfer. Set sample_seconds: 8 to keep native.
+Native REFIT is approximately 8 s. UK-DALE and REFIT are both placed on an
+8 s grid so cross-domain training uses one physical sampling interval.
 """
 
 from __future__ import annotations
@@ -28,7 +29,12 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from ukdale_processing import apply_algorithm1_labeling, resolve_appliance_setting
+from ukdale_processing import (
+    apply_algorithm1_labeling,
+    contiguous_segment_ids,
+    fill_complete_short_gaps,
+    resolve_appliance_setting,
+)
 
 
 def get_arguments() -> argparse.Namespace:
@@ -104,20 +110,20 @@ def get_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--house_filename",
         type=str,
-        default="refit_house{house}_lf_6s.csv",
+        default="refit_house{house}_lf_8s.csv",
         help="Per-house filename for --split_houses. Use {house} placeholder.",
     )
     parser.add_argument(
         "--trim_to_common_start",
         action="store_true",
         default=True,
-        help="Drop leading rows until every appliance has non-zero power (default: on).",
+        help="Drop leading rows until every available meter has reported (default: on).",
     )
     parser.add_argument(
         "--no_trim_to_common_start",
         action="store_false",
         dest="trim_to_common_start",
-        help="Keep leading rows where some appliances are still all-zero.",
+        help="Keep leading rows before every available meter has reported.",
     )
     return parser.parse_args()
 
@@ -212,28 +218,24 @@ def house_csv_path(data_dir: str, house: int, config: dict) -> str:
     return path
 
 
-def fill_short_appliance_gaps(series: pd.Series, limit: int = 3) -> pd.Series:
-    if series.empty:
-        return series
-    filled = series.interpolate(method="linear", limit=limit, limit_area="inside")
-    return filled.ffill(limit=1).bfill(limit=1)
-
-
 def trim_to_common_appliance_start(
     combined: pd.DataFrame,
     appliances: list[str],
-    *,
-    min_power_w: float = 0.0,
 ) -> tuple[pd.DataFrame, pd.Timestamp | None]:
     starts: list[pd.Timestamp] = []
     for app in appliances:
         col = f"{app}_power"
         if col not in combined.columns:
             continue
-        active = combined[col] > min_power_w
-        if not active.any():
+        observed_col = f"{app}_observed"
+        observed = (
+            combined[observed_col].astype(bool)
+            if observed_col in combined.columns
+            else combined[col].notna()
+        )
+        if not observed.any():
             continue
-        starts.append(combined.index[active][0])
+        starts.append(combined.index[observed][0])
     if not starts:
         return combined, None
     common_start = max(starts)
@@ -433,8 +435,15 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
 
     print(f"[2/3] Resample to {sample_seconds}s grid and label ON/OFF")
     combined = raw[["aggregate"]].resample(sample_period).mean()
-    combined = combined.dropna(subset=["aggregate"]).copy()
-    print(f"      aggregate rows after resample: {len(combined):,}")
+    agg_gap_limit = int(algorithm_cfg.get("resample_gap_fill", 3))
+    combined["aggregate_observed"] = combined["aggregate"].notna().astype(np.int8)
+    combined["aggregate"] = fill_complete_short_gaps(
+        combined["aggregate"], agg_gap_limit
+    )
+    print(
+        f"      aggregate bins={len(combined):,} "
+        f"missing_after_short_fill={int(combined['aggregate'].isna().sum()):,}"
+    )
 
     for app in appliances:
         app_cfg = config["appliances"][app]
@@ -445,11 +454,11 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
                 raise ValueError(message)
             print(f"      skip {app}: {message}")
             combined[f"{app}_power"] = 0.0
-            combined[f"{app}_on"] = 0
+            combined[f"{app}_observed"] = 0
             continue
 
-        app_resampled = raw[[app]].resample(sample_period).mean()
-        aligned = combined[["aggregate"]].join(app_resampled, how="left")
+        app_series = raw[[app]].resample(sample_period).mean()[app].reindex(combined.index)
+        observed = app_series.notna()
         gap_limit = int(
             resolve_appliance_setting(
                 app_cfg,
@@ -458,33 +467,11 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
                 algorithm_cfg.get("resample_gap_fill", 3),
             )
         )
-        aligned[app] = fill_short_appliance_gaps(aligned[app], limit=gap_limit)
-        aligned = aligned.dropna(subset=["aggregate"]).copy()
-        aligned[app] = aligned[app].fillna(0.0)
-
-        power = np.minimum(
-            aligned[app].to_numpy(dtype=np.float32),
-            aligned["aggregate"].to_numpy(dtype=np.float32),
-        )
-        threshold = resolve_appliance_setting(app_cfg, "on_power_threshold", house, 50)
-        label = make_labels(power.copy(), app_cfg, algorithm_cfg, house)
-        app_frame = pd.DataFrame(
-            {f"{app}_power": power, f"{app}_on": label.astype(int)},
-            index=aligned.index,
-        )
-        combined = combined.join(app_frame, how="left")
+        combined[f"{app}_power"] = fill_complete_short_gaps(app_series, gap_limit)
+        combined[f"{app}_observed"] = observed.astype(np.int8)
         print(
-            f"      {app:<15} IAM={iam:<3} thresh={threshold:<4}W "
-            f"rows={len(app_frame):,} ON rows={int(label.sum()):,}"
-        )
-
-    combined = combined.dropna(subset=["aggregate"]).copy()
-    for app in appliances:
-        combined[f"{app}_power"] = pd.to_numeric(
-            combined[f"{app}_power"], errors="coerce"
-        ).fillna(0.0)
-        combined[f"{app}_on"] = (
-            pd.to_numeric(combined[f"{app}_on"], errors="coerce").fillna(0).astype(int)
+            f"      {app:<15} IAM={iam:<3} missing_after_short_fill="
+            f"{int(combined[f'{app}_power'].isna().sum()):,}"
         )
 
     if args.trim_to_common_start:
@@ -493,29 +480,63 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
         dropped = before_rows - len(combined)
         if common_start is not None and dropped > 0:
             print(
-                f"[trim] dropped {dropped:,} leading rows before all appliances active "
+                f"[trim] dropped {dropped:,} leading rows before all meters reported "
                 f"(common start {common_start.tz_convert(tz).strftime('%Y-%m-%d %H:%M:%S')})"
             )
 
+    power_cols = [f"{app}_power" for app in appliances]
+    required = ["aggregate", *power_cols]
+    before_valid = len(combined)
+    combined = combined.dropna(subset=required).copy()
+    print(
+        f"[segments] dropped {before_valid - len(combined):,} rows with unresolved "
+        "meter gaps"
+    )
+    if combined.empty:
+        raise ValueError(f"No fully observed rows remain for REFIT house {house}.")
+
+    combined["sequence_id"] = contiguous_segment_ids(combined.index, sample_period)
+    aggregate = combined["aggregate"].to_numpy(dtype=np.float32)
+    for app in appliances:
+        power = combined[f"{app}_power"].to_numpy(dtype=np.float32)
+        labels = np.zeros(len(combined), dtype=np.int8)
+        for positions in combined.groupby("sequence_id", sort=False).indices.values():
+            positions = np.asarray(positions, dtype=np.int64)
+            labels[positions] = make_labels(
+                power[positions].copy(), config["appliances"][app], algorithm_cfg, house
+            )
+        combined[f"{app}_on"] = labels
+        threshold = resolve_appliance_setting(
+            config["appliances"][app], "on_power_threshold", house, 50
+        )
+        above_mains = int(np.sum(power > aggregate))
+        print(
+            f"      {app:<15} thresh={threshold:<4}W ON rows={int(labels.sum()):,} "
+            f"power>aggregate rows={above_mains:,} (kept, not clipped)"
+        )
+
+    print(f"[segments] contiguous sequences={combined['sequence_id'].nunique():,}")
     combined = combined.reset_index()
     time_col = combined.columns[0]
     if time_col != "time":
         combined.rename(columns={time_col: "time"}, inplace=True)
+    combined["unix_time"] = (combined["time"].astype("int64") // 10**9).astype(np.int64)
     combined["readable_time"] = combined["time"].dt.tz_convert(tz).dt.strftime("%Y-%m-%d %H:%M:%S")
     combined.drop(columns=["time"], inplace=True)
-    combined.insert(1, "house", house)
+    combined.insert(2, "house", house)
 
-    power_cols = [f"{app}_power" for app in appliances]
+    metadata_cols = ["readable_time", "unix_time", "house", "sequence_id"]
+    observed_cols = ["aggregate_observed", *[f"{app}_observed" for app in appliances]]
     on_cols = [f"{app}_on" for app in appliances]
-    combined = combined[["readable_time", "house", "aggregate", *power_cols, *on_cols]]
+    combined = combined[[*metadata_cols, "aggregate", *power_cols, *observed_cols, *on_cols]]
 
     if args.output_mode == "zscore":
         z = add_zscore_columns(combined, config, appliances)
         keep = [
-            "readable_time",
-            "house",
+            *metadata_cols,
             "aggregate_zscore",
             *[f"{app}_power_zscore" for app in appliances],
+            *observed_cols,
             *on_cols,
         ]
         combined = z[keep].rename(columns={"aggregate_zscore": "aggregate"})

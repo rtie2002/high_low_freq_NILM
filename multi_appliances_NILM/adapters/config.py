@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,20 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
 
 def load_experiment(path: str | Path) -> dict[str, Any]:
     """Dataset side: CSV paths, columns, normalization, evaluation."""
-    return load_yaml(path)
+    experiment_path = Path(path).resolve()
+    config = load_yaml(experiment_path)
+    if normalization_file := config.get("normalization_file"):
+        stats_path = Path(normalization_file)
+        if not stats_path.is_absolute():
+            stats_path = experiment_path.parent / stats_path
+        if not stats_path.is_file():
+            raise FileNotFoundError(
+                f"Normalization statistics not found: {stats_path}. "
+                "Regenerate the mixed dataset before training."
+            )
+        with stats_path.open(encoding="utf-8") as file:
+            config["normalization"] = json.load(file)
+    return config
 
 
 def load_model_config(path: str | Path) -> dict[str, Any]:

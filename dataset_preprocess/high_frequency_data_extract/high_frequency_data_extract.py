@@ -316,12 +316,9 @@ def load_lf_data(
     mains_path = os.path.join(data_dir, f"house_{house_id}", "mains.dat")
     print(f"  [1/2] Loading mains.dat ...")
     mains_df = pd.read_csv(mains_path, sep=r"\s+", header=None, engine="c")
-    if house_id == 2:
-        mains_df["aggregate"] = mains_df[1]
-    elif mains_df.shape[1] >= 3:
-        mains_df["aggregate"] = mains_df[1] + mains_df[2]
-    else:
-        mains_df["aggregate"] = mains_df[1]
+    # SoundCardPowerMeter: col1=active (W), col2=apparent (VA), col3=voltage.
+    # Always active-only; never sum active+apparent.
+    mains_df["aggregate"] = mains_df[1]
     mains_df = mains_df[[0, "aggregate"]]
     mains_df.columns = ["time", "aggregate"]
     mains_df.drop_duplicates(subset=["time"], keep="first", inplace=True)

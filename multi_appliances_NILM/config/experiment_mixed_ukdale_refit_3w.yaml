@@ -11,6 +11,7 @@ seed: 2026
 data_root: datasets/mixed_ukdale_refit_3w
 
 csv:
+  sample_seconds: 8
   train_file: training/multi_appliance_training.csv
   validation_file: validating/multi_appliance_validating.csv
   test_file: testing/multi_appliance_testing.csv
@@ -22,16 +23,9 @@ csv:
     washingmachine: {power: washingmachine_power, state: washingmachine_on}
     microwave:      {power: microwave_power,      state: microwave_on}
 
-# Shared z-score from mixed TRAIN only (UK+REFIT source houses, 3-week blocks).
-# Fit once on training CSV; apply same stats to val/test (do not refit on test).
-normalization:
-  aggregate: {mean: 775, std: 1045}
-  appliances:
-    kettle:         {mean: 20,  std: 214}
-    fridge:         {mean: 39,  std: 68}
-    dishwasher:     {mean: 44,  std: 297}
-    washingmachine: {mean: 27,  std: 190}
-    microwave:      {mean: 14,  std: 99}
+# Generated from the mixed TRAIN split only, then reused unchanged for val/test.
+# Training fails clearly if this artifact has not been regenerated.
+normalization_file: ../datasets/mixed_ukdale_refit_3w/normalization_stats.json
 
 evaluation:
   on_thresholds_watts:

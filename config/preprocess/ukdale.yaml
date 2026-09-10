@@ -30,7 +30,8 @@ global_params:
 
   aggregate_mean: 522
   aggregate_std: 814
-  sample_seconds: 6
+  # Shared cross-domain grid. UK-DALE is downsampled to REFIT's native rate.
+  sample_seconds: 8
   validation_percent: 0   
   testing_percent: 100    
   appliances_to_process: ["washingmachine", "kettle", "microwave", "fridge", "dishwasher"]
@@ -55,7 +56,8 @@ appliances:
     max_power: 3998          # User defined
     on_power_threshold: 200   # User defined
     min_off_duration: 0      # Kelly Table 4 (0s)
-    min_on_duration: 2       # Kelly Table 4 (12s @ 6s rate)
+    min_on_duration: 2       # Approximately Kelly's 12 s minimum (16 s @ 8 s)
+    remove_spikes: false     # Short heating events are signal, not isolated noise
     houses: [2]
     channel_map: {1: 10, 2: 8, 3: 2, 5: 18}
   
@@ -64,8 +66,9 @@ appliances:
     std: 800
     max_power: 3969          # User defined
     on_power_threshold: 200   # User defined
-    min_off_duration: 5      # Kelly Table 4 (30s @ 6s rate)
-    min_on_duration: 2       # Kelly Table 4 (12s @ 6s rate)
+    min_off_duration: 4      # Approximately 30 s (32 s @ 8 s)
+    min_on_duration: 2       # Approximately 12 s (16 s @ 8 s)
+    remove_spikes: false     # Preserve genuine short microwave bursts
     houses: [2]
     channel_map: {1: 13, 2: 15, 5: 23}
 
@@ -74,10 +77,10 @@ appliances:
     std: 400
     max_power: 350           # User defined
     on_power_threshold: 50    # User defined
-    min_off_duration: 2      # Kelly Table 4 (12s @ 6s rate)
-    min_off_duration_by_house: {5: 5}  # H5 fridge: bridge up to 30s packet gaps
-    min_on_duration: 10      # Kelly Table 4 (60s @ 6s rate)
-    resample_gap_fill: 3     # interpolate up to 18s missing 6s bins before labeling
+    min_off_duration: 2      # Approximately 12 s (16 s @ 8 s)
+    min_off_duration_by_house: {5: 4}  # H5 fridge: bridge up to 32 s
+    min_on_duration: 8       # Approximately 60 s (64 s @ 8 s)
+    resample_gap_fill: 1     # interpolate one missing 8 s bin
     houses: [2]
     channel_map: {1: 12, 2: 14, 5: 19}
 
@@ -86,8 +89,8 @@ appliances:
     std: 1000
     max_power: 3964          # User defined
     on_power_threshold: 50    # User defined
-    min_off_duration: 300    # Kelly Table 4 (1800s @ 6s rate)
-    min_on_duration: 300     # Kelly Table 4 (1800s @ 6s rate)
+    min_off_duration: 225    # Kelly Table 4 (1800 s @ 8 s)
+    min_on_duration: 225     # Kelly Table 4 (1800 s @ 8 s)
     houses: [2]
     channel_map: {1: 6, 2: 13, 5: 22}
 
@@ -99,8 +102,8 @@ appliances:
     # Per-house ON threshold overrides (idle standby power varies by installation).
     # House 5 channel often reads ~15-16 W when OFF; 15 W global threshold labels it ~always ON.
     on_power_threshold_by_house: {5: 25}
-    min_off_duration: 100    # User optimized (Kelly: 27)
-    min_on_duration: 300     # Kelly Table 4 (1800s @ 6s rate)
+    min_off_duration: 75     # Preserve the previous 600 s setting
+    min_on_duration: 225     # Kelly Table 4 (1800 s @ 8 s)
     houses: [2]
     channel_map: {1: 5, 2: 12, 5: 24}
 
@@ -122,9 +125,9 @@ algorithm1:
   background_threshold: 50   # Threshold below which signal is considered background (Watts)
   
   # Kelly / NILMTK Logic Defaults (If not specified in appliance section)
-  min_off_duration_default: 10 # 1 minute bridge (at 6s sampling)
+  min_off_duration_default: 8  # Approximately 1 minute at 8 s sampling
   min_on_duration_default: 1   # 1 sample minimum
-  resample_gap_fill: 3         # max 6s bins to linear-interpolate after resample
+  resample_gap_fill: 1         # fill only a complete one-bin (8 s) gap
   
   # Normalization & Limits
   clip_max: null             # (Optional) Hard cap on power values before normalization

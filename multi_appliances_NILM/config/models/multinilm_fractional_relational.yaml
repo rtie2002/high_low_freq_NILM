@@ -18,26 +18,27 @@ evaluation:
     apply_to_power: true
     postprocess:
       enabled: true
-      # One sample is 6 s. Microwave/kettle have many genuine short events.
+      # One sample is 8 s. Microwave/kettle have genuine short events.
       min_on_samples:
-        kettle: 3
-        fridge: 20
-        dishwasher: 160
-        washingmachine: 300
-        microwave: 3
+        kettle: 2
+        fridge: 15
+        dishwasher: 120
+        washingmachine: 225
+        microwave: 1
       merge_gap_samples:
         kettle: 0
-        fridge: 40
-        dishwasher: 300
-        washingmachine: 160
+        fridge: 30
+        dishwasher: 225
+        washingmachine: 120
         microwave: 2
 
 windowing:
-  input_window_length: 2048
-  output_window_length: 2048
+  # 1536 x 8 s preserves the previous 2048 x 6 s physical context (3.41 h).
+  input_window_length: 1024
+  output_window_length: 1024
   output_alignment: end
-  input_stride: 1024
-  eval_stride: 1024
+  input_stride: 512
+  eval_stride: 512
   eval_reconstruction: auto
   training_targets: auto
 
@@ -49,8 +50,8 @@ fractional:
   include_abs_delta: true
   include_rolling_mean: true
   include_rolling_std: true
-  rolling_windows: [10, 30, 60]
-  memory: 32
+  rolling_windows: [8, 23, 45]
+  memory: 24
   channel_normalize: none
 
 architecture:
@@ -91,7 +92,7 @@ architecture:
     attention_channels: 16
     residual_scale: 0.25
 
-  domain_feature_layers: [temporal_3, temporal_6, aligned]
+  domain_feature_layers: [temporal_3, aligned]
 
 loss:
   task_balance: equal

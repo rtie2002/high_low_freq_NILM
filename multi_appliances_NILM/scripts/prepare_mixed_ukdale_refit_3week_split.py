@@ -57,7 +57,7 @@ REFIT_DIR = ROOT / "datasets" / "refit"
 OUT_DIR = ROOT / "datasets" / "mixed_ukdale_refit_3w"
 
 TIME_COL = "readable_time"
-SAMPLE_SECONDS = 6.0
+SAMPLE_SECONDS = 8.0
 
 APPS_5 = ["kettle", "fridge", "dishwasher", "washingmachine", "microwave"]
 
@@ -102,45 +102,75 @@ class BlockStats:
 
 
 def resolve_ukdale(house: int, ukdale: Path) -> Path:
-    candidates = [
-        ukdale / f"ukdale_house{house}_lf_6s.csv",
-        ukdale / f"multi_appliance_house{house}_lf.csv",
-        ukdale / f"multi_appliance_FULL_house{house}.csv",
-    ]
-    for p in candidates:
-        if p.is_file():
-            return p
-    raise FileNotFoundError(f"UK-DALE house {house} CSV not found under {ukdale}")
+    path = ukdale / f"ukdale_house{house}_lf_8s.csv"
+    if path.is_file():
+        return path
+    raise FileNotFoundError(
+        f"Corrected 8 s UK-DALE house {house} CSV not found: {path}. "
+        "Regenerate it before building the mixed dataset."
+    )
 
 
 def resolve_refit(house: int, refit: Path) -> Path:
-    candidates = [
-        refit / f"refit_house{house}_lf_6s.csv",
-        refit / f"multi_appliance_house{house}_lf.csv",
-    ]
-    for p in candidates:
-        if p.is_file():
-            return p
-    raise FileNotFoundError(f"REFIT house {house} CSV not found under {refit}")
+    path = refit / f"refit_house{house}_lf_8s.csv"
+    if path.is_file():
+        return path
+    raise FileNotFoundError(
+        f"Corrected 8 s REFIT house {house} CSV not found: {path}. "
+        "Regenerate it before building the mixed dataset."
+    )
 
 
 def on_cols(apps: list[str]) -> list[str]:
     return [f"{a}_on" for a in apps]
 
 
-def count_events(on: np.ndarray) -> int:
+def count_events(on: np.ndarray, sequence_ids: np.ndarray | None = None) -> int:
     """Number of contiguous ON runs (0->1 edges + leading 1)."""
     if on.size == 0:
         return 0
     x = on.astype(np.int8)
-    return int(x[0]) + int(np.sum((x[1:] == 1) & (x[:-1] == 0)))
+    starts = (x[1:] == 1) & (x[:-1] == 0)
+    if sequence_ids is not None:
+        segments = np.asarray(sequence_ids)
+        starts |= (x[1:] == 1) & (segments[1:] != segments[:-1])
+    return int(x[0]) + int(np.sum(starts))
 
 
-def load_on_timeline(csv_path: Path, apps: list[str]) -> tuple[pd.DatetimeIndex, np.ndarray]:
-    cols = [TIME_COL] + on_cols(apps)
+def frame_sequence_ids(df: pd.DataFrame) -> np.ndarray | None:
+    """Return IDs for contiguous dataset/house/preprocessing sequences.
+
+    Preprocessed house files number ``sequence_id`` independently, so the raw
+    IDs cannot be compared safely after several houses are concatenated.
+    """
+    key_columns = [
+        col for col in ("dataset", "house", "sequence_id") if col in df.columns
+    ]
+    if not key_columns:
+        return None
+    boundary = df[key_columns].ne(df[key_columns].shift()).any(axis=1).to_numpy()
+    return np.cumsum(boundary, dtype=np.int64) - 1
+
+
+def load_on_timeline(
+    csv_path: Path, apps: list[str]
+) -> tuple[pd.DatetimeIndex, np.ndarray, np.ndarray]:
+    available = set(pd.read_csv(csv_path, nrows=0).columns)
+    if "sequence_id" not in available:
+        raise ValueError(
+            f"{csv_path} has no sequence_id column; it is not a corrected 8 s file."
+        )
+    cols = [TIME_COL, *on_cols(apps)]
+    if "unix_time" in available:
+        cols.append("unix_time")
+    cols.append("sequence_id")
     print(f"  loading ON timeline: {csv_path.name}", flush=True)
     df = pd.read_csv(csv_path, usecols=cols)
-    times = pd.to_datetime(df[TIME_COL], errors="coerce")
+    times = (
+        pd.to_datetime(df["unix_time"], unit="s", errors="coerce", utc=True)
+        if "unix_time" in df.columns
+        else pd.to_datetime(df[TIME_COL], errors="coerce", utc=True)
+    )
     ok = times.notna()
     if not bool(ok.all()):
         n_bad = int((~ok).sum())
@@ -152,12 +182,29 @@ def load_on_timeline(csv_path: Path, apps: list[str]) -> tuple[pd.DatetimeIndex,
         [df[f"{a}_on"].fillna(0).astype(np.int8).to_numpy() for a in apps]
     )
     order = np.argsort(times.values)
-    return times[order], mat[order]
+    sequence_ids = (
+        df["sequence_id"].fillna(-1).to_numpy(dtype=np.int64)
+        if "sequence_id" in df.columns
+        else np.zeros(len(df), dtype=np.int64)
+    )
+    times, mat, sequence_ids = times[order], mat[order], sequence_ids[order]
+    if len(times) > 1:
+        delta_s = np.diff(times.asi8) / 1e9
+        same_sequence = sequence_ids[1:] == sequence_ids[:-1]
+        if not bool(np.all(np.isclose(delta_s[same_sequence], SAMPLE_SECONDS))):
+            raise ValueError(
+                f"{csv_path} contains non-{SAMPLE_SECONDS:g}s steps inside sequence_id."
+            )
+    return times, mat, sequence_ids
 
 
 def load_full_slice(csv_path: Path, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
-    t = pd.to_datetime(df[TIME_COL], errors="coerce")
+    t = (
+        pd.to_datetime(df["unix_time"], unit="s", errors="coerce", utc=True)
+        if "unix_time" in df.columns
+        else pd.to_datetime(df[TIME_COL], errors="coerce", utc=True)
+    )
     df = df.loc[t.notna()].copy()
     df[TIME_COL] = t.loc[t.notna()]
     out = df[(df[TIME_COL] >= start) & (df[TIME_COL] <= end)].copy()
@@ -178,7 +225,10 @@ def val_floors(full_events: dict[str, int], full_minutes: dict[str, float]) -> t
 
 
 def _daily_tables(
-    times: pd.DatetimeIndex, on_mat: np.ndarray, apps: list[str]
+    times: pd.DatetimeIndex,
+    on_mat: np.ndarray,
+    sequence_ids: np.ndarray,
+    apps: list[str],
 ) -> tuple[pd.DatetimeIndex, np.ndarray, np.ndarray, np.ndarray]:
     """Aggregate to calendar days: row counts, ON sample counts, ON event counts.
 
@@ -203,7 +253,10 @@ def _daily_tables(
         x = on_mat[:, i].astype(np.int8)
         starts = np.zeros(len(x), dtype=np.int8)
         starts[0] = x[0]
-        starts[1:] = ((x[1:] == 1) & (x[:-1] == 0)).astype(np.int8)
+        starts[1:] = (
+            (x[1:] == 1)
+            & ((x[:-1] == 0) | (sequence_ids[1:] != sequence_ids[:-1]))
+        ).astype(np.int8)
         edf = pd.DataFrame({"day": day, "s": starts})
         event_counts[:, i] = (
             edf.groupby("day", sort=True)["s"].sum().reindex(days, fill_value=0).to_numpy()
@@ -278,6 +331,7 @@ def _window_from_daily(
 def select_best_block(
     times: pd.DatetimeIndex,
     on_mat: np.ndarray,
+    sequence_ids: np.ndarray,
     apps: list[str],
     *,
     block_weeks: float,
@@ -297,7 +351,9 @@ def select_best_block(
     full_min = FULL_MIN_ON_MINUTES
     val_ev, val_min = val_floors(FULL_MIN_EVENTS, FULL_MIN_ON_MINUTES)
 
-    days, n_rows_d, on_counts, event_counts = _daily_tables(times, on_mat, apps)
+    days, n_rows_d, on_counts, event_counts = _daily_tables(
+        times, on_mat, sequence_ids, apps
+    )
     # Fill missing calendar days with zeros so windows are true calendar spans
     if len(days) == 0:
         raise ValueError("No days in timeline")
@@ -459,16 +515,37 @@ def summarize_split(name: str, df: pd.DataFrame, apps: list[str]) -> str:
     parts.append(f"time={df[TIME_COL].iloc[0]} -> {df[TIME_COL].iloc[-1]}")
     houses = sorted(df["house"].unique().tolist()) if "house" in df.columns else []
     parts.append(f"houses={houses}")
+    sequence_ids = frame_sequence_ids(df)
     for a in apps:
         col = f"{a}_on"
         if col not in df.columns:
             continue
         on = df[col].fillna(0).to_numpy()
         parts.append(
-            f"{a}: ON%={100.0 * on.mean():.2f} events={count_events(on)} "
+            f"{a}: ON%={100.0 * on.mean():.2f} "
+            f"events={count_events(on, sequence_ids)} "
             f"min={on.sum() * SAMPLE_SECONDS / 60.0:.1f}"
         )
     return " | ".join(parts)
+
+
+def training_normalization(df: pd.DataFrame, apps: list[str]) -> dict:
+    """Z-score statistics fitted once on the mixed labeled training split."""
+    def mean_std(values: pd.Series, name: str) -> dict[str, float]:
+        numeric = pd.to_numeric(values, errors="raise")
+        mean = float(numeric.mean())
+        std = float(numeric.std(ddof=0))
+        if not np.isfinite(mean) or not np.isfinite(std) or std <= 0:
+            raise ValueError(f"Invalid normalization statistics for {name}: {mean=}, {std=}")
+        return {"mean": mean, "std": std}
+
+    stats = {
+        "aggregate": mean_std(df["aggregate"], "aggregate"),
+        "appliances": {},
+    }
+    for app in apps:
+        stats["appliances"][app] = mean_std(df[f"{app}_power"], app)
+    return stats
 
 
 def parse_args() -> argparse.Namespace:
@@ -529,13 +606,14 @@ def main() -> None:
             else resolve_refit(house, args.refit_dir)
         )
         print(f"\n[{dataset} house {house} | {role}] {path}", flush=True)
-        times, on_mat = load_on_timeline(path, apps)
+        times, on_mat, sequence_ids = load_on_timeline(path, apps)
         # Test houses: still want active apps, but do not require val-tail
         # (whole block goes to test).
         require_val = role == "source"
         block = select_best_block(
             times,
             on_mat,
+            sequence_ids,
             apps,
             block_weeks=float(args.block_weeks),
             step_days=float(args.step_days),
@@ -576,9 +654,10 @@ def main() -> None:
             print("   ", summarize_split("train", tr, apps), flush=True)
             print("   ", summarize_split("val", va, apps), flush=True)
             # Soft assert: val has >=1 event per app
+            va_segments = frame_sequence_ids(va)
             for a in apps:
                 col = f"{a}_on"
-                if count_events(va[col].fillna(0).to_numpy()) < 1:
+                if count_events(va[col].fillna(0).to_numpy(), va_segments) < 1:
                     print(
                         f"    WARN: val has 0 events for {a} "
                         f"(house {house}); consider re-running with softer floors",
@@ -600,6 +679,7 @@ def main() -> None:
             {
                 "block_weeks": args.block_weeks,
                 "step_days": args.step_days,
+                "sample_seconds": SAMPLE_SECONDS,
                 "train_val_ratio": "80/20",
                 "ukdale_source": UKDALE_SOURCE,
                 "ukdale_test": UKDALE_TEST,
@@ -632,6 +712,10 @@ def main() -> None:
     train_df.to_csv(train_out, index=False)
     val_df.to_csv(val_out, index=False)
     test_df.to_csv(test_out, index=False)
+    normalization_path = out_dir / "normalization_stats.json"
+    normalization_path.write_text(
+        json.dumps(training_normalization(train_df, apps), indent=2), encoding="utf-8"
+    )
 
     print("\n=== Wrote split CSVs ===", flush=True)
     print(summarize_split("TRAIN", train_df, apps), flush=True)
@@ -640,6 +724,7 @@ def main() -> None:
     print(f"  {train_out}", flush=True)
     print(f"  {val_out}", flush=True)
     print(f"  {test_out}", flush=True)
+    print(f"  {normalization_path}", flush=True)
 
 
 if __name__ == "__main__":

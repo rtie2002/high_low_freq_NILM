@@ -167,13 +167,6 @@ def _output_slice(start: int, seq_len: int, windowing: dict[str, Any]) -> slice:
     return slice(start + offset, start + offset + out_len)
 
 
-def _count_windows(n_timesteps: int, windowing: dict[str, Any], stride: int) -> int:
-    seq_len = _resolve_input_length(windowing)
-    if n_timesteps < seq_len:
-        return 0
-    return len(np.arange(0, n_timesteps - seq_len + 1, max(1, stride)))
-
-
 def _target_mode(windowing: dict[str, Any], split: str) -> TargetMode:
     if split == "train" and resolve_training_targets(windowing) == "full_input":
         return "full_input"
@@ -191,6 +184,7 @@ class WindowDataset(Dataset):
         windowing: dict[str, Any],
         *,
         stride: int,
+        segment_ids: np.ndarray | None = None,
         target_mode: TargetMode = "output_window",
         normalization: NormalizationStats | None = None,
         state_threshold_watts: float | np.ndarray | None = None,
@@ -221,7 +215,21 @@ class WindowDataset(Dataset):
         self.target_mode = target_mode
         self.seq_len = _resolve_input_length(windowing)
         self.stride = max(1, stride)
-        self.indices = np.arange(0, len(inputs) - self.seq_len + 1, self.stride)
+        self.indices = np.arange(
+            0, max(0, len(inputs) - self.seq_len + 1), self.stride
+        )
+        self.n_candidate_windows = len(self.indices)
+        if segment_ids is not None and len(self.indices):
+            segments = np.asarray(segment_ids, dtype=np.int64)
+            if len(segments) != len(inputs):
+                raise ValueError(
+                    f"segment_ids has {len(segments)} rows but inputs has {len(inputs)}"
+                )
+            same_segment = segments[self.indices] == segments[
+                self.indices + self.seq_len - 1
+            ]
+            self.indices = self.indices[same_segment]
+        self.n_rejected_windows = self.n_candidate_windows - len(self.indices)
 
     def __len__(self) -> int:
         return len(self.indices)
@@ -263,24 +271,75 @@ def resolve_mains_column(experiment_cfg: dict[str, Any], model_cfg: dict[str, An
     raise ValueError("Set csv.mains_column in experiment yaml or data.mains_column in model yaml")
 
 
+@dataclass
+class SplitArrays:
+    """Numeric model arrays plus training-only sequence boundary metadata."""
+
+    inputs: np.ndarray
+    targets: np.ndarray
+    states: np.ndarray
+    segment_ids: np.ndarray
+
+
+def _sequence_ids_from_csv(df: pd.DataFrame, sample_seconds: float | None) -> np.ndarray:
+    """Create monotonic IDs at dataset, house, declared segment, or time changes."""
+    n_rows = len(df)
+    if n_rows == 0:
+        return np.zeros(0, dtype=np.int64)
+
+    starts = np.zeros(n_rows, dtype=bool)
+    starts[0] = True
+    for column in ("dataset", "house", "sequence_id"):
+        if column not in df.columns:
+            continue
+        values = df[column].astype(str).to_numpy()
+        starts[1:] |= values[1:] != values[:-1]
+
+    time_values: np.ndarray | None = None
+    if "unix_time" in df.columns:
+        time_values = pd.to_numeric(df["unix_time"], errors="coerce").to_numpy(
+            dtype=np.float64
+        )
+    elif "readable_time" in df.columns:
+        parsed = pd.to_datetime(df["readable_time"], errors="coerce", utc=True)
+        time_values = parsed.astype("int64").to_numpy(dtype=np.float64) / 1e9
+        time_values[parsed.isna().to_numpy()] = np.nan
+
+    if sample_seconds is not None and time_values is not None and n_rows > 1:
+        delta = np.diff(time_values)
+        starts[1:] |= ~np.isclose(delta, float(sample_seconds), rtol=0.0, atol=1e-3)
+
+    return np.cumsum(starts, dtype=np.int64) - 1
+
+
 def load_csv_arrays(
     csv_path: Path,
     csv_cfg: dict[str, Any],
     appliances: list[str],
     *,
     mains_column: str,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> SplitArrays:
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV not found: {csv_path}")
 
     power_cols, state_cols = _csv_column_map(csv_cfg, appliances)
-    usecols = list(dict.fromkeys([mains_column, *power_cols, *state_cols]))
-    df = pd.read_csv(csv_path, usecols=usecols).dropna(subset=usecols)
+    required = list(dict.fromkeys([mains_column, *power_cols, *state_cols]))
+    available = set(pd.read_csv(csv_path, nrows=0).columns)
+    metadata = [
+        col
+        for col in ("readable_time", "unix_time", "dataset", "house", "sequence_id")
+        if col in available
+    ]
+    df = pd.read_csv(csv_path, usecols=[*required, *metadata]).dropna(subset=required)
 
     x = df[mains_column].to_numpy(dtype=np.float32)
     y = df[power_cols].to_numpy(dtype=np.float32)
     z = df[state_cols].to_numpy(dtype=np.int64)
-    return x, y, z
+    sample_seconds = csv_cfg.get("sample_seconds")
+    segment_ids = _sequence_ids_from_csv(
+        df, float(sample_seconds) if sample_seconds is not None else None
+    )
+    return SplitArrays(x, y, z, segment_ids)
 
 
 class NILMDataLoader:
@@ -306,7 +365,7 @@ class NILMDataLoader:
         self.norm = NormalizationStats.from_config(experiment_cfg, model_cfg, self.appliances)
         self.loss_scale = self.norm.loss_scale
         self.tensor_dtype, _ = resolve_tensor_dtype(model_cfg)
-        self._splits: dict[SplitName, tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None
+        self._splits: dict[SplitName, SplitArrays] | None = None
 
     def _resolve_csv_path(self, split: SplitName) -> Path:
         key = _SPLIT_FILE_KEYS[split]
@@ -316,7 +375,7 @@ class NILMDataLoader:
         path = Path(name)
         return path if path.is_absolute() else self.data_root / path
 
-    def _load_split_csv(self, split: SplitName) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _load_split_csv(self, split: SplitName) -> SplitArrays:
         return load_csv_arrays(
             self._resolve_csv_path(split),
             self.csv_cfg,
@@ -332,20 +391,30 @@ class NILMDataLoader:
 
     def _make_window_dataset(self, split: str) -> WindowDataset:
         key = _split_key(split)
-        x, y, z = self.get_splits()[key]
+        data = self.get_splits()[key]
         w = self.model_cfg["windowing"]
-        return WindowDataset(
-            x,
-            y,
-            z,
+        dataset = WindowDataset(
+            data.inputs,
+            data.targets,
+            data.states,
             w,
             stride=self._stride_for_split(split),
+            segment_ids=data.segment_ids,
             target_mode=_target_mode(w, split),
             normalization=self.norm,
             state_threshold_watts=self.state_threshold_watts,
             state_label_source=self.state_label_source,
             tensor_dtype=self.tensor_dtype,
         )
+        if len(dataset) == 0:
+            _, segment_lengths = np.unique(data.segment_ids, return_counts=True)
+            longest_segment = int(segment_lengths.max()) if len(segment_lengths) else 0
+            raise ValueError(
+                f"No valid {split} windows: input length is {dataset.seq_len}, "
+                f"but the longest contiguous segment is {longest_segment} rows. "
+                "Check sample_seconds and regenerate sequence-aware CSVs."
+            )
+        return dataset
 
     def window_output_timesteps(self, split: str, n_windows: int) -> np.ndarray:
         """CSV row index for each sliding-window model output."""
@@ -369,8 +438,7 @@ class NILMDataLoader:
         Averaging removes window-boundary pulses in plots and test metrics.
         """
         key = _split_key(split)
-        x, _, _ = self.get_splits()[key]
-        total = len(x)
+        total = len(self.get_splits()[key].inputs)
         window_values = np.asarray(window_values, dtype=np.float64)
         if window_values.ndim != 3:
             raise ValueError(f"Expected (n_windows, out_len, A), got {window_values.shape}")
@@ -402,13 +470,14 @@ class NILMDataLoader:
 
     def csv_on_labels_at_timesteps(self, split: str, csv_timesteps: np.ndarray) -> np.ndarray:
         """Dataset CSV *_on labels at the same CSV rows as a prediction bundle."""
-        _, _, z_csv = self.get_splits()[_split_key(split)]
+        z_csv = self.get_splits()[_split_key(split)].states
         indices = np.asarray(csv_timesteps, dtype=np.int64)
         return z_csv[indices].astype(np.int32)
 
     def get_raw_csv_arrays(self, split: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return raw CSV mains/power/state arrays (watts / labels, not z-scored)."""
-        return self.get_splits()[_split_key(split)]
+        data = self.get_splits()[_split_key(split)]
+        return data.inputs, data.targets, data.states
 
     def mains_watts_at_timesteps(self, split: str, csv_timesteps: np.ndarray) -> np.ndarray:
         """Raw aggregate (W) at the same CSV rows as a prediction-bundle timeline."""
@@ -443,14 +512,15 @@ class NILMDataLoader:
         may still follow data.state_label_source in the model yaml.
         """
         key = _split_key(split)
-        x, y, z_csv = self.get_splits()[key]
+        data = self.get_splits()[key]
         w = self.model_cfg["windowing"]
         ds = WindowDataset(
-            x,
-            y,
-            z_csv,
+            data.inputs,
+            data.targets,
+            data.states,
             w,
             stride=self._stride_for_split(split),
+            segment_ids=data.segment_ids,
             target_mode=_target_mode(w, split),
             normalization=self.norm,
             state_label_source="csv",
@@ -466,7 +536,7 @@ class NILMDataLoader:
         flat = np.concatenate(rows, axis=0)
         return flat[: int(n_points)].astype(np.int32)
 
-    def get_splits(self) -> dict[SplitName, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    def get_splits(self) -> dict[SplitName, SplitArrays]:
         if self._splits is not None:
             return self._splits
         self._splits = {
@@ -485,7 +555,8 @@ class NILMDataLoader:
 
     def estimate_state_pos_weights(self, split: str = "train") -> np.ndarray:
         """Per-appliance BCE pos_weight = (1 - p) / p from training ON rate p."""
-        _, y, z = self.get_splits()[_split_key(split)]
+        data = self.get_splits()[_split_key(split)]
+        y, z = data.targets, data.states
         if self.state_threshold_watts is not None:
             on = (y > self.state_threshold_watts).astype(np.float64)
         else:
@@ -496,11 +567,12 @@ class NILMDataLoader:
     def describe_split(self, split: str, *, batch_size: int) -> dict[str, Any]:
         key = _split_key(split)
         csv_path = self._resolve_csv_path(key)
-        x, _, _ = self.get_splits()[key]
+        x = self.get_splits()[key].inputs
         w = self.model_cfg["windowing"]
         stride = self._stride_for_split(split)
         target_mode = _target_mode(w, split)
-        n_windows = _count_windows(len(x), w, stride)
+        window_dataset = self._make_window_dataset(split)
+        n_windows = len(window_dataset)
         n_batches = (n_windows + batch_size - 1) // batch_size if n_windows else 0
         return {
             "split": split,
@@ -514,6 +586,7 @@ class NILMDataLoader:
             "stride": stride,
             "target_mode": target_mode,
             "windows": n_windows,
+            "rejected_boundary_windows": window_dataset.n_rejected_windows,
             "batch_size": batch_size,
             "batches": n_batches,
         }
