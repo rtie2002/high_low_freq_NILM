@@ -29,17 +29,21 @@ global_params:
 
 # IAM index = Appliance{N} column in House_*.csv
 # Thresholds / stats follow baseline Arguments.refit_params_appliance.
-# min_on / min_off are in samples at the configured 8 s interval.
+# *_seconds is authoritative and remains fixed when sample_seconds changes.
+# *_duration is the equivalent 8 s sample count retained for legacy scripts.
 appliances:
   kettle:
     mean: 50
     std: 80
     max_power: 3998
     on_power_threshold: 20
+    min_off_seconds: 0
+    min_on_seconds: 12
     min_off_duration: 0
     min_on_duration: 2
     remove_spikes: false
-    resample_gap_fill: 1
+    resample_gap_fill_seconds: 18
+    resample_gap_fill: 2
     houses: [2, 3, 5, 9, 11, 20]
     channel_map: {2: 8, 3: 9, 5: 8, 9: 7, 11: 7, 20: 9}
 
@@ -48,12 +52,15 @@ appliances:
     std: 800
     max_power: 3969
     on_power_threshold: 200
+    min_off_seconds: 30
+    min_on_seconds: 6
     min_off_duration: 4
     # Keep genuine one-bin microwave bursts at the native 8 s resolution.
     min_on_duration: 1
     # Algorithm-1 spike removal treats short MW peaks as noise — disable for MW.
     remove_spikes: false
-    resample_gap_fill: 1
+    resample_gap_fill_seconds: 18
+    resample_gap_fill: 2
     houses: [2, 3, 5, 9, 11, 20]
     channel_map: {2: 5, 3: 8, 5: 7, 9: 6, 11: 6, 20: 8}
 
@@ -62,9 +69,12 @@ appliances:
     std: 700
     max_power: 3323
     on_power_threshold: 19
+    min_off_seconds: 12
+    min_on_seconds: 60
     min_off_duration: 2
     min_on_duration: 8
-    resample_gap_fill: 1
+    resample_gap_fill_seconds: 18
+    resample_gap_fill: 2
     houses: [2, 3, 5, 9, 11, 20]
     channel_map: {2: 1, 3: 2, 5: 1, 9: 1, 11: 1, 20: 1}
 
@@ -73,9 +83,14 @@ appliances:
     std: 400
     max_power: 3964
     on_power_threshold: 20
+    min_off_seconds: 1800
+    # A cycle may contain short above-threshold phases; 960 s avoids deleting
+    # valid cycles while min_off still joins long internal quiet phases.
+    min_on_seconds: 960
     min_off_duration: 225
-    min_on_duration: 225
-    resample_gap_fill: 1
+    min_on_duration: 120
+    resample_gap_fill_seconds: 18
+    resample_gap_fill: 2
     houses: [2, 3, 5, 9, 11, 20]
     channel_map: {2: 3, 3: 5, 5: 4, 9: 4, 11: 4, 20: 5}
 
@@ -84,9 +99,14 @@ appliances:
     std: 500
     max_power: 3999
     on_power_threshold: 20
-    min_off_duration: 75
-    min_on_duration: 225
-    resample_gap_fill: 1
+    # One appliance-level rule is shared across REFIT and UK-DALE. Do not tune
+    # this by dataset/house: cross-domain labels must have the same semantics.
+    min_off_seconds: 960
+    min_on_seconds: 960
+    min_off_duration: 120
+    min_on_duration: 120
+    resample_gap_fill_seconds: 18
+    resample_gap_fill: 2
     houses: [2, 3, 5, 9, 11, 20]
     channel_map: {2: 2, 3: 6, 5: 3, 9: 3, 11: 3, 20: 4}
 
@@ -97,4 +117,5 @@ algorithm1:
   spike_window: 5
   spike_threshold: 3.0
   background_threshold: 50
-  resample_gap_fill: 1
+  resample_gap_fill_seconds: 18
+  resample_gap_fill: 2

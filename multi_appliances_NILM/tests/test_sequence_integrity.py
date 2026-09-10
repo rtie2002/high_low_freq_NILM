@@ -20,7 +20,11 @@ from scripts.prepare_mixed_ukdale_refit_3week_split import (
     count_events,
     frame_sequence_ids,
 )
-from ukdale_processing import apply_algorithm1_labeling, fill_complete_short_gaps
+from ukdale_processing import (
+    apply_algorithm1_labeling,
+    fill_complete_short_gaps,
+    resolve_time_samples,
+)
 
 
 class SequenceIntegrityTests(unittest.TestCase):
@@ -62,6 +66,28 @@ class SequenceIntegrityTests(unittest.TestCase):
 
         np.testing.assert_array_equal(labels, np.ones(2, dtype=int))
 
+    def test_censored_short_on_is_kept_but_complete_short_on_is_removed(self) -> None:
+        boundary_power = np.r_[np.full(3, 100.0), np.zeros(7)]
+        interior_power = np.r_[np.zeros(2), np.full(3, 100.0), np.zeros(5)]
+
+        boundary = apply_algorithm1_labeling(
+            boundary_power, 50, l_window=0, remove_spikes=False, min_on_duration=5
+        )
+        interior = apply_algorithm1_labeling(
+            interior_power, 50, l_window=0, remove_spikes=False, min_on_duration=5
+        )
+
+        np.testing.assert_array_equal(boundary[:3], np.ones(3, dtype=int))
+        self.assertEqual(int(interior.sum()), 0)
+
+    def test_physical_duration_is_stable_across_sampling_rates(self) -> None:
+        config = {"min_on_seconds": 1800, "resample_gap_fill_seconds": 18}
+
+        self.assertEqual(resolve_time_samples(config, "min_on_duration", 1, 6), 300)
+        self.assertEqual(resolve_time_samples(config, "min_on_duration", 1, 8), 225)
+        self.assertEqual(resolve_time_samples(config, "resample_gap_fill", 1, 6), 3)
+        self.assertEqual(resolve_time_samples(config, "resample_gap_fill", 1, 8), 2)
+
     def test_appliance_spike_override_preserves_short_event(self) -> None:
         power = np.asarray([0.0, 1000.0, 0.0])
         appliance = {
@@ -77,7 +103,7 @@ class SequenceIntegrityTests(unittest.TestCase):
             "background_threshold": 50,
         }
 
-        labels = make_labels(power, appliance, algorithm, house=1)
+        labels = make_labels(power, appliance, algorithm, house=1, sample_seconds=8)
 
         np.testing.assert_array_equal(labels, np.asarray([0, 1, 0]))
 

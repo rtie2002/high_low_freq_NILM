@@ -36,6 +36,7 @@ from ukdale_processing import (
     label_power_by_segments,
     read_unix_power_chunks,
     resolve_appliance_setting,
+    resolve_time_samples,
     unix_power_to_resampled,
     write_dataframe_csv,
 )
@@ -316,6 +317,7 @@ def make_labels(
     appliance_cfg: dict,
     algorithm_cfg: dict,
     house: int,
+    sample_seconds: int,
 ) -> np.ndarray:
     remove_spikes = bool(
         resolve_appliance_setting(
@@ -341,8 +343,12 @@ def make_labels(
             algorithm_cfg.get("spike_threshold", 3.0),
         ),
         background_threshold=algorithm_cfg.get("background_threshold", 50),
-        min_off_duration=resolve_appliance_setting(appliance_cfg, "min_off_duration", house, 1),
-        min_on_duration=resolve_appliance_setting(appliance_cfg, "min_on_duration", house, 1),
+        min_off_duration=resolve_time_samples(
+            appliance_cfg, "min_off_duration", house, sample_seconds, 1
+        ),
+        min_on_duration=resolve_time_samples(
+            appliance_cfg, "min_on_duration", house, sample_seconds, 1
+        ),
     )
 
 
@@ -398,7 +404,9 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
         print(f"time range : {start_label} to {end_label}")
 
     mains = load_mains(paths["data_dir"], house, start_ts, end_ts, tz, sample_period)
-    agg_gap_limit = int(algorithm_cfg.get("resample_gap_fill", 3))
+    agg_gap_limit = resolve_time_samples(
+        algorithm_cfg, "resample_gap_fill", house, sample_seconds, 3
+    )
     # No copy: mains is not reused after this point.
     combined = mains
     combined["aggregate_observed"] = combined["aggregate"].notna().astype(np.int8)
@@ -458,13 +466,8 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
         app_cfg = config["appliances"][app]
         app_series = loaded[app][app].reindex(combined.index)
         observed = app_series.notna()
-        gap_limit = int(
-            resolve_appliance_setting(
-                app_cfg,
-                "resample_gap_fill",
-                house,
-                algorithm_cfg.get("resample_gap_fill", 3),
-            )
+        gap_limit = resolve_time_samples(
+            app_cfg, "resample_gap_fill", house, sample_seconds, agg_gap_limit
         )
         combined[f"{app}_power"] = fill_complete_short_gaps(app_series, gap_limit)
         combined[f"{app}_observed"] = observed.astype(np.int8)
@@ -506,7 +509,7 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
             power,
             sequence_ids,
             lambda segment, app=app: make_labels(
-                segment, config["appliances"][app], algorithm_cfg, house
+                segment, config["appliances"][app], algorithm_cfg, house, sample_seconds
             ),
         )
         combined[f"{app}_on"] = labels

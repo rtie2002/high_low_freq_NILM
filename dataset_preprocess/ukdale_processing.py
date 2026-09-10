@@ -87,6 +87,40 @@ def resolve_appliance_setting(appliance_cfg, key, house, default=None):
     return default
 
 
+_TIME_SETTING_KEYS = {
+    "min_off_duration": "min_off_seconds",
+    "min_on_duration": "min_on_seconds",
+    "resample_gap_fill": "resample_gap_fill_seconds",
+}
+
+
+def resolve_time_samples(appliance_cfg, key, house, sample_seconds, default=0):
+    """Resolve a time setting and convert physical seconds to sample counts.
+
+    New configs should define settings in seconds so their physical meaning is
+    independent of sampling rate. The conversion is
+
+        N_samples = round(T_seconds / sample_seconds)
+
+    using half-up rounding. Legacy sample-count keys remain a fallback for old
+    configs. Any positive duration occupies at least one sample.
+    """
+    seconds_key = _TIME_SETTING_KEYS.get(key)
+    if seconds_key is None:
+        raise KeyError(f"Unsupported time setting: {key}")
+
+    seconds = resolve_appliance_setting(appliance_cfg, seconds_key, house, None)
+    if seconds is None:
+        return int(resolve_appliance_setting(appliance_cfg, key, house, default))
+    if sample_seconds <= 0:
+        raise ValueError("sample_seconds must be positive")
+    if seconds < 0:
+        raise ValueError(f"{seconds_key} cannot be negative")
+    if seconds == 0:
+        return 0
+    return max(1, int(np.floor(float(seconds) / float(sample_seconds) + 0.5)))
+
+
 def fill_complete_short_gaps(series, max_gap):
     """Interpolate only missing runs whose complete length is at most ``max_gap``.
 
@@ -246,19 +280,18 @@ def apply_algorithm1_labeling(power_sequence, x_threshold, l_window=100, x_noise
             if 0 < gap <= min_off:
                 is_on[ends[i]:starts[i + 1]] = 1
 
-    # Step 5: Filter Short Activations
-    # After long meter gaps are split into contiguous segments, a real long ON
-    # (e.g. fridge compressor) can become many fragments shorter than
-    # min_on_duration. Only apply the short-ON filter when the current segment
-    # is long enough for that filter to be meaningful.
+    # Step 5: Filter complete short activations. An ON run touching either
+    # sequence boundary is right/left-censored by a meter gap: its true duration
+    # is unknown, so deleting it as a short event would create a false OFF label.
     min_on = int(min_on_duration)
-    if len(is_on) >= min_on and np.any(is_on):
+    if min_on > 1 and np.any(is_on):
         padded = np.concatenate([[0], is_on, [0]])
         diff = np.diff(padded)
         starts = np.flatnonzero(diff == 1)
         ends = np.flatnonzero(diff == -1)
         for s, e in zip(starts, ends):
-            if (e - s) < min_on:
+            touches_segment_boundary = s == 0 or e == len(is_on)
+            if (e - s) < min_on and not touches_segment_boundary:
                 is_on[s:e] = 0
 
     # Step 6: Expand windows (Window Expansion)
