@@ -22,6 +22,7 @@ Native REFIT is approximately 8 s. UK-DALE and REFIT are both placed on an
 from __future__ import annotations
 
 import argparse
+import gc
 import os
 import time
 
@@ -33,7 +34,9 @@ from ukdale_processing import (
     apply_algorithm1_labeling,
     contiguous_segment_ids,
     fill_complete_short_gaps,
+    label_power_by_segments,
     resolve_appliance_setting,
+    write_dataframe_csv,
 )
 
 
@@ -326,8 +329,18 @@ def load_house_raw(
             seen.add(c)
             usecols_unique.append(c)
 
-    df = pd.read_csv(path, usecols=usecols_unique)
+    # Prefer typed numeric read; filter on Unix before building DatetimeIndex.
+    dtype_map: dict[str, str] = {"Unix": "float64", "Aggregate": "float32"}
+    for col in usecols_unique:
+        if col.startswith("Appliance"):
+            dtype_map[col] = "float32"
+
+    df = pd.read_csv(path, usecols=usecols_unique, dtype=dtype_map, engine="c")
     if "Unix" in df.columns and df["Unix"].notna().any():
+        if start_ts is not None:
+            df = df[df["Unix"] >= start_ts]
+        if end_ts is not None:
+            df = df[df["Unix"] <= end_ts]
         ts = pd.to_datetime(df["Unix"], unit="s", utc=True).dt.tz_convert(tz)
     else:
         ts = pd.to_datetime(df["Time"], errors="coerce")
@@ -335,8 +348,18 @@ def load_house_raw(
             ts = ts.dt.tz_localize(tz, ambiguous="infer", nonexistent="shift_forward")
         else:
             ts = ts.dt.tz_convert(tz)
+        if start_ts is not None:
+            start = pd.to_datetime(start_ts, unit="s", utc=True).tz_convert(tz)
+            keep = ts >= start
+            df = df.loc[keep]
+            ts = ts.loc[keep]
+        if end_ts is not None:
+            end = pd.to_datetime(end_ts, unit="s", utc=True).tz_convert(tz)
+            keep = ts <= end
+            df = df.loc[keep]
+            ts = ts.loc[keep]
 
-    out = df.rename(columns=rename).copy()
+    out = df.rename(columns=rename)
     out.index = ts
     app_cols = [c for c in rename.values() if c != "aggregate" and c in out.columns]
     # Keep unique app columns only (IAM collisions would already have overwritten in rename).
@@ -351,25 +374,25 @@ def load_house_raw(
     if isinstance(out["aggregate"], pd.DataFrame):
         out["aggregate"] = out["aggregate"].iloc[:, 0]
 
-    if start_ts is not None:
-        start = pd.to_datetime(start_ts, unit="s", utc=True).tz_convert(tz)
-        out = out.loc[out.index >= start]
-    if end_ts is not None:
-        end = pd.to_datetime(end_ts, unit="s", utc=True).tz_convert(tz)
-        out = out.loc[out.index <= end]
-
     if out.empty:
         raise ValueError(f"No rows in selected time range for {path}")
     return out
 
 
 def house_time_span(path: str, tz: str) -> tuple[float, float]:
-    """First/last unix seconds from a REFIT house CSV (fast path via Unix column)."""
-    df = pd.read_csv(path, usecols=["Unix"])
-    unix = pd.to_numeric(df["Unix"], errors="coerce").dropna()
-    if unix.empty:
+    """First/last unix seconds from a REFIT house CSV (same semantics, lower peak RAM)."""
+    first = None
+    last = None
+    for chunk in pd.read_csv(path, usecols=["Unix"], chunksize=1_000_000, engine="c"):
+        unix = pd.to_numeric(chunk["Unix"], errors="coerce").dropna()
+        if unix.empty:
+            continue
+        if first is None:
+            first = float(unix.iloc[0])
+        last = float(unix.iloc[-1])
+    if first is None or last is None:
         raise ValueError(f"No Unix timestamps in {path}")
-    return float(unix.iloc[0]), float(unix.iloc[-1])
+    return first, last
 
 
 def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tuple[pd.DataFrame, list[str]]:
@@ -433,13 +456,14 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
     )
     print(f"      raw rows: {len(raw):,}")
 
-    print(f"[2/3] Resample to {sample_seconds}s grid and label ON/OFF")
-    combined = raw[["aggregate"]].resample(sample_period).mean()
+    print(f"[2/3] Resample to {sample_seconds}s grid and label ON/OFF", flush=True)
+    # One joint resample preserves the same mean bins as per-column resample.
+    value_cols = ["aggregate", *[app for app in appliances if app in raw.columns]]
+    resampled = raw[value_cols].resample(sample_period).mean()
     agg_gap_limit = int(algorithm_cfg.get("resample_gap_fill", 3))
-    combined["aggregate_observed"] = combined["aggregate"].notna().astype(np.int8)
-    combined["aggregate"] = fill_complete_short_gaps(
-        combined["aggregate"], agg_gap_limit
-    )
+    combined = pd.DataFrame(index=resampled.index)
+    combined["aggregate_observed"] = resampled["aggregate"].notna().astype(np.int8)
+    combined["aggregate"] = fill_complete_short_gaps(resampled["aggregate"], agg_gap_limit)
     print(
         f"      aggregate bins={len(combined):,} "
         f"missing_after_short_fill={int(combined['aggregate'].isna().sum()):,}"
@@ -448,7 +472,7 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
     for app in appliances:
         app_cfg = config["appliances"][app]
         iam = appliance_iam(config, app, house)
-        if iam is None or app not in raw.columns:
+        if iam is None or app not in resampled.columns:
             message = f"no channel_map / column for {app} in house {house}"
             if not allow_missing:
                 raise ValueError(message)
@@ -457,7 +481,7 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
             combined[f"{app}_observed"] = 0
             continue
 
-        app_series = raw[[app]].resample(sample_period).mean()[app].reindex(combined.index)
+        app_series = resampled[app]
         observed = app_series.notna()
         gap_limit = int(
             resolve_appliance_setting(
@@ -496,15 +520,17 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
         raise ValueError(f"No fully observed rows remain for REFIT house {house}.")
 
     combined["sequence_id"] = contiguous_segment_ids(combined.index, sample_period)
+    sequence_ids = combined["sequence_id"].to_numpy()
     aggregate = combined["aggregate"].to_numpy(dtype=np.float32)
     for app in appliances:
         power = combined[f"{app}_power"].to_numpy(dtype=np.float32)
-        labels = np.zeros(len(combined), dtype=np.int8)
-        for positions in combined.groupby("sequence_id", sort=False).indices.values():
-            positions = np.asarray(positions, dtype=np.int64)
-            labels[positions] = make_labels(
-                power[positions].copy(), config["appliances"][app], algorithm_cfg, house
-            )
+        labels = label_power_by_segments(
+            power,
+            sequence_ids,
+            lambda segment, app=app: make_labels(
+                segment, config["appliances"][app], algorithm_cfg, house
+            ),
+        )
         combined[f"{app}_on"] = labels
         threshold = resolve_appliance_setting(
             config["appliances"][app], "on_power_threshold", house, 50
@@ -516,13 +542,10 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
         )
 
     print(f"[segments] contiguous sequences={combined['sequence_id'].nunique():,}")
-    combined = combined.reset_index()
-    time_col = combined.columns[0]
-    if time_col != "time":
-        combined.rename(columns={time_col: "time"}, inplace=True)
-    combined["unix_time"] = (combined["time"].astype("int64") // 10**9).astype(np.int64)
-    combined["readable_time"] = combined["time"].dt.tz_convert(tz).dt.strftime("%Y-%m-%d %H:%M:%S")
-    combined.drop(columns=["time"], inplace=True)
+    time_index = combined.index
+    combined = combined.reset_index(drop=True)
+    combined.insert(0, "unix_time", (time_index.asi8 // 10**9).astype(np.int64))
+    combined.insert(0, "readable_time", time_index.strftime("%Y-%m-%d %H:%M:%S"))
     combined.insert(2, "house", house)
 
     metadata_cols = ["readable_time", "unix_time", "house", "sequence_id"]
@@ -603,20 +626,21 @@ def main() -> None:
             house_start = time.time()
             df, appliances = build_one_house_lf(config, args, house)
             output_path = per_house_output_path(output_dir, house, args.house_filename)
-            df.to_csv(output_path, index=False)
+            write_dataframe_csv(df, output_path)
             print("[3/3] Saved low-frequency multi-appliance CSV")
             print(f"output : {output_path}")
             print(f"rows   : {len(df):,}")
             print(f"columns: {list(df.columns)}")
             print_on_summary(df, appliances)
             print(f"house {house} done in {(time.time() - house_start) / 60.0:.2f} min.\n")
+            del df
+            gc.collect()
         print(f"All houses done in {(time.time() - start_time) / 60.0:.2f} min.")
         return
 
     df, appliances, houses = build_multi_appliance_lf(config, args)
     output_path = default_output_path(config, args, houses)
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    df.to_csv(output_path, index=False)
+    write_dataframe_csv(df, output_path)
 
     print("[3/3] Saved low-frequency multi-appliance CSV")
     print(f"output : {output_path}")

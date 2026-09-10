@@ -47,6 +47,21 @@ class SequenceIntegrityTests(unittest.TestCase):
 
         np.testing.assert_array_equal(labels, np.ones(4, dtype=int))
 
+    def test_short_gap_segment_keeps_threshold_on(self) -> None:
+        """Fridge-like power in a 2-sample gap fragment must not be wiped by min_on=8."""
+        power = np.asarray([88.0, 87.0])
+
+        labels = apply_algorithm1_labeling(
+            power,
+            x_threshold=50.0,
+            l_window=0,
+            remove_spikes=False,
+            min_off_duration=2,
+            min_on_duration=8,
+        )
+
+        np.testing.assert_array_equal(labels, np.ones(2, dtype=int))
+
     def test_appliance_spike_override_preserves_short_event(self) -> None:
         power = np.asarray([0.0, 1000.0, 0.0])
         appliance = {
@@ -83,6 +98,23 @@ class SequenceIntegrityTests(unittest.TestCase):
 
         np.testing.assert_array_equal(dataset.indices, np.asarray([0, 2, 6, 8]))
         self.assertEqual(dataset.n_rejected_windows, 1)
+
+    def test_window_stride_restarts_at_each_segment(self) -> None:
+        values = np.arange(12, dtype=np.float32)
+        targets = values[:, None]
+        states = np.zeros((12, 1), dtype=np.int64)
+        segments = np.asarray([0] * 5 + [1] * 7)
+
+        dataset = WindowDataset(
+            values,
+            targets,
+            states,
+            {"input_window_length": 4, "output_window_length": 4},
+            stride=3,
+            segment_ids=segments,
+        )
+
+        np.testing.assert_array_equal(dataset.indices, np.asarray([0, 5, 8]))
 
     def test_csv_metadata_creates_monotonic_segments(self) -> None:
         frame = pd.DataFrame(

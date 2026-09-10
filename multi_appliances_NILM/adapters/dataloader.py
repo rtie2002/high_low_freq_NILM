@@ -215,21 +215,39 @@ class WindowDataset(Dataset):
         self.target_mode = target_mode
         self.seq_len = _resolve_input_length(windowing)
         self.stride = max(1, stride)
-        self.indices = np.arange(
+        global_indices = np.arange(
             0, max(0, len(inputs) - self.seq_len + 1), self.stride
         )
-        self.n_candidate_windows = len(self.indices)
-        if segment_ids is not None and len(self.indices):
+        self.indices = global_indices
+        self.n_rejected_windows = 0
+        if segment_ids is not None:
             segments = np.asarray(segment_ids, dtype=np.int64)
             if len(segments) != len(inputs):
                 raise ValueError(
                     f"segment_ids has {len(segments)} rows but inputs has {len(inputs)}"
                 )
-            same_segment = segments[self.indices] == segments[
-                self.indices + self.seq_len - 1
+            if len(global_indices):
+                same_segment = segments[global_indices] == segments[
+                    global_indices + self.seq_len - 1
+                ]
+                self.n_rejected_windows = int(np.sum(~same_segment))
+
+            # Restart stride at each boundary. Otherwise a segment's sampling
+            # phase depends on the total length of every preceding house.
+            boundaries = np.flatnonzero(
+                np.r_[True, segments[1:] != segments[:-1], True]
+            )
+            starts = [
+                np.arange(start, end - self.seq_len + 1, self.stride)
+                for start, end in zip(boundaries[:-1], boundaries[1:])
+                if end - start >= self.seq_len
             ]
-            self.indices = self.indices[same_segment]
-        self.n_rejected_windows = self.n_candidate_windows - len(self.indices)
+            self.indices = (
+                np.concatenate(starts).astype(np.int64, copy=False)
+                if starts
+                else np.zeros(0, dtype=np.int64)
+            )
+        self.n_candidate_windows = len(self.indices) + self.n_rejected_windows
 
     def __len__(self) -> int:
         return len(self.indices)

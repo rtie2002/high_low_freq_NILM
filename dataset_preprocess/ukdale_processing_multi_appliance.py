@@ -21,6 +21,7 @@ features. It only uses UK-DALE mains.dat + appliance channel_*.dat files.
 from __future__ import annotations
 
 import argparse
+import gc
 import os
 import time
 
@@ -32,7 +33,11 @@ from ukdale_processing import (
     apply_algorithm1_labeling,
     contiguous_segment_ids,
     fill_complete_short_gaps,
+    label_power_by_segments,
+    read_unix_power_chunks,
     resolve_appliance_setting,
+    unix_power_to_resampled,
+    write_dataframe_csv,
 )
 
 
@@ -239,40 +244,17 @@ def load_mains(data_dir: str, house: int, start_ts: float | None, end_ts: float 
     if not os.path.exists(mains_path):
         raise FileNotFoundError(f"Missing mains file: {mains_path}")
 
-    print(f"[1/3] Loading mains: {mains_path}")
-    chunks = []
-    for chunk in pd.read_csv(mains_path, sep=r"\s+", header=None, engine="c", chunksize=1_000_000):
-        if start_ts is not None:
-            chunk = chunk[chunk[0] >= start_ts]
-        if end_ts is not None:
-            chunk = chunk[chunk[0] <= end_ts]
-        if not chunk.empty:
-            chunks.append(chunk)
-    if not chunks:
-        raise ValueError(f"No mains rows found for house {house} in the selected time range.")
-    mains_df = pd.concat(chunks, ignore_index=True)
-    # SoundCardPowerMeter mains.dat columns (NILMTK meter_devices.yaml):
-    #   0=timestamp, 1=active (W), 2=apparent (VA), 3=voltage
-    # Always use active power only. Never sum col1+col2 (that mixes W+VA and
-    # artificially inflates H1/H5 vs H2 / REFIT active aggregates).
-    n_raw_cols = int(mains_df.shape[1])
-    if n_raw_cols < 2:
-        raise ValueError(f"mains.dat for house {house} has no power column: {mains_path}")
-    mains_df["aggregate"] = pd.to_numeric(mains_df[1], errors="coerce")
-    print(
-        f"      mains raw columns={n_raw_cols} "
-        f"(SoundCard expects 4: time/active/apparent/V); using col1=active only"
+    print(f"[1/3] Loading mains: {mains_path}", flush=True)
+    # SoundCardPowerMeter: keep timestamp + active only (skip apparent/voltage parse).
+    mains_raw = read_unix_power_chunks(
+        mains_path,
+        value_name="aggregate",
+        start_ts=start_ts,
+        end_ts=end_ts,
     )
-
-    mains_df = mains_df[[0, "aggregate"]]
-    mains_df.columns = ["time", "aggregate"]
-    mains_df.drop_duplicates(subset=["time"], keep="first", inplace=True)
-
-    mains_df["time"] = pd.to_datetime(mains_df["time"], unit="s", utc=True).dt.tz_convert(tz)
-    mains_df.set_index("time", inplace=True)
-    mains_df.sort_index(inplace=True)
-    mains_resampled = mains_df.resample(sample_period).mean()
-    print(f"      mains rows after resample: {len(mains_resampled):,}")
+    print(f"      mains rows before resample: {len(mains_raw):,}", flush=True)
+    mains_resampled = unix_power_to_resampled(mains_raw, "aggregate", tz, sample_period)
+    print(f"      mains rows after resample: {len(mains_resampled):,}", flush=True)
     return mains_resampled
 
 
@@ -290,33 +272,13 @@ def load_appliance(
     if not os.path.exists(app_path):
         raise FileNotFoundError(f"Missing appliance file for {appliance}: {app_path}")
 
-    chunks = []
-    for chunk in pd.read_csv(
+    app_raw = read_unix_power_chunks(
         app_path,
-        sep=r"\s+",
-        header=None,
-        usecols=[0, 1],
-        dtype={0: np.float64, 1: np.float32},
-        engine="c",
-        chunksize=1_000_000,
-    ):
-        if start_ts is not None:
-            chunk = chunk[chunk[0] >= start_ts]
-        if end_ts is not None:
-            chunk = chunk[chunk[0] <= end_ts]
-        if not chunk.empty:
-            chunks.append(chunk)
-    if not chunks:
-        raise ValueError(f"No {appliance} rows found for house {house} in the selected time range.")
-    app_df = pd.concat(chunks, ignore_index=True)
-    app_df.columns = ["time", appliance]
-    app_df.drop_duplicates(subset=["time"], keep="first", inplace=True)
-
-    app_df["time"] = pd.to_datetime(app_df["time"], unit="s", utc=True).dt.tz_convert(tz)
-    app_df.set_index("time", inplace=True)
-    app_df.sort_index(inplace=True)
-    return app_df.resample(sample_period).mean()
-
+        value_name=appliance,
+        start_ts=start_ts,
+        end_ts=end_ts,
+    )
+    return unix_power_to_resampled(app_raw, appliance, tz, sample_period)
 
 def trim_to_common_appliance_start(
     combined: pd.DataFrame,
@@ -437,7 +399,8 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
 
     mains = load_mains(paths["data_dir"], house, start_ts, end_ts, tz, sample_period)
     agg_gap_limit = int(algorithm_cfg.get("resample_gap_fill", 3))
-    combined = mains.copy()
+    # No copy: mains is not reused after this point.
+    combined = mains
     combined["aggregate_observed"] = combined["aggregate"].notna().astype(np.int8)
     combined["aggregate"] = fill_complete_short_gaps(
         combined["aggregate"], agg_gap_limit
@@ -447,10 +410,14 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
         f"missing_after_short_fill={int(combined['aggregate'].isna().sum()):,}"
     )
 
-    print("[2/3] Loading appliance channels and aligning to mains")
+    print("[2/3] Loading appliance channels and aligning to mains", flush=True)
+    # Parallel I/O: each appliance is an independent DAT file. Results are
+    # applied in appliance-list order so the CSV columns stay deterministic.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    load_jobs: list[tuple[str, int]] = []
     for app in appliances:
-        app_cfg = config["appliances"][app]
-        channel_id = app_cfg.get("channel_map", {}).get(house)
+        channel_id = config["appliances"][app].get("channel_map", {}).get(house)
         if channel_id is None:
             message = f"no channel_map entry for {app} in house {house}"
             if not args.allow_missing_appliances:
@@ -462,18 +429,34 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
             combined[f"{app}_power"] = 0.0
             combined[f"{app}_observed"] = 0
             continue
+        load_jobs.append((app, int(channel_id)))
 
-        app_resampled = load_appliance(
-            paths["data_dir"],
-            house,
-            app,
-            channel_id,
-            start_ts,
-            end_ts,
-            tz,
-            sample_period,
-        )
-        app_series = app_resampled[app].reindex(combined.index)
+    loaded: dict[str, pd.DataFrame] = {}
+    if load_jobs:
+        workers = min(len(load_jobs), max(1, os.cpu_count() or 2))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(
+                    load_appliance,
+                    paths["data_dir"],
+                    house,
+                    app,
+                    channel_id,
+                    start_ts,
+                    end_ts,
+                    tz,
+                    sample_period,
+                ): (app, channel_id)
+                for app, channel_id in load_jobs
+            }
+            for fut in as_completed(futures):
+                app, channel_id = futures[fut]
+                loaded[app] = fut.result()
+                print(f"      loaded {app:<15} channel={channel_id}", flush=True)
+
+    for app, channel_id in load_jobs:
+        app_cfg = config["appliances"][app]
+        app_series = loaded[app][app].reindex(combined.index)
         observed = app_series.notna()
         gap_limit = int(
             resolve_appliance_setting(
@@ -515,15 +498,17 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
         raise ValueError(f"No fully observed rows remain for UK-DALE house {house}.")
 
     combined["sequence_id"] = contiguous_segment_ids(combined.index, sample_period)
+    sequence_ids = combined["sequence_id"].to_numpy()
     aggregate = combined["aggregate"].to_numpy(dtype=np.float32)
     for app in appliances:
         power = combined[f"{app}_power"].to_numpy(dtype=np.float32)
-        labels = np.zeros(len(combined), dtype=np.int8)
-        for positions in combined.groupby("sequence_id", sort=False).indices.values():
-            positions = np.asarray(positions, dtype=np.int64)
-            labels[positions] = make_labels(
-                power[positions].copy(), config["appliances"][app], algorithm_cfg, house
-            )
+        labels = label_power_by_segments(
+            power,
+            sequence_ids,
+            lambda segment, app=app: make_labels(
+                segment, config["appliances"][app], algorithm_cfg, house
+            ),
+        )
         combined[f"{app}_on"] = labels
         threshold = resolve_appliance_setting(
             config["appliances"][app], "on_power_threshold", house, 50
@@ -535,10 +520,11 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
         )
 
     print(f"[segments] contiguous sequences={combined['sequence_id'].nunique():,}")
-    combined.reset_index(inplace=True)
-    combined["unix_time"] = (combined["time"].astype("int64") // 10**9).astype(np.int64)
-    combined["readable_time"] = combined["time"].dt.tz_convert(tz).dt.strftime("%Y-%m-%d %H:%M:%S")
-    combined.drop(columns=["time"], inplace=True)
+    time_index = combined.index
+    combined = combined.reset_index(drop=True)
+    # Index is already in target timezone; one conversion path for both columns.
+    combined.insert(0, "unix_time", (time_index.asi8 // 10**9).astype(np.int64))
+    combined.insert(0, "readable_time", time_index.strftime("%Y-%m-%d %H:%M:%S"))
     combined.insert(2, "house", house)
 
     metadata_cols = ["readable_time", "unix_time", "house", "sequence_id"]
@@ -617,20 +603,21 @@ def main() -> None:
             house_start = time.time()
             df, appliances = build_one_house_lf(config, args, house)
             output_path = per_house_output_path(output_dir, house, args.house_filename)
-            df.to_csv(output_path, index=False)
+            write_dataframe_csv(df, output_path)
             print("[3/3] Saved low-frequency multi-appliance CSV")
             print(f"output : {output_path}")
             print(f"rows   : {len(df):,}")
             print(f"columns: {list(df.columns)}")
             print_on_summary(df, appliances)
             print(f"house {house} done in {(time.time() - house_start) / 60.0:.2f} min.\n")
+            del df
+            gc.collect()
         print(f"All houses done in {(time.time() - start_time) / 60.0:.2f} min.")
         return
 
     df, appliances, houses = build_multi_appliance_lf(config, args)
     output_path = default_output_path(config, args, houses)
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    df.to_csv(output_path, index=False)
+    write_dataframe_csv(df, output_path)
 
     print("[3/3] Saved low-frequency multi-appliance CSV")
     print(f"output : {output_path}")

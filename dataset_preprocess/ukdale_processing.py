@@ -97,17 +97,32 @@ def fill_complete_short_gaps(series, max_gap):
     """
     result = series.copy()
     max_gap = int(max_gap)
-    missing = result.isna()
+    missing = result.isna().to_numpy()
     if max_gap <= 0 or not bool(missing.any()):
         return result
 
-    run_id = missing.ne(missing.shift(fill_value=False)).cumsum()
-    run_length = missing.groupby(run_id).transform("sum")
-    short_gap = missing & (run_length <= max_gap)
+    # Run-length encoding (same short-gap mask as groupby().transform, faster).
+    edges = np.flatnonzero(np.r_[True, missing[1:] != missing[:-1], True])
+    short_gap = np.zeros(len(missing), dtype=bool)
+    for i in range(len(edges) - 1):
+        start, end = int(edges[i]), int(edges[i + 1])
+        if missing[start] and (end - start) <= max_gap:
+            short_gap[start:end] = True
+    if not short_gap.any():
+        return result
     method = "time" if isinstance(result.index, pd.DatetimeIndex) else "linear"
     interpolated = result.interpolate(method=method, limit_area="inside")
     result.loc[short_gap] = interpolated.loc[short_gap]
     return result
+
+
+def write_dataframe_csv(df: pd.DataFrame, path: str) -> None:
+    """Write CSV with a large file buffer. Content matches ``DataFrame.to_csv``."""
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8", buffering=8 * 1024 * 1024) as handle:
+        df.to_csv(handle, index=False)
 
 
 def contiguous_segment_ids(index, sample_period):
@@ -125,6 +140,80 @@ def contiguous_segment_ids(index, sample_period):
     return (starts.cumsum().to_numpy(dtype=np.int64) - 1)
 
 
+def segment_slices(sequence_ids: np.ndarray) -> list[tuple[int, int]]:
+    """Half-open [start, end) slices for contiguous equal sequence_id runs."""
+    ids = np.asarray(sequence_ids)
+    if ids.size == 0:
+        return []
+    cuts = np.flatnonzero(np.r_[True, ids[1:] != ids[:-1], True])
+    return [(int(cuts[i]), int(cuts[i + 1])) for i in range(len(cuts) - 1)]
+
+
+def label_power_by_segments(power: np.ndarray, sequence_ids: np.ndarray, label_fn) -> np.ndarray:
+    """Apply ``label_fn`` independently on each contiguous sequence slice."""
+    power = np.asarray(power, dtype=np.float32)
+    labels = np.zeros(len(power), dtype=np.int8)
+    for start, end in segment_slices(sequence_ids):
+        labels[start:end] = label_fn(power[start:end].copy())
+    return labels
+
+
+def read_unix_power_chunks(
+    path: str,
+    *,
+    value_name: str = "value",
+    start_ts: float | None = None,
+    end_ts: float | None = None,
+    chunksize: int = 2_000_000,
+) -> pd.DataFrame:
+    """Fast whitespace DAT reader: keep only unix seconds + one power column."""
+    chunks = []
+    n_chunks = 0
+    kept = 0
+    for chunk in pd.read_csv(
+        path,
+        sep=r"\s+",
+        header=None,
+        usecols=[0, 1],
+        names=["time", value_name],
+        dtype={"time": np.float64, value_name: np.float32},
+        engine="c",
+        chunksize=chunksize,
+    ):
+        n_chunks += 1
+        if start_ts is not None:
+            chunk = chunk[chunk["time"] >= start_ts]
+        if end_ts is not None:
+            chunk = chunk[chunk["time"] <= end_ts]
+        if not chunk.empty:
+            chunks.append(chunk)
+            kept += len(chunk)
+        if n_chunks % 10 == 0:
+            print(
+                f"      ... {os.path.basename(path)}: chunks={n_chunks} kept={kept:,}",
+                flush=True,
+            )
+    if not chunks:
+        raise ValueError(f"No rows found in selected time range: {path}")
+    data = pd.concat(chunks, ignore_index=True)
+    data.drop_duplicates(subset=["time"], keep="first", inplace=True)
+    return data
+
+
+def unix_power_to_resampled(
+    data: pd.DataFrame,
+    value_name: str,
+    tz: str,
+    sample_period: str,
+) -> pd.DataFrame:
+    """Convert unix-seconds table to timezone index and mean-resample."""
+    frame = data
+    frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True).dt.tz_convert(tz)
+    frame.set_index("time", inplace=True)
+    frame.sort_index(inplace=True)
+    return frame[[value_name]].resample(sample_period).mean()
+
+
 def apply_algorithm1_labeling(power_sequence, x_threshold, l_window=100, x_noise=0,
                              remove_spikes=True, spike_window=5, spike_threshold=3.0,
                              background_threshold=50, min_off_duration=1, min_on_duration=1):
@@ -132,45 +221,55 @@ def apply_algorithm1_labeling(power_sequence, x_threshold, l_window=100, x_noise
     Exact Algorithm 1 steps from algorithm1_v2_multivariate.py,
     returning the final mask as the ON/OFF label.
     """
-    sequence = power_sequence.copy()
-    
+    sequence = np.asarray(power_sequence, dtype=np.float64).copy()
+
     # Step 0: Spike Removal
     if remove_spikes:
         sequence, _ = remove_isolated_spikes(sequence, spike_window, spike_threshold, background_threshold)
-    
+
     # Step 2: Noise Floor
-    sequence[sequence < x_noise] = 0
-    
+    if x_noise:
+        sequence[sequence < x_noise] = 0
+
     # Step 3: Thresholding
-    is_on = (sequence >= x_threshold).astype(int)
-    
-    # Step 4: Close Gaps
-    if np.any(is_on):
-        on_indices = np.where(is_on)[0]
-        for i in range(len(on_indices) - 1):
-            off_length = on_indices[i + 1] - on_indices[i] - 1
-            if 0 < off_length <= min_off_duration:
-                is_on[on_indices[i] + 1:on_indices[i + 1]] = 1
+    is_on = (sequence >= x_threshold).astype(np.int8)
+
+    # Step 4: Close Gaps — same rule as consecutive-ON scan, O(n) via ON runs.
+    min_off = int(min_off_duration)
+    if min_off > 0 and np.any(is_on):
+        padded = np.concatenate([[0], is_on, [0]])
+        diff = np.diff(padded)
+        starts = np.flatnonzero(diff == 1)
+        ends = np.flatnonzero(diff == -1)
+        for i in range(len(starts) - 1):
+            gap = int(starts[i + 1] - ends[i])
+            if 0 < gap <= min_off:
+                is_on[ends[i]:starts[i + 1]] = 1
 
     # Step 5: Filter Short Activations
-    if np.any(is_on):
-        diff = np.diff(np.concatenate([[0], is_on, [0]]))
-        starts = np.where(diff == 1)[0]
-        ends = np.where(diff == -1)[0]
+    # After long meter gaps are split into contiguous segments, a real long ON
+    # (e.g. fridge compressor) can become many fragments shorter than
+    # min_on_duration. Only apply the short-ON filter when the current segment
+    # is long enough for that filter to be meaningful.
+    min_on = int(min_on_duration)
+    if len(is_on) >= min_on and np.any(is_on):
+        padded = np.concatenate([[0], is_on, [0]])
+        diff = np.diff(padded)
+        starts = np.flatnonzero(diff == 1)
+        ends = np.flatnonzero(diff == -1)
         for s, e in zip(starts, ends):
-            if (e - s) < min_on_duration:
+            if (e - s) < min_on:
                 is_on[s:e] = 0
 
     # Step 6: Expand windows (Window Expansion)
-    final_is_selected = np.zeros_like(is_on)
-    if np.any(is_on):
-        valid_on_indices = np.where(is_on)[0]
-        for t in valid_on_indices:
-            start_win = max(0, t - l_window)
-            end_win = min(len(is_on), t + l_window + 1)
-            final_is_selected[start_win:end_win] = 1
-            
-    return final_is_selected
+    l_window = int(l_window)
+    if l_window <= 0:
+        return is_on
+    if not np.any(is_on):
+        return np.zeros_like(is_on)
+    padded = np.pad(is_on, l_window, mode="constant")
+    windows = np.lib.stride_tricks.sliding_window_view(padded, 2 * l_window + 1)
+    return windows.max(axis=1).astype(np.int8)
 
 def main():
     args = get_arguments()

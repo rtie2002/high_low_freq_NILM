@@ -22,6 +22,7 @@ join appliances to the mains timeline, then apply Algorithm-1 ON labels.
 from __future__ import annotations
 
 import argparse
+import gc
 import os
 import time
 from typing import Sequence
@@ -30,7 +31,12 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from ukdale_processing import apply_algorithm1_labeling, resolve_appliance_setting
+from ukdale_processing import (
+    apply_algorithm1_labeling,
+    read_unix_power_chunks,
+    resolve_appliance_setting,
+    write_dataframe_csv,
+)
 
 try:
     import tables as tb
@@ -336,38 +342,22 @@ def read_dat(
     end_ts: float | None,
     tz: str,
     *,
-    chunksize: int = 1_000_000,
+    chunksize: int = 2_000_000,
 ) -> pd.DataFrame:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Missing dat file: {path}")
 
-    chunks = []
-    for chunk in pd.read_csv(
+    data = read_unix_power_chunks(
         path,
-        sep=r"\s+",
-        header=None,
-        usecols=[0, 1],
-        names=["time", value_name],
-        dtype={"time": np.float64, value_name: np.float32},
-        engine="c",
+        value_name=value_name,
+        start_ts=start_ts,
+        end_ts=end_ts,
         chunksize=chunksize,
-    ):
-        if start_ts is not None:
-            chunk = chunk[chunk["time"] >= start_ts]
-        if end_ts is not None:
-            chunk = chunk[chunk["time"] <= end_ts]
-        if not chunk.empty:
-            chunks.append(chunk)
-
-    if not chunks:
-        raise ValueError(f"No rows found in selected time range: {path}")
-
-    data = pd.concat(chunks, ignore_index=True)
-    data.drop_duplicates(subset=["time"], keep="first", inplace=True)
+    )
     data["time"] = pd.to_datetime(data["time"], unit="s", utc=True).dt.tz_convert(tz)
     data.set_index("time", inplace=True)
     data.sort_index(inplace=True)
-    return data
+    return data[[value_name]]
 
 
 def first_last_dat(path: str) -> tuple[float, float]:
@@ -809,20 +799,21 @@ def main() -> None:
             house_start = time.time()
             df, appliances = build_one_house_lf(config, args, house)
             output_path = per_house_output_path(output_dir, house, args.house_filename)
-            df.to_csv(output_path, index=False)
+            write_dataframe_csv(df, output_path)
             print("[3/3] Saved low-frequency multi-appliance CSV")
             print(f"output : {output_path}")
             print(f"rows   : {len(df):,}")
             print(f"columns: {list(df.columns)}")
             print_on_summary(df, appliances)
             print(f"house {house} done in {(time.time() - house_start) / 60.0:.2f} min.\n")
+            del df
+            gc.collect()
         print(f"All houses done in {(time.time() - start_time) / 60.0:.2f} min.")
         return
 
     df, appliances, houses = build_multi_appliance_lf(config, args)
     output_path = default_output_path(config, args, houses)
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    df.to_csv(output_path, index=False)
+    write_dataframe_csv(df, output_path)
 
     print("[3/3] Saved low-frequency multi-appliance CSV")
     print(f"output : {output_path}")
