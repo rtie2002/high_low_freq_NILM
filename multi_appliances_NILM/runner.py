@@ -1822,6 +1822,10 @@ def evaluate_model(
         len(bundle.y_true_watts),
         bundle.csv_timesteps,
     )
+    waveform_segments = adapter._data_loader().segment_ids_at_timesteps(
+        split,
+        bundle.csv_timesteps,
+    )
 
     y_true_watts, y_pred_watts = apply_power_postprocess_pair(
         bundle.y_true_watts,
@@ -1856,6 +1860,7 @@ def evaluate_model(
         state_label_source=state_src,
         aggregate=aggregate,
         csv_timesteps=bundle.csv_timesteps,
+        segment_ids=waveform_segments,
         n_periods=int(plot_cfg.get("plot_on_periods", 5)),
         period_samples=period_samples,
         full_cycle_appliances=plot_cfg.get("full_cycle_appliances"),

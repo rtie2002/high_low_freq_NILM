@@ -393,6 +393,11 @@ def save_feature_maps(
         margin_min=int(plot_cfg.get("on_period_margin_min", 40)),
         margin_frac=float(plot_cfg.get("on_period_margin_frac", 0.08)),
         min_on_duration=10,
+        csv_timesteps=bundle.csv_timesteps,
+        segment_ids=adapter._data_loader().segment_ids_at_timesteps(
+            split,
+            bundle.csv_timesteps,
+        ),
         rng=rng,
     )
 

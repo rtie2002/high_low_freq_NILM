@@ -34,13 +34,28 @@ def _set_epoch_axis(ax, x: pd.Series | np.ndarray) -> None:
     ax.set_xlim(max(0, xmin - pad), xmax + pad)
 
 
-def _find_on_events(on: np.ndarray, *, min_duration: int = 10) -> list[tuple[int, int]]:
+def _find_on_events(
+    on: np.ndarray,
+    *,
+    min_duration: int = 10,
+    segment_ids: np.ndarray | None = None,
+) -> list[tuple[int, int]]:
     mask = np.asarray(on).reshape(-1) >= 0.5
     if not mask.any():
         return []
-    padded = np.concatenate([[False], mask, [False]])
-    starts = np.flatnonzero(np.diff(padded.astype(int)) == 1)
-    ends = np.flatnonzero(np.diff(padded.astype(int)) == -1) - 1
+    segments = (
+        np.zeros(len(mask), dtype=np.int64)
+        if segment_ids is None
+        else np.asarray(segment_ids, dtype=np.int64).reshape(-1)
+    )
+    if len(segments) != len(mask):
+        raise ValueError("segment_ids length must match ON-state timeline")
+
+    # An ON state on both sides of a data/house/time boundary is two events,
+    # never one continuous appliance cycle.
+    boundary = segments[1:] != segments[:-1]
+    starts = np.flatnonzero(mask & np.r_[True, ~mask[:-1] | boundary])
+    ends = np.flatnonzero(mask & np.r_[~mask[1:] | boundary, True])
     return [(int(s), int(e)) for s, e in zip(starts, ends) if e - s + 1 >= min_duration]
 
 
@@ -53,6 +68,31 @@ class OnPeriodSelection:
     event_end: int
     crop_start: int
     crop_end: int
+    segment_start: int
+    segment_end: int
+
+
+def _plot_segment_ids(
+    n_points: int,
+    *,
+    csv_timesteps: np.ndarray | None,
+    source_segment_ids: np.ndarray | None,
+) -> np.ndarray:
+    """Build local segment IDs from source boundaries and missing CSV rows."""
+    starts = np.zeros(n_points, dtype=bool)
+    if n_points:
+        starts[0] = True
+    if source_segment_ids is not None:
+        source = np.asarray(source_segment_ids, dtype=np.int64).reshape(-1)[:n_points]
+        if len(source) != n_points:
+            raise ValueError("segment_ids length must match waveform timeline")
+        starts[1:] |= source[1:] != source[:-1]
+    if csv_timesteps is not None:
+        timesteps = np.asarray(csv_timesteps, dtype=np.int64).reshape(-1)[:n_points]
+        if len(timesteps) != n_points:
+            raise ValueError("csv_timesteps length must match waveform timeline")
+        starts[1:] |= np.diff(timesteps) != 1
+    return np.cumsum(starts, dtype=np.int64) - 1
 
 
 def dataset_on_labels_for_bundle(
@@ -120,6 +160,8 @@ def select_appliance_on_periods(
     margin_min: int = 40,
     margin_frac: float = 0.08,
     min_on_duration: int = 10,
+    csv_timesteps: np.ndarray | None = None,
+    segment_ids: np.ndarray | None = None,
     rng: np.random.Generator | None = None,
 ) -> dict[str, list[OnPeriodSelection]]:
     """Pick ON periods from dataset CSV labels (same logic as waveform plots)."""
@@ -127,6 +169,13 @@ def select_appliance_on_periods(
     y_true = np.asarray(y_true_watts, dtype=float)
     full_cycle = set(full_cycle_appliances or FULL_CYCLE_APPLIANCES)
     series_len = len(y_true)
+    plot_segments = _plot_segment_ids(
+        series_len,
+        csv_timesteps=csv_timesteps,
+        source_segment_ids=segment_ids,
+    )
+    segment_starts = np.flatnonzero(np.r_[True, np.diff(plot_segments) != 0])
+    segment_ends = np.r_[segment_starts[1:], series_len]
     out: dict[str, list[OnPeriodSelection]] = {}
 
     for idx, app in enumerate(appliances):
@@ -139,10 +188,14 @@ def select_appliance_on_periods(
             rng=rng,
             min_duration=min_dur,
             prefer_longest=(app in full_cycle),
+            segment_ids=plot_segments,
         )
         app_cap = None if app in full_cycle else period_samples
         periods: list[OnPeriodSelection] = []
         for ev_start, ev_end in events:
+            segment_id = int(plot_segments[(ev_start + ev_end) // 2])
+            segment_start = int(segment_starts[segment_id])
+            segment_end = int(segment_ends[segment_id])
             crop_start, crop_end = _window_for_on_event(
                 ev_start,
                 ev_end,
@@ -151,12 +204,16 @@ def select_appliance_on_periods(
                 margin_frac=margin_frac,
                 max_samples=app_cap if app_cap and app_cap > 0 else None,
             )
+            crop_start = max(crop_start, segment_start)
+            crop_end = min(crop_end, segment_end)
             periods.append(
                 OnPeriodSelection(
                     event_start=int(ev_start),
                     event_end=int(ev_end),
                     crop_start=int(crop_start),
                     crop_end=int(crop_end),
+                    segment_start=segment_start,
+                    segment_end=segment_end,
                 )
             )
         out[app] = periods
@@ -171,9 +228,14 @@ def _pick_random_on_events(
     rng: np.random.Generator,
     min_duration: int = 10,
     prefer_longest: bool = False,
+    segment_ids: np.ndarray | None = None,
 ) -> list[tuple[int, int]]:
     """Return (start, end) inclusive indices for random ON segments."""
-    events = _find_on_events(on, min_duration=min_duration)
+    events = _find_on_events(
+        on,
+        min_duration=min_duration,
+        segment_ids=segment_ids,
+    )
     if events:
         if prefer_longest:
             events = sorted(events, key=lambda t: t[1] - t[0], reverse=True)
@@ -471,6 +533,7 @@ def save_appliance_on_waveforms(
     state_label_source: str = "csv",
     aggregate: np.ndarray | None = None,
     csv_timesteps: np.ndarray | None = None,
+    segment_ids: np.ndarray | None = None,
     n_periods: int = 5,
     period_samples: int | None = None,
     full_cycle_appliances: Iterable[str] | None = None,
@@ -532,6 +595,8 @@ def save_appliance_on_waveforms(
         margin_min=margin_min,
         margin_frac=margin_frac,
         min_on_duration=min_on_duration,
+        csv_timesteps=csv_timesteps,
+        segment_ids=segment_ids,
         rng=rng,
     )
 
@@ -557,6 +622,8 @@ def save_appliance_on_waveforms(
                 y_pred_watts=y_pred[:, idx],
                 event_start=period.event_start,
                 event_end=period.event_end,
+                window_start=period.crop_start,
+                window_end=period.crop_end,
                 output_path=path,
                 period_samples=app_cap if app_cap and app_cap > 0 else None,
                 margin_min=margin_min,
@@ -584,6 +651,8 @@ def save_appliance_on_waveforms(
                 series_len,
                 scale=float(context_scale),
             )
+            ctx_start = max(ctx_start, period.segment_start)
+            ctx_end = min(ctx_end, period.segment_end)
             scale_tag = int(round(float(context_scale)))
             ctx_path = app_dir / f"{file_prefix}_{period_i:02d}_t{center}_context{scale_tag}x.png"
             ctx_title = (

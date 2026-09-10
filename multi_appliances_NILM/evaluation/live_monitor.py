@@ -542,6 +542,10 @@ class LiveTrainingMonitor:
             len(bundle.y_true_watts),
             bundle.csv_timesteps,
         )
+        waveform_segments = adapter._data_loader().segment_ids_at_timesteps(
+            split,
+            bundle.csv_timesteps,
+        )
         state_src = get_state_label_source(adapter.model_cfg)
         on_thresholds = (
             resolve_state_thresholds_watts(adapter.experiment, self.appliances)
@@ -574,6 +578,7 @@ class LiveTrainingMonitor:
                     state_label_source=state_src,
                     aggregate=aggregate,
                     csv_timesteps=bundle.csv_timesteps,
+                    segment_ids=waveform_segments,
                     n_periods=self.plot_on_periods(),
                     period_samples=self.on_period_samples(),
                     full_cycle_appliances=self.full_cycle_appliances(),

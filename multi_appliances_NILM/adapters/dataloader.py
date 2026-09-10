@@ -492,6 +492,18 @@ class NILMDataLoader:
         indices = np.asarray(csv_timesteps, dtype=np.int64)
         return z_csv[indices].astype(np.int32)
 
+    def segment_ids_at_timesteps(
+        self,
+        split: str,
+        csv_timesteps: np.ndarray | None,
+    ) -> np.ndarray | None:
+        """Continuous-sequence IDs aligned with a prediction bundle timeline."""
+        if csv_timesteps is None:
+            return None
+        segment_ids = self.get_splits()[_split_key(split)].segment_ids
+        indices = np.asarray(csv_timesteps, dtype=np.int64)
+        return segment_ids[indices].astype(np.int64)
+
     def get_raw_csv_arrays(self, split: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return raw CSV mains/power/state arrays (watts / labels, not z-scored)."""
         data = self.get_splits()[_split_key(split)]

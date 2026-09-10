@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "multi_appliances_NILM"))
 from adapters.config import load_experiment
 from adapters.dataloader import WindowDataset, _sequence_ids_from_csv
 from dataset_preprocess.ukdale_processing_multi_appliance import make_labels
+from evaluation.plots import select_appliance_on_periods
 from scripts.prepare_mixed_ukdale_refit_3week_split import (
     count_events,
     frame_sequence_ids,
@@ -170,6 +171,35 @@ class SequenceIntegrityTests(unittest.TestCase):
 
         np.testing.assert_array_equal(segments, np.asarray([0, 0, 1, 1]))
         self.assertEqual(count_events(labels, segments), 2)
+
+    def test_waveform_events_and_context_do_not_cross_segments(self) -> None:
+        powers = np.full((6, 1), 100.0)
+        states = np.ones((6, 1), dtype=np.int8)
+        segments = np.asarray([0, 0, 0, 1, 1, 1])
+
+        selected = select_appliance_on_periods(
+            ["kettle"],
+            powers,
+            states,
+            n_periods=2,
+            min_on_duration=1,
+            csv_timesteps=np.arange(6),
+            segment_ids=segments,
+            rng=np.random.default_rng(0),
+        )["kettle"]
+
+        self.assertEqual(
+            [
+                (
+                    period.event_start,
+                    period.event_end,
+                    period.crop_start,
+                    period.crop_end,
+                )
+                for period in selected
+            ],
+            [(0, 2, 0, 3), (3, 5, 3, 6)],
+        )
 
     def test_experiment_loads_generated_normalization(self) -> None:
         stats = {
