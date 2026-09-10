@@ -5,10 +5,13 @@ Shows aggregate/background power, real appliance power, and predicted appliance
 power without ON/OFF shading. The viewer is designed for choosing fair windows
 that include both active and inactive regions, then exporting high-DPI figures.
 
-Example:
-  python multi_appliances_NILM/scripts/paper_prediction_waveform_viewer.py ^
-    --checkpoint multi_appliances_NILM/runs/EXP/MODEL/best.pt ^
-    --experiment multi_appliances_NILM/config/experiment_ukdale.yaml ^
+Quick run (prompts for checkpoint path):
+  python data_quality_checking/paper_prediction_waveform_viewer.py
+
+Or with overrides:
+  python data_quality_checking/paper_prediction_waveform_viewer.py ^
+    --checkpoint path/to/best.pt ^
+    --experiment multi_appliances_NILM/config/experiment_mixed_ukdale_refit_3w.yaml ^
     --model-config multi_appliances_NILM/config/models/multinilm_fractional_relational.yaml ^
     --split test
 """
@@ -58,6 +61,8 @@ PROJECT_DIR = ROOT.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+DEFAULT_EXPERIMENT = ROOT / "config" / "experiment_mixed_ukdale_refit_3w.yaml"
+DEFAULT_MODEL_CONFIG = ROOT / "config" / "models" / "multinilm_fractional_relational.yaml"
 from adapters.common import PredictionBundle
 from adapters.config import load_experiment, load_model_config, merge_configs, model_name_from_config
 from adapters.mat_nilm import MATNILMAdapter
@@ -98,8 +103,18 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional second checkpoint .pt for comparison. Omit to show a single prediction.",
     )
-    parser.add_argument("--experiment", type=Path, required=True, help="Experiment dataset YAML.")
-    parser.add_argument("--model-config", type=Path, required=True, help="Model YAML used by the checkpoint.")
+    parser.add_argument(
+        "--experiment",
+        type=Path,
+        default=DEFAULT_EXPERIMENT,
+        help=f"Experiment dataset YAML. Default: {DEFAULT_EXPERIMENT.name}",
+    )
+    parser.add_argument(
+        "--model-config",
+        type=Path,
+        default=DEFAULT_MODEL_CONFIG,
+        help=f"Model YAML. Default: {DEFAULT_MODEL_CONFIG.name}",
+    )
     parser.add_argument("--split", choices=["validation", "test"], default="test")
     parser.add_argument("--data-path", type=Path, default=None, help="Optional override for experiment data_root.")
     parser.add_argument("--run-dir", type=Path, default=None, help="Run directory. Default: checkpoint parent.")
@@ -842,10 +857,18 @@ def interactive_viewer(
 
 def main() -> None:
     args = parse_args()
+    print("Paper waveform viewer", flush=True)
+    print(f"  experiment   : {args.experiment}", flush=True)
+    print(f"  model-config : {args.model_config}", flush=True)
+    print(f"  split        : {args.split}", flush=True)
     checkpoint = prompt_checkpoint(args.checkpoint)
     checkpoint_b = resolve_optional_checkpoint(args.checkpoint_b, ask=bool(args.ask_checkpoint_b))
     experiment = resolve_path(args.experiment)
     model_config = resolve_path(args.model_config)
+    if not experiment.is_file():
+        raise FileNotFoundError(f"Experiment YAML not found: {experiment}")
+    if not model_config.is_file():
+        raise FileNotFoundError(f"Model config YAML not found: {model_config}")
     data_path = resolve_path(args.data_path) if args.data_path else None
     run_dir = resolve_path(args.run_dir) if args.run_dir else default_run_dir(checkpoint)
     run_dir_b = (
