@@ -615,6 +615,7 @@ class LiveTrainingMonitor:
             adapter.model_cfg,
             self.run_dir,
             split,
+            sample_seconds=adapter.experiment.get("csv", {}).get("sample_seconds"),
         )
         saved = self._write_waveforms_for_bundle(
             adapter, bundle, split=split, epoch=epoch, tag=tag

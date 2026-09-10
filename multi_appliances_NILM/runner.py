@@ -1766,6 +1766,7 @@ def evaluate_model(
         adapter.model_cfg,
         run_dir,
         split,
+        sample_seconds=adapter.experiment.get("csv", {}).get("sample_seconds"),
     )
     if state_calibration is not None:
         thresholds = state_calibration.get("thresholds", {})

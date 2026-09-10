@@ -72,6 +72,34 @@ def _as_app_values(
     return [cast(raw) for _ in appliances]
 
 
+def _time_values_to_samples(
+    pp_cfg: dict[str, Any],
+    *,
+    seconds_key: str,
+    samples_key: str,
+    appliances: list[str],
+    sample_seconds: float,
+    default_samples: int,
+) -> list[int]:
+    """Resolve temporal postprocess settings in samples.
+
+    Seconds are the preferred config unit because the physical rule should not
+    change when the CSV sampling period changes. Legacy sample-count keys remain
+    supported so old run configs and calibration files are still readable.
+    """
+    raw_seconds = pp_cfg.get(seconds_key)
+    if raw_seconds is not None:
+        seconds = _as_app_values(raw_seconds, appliances, 0.0, float)
+        out: list[int] = []
+        for value in seconds:
+            if value <= 0:
+                out.append(0)
+            else:
+                out.append(max(1, int(np.floor(value / sample_seconds + 0.5))))
+        return out
+    return _as_app_values(pp_cfg.get(samples_key), appliances, default_samples, int)
+
+
 def _threshold_grid(cfg: dict[str, Any]) -> np.ndarray:
     raw = cfg.get("threshold_grid", [0.05, 0.98, 0.01])
     if isinstance(raw, (list, tuple)) and len(raw) == 3:
@@ -102,6 +130,8 @@ def calibration_path(run_dir: Path) -> Path:
 def calibrate_state_postprocess(
     bundle: PredictionBundle,
     model_cfg: dict[str, Any],
+    *,
+    sample_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Choose per-appliance probability thresholds using the calibration split."""
     cfg = model_cfg.get("evaluation", {}).get("state_calibration", {})
@@ -113,8 +143,32 @@ def calibrate_state_postprocess(
     appliances = list(bundle.appliances)
     pp_cfg = cfg.get("postprocess", {}) or {}
     post_enabled = bool(pp_cfg.get("enabled", True))
-    min_on = _as_app_values(pp_cfg.get("min_on_samples"), appliances, 1, int)
-    merge_gap = _as_app_values(pp_cfg.get("merge_gap_samples"), appliances, 0, int)
+    uses_seconds = any(
+        pp_cfg.get(key) is not None
+        for key in ("min_on_seconds", "merge_gap_seconds")
+    )
+    if uses_seconds and (sample_seconds is None or float(sample_seconds) <= 0):
+        raise ValueError(
+            "experiment.csv.sample_seconds must be positive when state calibration "
+            "uses min_on_seconds or merge_gap_seconds"
+        )
+    resolved_sample_seconds = float(sample_seconds or 1.0)
+    min_on = _time_values_to_samples(
+        pp_cfg,
+        seconds_key="min_on_seconds",
+        samples_key="min_on_samples",
+        appliances=appliances,
+        sample_seconds=resolved_sample_seconds,
+        default_samples=1,
+    )
+    merge_gap = _time_values_to_samples(
+        pp_cfg,
+        seconds_key="merge_gap_seconds",
+        samples_key="merge_gap_samples",
+        appliances=appliances,
+        sample_seconds=resolved_sample_seconds,
+        default_samples=0,
+    )
 
     configured_thresholds = cfg.get("thresholds", "auto")
     if isinstance(configured_thresholds, dict):
@@ -166,6 +220,7 @@ def calibrate_state_postprocess(
         "thresholds": {app: float(th) for app, th in zip(appliances, thresholds)},
         "postprocess": {
             "enabled": post_enabled,
+            "sample_seconds": resolved_sample_seconds,
             "min_on_samples": {app: int(v) for app, v in zip(appliances, min_on)},
             "merge_gap_samples": {app: int(v) for app, v in zip(appliances, merge_gap)},
         },
@@ -259,6 +314,8 @@ def maybe_calibrate_and_apply(
     model_cfg: dict[str, Any],
     run_dir: Path,
     split: str,
+    *,
+    sample_seconds: float | None = None,
 ) -> tuple[PredictionBundle, dict[str, Any] | None]:
     """Calibrate on validation, apply saved calibration on all enabled splits."""
     if not state_calibration_enabled(model_cfg):
@@ -274,7 +331,11 @@ def maybe_calibrate_and_apply(
 
     calibration = None
     if split_key == cal_split:
-        calibration = calibrate_state_postprocess(bundle, model_cfg)
+        calibration = calibrate_state_postprocess(
+            bundle,
+            model_cfg,
+            sample_seconds=sample_seconds,
+        )
         save_calibration(path, calibration)
     else:
         calibration = load_calibration(path)

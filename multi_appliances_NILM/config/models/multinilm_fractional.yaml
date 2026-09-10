@@ -30,18 +30,19 @@ evaluation:
     apply_to_power: true
     postprocess:
       enabled: true
-      min_on_samples:
-        kettle: 5
-        fridge: 20
-        dishwasher: 160
-        washingmachine: 300
-        microwave: 10
-      merge_gap_samples:
+      # Physical seconds keep postprocessing comparable across 6s/8s CSVs.
+      min_on_seconds:
+        kettle: 30
+        fridge: 120
+        dishwasher: 960
+        washingmachine: 1800
+        microwave: 60
+      merge_gap_seconds:
         kettle: 0
-        fridge: 40
-        dishwasher: 300
-        washingmachine: 160
-        microwave: 3
+        fridge: 240
+        dishwasher: 1800
+        washingmachine: 960
+        microwave: 18
 
 # =============================================================================
 # WINDOWING (6 s samples; 2048 ≈ 3.4 h)
