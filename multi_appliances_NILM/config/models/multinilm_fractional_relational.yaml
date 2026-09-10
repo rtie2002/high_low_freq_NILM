@@ -100,7 +100,8 @@ loss:
   task_balance: equal
   lambda_state: 0.8
   pos_weight: auto
-  pos_weight_cap: 12
+  # ON-class BCE weight: min(N_OFF / N_ON, cap); negatives keep weight 1.
+  pos_weight_cap: 50
 
   state_fp_weight: 1.0
   state_transition_weight: 0.20
