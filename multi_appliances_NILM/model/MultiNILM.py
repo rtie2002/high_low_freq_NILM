@@ -112,9 +112,13 @@ def state_gate(
     threshold: float = 0.5,
     training: bool = False,
 ) -> torch.Tensor:
-    """Gate power by predicted ON probability (soft) or binary mask (hard).
+    """Choose how predicted appliance state controls the power estimate.
 
     Modes:
+      none (alias: ungated):
+        Return an all-one gate, so the power head learns directly from the
+        power loss. The state head remains supervised independently and an
+        evaluation-time calibrated state mask may gate the final watts.
       soft:
         Always use σ(state) in (0, 1). Smooth edges (can blunt waveforms).
       hard:
@@ -129,6 +133,9 @@ def state_gate(
 
     def _hard_mask() -> torch.Tensor:
         return (state_prob >= thr).to(dtype=state_prob.dtype)
+
+    if gate_mode in {"none", "ungated"}:
+        return torch.ones_like(state_prob)
 
     if gate_mode in {"soft", "sigmoid", "prob", "probability"}:
         return state_prob
@@ -150,7 +157,7 @@ def state_gate(
         return hard
 
     raise ValueError(
-        "gate_mode must be soft | hard | soft_train_hard_eval, "
+        "gate_mode must be none | soft | hard | soft_train_hard_eval, "
         f"got {mode!r}"
     )
 
@@ -989,7 +996,7 @@ class MultiNILMConfig:
     kernel_size: int = 5
     dropout: float = 0.1
     max_dilation: int = 128
-    # soft | hard | soft_train_hard_eval (train soft, val/test/plots hard)
+    # none | soft | hard | soft_train_hard_eval (train soft, val/test hard)
     gate_mode: str = "soft_train_hard_eval"
     gate_threshold: float = 0.5
     # Per-appliance local temporal decoder (0 = legacy 1x1 refine only).

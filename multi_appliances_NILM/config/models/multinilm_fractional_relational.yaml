@@ -85,11 +85,13 @@ architecture:
     enabled: true
     reduction: 4
 
-  gate_mode: soft
+  # Train the power and state heads independently. Validation calibration
+  # applies the final postprocessed ON/OFF mask because apply_to_power is true.
+  gate_mode: none
   gate_threshold: 0.5
 
   cross_appliance:
-    enabled: false
+    enabled: true
     mode: relation_attention
     attention_channels: 16
     residual_scale: 0.25
@@ -164,7 +166,7 @@ training:
   plots:
     plot_mode: interval
     plot_interval: 50
-    plot_on_periods: 5
+    plot_on_periods: 10
     plot_max_batches: 16
     waveform_figsize: 5.5
     waveform_dpi: 300

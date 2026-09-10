@@ -5,12 +5,25 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import torch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "multi_appliances_NILM"))
 
 from adapters.common import PredictionBundle
 from evaluation.state_postprocess import calibrate_state_postprocess
+from model.MultiNILM import state_gate
+
+
+class StateGateTests(unittest.TestCase):
+    def test_ungated_mode_does_not_attenuate_power(self) -> None:
+        state_prob = torch.tensor([0.01, 0.50, 0.99], dtype=torch.float32)
+
+        # An all-one gate makes the model output equal power_raw. State logits
+        # are still returned by the model and trained by the separate BCE loss.
+        gate = state_gate(state_prob, mode="none", training=True)
+
+        torch.testing.assert_close(gate, torch.ones_like(state_prob))
 
 
 class StatePostprocessTests(unittest.TestCase):
