@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: 8s (got la)
+experiment_id: 8s latest
 model_name: multinilm_fractional
 
 data:
