@@ -103,7 +103,7 @@ loss:
   # ON-class BCE weight: min(N_OFF / N_ON, cap); negatives keep weight 1.
   pos_weight_cap: 12
 
-  state_fp_weight: 1.0
+  state_fp_weight: 0.0  # Ablation B: weighted BCE already penalizes false positives.
   state_transition_weight: 0.20
 
   power_on_weight: 1.0
