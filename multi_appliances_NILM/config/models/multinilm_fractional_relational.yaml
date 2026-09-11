@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: 8s
+experiment_id: 8s (got la)
 model_name: multinilm_fractional
 
 data:
@@ -114,10 +114,9 @@ loss:
   power_energy_relative_weight: 0.25
   energy_floor_watts: 10
 
-  # La ablation: disable aggregate consistency in the training objective.
-  # Keep tolerance/scale below so this experiment can be reverted by changing
-  # only this weight back to 1.0.
-  aggregate_consistency_weight: 0.0
+  # Only penalize impossible over-allocation. The unmodelled/other load is
+  # allowed to remain in aggregate - sum(predicted appliances).
+  aggregate_consistency_weight: 1.0
   aggregate_tolerance_watts: 30
   aggregate_loss_scale_watts: 1000
 
