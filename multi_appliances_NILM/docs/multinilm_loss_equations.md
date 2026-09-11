@@ -25,6 +25,9 @@ loss:
   power_energy_weight: 0.0
   power_energy_relative_weight: 0.25
   energy_floor_watts: 10
+  aggregate_consistency_weight: 1.0
+  aggregate_tolerance_watts: 30
+  aggregate_loss_scale_watts: 1000
   domain_method: both
   domain_mu: 0.4
   domain_mix: convex
@@ -34,212 +37,6 @@ loss:
 domain_adaptation:
   enabled: false
 ```
-
-## Latest Change: Removed Aggregate Consistency Loss
-
-The active implementation no longer contains the aggregate consistency loss
-$L_A$. The code change removed:
-
-- the `aggregate_consistency_weight`, `aggregate_tolerance_watts`, and
-  `aggregate_loss_scale_watts` YAML options;
-- the aggregate-loss constructor arguments and helper functions in
-  `MultiNILM_loss.py`;
-- the `aggregate_input=x` argument passed from `adapters/multinilm.py`;
-- the `loss_aggregate_consistency` and `loss_aggregate_term` logs;
-- the aggregate term from `train_loss_nilm` and `val_loss_nilm` in
-  `live_monitor.py`.
-
-Before this change, the active supervised NILM loss was
-
-$$
-L_{\mathrm{old}}
-=L_P+L_{S,\mathrm{term}}+L_A.
-$$
-
-After this change, the active supervised NILM loss is
-
-$$
-\boxed{
-L_{\mathrm{new}}
-=L_P+L_{S,\mathrm{term}}.
-}
-$$
-
-The removed aggregate consistency term was
-
-$$
-\boxed{
-L_A=\frac{1}{BT}\sum_{b,t}
-\left[
-\frac{\max(\sum_i\hat P_{bti}-X^W_{bt}-30,0)}{1000}
-\right]^2.
-}
-$$
-
-Its purpose was to penalize only physically impossible over-allocation, where
-the sum of the predicted target-appliance powers exceeded the aggregate mains
-power by more than 30 W. It was one-sided: it did not force the five modeled
-appliances to explain the full aggregate because other household loads may be
-present.
-
-## Conceptual Guide: What the Loss Is Trying to Do
-
-The full implementation is mathematically long, but its purpose is much
-simpler. For every appliance, the model must answer two questions:
-
-1. **State:** Is the appliance ON or OFF?
-2. **Power:** If it is ON, how much power is it using?
-
-The model therefore produces two outputs for each appliance and timestep:
-
-- $R$: a raw power prediction;
-- $p=\sigma(s)$: an ON probability calculated from the state logit $s$.
-
-They are combined by the soft gate
-
-$$
-\hat y=pR+(1-p)y_{\mathrm{off}}.
-$$
-
-This gate is not a hard switch. When $p\approx1$, the final prediction mainly
-uses $R$. When $p\approx0$, it approaches the normalized OFF value
-$y_{\mathrm{off}}$. At an uncertain value such as $p=0.5$, both contribute.
-Consequently, the state branch can influence the power prediction, but it
-cannot abruptly force the output to zero.
-
-### The two active jobs of the loss
-
-The easiest mental model is
-
-$$
-\boxed{L\approx L_P+L_S},
-$$
-
-where the exact implementation replaces $L_S$ with a dynamically scaled state
-term explained later. The previous aggregate-consistency term $L_A$ has been
-removed from the active code path.
-
-| Group | Main purpose | Question answered |
-|---|---|---|
-| $L_P$ | Power regression | Is the predicted wattage and waveform correct? |
-| $L_S$ | State classification | Is the appliance ON or OFF? |
-
-### 1. Power objective
-
-For appliance $i$, the active power objective is
-
-$$
-L_{P,i}
-=L_{\mathrm{base},i}
-+L_{\mathrm{on},i}
-+0.5L_{\mathrm{off},i}
-+0.15L_{\Delta,i}
-+0.25L_{\mathrm{relE},i}.
-$$
-
-| Term | Purpose |
-|---|---|
-| $L_{\mathrm{base}}$ | Fits the complete predicted power curve to the target curve. |
-| $L_{\mathrm{on}}$ | Gives explicit attention to errors while the appliance is ON, which helps rare appliances avoid being overwhelmed by OFF samples. |
-| $L_{\mathrm{off}}$ | Suppresses power leakage and false power predictions while the appliance is OFF. |
-| $L_{\Delta}$ | Fits changes between adjacent samples, especially event start and end edges. |
-| $L_{\mathrm{relE}}$ | Matches total predicted and true energy within a window, relative to the true energy. |
-
-For example, suppose a microwave is truly ON at 1,200 W but the model predicts
-only 100 W. The base and ON losses penalize the instantaneous error, the delta
-loss checks whether the activation edge was captured, and the relative-energy
-loss penalizes the missing energy over the complete window.
-
-### 2. State objective
-
-For appliance $i$, the active state objective is
-
-$$
-L_{S,i}
-=L_{\mathrm{BCE},i}
-+L_{\mathrm{FP},i}
-+0.2L_{\mathrm{trans},i}.
-$$
-
-| Term | Purpose |
-|---|---|
-| $L_{\mathrm{BCE}}$ | Trains the ON/OFF probability at every timestep. |
-| $L_{\mathrm{FP}}$ | Adds a direct penalty when the model predicts ON during a true OFF period. |
-| $L_{\mathrm{trans}}$ | Encourages changes in state probability near true activation and deactivation boundaries. |
-
-The positive BCE weight is estimated from the training-set ON rate:
-
-$$
-w_i^+=\min\left(\frac{N_{\mathrm{OFF},i}}{N_{\mathrm{ON},i}},12\right).
-$$
-
-Microwave ON samples are rare, so an error on a true microwave ON sample is
-weighted more heavily than an ordinary OFF error. This addresses class
-imbalance only. It does **not** directly solve microwave-to-kettle confusion,
-domain shift, missing events in sampled windows, incorrect labels, or events
-removed by temporal postprocessing.
-
-### 3. Removed aggregate consistency objective
-
-The previous implementation also included an aggregate-consistency objective.
-It applied the physical constraint
-
-$$
-\sum_i\hat P_i\leq X^W+30\ \mathrm{W}.
-$$
-
-If the mains meter reports 1,500 W while the model predicts 1,800 W for the
-kettle and 1,200 W for the microwave, their 3,000 W sum is physically
-inconsistent and is penalized. The constraint is one-sided: the modeled
-appliance sum may be below the aggregate because the house contains other,
-unmodeled loads.
-
-This term is now removed from `MultiNILM_loss.py`, `adapters/multinilm.py`,
-`live_monitor.py`, and `multinilm_fractional_relational.yaml`. Therefore, it
-does not affect gradients, logs, checkpoint selection, or the live NILM loss.
-
-### Why the state term has `stopgrad`
-
-The code does not directly add an unscaled $L_S$. It uses
-
-$$
-L_{S,\mathrm{term}}
-=0.8L_S\operatorname{stopgrad}
-\left(\frac{L_P}{\max(L_S,10^{-8})}\right).
-$$
-
-Its purpose is to put the power and state objectives on approximately similar
-numerical scales. For example, if $L_P=10$ and $L_S=0.1$, directly adding them
-would make the state term appear very small. The ratio increases the state
-gradient's weight. `stopgrad` treats that ratio as a fixed weight during the
-current backward pass, preventing the model from optimizing the ratio itself.
-
-This balances **loss magnitudes**, not necessarily gradient norms or task
-difficulty. It should therefore be treated as a design choice that needs an
-ablation, not as a guaranteed improvement.
-
-### Engineering assessment
-
-The current objective is defensible, but it is complex and contains partially
-overlapping supervision:
-
-- base, ON, and OFF losses all supervise power errors;
-- BCE and false-positive losses both penalize incorrect ON predictions;
-- delta and transition losses both supervise event boundaries;
-- the soft gate already allows the state branch to affect the power loss.
-
-Adding more terms is therefore unlikely to be the safest first response to poor
-microwave performance. A more interpretable experimental baseline is
-
-$$
-\boxed{L=L_{\mathrm{base}}+\lambda_S L_{\mathrm{BCE}}}.
-$$
-
-Starting from that baseline, add only one component per experiment: first the
-ON loss, then relative-energy loss, then delta loss, and finally the
-false-positive or transition loss. This staged ablation reveals which term
-actually improves microwave detection and avoids attributing a result to an
-unnecessarily complicated combination.
 
 ## 1. Complete Objective at a Glance
 
@@ -263,7 +60,7 @@ $\lambda_D=0$. Therefore, the scalar passed to `backward()` is exactly
 $$
 \boxed{
 L=L_{\mathrm{NILM}}
-=L_P+L_{S,\mathrm{term}}
+=L_P+L_{S,\mathrm{term}}+L_A
 }
 $$
 
@@ -281,8 +78,8 @@ L_{S,\mathrm{term}}
 \left(\frac{L_P}{\max(L_S,10^{-8})}\right),
 $$
 
-The current model has $A=5$ appliances. The earlier one-sided aggregate
-consistency loss $L_A$ has been removed from the active objective.
+and $L_A$ is the one-sided aggregate consistency loss. The current model has
+$A=5$ appliances.
 
 ### 1.1 Single derivation chain from the total loss to all components
 
@@ -309,24 +106,27 @@ The complete active loss can then be expanded in one chain:
 $$
 \begin{aligned}
 L
-&=L_P+L_{S,\mathrm{term}}\\
+&=L_P+L_{S,\mathrm{term}}+L_A\\
 &=L_P
 +0.8L_S\operatorname{stopgrad}
-\left(\frac{L_P}{\max(L_S,10^{-8})}\right)\\
+\left(\frac{L_P}{\max(L_S,10^{-8})}\right)
++L_A\\
 &=\sum_{i=1}^{5}L_{P,i}
 +0.8\left(\sum_{i=1}^{5}L_{S,i}\right)
 \operatorname{stopgrad}
 \left(
 \frac{\sum_{i=1}^{5}L_{P,i}}
 {\max(\sum_{i=1}^{5}L_{S,i},10^{-8})}
-\right)\\
+\right)
++L_A\\
 &=\sum_{i=1}^{5}\mathcal{P}_i
 +0.8\left(\sum_{i=1}^{5}\mathcal{S}_i\right)
 \operatorname{stopgrad}
 \left(
 \frac{\sum_{i=1}^{5}\mathcal{P}_i}
 {\max(\sum_{i=1}^{5}\mathcal{S}_i,10^{-8})}
-\right)\\
+\right)
++L_A\\
 &=\sum_{i=1}^{5}
 \left[
 L_{\mathrm{base},i}
@@ -363,7 +163,8 @@ L_{\mathrm{BCE},i}
 10^{-8}
 \right)
 }
-\right).
+\right)
++L_A.
 \end{aligned}
 $$
 
@@ -397,7 +198,12 @@ L_{\mathrm{FP},i}
 L_{\mathrm{trans},i}
 &=0.5\,\mathbb{1}[N_{\mathrm{boundary},i}>0]
 \operatorname{mean}_{r^{\Delta}=1}[-\log q]
-+0.5\operatorname{mean}_{r^{\Delta}=0}[-\log(1-q)].
++0.5\operatorname{mean}_{r^{\Delta}=0}[-\log(1-q)],\\
+L_A
+&=\frac{1}{BT}\sum_{b,t}
+\left[
+\frac{\max(\sum_i\hat P_{bti}-X^W_{bt}-30,0)}{1000}
+\right]^2.
 \end{aligned}
 $$
 
@@ -435,7 +241,7 @@ Numerically, when $L_S>10^{-8}$,
 $$
 L_{S,\mathrm{term}}=0.8L_P,
 \qquad
-L\approx1.8L_P.
+L\approx1.8L_P+L_A.
 $$
 
 This numerical identity does **not** mean that the state loss disappears. The
@@ -446,7 +252,8 @@ $$
 \nabla_\theta L
 =\nabla_\theta L_P
 +0.8\left(\frac{L_P}{L_S}\right)_{\mathrm{stopgrad}}
-\nabla_\theta L_S.
+\nabla_\theta L_S
++\nabla_\theta L_A.
 }
 $$
 
@@ -466,7 +273,7 @@ The following sections expand every term in this expression.
 | $z_{bti}$ | true binary ON/OFF state | $(B,T,A)$ |
 | $s_{bti}$ | predicted state logit | $(B,T,A)$ |
 | $p_{bti}=\sigma(s_{bti})$ | predicted ON probability | $(B,T,A)$ |
-| $X_{bt}$ | normalized aggregate input; only used by the removed $L_A$ note | $(B,T)$ |
+| $X_{bt}$ | normalized aggregate input | $(B,T)$ |
 | $\mu_i,\sigma_i$ | appliance normalization statistics | one pair per appliance |
 
 The target normalization and inverse transform are
@@ -477,8 +284,8 @@ y_{bti}=\frac{P_{bti}-\mu_i}{\sigma_i},
 P_{bti}=\max(\sigma_i y_{bti}+\mu_i,0).
 $$
 
-The clamp to zero is used only by the physical-watt relative-energy term.
-The normalized pointwise losses still receive gradients for negative
+The clamp to zero is used only by the physical-watt energy and aggregate
+terms. The normalized pointwise losses still receive gradients for negative
 predictions.
 
 ## 3. Soft State-Gated Power Output
@@ -865,12 +672,9 @@ Therefore, changing `pos_weight_cap` does not multiply the total state gradient
 by the same factor. It mainly redistributes state gradients among appliances
 and between positive and negative samples.
 
-## 7. Removed Aggregate Consistency Loss
+## 7. Aggregate Consistency Loss
 
-This section documents the term that was removed. It is useful for experiment
-notes and slides, but it is no longer called by the current training code.
-
-The old implementation converted the normalized aggregate input to watts:
+The normalized aggregate input is converted to watts:
 
 $$
 X^{W}_{bt}=\max(\sigma_X X_{bt}+\mu_X,0).
@@ -882,7 +686,7 @@ $$
 \hat P^{\mathrm{sum}}_{bt}=\sum_{i=1}^{5}\hat P_{bti}.
 $$
 
-Only physically impossible over-allocation beyond the 30 W tolerance was
+Only physically impossible over-allocation beyond the 30 W tolerance is
 penalized:
 
 $$
@@ -898,25 +702,9 @@ L_A=1.0\frac{1}{BT}\sum_{b,t}
 }
 $$
 
-This loss was intentionally one-sided. It did not require the five predicted
+This loss is intentionally one-sided. It does not require the five predicted
 appliances to sum to the aggregate because unmodeled appliances and background
 load are allowed to remain.
-
-Slide-ready summary:
-
-$$
-\boxed{
-\text{Removed }L_A:
-\quad
-L_A=\frac{1}{BT}\sum_{b,t}
-\left[
-\frac{\max(\sum_i\hat P_{bti}-X^W_{bt}-30,0)}{1000}
-\right]^2
-}
-$$
-
-This change removes the physical over-allocation penalty and leaves the active
-training objective as power regression plus balanced state classification.
 
 ## 8. Fully Expanded Active Training Objective
 
@@ -966,7 +754,8 @@ L_{\mathrm{BCE},i}
 10^{-8}
 \right)
 }
-\right).
+\right)\\
+&+L_A.
 \end{aligned}
 }
 $$
@@ -1058,7 +847,8 @@ The power-head parameters receive gradients from
 * base MSE;
 * conditional ON and OFF MSE;
 * ON-adjacent delta loss;
-* relative energy loss.
+* relative energy loss; and
+* aggregate consistency.
 
 Because $\partial\hat y/\partial R=p$, all of these gradients are attenuated
 when the state probability is low.
@@ -1068,7 +858,8 @@ The state-head parameters receive gradients from
 * weighted BCE;
 * explicit false-positive loss;
 * transition loss;
-* every power term through the soft gate.
+* every power term through the soft gate; and
+* aggregate consistency through the soft gate.
 
 The shared frontend, TCN, task-attention, and cross-appliance relation modules
 receive gradients from both task families and from all five appliance heads.
@@ -1083,8 +874,8 @@ The loss is scientifically expressive but contains overlapping constraints:
    probability penalty.
 3. Transition loss encourages temporal continuity during training, while
    validation/test postprocessing imposes additional duration and gap rules.
-4. Pointwise, delta, and relative-energy terms can prefer different waveform
-   compromises.
+4. Pointwise, delta, relative-energy, and aggregate terms can prefer different
+   waveform compromises.
 5. Global task balancing couples the state scale of all appliances instead of
    balancing each appliance independently.
 6. Soft gating makes the regression and classification objectives more tightly
