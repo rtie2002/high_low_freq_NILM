@@ -469,7 +469,11 @@ class MultiNILMLoss(nn.Module):
         aggregate_input: torch.Tensor | None,
     ) -> torch.Tensor:
         """Penalize only impossible over-allocation; unknown load may remain."""
-        if aggregate_input is None or not self.has_physical_stats:
+        if (
+            self.aggregate_consistency_weight <= 0.0
+            or aggregate_input is None
+            or not self.has_physical_stats
+        ):
             return power_pred.new_zeros(())
         aggregate = self._align_aggregate(aggregate_input, power_pred.shape[1])
         aggregate_watts = (

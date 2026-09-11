@@ -99,3 +99,5 @@ matuda_test_*.ps1
 !feature_selection/
 !feature_selection/dataset/
 
+/1min
+/8s
