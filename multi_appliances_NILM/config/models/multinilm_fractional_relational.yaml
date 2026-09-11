@@ -114,12 +114,6 @@ loss:
   power_energy_relative_weight: 0.25
   energy_floor_watts: 10
 
-  # Only penalize impossible over-allocation. The unmodelled/other load is
-  # allowed to remain in aggregate - sum(predicted appliances).
-  aggregate_consistency_weight: 1.0
-  aggregate_tolerance_watts: 30
-  aggregate_loss_scale_watts: 1000
-
   domain_method: both
   domain_mu: 0.4
   domain_mix: convex

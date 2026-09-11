@@ -127,11 +127,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
             # stats when available, otherwise from legacy scalar power_scale.
             power_scale=loader.loss_scale,
             target_mean=norm.target_mean,
-            input_mean=norm.input_mean,
-            input_std=norm.input_std,
-            output_alignment=str(
-                self.model_cfg.get("windowing", {}).get("output_alignment", "end")
-            ),
 
             # Domain adaptation (Lin-style).
             lambda_domain=float(loss_cfg.get("lambda_domain", 0.0)),
@@ -152,15 +147,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
                 loss_cfg.get("power_energy_relative_weight", 0.0)
             ),
             energy_floor_watts=float(loss_cfg.get("energy_floor_watts", 10.0)),
-            aggregate_consistency_weight=float(
-                loss_cfg.get("aggregate_consistency_weight", 0.0)
-            ),
-            aggregate_tolerance_watts=float(
-                loss_cfg.get("aggregate_tolerance_watts", 20.0)
-            ),
-            aggregate_loss_scale_watts=float(
-                loss_cfg.get("aggregate_loss_scale_watts", 1000.0)
-            ),
             mmd_sigma=(
                 None
                 if loss_cfg.get("mmd_sigma", None) in (None, "", "auto")
@@ -209,7 +195,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
                 state_logits,
                 y,
                 z,
-                aggregate_input=x,
                 domain_feats_S=feats_s,
                 domain_feats_T=feats_t,
             )
@@ -220,7 +205,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
                 state_logits,
                 y,
                 z,
-                aggregate_input=x,
             )
 
         state_prob = torch.sigmoid(state_logits)
@@ -247,15 +231,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
                 "loss_state_term": float(out.loss_state_term.detach()),
                 "loss_state_transition": float(out.loss_state_transition.detach()),
                 "loss_energy_relative": float(out.loss_energy_relative.detach()),
-                "loss_aggregate_consistency": float(
-                    out.loss_aggregate_consistency.detach()
-                ),
-                "loss_aggregate_term": float(
-                    (
-                        out.loss_aggregate_consistency
-                        * loss_fn.aggregate_consistency_weight
-                    ).detach()
-                ),
                 "loss_domain": float(out.loss_domain.detach()),
                 "loss_domain_term": float(out.loss_domain_term.detach()),
                 "mae": float(out.mae.detach()),
