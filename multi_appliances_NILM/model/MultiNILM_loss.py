@@ -1,31 +1,9 @@
-"""MultiNILM multitask loss + optional Lin-style domain adaptation.
+"""MultiNILM loss. Shapes: power/state (B, T, A).
 
-Pipeline total loss (Lin convex mix when DA on)::
-
-    L = (1 - lambda_domain) * L_NILM + lambda_domain * L_domain
-
-Legacy additive (domain_mix=additive)::
-
-    L = L_NILM + lambda_domain * L_domain
-
-Supervised part (see docs/multinilm_task_loss_balance.md)::
-
-    L_power = sum_i MSE_i
-    L_state = sum_i BCE_i
-    L_NILM  = L_power + state_term
-
-    task_balance=none :  state_term = lambda_state * L_state
-    task_balance=equal:  state_term = lambda_state * L_state
-                                       * (L_power / L_state).detach()
-                         → lambda_state=1 means equal power ↔ state weight
-
-Domain part (Lin et al., IEEE TSG 2022)::
-
-    L_domain = sum_layer [ mu * MMD^2 + (1-mu) * CORAL ]   # method=both
-    Paper: L = (1-λ) L_R + λ L_domain  with best λ=0.6  → domain_mix=convex
-
-Call site: adapters/multinilm.py → MultiNILMLoss(...)
-Shapes: power/state (B,T,A); domain hooks dict[str, (B,C,T)|(B,D)]
+    L_NILM = L_power + state_term
+    none : state_term = λ L_state
+    equal: state_term = λ L_state (L_power/L_state).detach()   # λ=1 → equal scale
+    DA convex: L = (1-λ) L_NILM + λ L_domain
 """
 
 from __future__ import annotations
