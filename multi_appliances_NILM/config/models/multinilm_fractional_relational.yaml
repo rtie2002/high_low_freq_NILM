@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: Clean Version
+experiment_id: Clean Version (detail_branch_channels)
 model_name: multinilm_fractional
 
 data:
@@ -48,7 +48,7 @@ fractional:
   enabled: true
   k: 4
   include_raw: true
-  include_delta: false
+  include_delta: true
   include_abs_delta: true
   include_rolling_mean: true
   include_rolling_std: true
