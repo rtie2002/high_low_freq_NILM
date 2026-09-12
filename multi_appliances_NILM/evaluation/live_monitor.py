@@ -468,7 +468,7 @@ class LiveTrainingMonitor:
             out,
             epoch=epoch,
             title=f"ep{epoch} val vs test",
-            dpi=max(600, int(self.plot_cfg.get("comparison_dpi", 600))),
+            dpi=int(self.plot_cfg.get("comparison_dpi", 300)),
         )
         latest_dir = self.run_dir / "metrics_by_epoch" / "latest"
         latest_dir.mkdir(parents=True, exist_ok=True)
@@ -490,7 +490,7 @@ class LiveTrainingMonitor:
         # Metrics only (no waveforms mixed in).
         metrics_all = save_multi_epoch_metrics_collage(
             self.run_dir,
-            title="",  # panels already labeled; keep collage compact
+            title="NILM diagnostics by epoch",
             dpi=dpi,
             best_epoch=self.best_epoch,
         )
@@ -692,7 +692,7 @@ class LiveTrainingMonitor:
         self.best_epoch = int(best_epoch) if best_epoch else self.best_epoch
         save_multi_epoch_metrics_collage(
             self.run_dir,
-            title="",
+            title="NILM diagnostics by epoch",
             dpi=int(self.plot_cfg.get("comparison_dpi", 600)),
             best_epoch=self.best_epoch,
         )

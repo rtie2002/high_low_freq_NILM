@@ -133,7 +133,7 @@ This module is repeated independently for kettle, refrigerator, dishwasher, wash
 | Shared feature channels | 128 |
 | Reduction ratio | 4 |
 | Attention bottleneck channels | 32 |
-| Local decoder layers | 1 |
+| Local decoder layers | 2 |
 | Local decoder kernel | 3 |
 | Output shape per appliance | $B\times128\times T$ |
 

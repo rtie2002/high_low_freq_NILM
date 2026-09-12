@@ -234,7 +234,11 @@ def print_evaluation_report(
 
 def print_val_test_comparison(run_dir: Path) -> None:
     """Compare validation vs test metrics to inspect generalization gap."""
-    from evaluation.plots import build_val_test_comparison_frame, save_val_test_comparison_figure
+    from evaluation.plots import (
+        build_val_test_comparison_frame,
+        save_multi_epoch_metrics_collage,
+        save_val_test_comparison_figure,
+    )
 
     val_path = run_dir / "validation_metrics.csv"
     test_path = run_dir / "test_metrics.csv"
@@ -257,6 +261,13 @@ def print_val_test_comparison(run_dir: Path) -> None:
         test_df,
         fig_path,
         title="best ckpt val vs test",
+    )
+    summary = load_run_summary(run_dir)
+    save_multi_epoch_metrics_collage(
+        run_dir,
+        title="NILM diagnostics by epoch",
+        dpi=300,
+        best_epoch=summary.get("best_epoch"),
     )
 
     width = 108

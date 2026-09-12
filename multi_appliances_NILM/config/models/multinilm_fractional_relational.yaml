@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: Clean Version (head_local_1)
+experiment_id: Clean Version (dropout035)
 model_name: multinilm_fractional
 
 data:
@@ -75,10 +75,11 @@ architecture:
   num_blocks: 5
   kernel_size: 9
   max_dilation: 16
-  dropout: 0.25
+  # Single-variable regularization ablation for the observed train/validation gap.
+  dropout: 0.35
 
-  # Simplification ablation: one local decoder block per appliance instead of two.
-  head_local_layers: 1
+  # Two local blocks preserve the multi-stage washing-machine waveform better.
+  head_local_layers: 2
   head_kernel_size: 3
   head_use_residual: true
   task_attention:

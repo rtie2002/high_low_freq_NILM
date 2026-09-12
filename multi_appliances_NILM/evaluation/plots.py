@@ -732,6 +732,28 @@ def build_val_test_comparison_frame(
             "test_F1": t_ma,
             "F1_gap": float(t_ma - v_ma),
         })
+        for metric in (
+            "precision",
+            "recall",
+            "balanced_accuracy",
+            "on_mae",
+            "off_mae",
+            "delta_mae",
+            "energy_ratio",
+            "on_energy_ratio",
+            "event_precision",
+            "event_recall",
+            "event_f1",
+            "missed_event_rate",
+            "true_events",
+            "pred_events",
+        ):
+            if metric in v.index and metric in t.index:
+                val_value = float(v[metric])
+                test_value = float(t[metric])
+                rows[-1][f"val_{metric}"] = val_value
+                rows[-1][f"test_{metric}"] = test_value
+                rows[-1][f"{metric}_gap"] = test_value - val_value
     return pd.DataFrame(rows)
 
 
@@ -744,161 +766,85 @@ def save_val_test_comparison_figure(
     title: str | None = None,
     dpi: int = 200,
 ) -> Path:
-    """Compact val/test table: MAE + SAE + per-app F1; overall maF1/miF1 below."""
+    """Paper-style side-by-side power, state, event, and energy tables."""
+    if not isinstance(val_metrics, pd.DataFrame):
+        val_metrics = pd.read_csv(val_metrics)
+    if not isinstance(test_metrics, pd.DataFrame):
+        test_metrics = pd.read_csv(test_metrics)
     compare = build_val_test_comparison_frame(val_metrics, test_metrics)
     output_path = _ensure_parent(output_path)
     if compare.empty:
         return output_path
 
-    # Put overall last if present.
-    if "overall" in set(compare["appliance"]):
-        apps = [a for a in compare["appliance"] if a != "overall"] + ["overall"]
-        compare = compare.set_index("appliance").loc[apps].reset_index()
-
-    # Narrow table: MAE/SAE/per-app F1. Overall maF1/miF1 go in the footer.
-    col_labels = [
-        "appliance",
-        "val_MAE",
-        "test_MAE",
-        "MAE_gap",
-        "val_SAE",
-        "test_SAE",
-        "SAE_gap",
-        "val_F1",
-        "test_F1",
-        "F1_gap",
+    columns = [
+        ("Appliance", "appliance", "text"),
+        ("MAE\n(W)", "mae", "power"),
+        ("ON MAE\n(W)", "on_mae", "power"),
+        ("OFF MAE\n(W)", "off_mae", "power"),
+        ("Delta MAE\n(W)", "delta_mae", "power"),
+        ("Precision", "precision", "score"),
+        ("Recall", "recall", "score"),
+        ("Sample\nF1", "f1", "score"),
+        ("Event\nprecision", "event_precision", "score"),
+        ("Event\nrecall", "event_recall", "score"),
+        ("Event\nF1", "event_f1", "score"),
+        ("Energy\nratio", "energy_ratio", "ratio"),
+        ("ON energy\nratio", "on_energy_ratio", "ratio"),
     ]
 
-    def _fmt_f1(x) -> str:
-        if x is None or (isinstance(x, float) and np.isnan(x)):
-            return "—"
-        return f"{float(x):.4f}"
+    def _ordered(frame: pd.DataFrame) -> pd.DataFrame:
+        if "overall" not in set(frame["appliance"]):
+            return frame.reset_index(drop=True)
+        order = [app for app in frame["appliance"] if app != "overall"] + ["overall"]
+        return frame.set_index("appliance").loc[order].reset_index()
 
-    def _fmt_gap(x) -> str:
-        if x is None or (isinstance(x, float) and np.isnan(x)):
-            return "—"
-        return f"{float(x):+.4f}"
+    def _cell(row: pd.Series, key: str, kind: str) -> str:
+        if kind == "text":
+            return str(row[key])
+        if key not in row.index or pd.isna(row[key]):
+            return "-"
+        value = float(row[key])
+        return f"{value:.1f}" if kind == "power" else f"{value:.3f}"
 
-    cell_text = []
-    for _, r in compare.iterrows():
-        # Per-app F1; overall row uses macro F1 in the F1 columns.
-        cell_text.append([
-            str(r["appliance"]),
-            f"{r['val_MAE']:.2f}",
-            f"{r['test_MAE']:.2f}",
-            f"{r['MAE_gap']:+.2f}",
-            f"{r['val_SAE']:.2f}",
-            f"{r['test_SAE']:.2f}",
-            f"{r['SAE_gap']:+.2f}",
-            _fmt_f1(r["val_maF1"]),
-            _fmt_f1(r["test_maF1"]),
-            _fmt_gap(r["maF1_gap"]),
-        ])
-
-    overall = compare[compare["appliance"] == "overall"]
-    footer_lines: list[str] = []
-    if not overall.empty:
-        o = overall.iloc[0]
-        footer_lines.append(
-            f"maF1  val={_fmt_f1(o['val_maF1'])}  test={_fmt_f1(o['test_maF1'])}  "
-            f"gap={_fmt_gap(o['maF1_gap'])}   "
-            f"miF1  val={_fmt_f1(o['val_miF1'])}  test={_fmt_f1(o['test_miF1'])}  "
-            f"gap={_fmt_gap(o['miF1_gap'])}"
+    def _draw(ax, frame: pd.DataFrame, split_name: str) -> None:
+        frame = _ordered(frame)
+        cells = [[_cell(row, key, kind) for _, key, kind in columns] for _, row in frame.iterrows()]
+        ax.axis("off")
+        ax.set_title(split_name, fontsize=10, fontweight="bold", loc="left", pad=5)
+        table = ax.table(
+            cellText=cells,
+            colLabels=[label for label, _, _ in columns],
+            cellLoc="center",
+            colWidths=[0.16] + [0.07] * (len(columns) - 1),
+            bbox=[0.0, 0.0, 1.0, 0.94],
         )
-        mae_gap = float(o["MAE_gap"])
-        f1_gap = float(o["maF1_gap"])
-        if abs(mae_gap) < 5 and abs(f1_gap) < 0.05:
-            transfer = "transfer: val≈test"
-        elif mae_gap > 0 or f1_gap < 0:
-            transfer = "transfer: test weaker (house gap)"
-        else:
-            transfer = "transfer: test better (check leakage)"
-        footer_lines.append(transfer)
+        table.auto_set_font_size(False)
+        table.set_fontsize(7.2)
+        for col in range(len(columns)):
+            table[0, col].set_facecolor("#263746")
+            table[0, col].set_text_props(color="white", weight="bold")
+            table[0, col].set_edgecolor("#ffffff")
+        for row_i, app in enumerate(frame["appliance"], start=1):
+            fill = "#dfe8f1" if app == "overall" else ("#f3f5f7" if row_i % 2 == 0 else "#ffffff")
+            for col in range(len(columns)):
+                table[row_i, col].set_facecolor(fill)
+                table[row_i, col].set_edgecolor("#c8d0d8")
+                table[row_i, col].set_linewidth(0.5)
+                if app == "overall":
+                    table[row_i, col].set_text_props(weight="bold")
+            table[row_i, 0].set_text_props(ha="left", weight="bold" if app == "overall" else "normal")
 
-    n_rows = len(cell_text)  # data rows (excludes header)
-    n_footer = len(footer_lines)
-    # Compact table, but leave readable space for maF1/miF1 footer under it.
-    row_inch = 0.22
-    title_inch = 0.28
-    footer_inch = 0.22 * n_footer + (0.10 if n_footer else 0.0)
-    fig_h = title_inch + row_inch * (n_rows + 1) + footer_inch + 0.10
-    fig, ax = plt.subplots(figsize=(10.5, fig_h))
-    ax.axis("off")
+    fig, axes = plt.subplots(1, 2, figsize=(20.5, 2.65))
     if title is None:
-        title = f"ep{epoch} val vs test" if epoch is not None else "val vs test"
-    ax.set_title(title, fontsize=9, pad=1, loc="left")
-
-    # Footer band under the table (enough to read maF1 / transfer lines).
-    footer_frac = min(0.36, 0.10 * max(n_footer, 1) + 0.06) if n_footer else 0.0
-    table = ax.table(
-        cellText=cell_text,
-        colLabels=col_labels,
-        cellLoc="center",
-        bbox=[0.0, footer_frac, 1.0, 1.0 - footer_frac],
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(8)
-    table.scale(1.0, 1.0)
-
-    for j in range(len(col_labels)):
-        table[0, j].set_facecolor("#2f3e4e")
-        table[0, j].set_text_props(color="white", weight="bold", fontsize=8)
-    for i, app in enumerate(compare["appliance"], start=1):
-        if str(app) == "overall":
-            for j in range(len(col_labels)):
-                table[i, j].set_facecolor("#e8eef5")
-                table[i, j].set_text_props(weight="bold")
-        elif i % 2 == 0:
-            for j in range(len(col_labels)):
-                table[i, j].set_facecolor("#f7f7f7")
-
-    for gap_col, key in (
-        ("MAE_gap", "MAE_gap"),
-        ("SAE_gap", "SAE_gap"),
-        ("F1_gap", "maF1_gap"),
-    ):
-        j = col_labels.index(gap_col)
-        for i, (_, r) in enumerate(compare.iterrows(), start=1):
-            val = r[key]
-            if val is None or (isinstance(val, float) and np.isnan(val)):
-                continue
-            # MAE/SAE: test>val is worse; F1: test<val is worse
-            worse = val > 0 if gap_col in {"MAE_gap", "SAE_gap"} else val < 0
-            better = val < 0 if gap_col in {"MAE_gap", "SAE_gap"} else val > 0
-            if worse:
-                table[i, j].set_text_props(color="#b00020")
-            elif better:
-                table[i, j].set_text_props(color="#1b7f3a")
-
-    # Footer centered in the reserved band, with clear gap below the table.
-    if footer_lines:
-        # Top of footer band is footer_frac; leave a small gap under table edge.
-        y_top = footer_frac - 0.02
-        y_bot = 0.04
-        span = max(y_top - y_bot, 0.06)
-        # Evenly space lines from near-table down toward bottom.
-        for i, line in enumerate(footer_lines):
-            # i=0 is maF1 line (closer to table), i=1 is transfer note.
-            frac = (i + 0.55) / max(n_footer, 1)
-            y = y_top - frac * span
-            ax.text(
-                0.5,
-                y,
-                line,
-                transform=ax.transAxes,
-                ha="center",
-                va="center",
-                fontsize=7.5,
-                family="monospace",
-                clip_on=False,
-            )
-
-    fig.subplots_adjust(left=0.01, right=0.99, top=0.92, bottom=0.04)
-    fig.savefig(output_path, dpi=dpi, bbox_inches="tight", pad_inches=0.04)
+        title = f"Epoch {epoch}" if epoch is not None else "Best checkpoint"
+    fig.suptitle(title, fontsize=11, fontweight="bold", x=0.01, ha="left", y=0.995)
+    _draw(axes[0], val_metrics, "Validation")
+    _draw(axes[1], test_metrics, "Test")
+    fig.subplots_adjust(left=0.012, right=0.988, top=0.88, bottom=0.025, wspace=0.035)
+    fig.savefig(output_path, dpi=dpi, facecolor="white", bbox_inches="tight", pad_inches=0.05)
     plt.close(fig)
 
-    csv_path = Path(output_path).with_suffix(".csv")
-    compare.to_csv(csv_path, index=False)
+    compare.to_csv(Path(output_path).with_suffix(".csv"), index=False)
     return Path(output_path)
 
 
@@ -1153,17 +1099,49 @@ def save_multi_epoch_metrics_collage(
     dpi: int = 600,
     best_epoch: int | None = None,
 ) -> Path | None:
-    """Stack every epoch's val/test comparison PNG; footer shows best epoch."""
+    """Build a stacked diagnostic dashboard at each configured plot epoch."""
     from PIL import Image, ImageDraw, ImageFont
 
     run_dir = Path(run_dir)
     epoch_dirs = _list_metric_epoch_dirs(run_dir)
+    best_ep, best_stats, best_rule = _resolve_best_epoch_for_collage(
+        run_dir, epoch_dirs, best_epoch=best_epoch
+    )
     panels: list[tuple[str, np.ndarray]] = []
     for ep, ep_dir in epoch_dirs:
+        val_csv = ep_dir / "validation_metrics.csv"
+        test_csv = ep_dir / "test_metrics.csv"
         png = ep_dir / "validation_test_comparison.png"
-        if not png.exists():
+        if not val_csv.exists() or not test_csv.exists():
             continue
+        save_val_test_comparison_figure(
+            val_csv,
+            test_csv,
+            png,
+            epoch=ep,
+            title=f"Epoch {ep}",
+            dpi=dpi,
+        )
         panels.append((f"epoch {ep}", plt.imread(png)))
+
+    plotted_epochs = {ep for ep, _ in epoch_dirs}
+    root_val = run_dir / "validation_metrics.csv"
+    root_test = run_dir / "test_metrics.csv"
+    if best_ep not in plotted_epochs and root_val.exists() and root_test.exists():
+        best_png = run_dir / "validation_test_comparison.png"
+        save_val_test_comparison_figure(
+            root_val,
+            root_test,
+            best_png,
+            epoch=best_ep,
+            title=f"Best checkpoint | epoch {best_ep}",
+            dpi=dpi,
+        )
+        root_comparison = build_val_test_comparison_frame(root_val, root_test)
+        overall = root_comparison[root_comparison["appliance"] == "overall"]
+        if not overall.empty:
+            best_stats = overall.iloc[0].to_dict()
+        panels.append((f"best epoch {best_ep}", plt.imread(best_png)))
     if not panels:
         return None
 
@@ -1188,9 +1166,6 @@ def save_multi_epoch_metrics_collage(
         body = np.concatenate([body, np.full(body.shape[:2] + (1,), 255, dtype=np.uint8)], axis=-1)
 
     width = int(body.shape[1])
-    best_ep, best_stats, best_rule = _resolve_best_epoch_for_collage(
-        run_dir, epoch_dirs, best_epoch=best_epoch
-    )
     footer_text = (
         _format_best_epoch_footer(best_ep, best_stats, rule=best_rule)
         if best_ep is not None

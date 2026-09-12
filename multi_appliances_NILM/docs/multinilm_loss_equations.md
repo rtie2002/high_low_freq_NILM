@@ -807,5 +807,5 @@ The loss is scientifically expressive but contains overlapping constraints:
    coupled than the high-level formula $L_P+L_S$ suggests.
 
 The previous `state_fp_weight: 0.0` ablation reduced test performance, so the
-explicit false-positive term remains active. The current experiment instead
-simplifies `head_local_layers` from 2 to 1 while keeping this loss unchanged.
+explicit false-positive term remains active. A one-block appliance head also
+reduced test performance, so the model retains two local convolution blocks.
