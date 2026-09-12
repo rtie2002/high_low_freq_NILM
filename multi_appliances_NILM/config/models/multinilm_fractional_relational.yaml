@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: Clean Version (no_state_transition)
+experiment_id: Clean Version (head_local_1)
 model_name: multinilm_fractional
 
 data:
@@ -34,8 +34,7 @@ evaluation:
         microwave: 16
 
 windowing:
-  # Restore the 1024-sample baseline so this experiment changes only the
-  # state-transition loss. At 8 s/sample, each window spans about 136.5 min.
+  # At 8 s/sample, each 1024-sample window spans about 136.5 min.
   input_window_length: 1024
   output_window_length: 1024
   output_alignment: end
@@ -78,7 +77,8 @@ architecture:
   max_dilation: 16
   dropout: 0.25
 
-  head_local_layers: 2
+  # Simplification ablation: one local decoder block per appliance instead of two.
+  head_local_layers: 1
   head_kernel_size: 3
   head_use_residual: true
   task_attention:
@@ -104,9 +104,6 @@ loss:
   pos_weight_cap: 12
 
   state_fp_weight: 1.0  # Keep explicit false-ON suppression; removing it reduced test performance.
-  # Single-variable ablation: test whether transition supervision suppresses
-  # short/irregular events such as microwave activations.
-  state_transition_weight: 0.0
 
   power_on_weight: 1.0
   power_off_weight: 0.5

@@ -193,7 +193,6 @@ class MultiNILMLossOutput:
     loss_power: torch.Tensor           # Σ_i MSE_i  (raw)
     loss_state: torch.Tensor           # Σ_i BCE_i  (raw)
     loss_state_term: torch.Tensor      # balanced state contribution into L_NILM
-    loss_state_transition: torch.Tensor
     loss_energy_relative: torch.Tensor
     loss_domain: torch.Tensor          # raw L_domain (0 if DA off)
     loss_domain_term: torch.Tensor     # domain contribution before mix weights
@@ -224,7 +223,6 @@ class MultiNILMLoss(nn.Module):
         power_delta_on_only: bool = True,
         power_energy_weight: float = 0.0,
         state_fp_weight: float = 0.0,
-        state_transition_weight: float = 0.0,
         power_energy_relative_weight: float = 0.0,
         energy_floor_watts: float = 10.0,
         target_mean: torch.Tensor | list[float] | None = None,
@@ -248,7 +246,6 @@ class MultiNILMLoss(nn.Module):
         self.power_delta_on_only = bool(power_delta_on_only)
         self.power_energy_weight = float(power_energy_weight)
         self.state_fp_weight = float(state_fp_weight)
-        self.state_transition_weight = float(state_transition_weight)
         self.power_energy_relative_weight = float(power_energy_relative_weight)
         self.energy_floor_watts = float(energy_floor_watts)
         # MAE logging scale (watts / std); not used in the training objective.
@@ -332,39 +329,6 @@ class MultiNILMLoss(nn.Module):
                 loss_i = loss_i + self.state_fp_weight * fp_i
             losses.append(loss_i)
         return torch.stack(losses)
-
-    def _state_transition_loss(
-        self,
-        state_logits: torch.Tensor,
-        state_true: torch.Tensor,
-    ) -> torch.Tensor:
-        """Balanced start/stop boundary loss for event width and continuity."""
-        if state_logits.shape[1] <= 1:
-            return state_logits.new_zeros(state_logits.shape[-1])
-
-        prob = torch.sigmoid(state_logits)
-        previous = prob[:, :-1, :]
-        current = prob[:, 1:, :]
-        # Probability that two adjacent Bernoulli states are different.
-        boundary_prob = (
-            previous * (1.0 - current)
-            + (1.0 - previous) * current
-        ).clamp(1e-6, 1.0 - 1e-6)
-        boundary_true = torch.abs(
-            state_true[:, 1:, :] - state_true[:, :-1, :]
-        ).float()
-
-        positive = -torch.log(boundary_prob) * boundary_true
-        negative = -torch.log1p(-boundary_prob) * (1.0 - boundary_true)
-        positive_loss = positive.sum(dim=(0, 1)) / boundary_true.sum(
-            dim=(0, 1)
-        ).clamp_min(1.0)
-        negative_mask = 1.0 - boundary_true
-        negative_loss = negative.sum(dim=(0, 1)) / negative_mask.sum(
-            dim=(0, 1)
-        ).clamp_min(1.0)
-        has_boundary = (boundary_true.sum(dim=(0, 1)) > 0).float()
-        return 0.5 * positive_loss * has_boundary + 0.5 * negative_loss
 
     def _to_watts(self, power: torch.Tensor) -> torch.Tensor:
         scale = self.power_scale.to(device=power.device, dtype=power.dtype)
@@ -463,14 +427,6 @@ class MultiNILMLoss(nn.Module):
         )
 
         loss_state_per_app = self._per_appliance_state_loss(state_logits, state_true)
-        loss_state_transition_per_app = self._state_transition_loss(
-            state_logits,
-            state_true,
-        )
-        loss_state_per_app = (
-            loss_state_per_app
-            + self.state_transition_weight * loss_state_transition_per_app
-        )
         loss_power = loss_power_per_app.sum()
         loss_state = loss_state_per_app.sum()
         loss_state_term = self._balanced_state_term(loss_power, loss_state)
@@ -520,7 +476,6 @@ class MultiNILMLoss(nn.Module):
             loss_power=loss_power,
             loss_state=loss_state,
             loss_state_term=loss_state_term.detach(),
-            loss_state_transition=loss_state_transition_per_app.sum().detach(),
             loss_energy_relative=loss_energy_relative_per_app.sum().detach(),
             loss_domain=loss_domain.detach(),
             loss_domain_term=domain_term.detach(),

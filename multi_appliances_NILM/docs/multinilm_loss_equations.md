@@ -17,7 +17,6 @@ loss:
   pos_weight: auto
   pos_weight_cap: 12
   state_fp_weight: 1.0
-  state_transition_weight: 0.20
   power_on_weight: 1.0
   power_off_weight: 0.5
   power_delta_weight: 0.15
@@ -97,8 +96,7 @@ $$
 $$
 \mathcal{S}_i
 =L_{\mathrm{BCE},i}
-+L_{\mathrm{FP},i}
-+0.20L_{\mathrm{trans},i}.
++L_{\mathrm{FP},i}.
 $$
 
 The complete active loss can then be expanded in one chain:
@@ -139,7 +137,6 @@ L_{\mathrm{base},i}
 \left[
 L_{\mathrm{BCE},i}
 +L_{\mathrm{FP},i}
-+0.20L_{\mathrm{trans},i}
 \right]
 \operatorname{stopgrad}
 \left(
@@ -158,7 +155,6 @@ L_{\mathrm{base},i}
 \left[
 L_{\mathrm{BCE},i}
 +L_{\mathrm{FP},i}
-+0.20L_{\mathrm{trans},i}
 \right],
 10^{-8}
 \right)
@@ -195,10 +191,6 @@ L_{\mathrm{BCE},i}
 L_{\mathrm{FP},i}
 &=\frac{\sum_{b,t}(1-z_{bti})p_{bti}^2}
 {\max(\sum_{b,t}(1-z_{bti}),1)},\\
-L_{\mathrm{trans},i}
-&=0.5\,\mathbb{1}[N_{\mathrm{boundary},i}>0]
-\operatorname{mean}_{r^{\Delta}=1}[-\log q]
-+0.5\operatorname{mean}_{r^{\Delta}=0}[-\log(1-q)],\\
 L_A
 &=\frac{1}{BT}\sum_{b,t}
 \left[
@@ -220,11 +212,6 @@ p_{bti}&=\sigma(s_{bti}),\\
 \hat P_{bti}&=\max(\sigma_i\hat y_{bti}+\mu_i,0),\\
 P_{bti}&=\max(\sigma_i y_{bti}+\mu_i,0),\\
 m^{\Delta}_{bti}&=\max(z_{bti},z_{b,t-1,i}),\\
-r^{\Delta}_{bti}&=|z_{bti}-z_{b,t-1,i}|,\\
-q_{bti}&=\operatorname{clip}\left[
-p_{b,t-1,i}(1-p_{bti})+(1-p_{b,t-1,i})p_{bti},
-10^{-6},1-10^{-6}
-\right],\\
 w_i^+&=\min\left(
 \frac{1-\operatorname{clip}(r_i,10^{-4},1-10^{-4})}
 {\operatorname{clip}(r_i,10^{-4},1-10^{-4})},
@@ -571,63 +558,7 @@ $$
 This overlaps with the negative part of BCE. BCE penalizes
 $-\log(1-p)$ at true OFF samples, while this term separately penalizes $p^2$.
 
-### 5.4 Balanced state-transition loss
-
-For adjacent predictions, define the probability that two independent
-Bernoulli states differ:
-
-$$
-q^{\mathrm{raw}}_{bti}
-=p_{b,t-1,i}(1-p_{bti})
-+(1-p_{b,t-1,i})p_{bti}.
-$$
-
-Before either logarithm is evaluated, the code uses
-
-$$
-q_{bti}=\operatorname{clip}
-\left(q^{\mathrm{raw}}_{bti},10^{-6},1-10^{-6}\right).
-$$
-
-The true transition indicator is
-
-$$
-r^{\Delta}_{bti}=|z_{bti}-z_{b,t-1,i}|.
-$$
-
-The positive-boundary and non-boundary components are
-
-$$
-L_{\mathrm{boundary},i}
-=\frac{
-\sum r^{\Delta}_{bti}[-\log q_{bti}]
-}{
-\max(\sum r^{\Delta}_{bti},1)
-},
-$$
-
-$$
-L_{\mathrm{noBoundary},i}
-=\frac{
-\sum(1-r^{\Delta}_{bti})[-\log(1-q_{bti})]
-}{
-\max(\sum(1-r^{\Delta}_{bti}),1)
-}.
-$$
-
-The implementation combines them as
-
-$$
-L_{\mathrm{trans},i}
-=0.5\,\mathbb{1}[N_{\mathrm{boundary},i}>0]
-L_{\mathrm{boundary},i}
-+0.5L_{\mathrm{noBoundary},i}.
-$$
-
-If a batch has no true boundary for an appliance, the unavailable positive
-component is set to zero, while the non-boundary component keeps weight 0.5.
-
-### 5.5 Complete active state loss
+### 5.4 Complete active state loss
 
 For one appliance,
 
@@ -635,8 +566,7 @@ $$
 \boxed{
 L_{S,i}
 =L_{\mathrm{BCE},i}
-+1.0L_{\mathrm{FP},i}
-+0.20L_{\mathrm{trans},i}.
++1.0L_{\mathrm{FP},i}.
 }
 $$
 
@@ -728,7 +658,6 @@ L_{\mathrm{base},i}
 \left(
 L_{\mathrm{BCE},i}
 +L_{\mathrm{FP},i}
-+0.20L_{\mathrm{trans},i}
 \right)
 \right]\\
 &\quad\times
@@ -749,7 +678,6 @@ L_{\mathrm{base},i}
 \left[
 L_{\mathrm{BCE},i}
 +L_{\mathrm{FP},i}
-+0.20L_{\mathrm{trans},i}
 \right],
 10^{-8}
 \right)
@@ -833,7 +761,7 @@ It is for logging only and is not added to $L$.
 
 `loss_power_per_appliance` contains the complete $L_{P,i}$, including delta
 and relative-energy terms; it is not pure MSE. `loss_state_per_appliance`
-contains BCE, false-positive, and transition terms. These values are detached
+contains BCE and false-positive terms. These values are detached
 for logging after the differentiable total loss has already been assembled.
 
 Validation threshold calibration, minimum-ON cleanup, gap merging, final hard
@@ -857,7 +785,6 @@ The state-head parameters receive gradients from
 
 * weighted BCE;
 * explicit false-positive loss;
-* transition loss;
 * every power term through the soft gate; and
 * aggregate consistency through the soft gate.
 
@@ -872,16 +799,13 @@ The loss is scientifically expressive but contains overlapping constraints:
    both errors again with different normalization.
 2. BCE already penalizes false positives; $L_{\mathrm{FP}}$ adds a second OFF
    probability penalty.
-3. Transition loss encourages temporal continuity during training, while
-   validation/test postprocessing imposes additional duration and gap rules.
-4. Pointwise, delta, relative-energy, and aggregate terms can prefer different
+3. Pointwise, delta, relative-energy, and aggregate terms can prefer different
    waveform compromises.
-5. Global task balancing couples the state scale of all appliances instead of
+4. Global task balancing couples the state scale of all appliances instead of
    balancing each appliance independently.
-6. Soft gating makes the regression and classification objectives more tightly
+5. Soft gating makes the regression and classification objectives more tightly
    coupled than the high-level formula $L_P+L_S$ suggests.
 
-For the current missed-microwave problem, the cleanest first loss ablation is
-to change only `state_fp_weight: 1.0` to `0.0`. This tests whether the explicit
-precision-oriented penalty is suppressing microwave recall. No other loss or
-architecture setting should change in the same run.
+The previous `state_fp_weight: 0.0` ablation reduced test performance, so the
+explicit false-positive term remains active. The current experiment instead
+simplifies `head_local_layers` from 2 to 1 while keeping this loss unchanged.

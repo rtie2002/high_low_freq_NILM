@@ -69,7 +69,7 @@ flowchart LR
     SG --> OUT[Five appliance waveforms]
     OUT --> L1[Power / delta / relative-energy loss]
     OUT --> L2[Aggregate over-allocation loss]
-    SH --> L3[BCE / false-ON / transition loss]
+    SH --> L3[BCE / false-ON loss]
 ```
 
 ## 1. TCN Temporal Context
@@ -133,7 +133,7 @@ This module is repeated independently for kettle, refrigerator, dishwasher, wash
 | Shared feature channels | 128 |
 | Reduction ratio | 4 |
 | Attention bottleneck channels | 32 |
-| Local decoder layers | 2 |
+| Local decoder layers | 1 |
 | Local decoder kernel | 3 |
 | Output shape per appliance | $B\times128\times T$ |
 
@@ -206,9 +206,9 @@ Attention is computed independently at each timestep. Its attention matrix is on
 
 `G_i` is a learned message gate. When a high-power event occurs, the model can compare the evidence from the kettle, dishwasher, washing machine, and microwave heads instead of making five completely independent decisions.
 
-This design is a lightweight 1D adaptation of the appliance/time correlation attention in [MATNilm](https://arxiv.org/abs/2307.14778) and attention-guided message passing in [PAD-Net](https://openaccess.thecvf.com/content_cvpr_2018/papers/Xu_PAD-Net_Multi-Tasks_Guided_CVPR_2018_paper.pdf). Temporal relationships are handled by the TCN, while attention is computed only among the five appliances. This avoids expensive global $O(T^2)$ attention over 2,048 timesteps.
+This design is a lightweight 1D adaptation of the appliance/time correlation attention in [MATNilm](https://arxiv.org/abs/2307.14778) and attention-guided message passing in [PAD-Net](https://openaccess.thecvf.com/content_cvpr_2018/papers/Xu_PAD-Net_Multi-Tasks_Guided_CVPR_2018_paper.pdf). Temporal relationships are handled by the TCN, while attention is computed only among the five appliances. This avoids expensive global $O(T^2)$ attention over 1,024 timesteps.
 
-## 4. State Gate and Event-Boundary Loss
+## 4. State Gate
 
 The final power prediction retains the SGN structure:
 
@@ -217,20 +217,6 @@ $$
 $$
 
 This follows [Subtask Gated Networks for NILM](https://ojs.aaai.org/index.php/AAAI/article/view/3908).
-
-In addition, the probability that two adjacent Bernoulli states differ is defined as
-
-$$
-b_i(t)=p_i(t-1)(1-p_i(t))+(1-p_i(t-1))p_i(t).
-$$
-
-The true event boundary is
-
-$$
-b_i^*(t)=|z_i(t)-z_i(t-1)|.
-$$
-
-The transition loss averages BCE separately over true-boundary and non-boundary positions. This prevents the large number of stable OFF samples from overwhelming the small number of ON/OFF edges. It directly trains when an appliance should switch on and off, so it targets waveform width, fragmentation, and boundary delay rather than only average power.
 
 ## 5. Energy and Aggregate Physical Constraints
 
@@ -257,7 +243,7 @@ $$
 L_E=\sum_{i=1}^{A}L_{E,i}.
 $$
 
-Relative-energy loss checks only the total amount within a window, not when the event occurs. Two waveforms with completely different temporal positions but identical total energy can still obtain $L_E=0$. It therefore cannot replace pointwise MSE, state loss, or transition loss.
+Relative-energy loss checks only the total amount within a window, not when the event occurs. Two waveforms with completely different temporal positions but identical total energy can still obtain $L_E=0$. It therefore cannot replace pointwise MSE or state loss.
 
 ### 5.2 Aggregate consistency loss
 
@@ -493,7 +479,7 @@ Within each detail branch and staged layer, the operation order is `Conv1d -> IB
 
 Therefore, IBN is applied to learned early feature maps, **not directly to the raw aggregate watts or the target appliance power**. The model's input feature construction and target normalization are unchanged.
 
-After the front end, all four residual TCN blocks use BatchNorm because `temporal_norm_type: batch`. The appliance-specific local decoders also use BatchNorm because `head_norm_type: batch`. The resulting normalization flow is:
+After the front end, all five residual TCN blocks use BatchNorm because `temporal_norm_type: batch`. The appliance-specific local decoders also use BatchNorm because `head_norm_type: batch`. The resulting normalization flow is:
 
 ```text
 aggregate/features
@@ -668,21 +654,10 @@ L_{FP,i}=
 {\max(\sum_{b,t}(1-z_{b,t,i}),1)}.
 $$
 
-The transition probability and true boundary are respectively
+The complete state loss for each appliance is
 
 $$
-q_{b,t,i}=p_{b,t-1,i}(1-p_{b,t,i})
-+(1-p_{b,t-1,i})p_{b,t,i},
-$$
-
-$$
-q^*_{b,t,i}=|z_{b,t,i}-z_{b,t-1,i}|.
-$$
-
-The implementation averages negative log-likelihood separately over true-boundary and non-boundary positions and gives each group half of the transition loss. This prevents the large number of stable OFF samples from overwhelming the small number of start/stop edges. The complete state loss for each appliance is
-
-$$
-L_{state,i}=L_{BCE,i}+1.0L_{FP,i}+0.20L_{transition,i},
+L_{state,i}=L_{BCE,i}+1.0L_{FP,i},
 $$
 
 $$
@@ -738,7 +713,6 @@ loss:
   pos_weight_cap: 12
 
   state_fp_weight: 1.0
-  state_transition_weight: 0.20
 
   power_on_weight: 1.0
   power_off_weight: 0.5
@@ -758,10 +732,9 @@ loss:
 | Log key | Meaning | Is the weight already applied? |
 |---|---|---|
 | `loss_power` | Sum of the complete power losses for five appliances, including ON/OFF, delta, and relative-energy terms | Yes |
-| `loss_state` | Sum of the complete raw state losses for five appliances, including FP and transition terms | Subterm weights are applied, but dynamic balancing is not |
+| `loss_state` | Sum of the complete raw state losses for five appliances, including the FP term | Subterm weights are applied, but dynamic balancing is not |
 | `loss_state_term` | Balanced state contribution actually added to $L_{NILM}$ | Yes |
 | `loss_energy_relative` | Sum of the raw relative-energy losses for five appliances | No; it has not yet been multiplied by 0.25 |
-| `loss_state_transition` | Sum of the raw transition losses for five appliances | No; it has not yet been multiplied by 0.20 |
 | `loss_aggregate_consistency` | Raw one-sided aggregate loss | No; it has not yet been multiplied by the aggregate weight |
 | `loss_aggregate_term` | Aggregate contribution actually added to the total loss | Yes |
 
@@ -773,7 +746,7 @@ L_{NILM}=\texttt{loss\_power}
 +\texttt{loss\_aggregate\_term},
 $$
 
-Do not add `loss_state`, `loss_energy_relative`, or `loss_state_transition` again, because doing so would double-count terms already included in the weighted contributions.
+Do not add `loss_state` or `loss_energy_relative` again, because doing so would double-count terms already included in the weighted contributions.
 
 ## How to Determine Whether the New Method Is Actually Better
 
@@ -786,4 +759,4 @@ Do not examine only overall MAE. At minimum, compare all of the following:
 5. The proportion where `sum(pred) > aggregate` and the mean excess power.
 6. Focused and 10x-context waveforms for the same true events.
 
-This is an evidence-based experimental design, but one training run is not guaranteed to optimize every appliance simultaneously. The most important ablation order is relational attention, transition loss, and IBN. Disable them one at a time to identify the source of each improvement.
+This is an evidence-based experimental design, but one training run is not guaranteed to optimize every appliance simultaneously. Disable relational attention, IBN, and head depth one at a time to identify the source of each improvement.
