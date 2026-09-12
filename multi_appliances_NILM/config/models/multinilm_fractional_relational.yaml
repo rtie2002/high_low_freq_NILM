@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: Clean Version (window512)
+experiment_id: Clean Version (no_state_transition)
 model_name: multinilm_fractional
 
 data:
@@ -34,13 +34,13 @@ evaluation:
         microwave: 16
 
 windowing:
-  # 512 x 8 s gives 68.3 min of input, longer than the model's ~313-sample
-  # effective receptive field, while retaining more valid boundary-aware data.
-  input_window_length: 512
-  output_window_length: 512
+  # Restore the 1024-sample baseline so this experiment changes only the
+  # state-transition loss. At 8 s/sample, each window spans about 136.5 min.
+  input_window_length: 1024
+  output_window_length: 1024
   output_alignment: end
-  input_stride: 256
-  eval_stride: 256
+  input_stride: 512
+  eval_stride: 512
   eval_reconstruction: auto
   training_targets: auto
 
@@ -104,7 +104,9 @@ loss:
   pos_weight_cap: 12
 
   state_fp_weight: 1.0  # Keep explicit false-ON suppression; removing it reduced test performance.
-  state_transition_weight: 0.20
+  # Single-variable ablation: test whether transition supervision suppresses
+  # short/irregular events such as microwave activations.
+  state_transition_weight: 0.0
 
   power_on_weight: 1.0
   power_off_weight: 0.5
@@ -158,7 +160,7 @@ training:
   plots:
     plot_mode: interval
     plot_interval: 50
-    plot_on_periods: 10
+    plot_on_periods: 5
     plot_max_batches: 16
     waveform_figsize: 5.5
     waveform_dpi: 300
@@ -166,7 +168,7 @@ training:
     on_period_margin_min: 40
     on_period_margin_frac: 0.08
     waveform_context_scale: 10
-    comparison_dpi: 600
+    comparison_dpi: 300
     feature_maps:
       enabled: false
       max_examples: 2
