@@ -1,18 +1,24 @@
-"""MultiNILM: a clear multi-appliance NILM baseline.
+"""MultiNILM architecture (one file).
 
-This model is intentionally written in a beginner-readable style.
+Symbols
+    B = batch size
+    T = input window length (samples)
+    T_out = label / output length
+    C = hidden channels (yaml hidden_channels, usually 128)
+    A = number of appliances
+    x = aggregate power, already normalized by the dataloader
 
-Task:
-    Input  : aggregate power window
-    Output : appliance power + appliance ON/OFF state for every appliance
+Forward (read MultiNILM.forward)
+    x                  (B, T) or (B, 1, T)
+    optional GL front  (B, C_in, T)
+    stem + TCN         (B, C, T)
+    time align         (B, C, T_out)
+    appliance heads    A tensors of (B, C, T_out)
+    relation attention A tensors of (B, C, T_out)
+    power, state       (B, T_out, A), (B, T_out, A)
 
-Expected shapes:
-    x            : (batch, input_length) or (batch, 1, input_length)
-    power_pred   : (batch, output_length, num_appliances)
-    state_logits : (batch, output_length, num_appliances)
-
-Important:
-    state_logits are raw logits. Use BCEWithLogitsLoss for ON/OFF loss.
+state_logits are raw logits for BCEWithLogitsLoss.
+Loss, metrics, and the train loop are not in this file.
 """
 
 from __future__ import annotations
@@ -25,6 +31,11 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from model.preprocess_feature.fractional import (
+    FractionalFrontEnd,
+    parse_fractional_architecture,
+)
+
 
 # Named hooks for domain-adaptation feature collection (MMD / CORAL).
 # Analogous to Lin et al. selecting fc6–fc8 by layer index.
@@ -36,7 +47,18 @@ DOMAIN_FEATURE_LAYER_ALIASES = {
 
 
 class IBN1d(nn.Module):
-    """Split channels between InstanceNorm and BatchNorm (IBN-Net style)."""
+    """Instance-Batch Normalization on a 1D feature map ``(B, C, T)``.
+
+    IBN-Net (Pan et al., ECCV 2018) splits channels rather than averaging two
+    normalizers. Half the channels use per-window InstanceNorm so house-style
+    offset/scale is suppressed; the other half use BatchNorm so absolute
+    amplitude (100 W fridge vs 2 kW kettle) is not fully washed out.
+
+        X_IN = X[:, :C/2, :],   X_BN = X[:, C/2:, :]
+        Y    = concat(IN(X_IN), BN(X_BN))
+
+    Shape is unchanged: ``(B, C, T) → (B, C, T)``. Used in the early stem only.
+    """
 
     def __init__(self, channels: int) -> None:
         super().__init__()
@@ -206,14 +228,8 @@ class ResidualTemporalBlock(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = x
-
-        y = self.conv(x)
-        y = self.norm(y)
-        y = self.activation(y)
-        y = self.dropout(y)
-
-        return residual + y
+        # (B, C, T) -> (B, C, T)
+        return x + self.dropout(self.activation(self.norm(self.conv(x))))
 
 
 class MultiScaleWaveformStem(nn.Module):
@@ -395,32 +411,31 @@ class ApplianceHead(nn.Module):
         self.feature_refine = self.local_decoder
 
     def encode_features(self, shared_features: torch.Tensor) -> torch.Tensor:
-        """Head body only: shared TCN map → per-appliance features ``F`` (B, C, T)."""
-        attended = shared_features
+        """Shared map Z → appliance feature F.  Both (B, C, T)."""
+        z = shared_features
         if self.task_attention is not None:
-            attended = attended * self.task_attention(attended)
-        features = self.local_decoder(attended)
+            # M = σ(A(Z));  Z̃ = Z ⊙ M
+            z = z * self.task_attention(z)
+        f = self.local_decoder(z)
         if self.head_use_residual:
-            features = features + attended
-        return self.dropout(features)
+            f = f + z
+        return self.dropout(f)
 
     def decode_from_features(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Final 1×1 power/state + gate from features ``F`` or ``F^dist``."""
-        power_raw = self.power_head(features)
-        state_logits = self.state_head(features)
-
-        # State logits stay unbounded for BCEWithLogitsLoss.
-        state_prob = torch.sigmoid(state_logits)
-        gate = state_gate(
-            state_prob,
+        """F → raw power r, state logit s, gated ŷ.  Each (B, 1, T)."""
+        r = self.power_head(features)
+        s = self.state_head(features)
+        p = torch.sigmoid(s)
+        g = state_gate(
+            p,
             mode=self.gate_mode,
             threshold=self.gate_threshold,
             training=self.training,
         )
-        # Blend ON power with the normalized OFF level (0 W -> -mean/std), not 0.
-        # denorm(0) equals the dataset mean and causes constant watt spikes in plots.
-        power = gate * power_raw + (1.0 - gate) * self.off_norm
-        return power, state_logits
+        # ŷ = g · r + (1-g) · y_off
+        # y_off is 0 W in normalized space (-mean/std), not 0.
+        y_hat = g * r + (1.0 - g) * self.off_norm
+        return y_hat, s
 
     def forward(self, shared_features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Independent head path (no cross-appliance distill)."""
@@ -470,12 +485,25 @@ class CrossApplianceDistill(nn.Module):
 
 
 class CrossApplianceRelationAttention(nn.Module):
-    """Attention-gated message passing across appliances at every timestep.
+    """Per-timestep attention over K appliance tokens, not over time.
 
-    TCN blocks already model the time axis. This module treats the appliance
-    heads as a short token sequence (K is normally 5), so it can learn dynamic
-    co-occurrence and confusion relations without quadratic attention over the
-    2048-sample time window.
+    TCN already covers the time axis. Here each appliance head is one token, so
+    a high-power pulse can compare kettle / microwave / dishwasher evidence
+    without ``O(T^2)`` attention over the window.
+
+    For features ``F_i(t) ∈ R^C`` at one timestep:
+
+        α_{ij}(t) = softmax_j( q_i(t)^T k_j(t) / √d )
+        C_i(t)    = Σ_j α_{ij}(t) v_j(t)
+        F'_i      = F_i + ρ · G_i ⊙ W_o C_i
+
+    ``G_i = σ([F_i, message_i])`` is a learned gate: unused messages can be
+    shut off. ``ρ`` is ``residual_scale`` (yaml default 0.25).
+
+    Shapes:
+        in  : K tensors of ``(B, C, T)``
+        attn: ``(B, T, K, K)``  — one K×K matrix per timestep
+        out : K tensors of ``(B, C, T)``
     """
 
     def __init__(
@@ -493,6 +521,7 @@ class CrossApplianceRelationAttention(nn.Module):
         self.residual_scale = float(residual_scale)
         relation_channels = max(4, min(int(attention_channels), self.channels))
 
+        self.relation_channels = relation_channels
         self.query = nn.Conv1d(self.channels, relation_channels, kernel_size=1)
         self.key = nn.Conv1d(self.channels, relation_channels, kernel_size=1)
         self.value = nn.Conv1d(self.channels, relation_channels, kernel_size=1)
@@ -504,95 +533,44 @@ class CrossApplianceRelationAttention(nn.Module):
         self.dropout = nn.Dropout(float(dropout))
         self.scale = math.sqrt(float(relation_channels))
 
-    def _project(self, layer: nn.Module, stacked: torch.Tensor) -> torch.Tensor:
-        batch, appliances, channels, time_len = stacked.shape
-        flat = stacked.reshape(batch * appliances, channels, time_len)
-        projected = layer(flat)
-        relation_channels = projected.shape[1]
-        return projected.reshape(
-            batch,
-            appliances,
-            relation_channels,
-            time_len,
-        ).permute(0, 3, 1, 2)
-
     def forward(self, features: list[torch.Tensor]) -> list[torch.Tensor]:
         if len(features) != self.num_appliances:
             raise ValueError(
-                "CrossApplianceRelationAttention expected "
-                f"{self.num_appliances} maps, got {len(features)}"
+                f"expected {self.num_appliances} appliance maps, got {len(features)}"
             )
+        # features[i]: (B, C, T)
+        stacked = torch.stack(features, dim=1)
+        batch, n_app, channels, time_len = stacked.shape  # (B, A, C, T)
+        rel_ch = self.relation_channels
+        flat = stacked.reshape(batch * n_app, channels, time_len)  # (B*A, C, T)
 
-        stacked = torch.stack(features, dim=1)  # (B, K, C, T)
-        query = self._project(self.query, stacked)  # (B, T, K, D)
-        key = self._project(self.key, stacked)
-        value = self._project(self.value, stacked)
+        # Q,K,V: (B*A, C, T) -> (B*A, D, T) -> (B, T, A, D)
+        query = self.query(flat).reshape(batch, n_app, rel_ch, time_len).permute(0, 3, 1, 2)
+        key = self.key(flat).reshape(batch, n_app, rel_ch, time_len).permute(0, 3, 1, 2)
+        value = self.value(flat).reshape(batch, n_app, rel_ch, time_len).permute(0, 3, 1, 2)
+
+        # α = softmax(Q K^T / √D)          (B, T, A, A)
         scores = torch.einsum("btkd,btjd->btkj", query, key) / self.scale
         weights = torch.softmax(scores, dim=-1)
+        # context = α V                    (B, T, A, D)
         context = torch.einsum("btkj,btjd->btkd", weights, value)
 
-        batch, time_len, appliances, relation_channels = context.shape
-        context = context.permute(0, 2, 3, 1).reshape(
-            batch * appliances,
-            relation_channels,
-            time_len,
-        )
-        message = self.out(context).reshape(
-            batch,
-            appliances,
-            self.channels,
-            time_len,
-        )
+        # message = W_o context            (B, A, C, T)
+        message = self.out(
+            context.permute(0, 2, 3, 1).reshape(batch * n_app, rel_ch, time_len)
+        ).reshape(batch, n_app, self.channels, time_len)
 
+        # F'_i = F_i + ρ · G_i ⊙ message_i
         outputs: list[torch.Tensor] = []
-        for app_i, feature in enumerate(features):
-            message_i = message[:, app_i]
-            gate_i = self.message_gate(torch.cat([feature, message_i], dim=1))
-            outputs.append(
-                feature
-                + self.residual_scale * gate_i * self.dropout(message_i)
-            )
+        for app_i, feat in enumerate(features):
+            msg_i = message[:, app_i]  # (B, C, T)
+            gate_i = self.message_gate(torch.cat([feat, msg_i], dim=1))
+            outputs.append(feat + self.residual_scale * gate_i * self.dropout(msg_i))
         return outputs
 
 
 class MultiNILM(nn.Module):
-    """Simple CNN/TCN model for multi-appliance NILM.
-
-    Layer-by-layer architecture:
-
-        Input aggregate window
-            Shape: (B, T) or (B, 1, T)
-
-        1. _format_input
-            Convert input to Conv1d format.
-            Output: (B, 1, T)
-
-        2. aggregate_feature_extractor
-            Optional multi-scale stem (k=3/5/9) then staged Conv1d widening
-            (channel_schedule), or one Conv1d jump.
-            Output: (B, hidden_channels, T)
-
-        3. temporal_encoder
-            ResidualTemporalBlock x num_blocks
-            Default dilation sequence: 1, 2, 4, 8, 16
-            Output: (B, hidden_channels, T)
-
-        4. temporal alignment
-            Center-crop (or pad) features to output_length so each output step
-            matches the same CSV timestep as the dataloader center targets.
-            Output: (B, hidden_channels, output_length)
-
-        5. appliance_heads (one per appliance)
-            Optional local temporal decoder (k=3 x N) + residual → F_k.
-            Optional CrossApplianceDistill (PAD-lite): F → F^dist across appliances.
-            Then 1x1 power/state heads with state-gated power.
-            Outputs: (B, output_length, num_appliances)
-
-    Notes:
-        - Shared TCN learns aggregate patterns once.
-        - Per-appliance heads specialize power/state decoding per device.
-        - Use BCEWithLogitsLoss for state_logits; apply sigmoid only for inference.
-    """
+    """CNN/TCN multi-appliance NILM. See file header for the full shape map."""
 
     def __init__(
         self,
@@ -773,7 +751,7 @@ class MultiNILM(nn.Module):
             self.cross_appliance_distill = None
 
     def _format_input(self, x: torch.Tensor) -> torch.Tensor:
-        """Convert input to Conv1d format: (batch, channels, time)."""
+        """(B, T), (B, C, T), or (B, T, C) → Conv1d layout (B, C, T)."""
 
         # Common dataloader format: (batch, time)
         if x.dim() == 2:
@@ -798,72 +776,16 @@ class MultiNILM(nn.Module):
         return x.float()
 
     def _align_output_time(self, features: torch.Tensor) -> torch.Tensor:
-        """Match encoder time length to ``output_length`` for the appliance heads.
-
-        Where this sits in the forward pass::
-
-            aggregate (B, 1, T_in)
-              → aggregate_feature_extractor   # still length T_in
-              → temporal_encoder             # still length T_in  (same-pad convs)
-              → _align_output_time           # → length T_out = self.output_length
-              → appliance_heads
-
-        ``features`` shape: ``(batch, channels, time_len)``.
-        Return shape: ``(batch, channels, output_length)``.
-
-        Why it exists
-        -------------
-        The dataloader can supervise a *shorter* label window than the input
-        (e.g. old setup T_in=864, T_out=256 with center targets). The encoder
-        still runs on the full input, so we must cut (or pad) the time axis so
-        each head output timestep lines up with the CSV / label timestep.
-
-        Important: this is a *slice or pad*, never interpolate. Interpolating
-        the full window into ``output_length`` would warp time and misalign
-        labels (and caused repeating pulse artifacts in earlier experiments).
-
-        Three cases
-        -----------
-        1) ``time_len == output_length`` (current yaml: 480 in / 480 out)
-           Identity. No crop, no pad. Shared features Z have the same length
-           as the labels → domain-adaptation hook can use this tensor as-is.
-
-        2) ``time_len > output_length`` (e.g. 864 → 256)
-           **Center crop**: drop equal context on both sides::
-
-               offset = (time_len - output_length) // 2
-               features[:, :, offset : offset + output_length]
-
-           Example 864 → 256: offset = 304, keep indices [304, 560).
-           That matches dataloader ``output_alignment: center`` targets.
-
-           Note: this implementation always center-crops. It does *not* read
-           yaml ``output_alignment: end``. If you use end-aligned labels with
-           T_in > T_out, either change this crop to a right-end slice or keep
-           center alignment in the experiment config.
-
-        3) ``time_len < output_length`` (rare)
-           Symmetric zero-pad on the left/right so length becomes
-           ``output_length`` (``F.pad`` on the last dim).
-
-        Domain adaptation
-        -----------------
-        The tensor returned here is the recommended shared representation Z
-        for CORAL/MMD (after temporal encoder, before appliance heads).
-        """
+        """(B, C, T) → (B, C, T_out) by center crop or pad. Never interpolate."""
         time_len = features.shape[-1]
         if time_len == self.output_length:
-            # Case 1: full_input / equal windows — nothing to do.
             return features
         if time_len > self.output_length:
-            # Case 2: center-crop longer encoder features to label length.
             offset = (time_len - self.output_length) // 2
             return features[:, :, offset : offset + self.output_length]
-        # Case 3: pad shorter features up to label length.
         pad_total = self.output_length - time_len
         pad_left = pad_total // 2
-        pad_right = pad_total - pad_left
-        return F.pad(features, (pad_left, pad_right))
+        return F.pad(features, (pad_left, pad_total - pad_left))
 
     def available_domain_feature_layers(self) -> list[str]:
         """Layer names you can put in ``domain_feature_layers`` (yaml / ctor).
@@ -895,88 +817,60 @@ class MultiNILM(nn.Module):
         return_domain_features: bool = False,
         domain_feature_layers: list[str] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
-        """Run MultiNILM; optionally also return selected encoder features for DA.
-
-        Default (training / eval today)::
-
-            power_pred, state_logits = model(x)
-
-        Domain-adaptation collection (like selecting fc6–fc8 in Lin et al.)::
-
-            power, state, feats = model(x, return_domain_features=True)
-            # feats = {"aligned": (B, C, T_out), ...}   # names from yaml
-
-        Or override layers for one call::
-
-            ..., feats = model(
-                x,
-                return_domain_features=True,
-                domain_feature_layers=["temporal_4", "aligned"],
-            )
-
-        Flow:
-            aggregate input
-            -> aggregate_feature_extractor          # hook: stem
-            -> temporal_encoder blocks              # hooks: temporal_i, temporal
-            -> _align_output_time                   # hook: aligned  ★ default DA Z
-            -> per-appliance head bodies → F_k
-            -> optional CrossApplianceDistill → F_k^dist
-            -> final 1×1 + gate
-            -> (B, output_length, num_appliances)
-        """
-        collect_layers: list[str] = []
-        if return_domain_features:
-            collect_layers = self._validate_domain_feature_layers(
-                domain_feature_layers
-                if domain_feature_layers is not None
-                else self.domain_feature_layers
-            )
-        need_block = any(name.startswith("temporal_") for name in collect_layers)
-        want = set(collect_layers)
         domain_feats: dict[str, torch.Tensor] = {}
+        want: set[str] = set()
+        if return_domain_features:
+            want = set(
+                self._validate_domain_feature_layers(
+                    domain_feature_layers
+                    if domain_feature_layers is not None
+                    else self.domain_feature_layers
+                )
+            )
+        need_block = any(name.startswith("temporal_") for name in want)
 
-        x = self._format_input(x)
+        # x: (B, T) or (B, C_in, T) or (B, T, C_in)  ->  (B, C_in, T)
+        h = self._format_input(x)
 
-        # Step 1-2: raw aggregate → hidden maps.
-        features = self.aggregate_feature_extractor(x)
+        # stem: (B, C_in, T) -> (B, C, T)
+        h = self.aggregate_feature_extractor(h)
         if "stem" in want:
-            domain_feats["stem"] = features
+            domain_feats["stem"] = h
 
-        # Step 3: dilated residual temporal stack.
+        # TCN: (B, C, T) -> (B, C, T)   dilations 1,2,4,...
         if need_block or "temporal" in want:
             for block_index, block in enumerate(self.temporal_encoder):
-                features = block(features)
+                h = block(h)
                 key = f"temporal_{block_index}"
                 if key in want:
-                    domain_feats[key] = features
+                    domain_feats[key] = h
             if "temporal" in want:
-                domain_feats["temporal"] = features
+                domain_feats["temporal"] = h
         else:
-            features = self.temporal_encoder(features)
+            h = self.temporal_encoder(h)
 
-        # Step 4: align time to labels / heads.
-        output_features = self._align_output_time(features)
+        # align: (B, C, T) -> (B, C, T_out)
+        z = self._align_output_time(h)
         if "aligned" in want:
-            domain_feats["aligned"] = output_features
+            domain_feats["aligned"] = z
 
-        # Step 5: head bodies → optional PAD-lite distill → final 1×1 + gate.
-        head_feats = [head.encode_features(output_features) for head in self.appliance_heads]
+        # heads: Z -> F_i                 each (B, C, T_out)
+        feats = [head.encode_features(z) for head in self.appliance_heads]
+        # optional mix: F_i -> F'_i
         if self.cross_appliance_distill is not None:
-            head_feats = self.cross_appliance_distill(head_feats)
+            feats = self.cross_appliance_distill(feats)
 
+        # decode: F'_i -> ŷ_i, s_i        each (B, 1, T_out)
         power_parts: list[torch.Tensor] = []
         state_parts: list[torch.Tensor] = []
-        for head, feat in zip(self.appliance_heads, head_feats):
+        for head, feat in zip(self.appliance_heads, feats):
             power_i, state_i = head.decode_from_features(feat)
             power_parts.append(power_i)
             state_parts.append(state_i)
 
-        power_pred = torch.cat(power_parts, dim=1)
-        state_logits = torch.cat(state_parts, dim=1)
-
-        # Step 6: (B, A, T) → (B, T, A).
-        power_pred = power_pred.permute(0, 2, 1)
-        state_logits = state_logits.permute(0, 2, 1)
+        # (B, A, T_out) -> (B, T_out, A)
+        power_pred = torch.cat(power_parts, dim=1).permute(0, 2, 1)
+        state_logits = torch.cat(state_parts, dim=1).permute(0, 2, 1)
 
         if return_domain_features:
             return power_pred, state_logits, domain_feats
@@ -1040,6 +934,57 @@ def _parse_cross_appliance(
     return enabled, mode, scale, mid_i, attention_channels
 
 
+def build_multinilm(
+    cfg: MultiNILMConfig,
+    *,
+    num_appliances: int,
+    output_length: int,
+    appliance_off_norm: list[float] | None = None,
+    input_channels: int | None = None,
+) -> MultiNILM:
+    """Build MultiNILM from a parsed config.
+
+    Adapters and front-end wrappers should call this instead of repeating the
+    constructor keyword list. ``input_channels`` overrides yaml when a
+    fractional front-end expands ``(B, 1, T)`` into ``(B, C, T)``.
+    """
+    return MultiNILM(
+        input_channels=int(
+            cfg.input_channels if input_channels is None else input_channels
+        ),
+        num_appliances=int(num_appliances),
+        output_length=int(output_length),
+        hidden_channels=cfg.hidden_channels,
+        channel_schedule=cfg.channel_schedule,
+        stem_kernel_size=cfg.stem_kernel_size,
+        stage_kernel_size=cfg.stage_kernel_size,
+        num_blocks=cfg.num_blocks,
+        kernel_size=cfg.kernel_size,
+        dropout=cfg.dropout,
+        max_dilation=cfg.max_dilation,
+        gate_mode=cfg.gate_mode,
+        gate_threshold=cfg.gate_threshold,
+        appliance_off_norm=appliance_off_norm,
+        domain_feature_layers=cfg.domain_feature_layers,
+        head_local_layers=cfg.head_local_layers,
+        head_kernel_size=cfg.head_kernel_size,
+        head_use_residual=cfg.head_use_residual,
+        use_multiscale_stem=cfg.use_multiscale_stem,
+        detail_kernels=cfg.detail_kernels,
+        detail_branch_channels=cfg.detail_branch_channels,
+        stem_norm_type=cfg.stem_norm_type,
+        temporal_norm_type=cfg.temporal_norm_type,
+        head_norm_type=cfg.head_norm_type,
+        task_attention_enabled=cfg.task_attention_enabled,
+        task_attention_reduction=cfg.task_attention_reduction,
+        cross_appliance_enabled=cfg.cross_appliance_enabled,
+        cross_appliance_mode=cfg.cross_appliance_mode,
+        cross_appliance_residual_scale=cfg.cross_appliance_residual_scale,
+        cross_appliance_mid_channels=cfg.cross_appliance_mid_channels,
+        cross_appliance_attention_channels=cfg.cross_appliance_attention_channels,
+    )
+
+
 def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
     """Read MultiNILM settings from the model YAML architecture section."""
 
@@ -1084,3 +1029,71 @@ def multinilm_config(architecture: dict[str, Any]) -> MultiNILMConfig:
             architecture.get("domain_feature_layers")
         ),
     )
+
+
+class MultiNILMFractional(nn.Module):
+    """Same architecture as MultiNILM, with a GL channel front-end.
+
+    Kept as a wrapper so old checkpoints still load as
+    ``frontend.*`` / ``backbone.*``.
+    """
+
+    def __init__(self, *, backbone: MultiNILM, frontend: FractionalFrontEnd) -> None:
+        super().__init__()
+        self.frontend = frontend
+        self.backbone = backbone
+        if int(backbone.input_channels) != int(frontend.out_channels):
+            raise ValueError(
+                "backbone input_channels must match FractionalFrontEnd: "
+                f"expected {frontend.out_channels}, got {backbone.input_channels}."
+            )
+        self.input_channels = 1
+        self.feature_channels = int(frontend.out_channels)
+        self.num_appliances = backbone.num_appliances
+        self.output_length = backbone.output_length
+        self.domain_feature_layers = backbone.domain_feature_layers
+
+    def forward(self, x: torch.Tensor, return_domain_features: bool = False):
+        # x: (B, T) or (B, 1, T) or (B, T, 1)
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+        elif x.dim() == 3 and x.shape[-1] == 1:
+            x = x.permute(0, 2, 1)
+        x = x.float()
+        # GL / delta / rolling: (B, 1, T) -> (B, C_in, T)
+        x = self.frontend(x)
+        return self.backbone(x, return_domain_features=return_domain_features)
+
+
+def build_multinilm_fractional(
+    architecture: dict[str, Any],
+    *,
+    num_appliances: int,
+    output_length: int,
+    appliance_off_norm: list[float] | None = None,
+) -> MultiNILMFractional:
+    """Build the fractional MultiNILM used by ``multinilm_fractional`` yaml."""
+    settings = parse_fractional_architecture(architecture)
+    frontend = FractionalFrontEnd(
+        alphas=settings.resolved_alphas(),
+        include_raw=settings.include_raw,
+        memory=settings.memory,
+        h=settings.h,
+        channel_normalize=settings.channel_normalize,
+        include_delta=settings.include_delta,
+        include_abs_delta=settings.include_abs_delta,
+        rolling_windows=settings.rolling_windows,
+        include_rolling_mean=settings.include_rolling_mean,
+        include_rolling_std=settings.include_rolling_std,
+    )
+    feature_c = int(frontend.out_channels)
+    arch = dict(architecture)
+    arch["input_channels"] = feature_c
+    backbone = build_multinilm(
+        multinilm_config(arch),
+        num_appliances=num_appliances,
+        output_length=output_length,
+        appliance_off_norm=appliance_off_norm,
+        input_channels=feature_c,
+    )
+    return MultiNILMFractional(backbone=backbone, frontend=frontend)

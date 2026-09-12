@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: 8s_ablation_no_power_off
+experiment_id: 8s latest
 model_name: multinilm_fractional
 
 data:
@@ -107,7 +107,7 @@ loss:
   state_transition_weight: 0.20
 
   power_on_weight: 1.0
-  power_off_weight: 0.0  # Ablation C: test whether OFF-MSE duplicates the all-sample MSE penalty.
+  power_off_weight: 0.5
   power_delta_weight: 0.15
   power_delta_on_only: true
   power_energy_weight: 0.0

@@ -76,10 +76,7 @@ from adapters.config import (  # noqa: E402
 )
 from adapters.mat_nilm import MATNILMAdapter  # noqa: E402
 from adapters.matuda import MATUDAAdapter  # noqa: E402
-from adapters.multinilm import MultiNILMAdapter  # noqa: E402
-from adapters.multinilm_fractional import MultiNILMFractionalAdapter  # noqa: E402
-from adapters.multinilm_kle import MultiNILMKLEAdapter  # noqa: E402
-from adapters.multinilm_no_distill import MultiNILMNoDistillAdapter  # noqa: E402
+from adapters.multinilm import MultiNILMAdapter, MultiNILMFractionalAdapter  # noqa: E402
 from adapters.transfer_multi_appliance import TransferMultiApplianceAdapter  # noqa: E402
 
 
@@ -88,8 +85,6 @@ MODELS = {
     "matuda": MATUDAAdapter,
     "multinilm": MultiNILMAdapter,
     "multinilm_fractional": MultiNILMFractionalAdapter,
-    "multinilm_kle": MultiNILMKLEAdapter,
-    "multinilm_no_distill": MultiNILMNoDistillAdapter,
     "transfer_multi_appliance": TransferMultiApplianceAdapter,
 }
 

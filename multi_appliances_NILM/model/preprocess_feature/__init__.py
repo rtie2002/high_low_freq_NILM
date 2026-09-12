@@ -1,24 +1,13 @@
-"""
-Hand-designed invariant features for transferable multi-appliance NILM.
+"""Hand-designed features for MultiNILM.
 
-Package layout
---------------
-``fractional`` — Grünwald–Letnikov (time-shift)
-  1. Core:     ``gl_binomial_weights``, ``default_schirmer_alphas``
-  2. NumPy:    ``fractional_derivative``, ``fractional_stack`` (+ batch)
-  3. Torch:    ``FractionalFrontEnd``, ``parse_fractional_architecture``
+Only the Grünwald–Letnikov front-end is used by the current model:
 
-``kle`` — Karhunen–Loève (scale / brand)
-  - NumPy: ACM / eig / mag-phase / ``kle_subspace_channels``
-  - Torch: ``kle_spectrogram_from_channels``, ``kle_spectrogram_sliding``
-
-``schirmer_frontend`` — combine fractional (+ optional KLE maps)
-  - ``fractional_channels_for_tcn`` (+ batch)
-  - ``schirmer_kle_maps`` (+ batch)
+    FractionalFrontEnd : (B, 1, T) → (B, C, T)
 """
 
 from .fractional import (
     FractionalFrontEnd,
+    FractionalSettings,
     default_schirmer_alphas,
     fractional_derivative,
     fractional_derivative_batch,
@@ -27,54 +16,15 @@ from .fractional import (
     gl_binomial_weights,
     parse_fractional_architecture,
 )
-from .kle import (
-    autocorrelation,
-    autocorrelation_matrix,
-    kle_coefficients,
-    kle_eigensystem,
-    kle_magnitude_phase,
-    kle_spectrogram_column,
-    kle_spectrogram_from_channels,
-    kle_spectrogram_sliding,
-    kle_subspace_channels,
-    kle_subspace_channels_batch,
-    normalize_spectrum,
-)
-from .schirmer_frontend import (
-    fractional_channels_for_tcn,
-    fractional_channels_for_tcn_batch,
-    schirmer_kle_maps,
-    schirmer_kle_maps_batch,
-)
 
 __all__ = [
-    # fractional — core
     "gl_binomial_weights",
     "default_schirmer_alphas",
-    # fractional — numpy
     "fractional_derivative",
     "fractional_derivative_batch",
     "fractional_stack",
     "fractional_stack_batch",
-    # fractional — torch
     "FractionalFrontEnd",
+    "FractionalSettings",
     "parse_fractional_architecture",
-    # kle — numpy
-    "autocorrelation",
-    "autocorrelation_matrix",
-    "kle_coefficients",
-    "kle_eigensystem",
-    "kle_magnitude_phase",
-    "kle_spectrogram_column",
-    "kle_subspace_channels",
-    "kle_subspace_channels_batch",
-    "normalize_spectrum",
-    # kle — torch
-    "kle_spectrogram_from_channels",
-    "kle_spectrogram_sliding",
-    # schirmer combine
-    "fractional_channels_for_tcn",
-    "fractional_channels_for_tcn_batch",
-    "schirmer_kle_maps",
-    "schirmer_kle_maps_batch",
 ]

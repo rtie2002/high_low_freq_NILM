@@ -12,17 +12,18 @@ Components
    - ``gl_binomial_weights``
    - ``default_schirmer_alphas``
 
-2. NumPy API (offline, scripts, KLE / schirmer_frontend)
+2. NumPy API (offline / scripts)
    - ``fractional_derivative`` / ``fractional_derivative_batch``
    - ``fractional_stack`` / ``fractional_stack_batch``
 
 3. PyTorch API (MultiNILM training front-end)
    - ``FractionalFrontEnd``  — (B,1,T) → (B,C,T)
-   - ``parse_fractional_architecture``  — yaml ``architecture.fractional``
+   - ``parse_fractional_architecture`` / ``FractionalSettings``
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 import numpy as np
@@ -344,24 +345,37 @@ class FractionalFrontEnd(nn.Module):
         return out
 
 
-def parse_fractional_architecture(
-    architecture: dict[str, Any],
-) -> tuple[bool, list[float] | None, bool, int | None, float]:
-    """
-    Read optional ``architecture.fractional`` from model yaml.
+@dataclass
+class FractionalSettings:
+    """All yaml knobs for ``FractionalFrontEnd``.
 
-    Returns:
-        enabled, alphas, include_raw, memory, h
+    Dedicated ``multinilm_fractional`` always builds a front-end. ``enabled``
+    only matters when the block is omitted (then the builder uses defaults).
     """
+
+    enabled: bool = False
+    alphas: list[float] | None = None
+    include_raw: bool = True
+    memory: int | None = None
+    h: float = 1.0
+    channel_normalize: str = "mean_std"
+    include_delta: bool = False
+    include_abs_delta: bool = False
+    rolling_windows: list[int] = field(default_factory=list)
+    include_rolling_mean: bool = False
+    include_rolling_std: bool = False
+
+    def resolved_alphas(self) -> list[float]:
+        if self.alphas is None:
+            return default_schirmer_alphas(8)
+        return list(self.alphas)
+
+
+def parse_fractional_architecture(architecture: dict[str, Any]) -> FractionalSettings:
+    """Read optional ``architecture.fractional`` (or a merged top-level copy)."""
     block = architecture.get("fractional")
     if not isinstance(block, dict):
-        return False, None, True, None, 1.0
-
-    enabled = bool(block.get("enabled", False))
-    include_raw = bool(block.get("include_raw", True))
-    memory = block.get("memory", None)
-    memory_i = None if memory is None else int(memory)
-    h = float(block.get("h", 1.0))
+        return FractionalSettings()
 
     alphas_raw = block.get("alphas", None)
     if alphas_raw is None:
@@ -369,4 +383,17 @@ def parse_fractional_architecture(
     else:
         alphas = [float(a) for a in alphas_raw]
 
-    return enabled, alphas, include_raw, memory_i, h
+    memory = block.get("memory", None)
+    return FractionalSettings(
+        enabled=bool(block.get("enabled", False)),
+        alphas=alphas,
+        include_raw=bool(block.get("include_raw", True)),
+        memory=None if memory is None else int(memory),
+        h=float(block.get("h", 1.0)),
+        channel_normalize=str(block.get("channel_normalize", "mean_std")),
+        include_delta=bool(block.get("include_delta", False)),
+        include_abs_delta=bool(block.get("include_abs_delta", False)),
+        rolling_windows=[int(w) for w in (block.get("rolling_windows") or [])],
+        include_rolling_mean=bool(block.get("include_rolling_mean", False)),
+        include_rolling_std=bool(block.get("include_rolling_std", False)),
+    )

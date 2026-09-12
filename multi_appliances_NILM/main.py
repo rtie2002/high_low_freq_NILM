@@ -14,12 +14,7 @@ if str(ROOT) not in sys.path:
 from adapters.config import load_experiment, load_model_config, merge_configs, model_name_from_config
 from adapters.mat_nilm import MATNILMAdapter
 from adapters.matuda import MATUDAAdapter
-from adapters.multinilm import MultiNILMAdapter
-from adapters.multinilm_fractional_cascade import MultiNILMFractionalCascadeAdapter
-from adapters.multinilm_fractional import MultiNILMFractionalAdapter
-from adapters.multinilm_fractional_residual import MultiNILMFractionalResidualAdapter
-from adapters.multinilm_kle import MultiNILMKLEAdapter
-from adapters.multinilm_no_distill import MultiNILMNoDistillAdapter
+from adapters.multinilm import MultiNILMAdapter, MultiNILMFractionalAdapter
 from adapters.transfer_multi_appliance import TransferMultiApplianceAdapter
 from evaluation.compare import compare_experiment
 from evaluation.run_summary import print_run_cost_summary, print_val_test_comparison
@@ -30,20 +25,16 @@ MODELS = {
     "mat_nilm": MATNILMAdapter,
     "matuda": MATUDAAdapter,
     "multinilm": MultiNILMAdapter,
-    "multinilm_fractional_cascade": MultiNILMFractionalCascadeAdapter,
     "multinilm_fractional": MultiNILMFractionalAdapter,
-    "multinilm_fractional_residual": MultiNILMFractionalResidualAdapter,
-    "multinilm_kle": MultiNILMKLEAdapter,
-    "multinilm_no_distill": MultiNILMNoDistillAdapter,
     "transfer_multi_appliance": TransferMultiApplianceAdapter,
 }
 
 # Default run settings for "click Run on main.py".
 # Edit these once, then run this file directly without command-line arguments.
 DEFAULT_MODE = "train_evaluate"
-DEFAULT_MODEL = "multinilm"
+DEFAULT_MODEL = "multinilm_fractional"
 DEFAULT_EXPERIMENT = ROOT / "config" / "experiment_ukdale.yaml"
-DEFAULT_MODEL_CONFIG: Path | None = None
+DEFAULT_MODEL_CONFIG: Path | None = ROOT / "config" / "models" / "multinilm_fractional_relational.yaml"
 DEFAULT_DATA_PATH: Path | None = None
 DEFAULT_CHECKPOINT: Path | None = None
 DEFAULT_INIT_CHECKPOINT: Path | None = None

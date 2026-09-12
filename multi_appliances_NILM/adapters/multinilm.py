@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 
 from adapters.common import BaseNILMAdapter, StepOutput
 from adapters.config import appliance_off_norm_normalized
-from model.MultiNILM import MultiNILM, multinilm_config
+from model.MultiNILM import build_multinilm, build_multinilm_fractional, multinilm_config
 from model.MultiNILM_loss import MultiNILMLoss
 
 
@@ -69,42 +69,12 @@ class MultiNILMAdapter(BaseNILMAdapter):
         appliances = self.cfg["appliances"]
         off_norms = appliance_off_norm_normalized(self.experiment, appliances)
 
-        # Create the MultiNILM neural network.
-        model = MultiNILM(
-            input_channels=cfg.input_channels,
+        model = build_multinilm(
+            cfg,
             num_appliances=len(appliances),
             output_length=int(self.model_cfg["windowing"].get("output_window_length", 1)),
-            hidden_channels=cfg.hidden_channels,
-            channel_schedule=cfg.channel_schedule,
-            stem_kernel_size=cfg.stem_kernel_size,
-            stage_kernel_size=cfg.stage_kernel_size,
-            num_blocks=cfg.num_blocks,
-            kernel_size=cfg.kernel_size,
-            dropout=cfg.dropout,
-            max_dilation=cfg.max_dilation,
-            gate_mode=cfg.gate_mode,
-            gate_threshold=cfg.gate_threshold,
             appliance_off_norm=off_norms,
-            domain_feature_layers=cfg.domain_feature_layers,
-            head_local_layers=cfg.head_local_layers,
-            head_kernel_size=cfg.head_kernel_size,
-            head_use_residual=cfg.head_use_residual,
-            use_multiscale_stem=cfg.use_multiscale_stem,
-            detail_kernels=cfg.detail_kernels,
-            detail_branch_channels=cfg.detail_branch_channels,
-            stem_norm_type=cfg.stem_norm_type,
-            temporal_norm_type=cfg.temporal_norm_type,
-            head_norm_type=cfg.head_norm_type,
-            task_attention_enabled=cfg.task_attention_enabled,
-            task_attention_reduction=cfg.task_attention_reduction,
-            cross_appliance_enabled=cfg.cross_appliance_enabled,
-            cross_appliance_mode=cfg.cross_appliance_mode,
-            cross_appliance_residual_scale=cfg.cross_appliance_residual_scale,
-            cross_appliance_mid_channels=cfg.cross_appliance_mid_channels,
-            cross_appliance_attention_channels=cfg.cross_appliance_attention_channels,
         )
-
-        # Move model to GPU if available, otherwise CPU.
         return model.to(device)
 
     def build_loss(self) -> MultiNILMLoss:
@@ -303,3 +273,23 @@ class MultiNILMAdapter(BaseNILMAdapter):
             true_power_batches=true_power,
             true_state_batches=true_state,
         )
+
+
+class MultiNILMFractionalAdapter(MultiNILMAdapter):
+    """Same train/eval path; yaml fractional block expands (B,1,T) → (B,C,T)."""
+
+    name = "multinilm_fractional"
+
+    def build_model(self, device: torch.device) -> torch.nn.Module:
+        arch = dict(self.model_cfg["architecture"])
+        frac = self.model_cfg.get("fractional")
+        if isinstance(frac, dict):
+            arch["fractional"] = frac
+        appliances = self.cfg["appliances"]
+        model = build_multinilm_fractional(
+            arch,
+            num_appliances=len(appliances),
+            output_length=int(self.model_cfg["windowing"].get("output_window_length", 1)),
+            appliance_off_norm=appliance_off_norm_normalized(self.experiment, appliances),
+        )
+        return model.to(device)
