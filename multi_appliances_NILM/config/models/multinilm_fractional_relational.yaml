@@ -72,10 +72,10 @@ architecture:
   temporal_norm_type: batch
   head_norm_type: batch
 
-  # TCN depth ablation: k=9 with dilations 1,2,4,8 gives a 121-sample RF.
-  num_blocks: 4
+  # Receptive-field ablation: k=9 with dilations 1,2,4,8,16 gives a 249-sample TCN RF.
+  num_blocks: 5
   kernel_size: 9
-  max_dilation: 8
+  max_dilation: 16
   dropout: 0.25
 
   head_local_layers: 2
