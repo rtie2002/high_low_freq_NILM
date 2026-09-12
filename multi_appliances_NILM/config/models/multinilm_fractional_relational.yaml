@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: Clean Version (detail_branch_channels)
+experiment_id: Clean Version (window512)
 model_name: multinilm_fractional
 
 data:
@@ -34,13 +34,13 @@ evaluation:
         microwave: 16
 
 windowing:
-  # 1024 x 8 s gives 2.28 h context and lowers memory/step time.
-  # Use 1536 samples to preserve the old 2048 x 6 s context (3.41 h).
-  input_window_length: 1024
-  output_window_length: 1024
+  # 512 x 8 s gives 68.3 min of input, longer than the model's ~313-sample
+  # effective receptive field, while retaining more valid boundary-aware data.
+  input_window_length: 512
+  output_window_length: 512
   output_alignment: end
-  input_stride: 512
-  eval_stride: 512
+  input_stride: 256
+  eval_stride: 256
   eval_reconstruction: auto
   training_targets: auto
 
