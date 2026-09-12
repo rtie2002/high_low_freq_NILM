@@ -36,11 +36,11 @@ evaluation:
 windowing:
   # 1024 x 8 s gives 2.28 h context and lowers memory/step time.
   # Use 1536 samples to preserve the old 2048 x 6 s context (3.41 h).
-  input_window_length: 2048
-  output_window_length: 2048
+  input_window_length: 1024
+  output_window_length: 1024
   output_alignment: end
-  input_stride: 1024
-  eval_stride: 1024
+  input_stride: 512
+  eval_stride: 512
   eval_reconstruction: auto
   training_targets: auto
 

@@ -184,7 +184,6 @@ class WindowDataset(Dataset):
         windowing: dict[str, Any],
         *,
         stride: int,
-        segment_ids: np.ndarray | None = None,
         target_mode: TargetMode = "output_window",
         normalization: NormalizationStats | None = None,
         state_threshold_watts: float | np.ndarray | None = None,
@@ -215,39 +214,16 @@ class WindowDataset(Dataset):
         self.target_mode = target_mode
         self.seq_len = _resolve_input_length(windowing)
         self.stride = max(1, stride)
-        global_indices = np.arange(
-            0, max(0, len(inputs) - self.seq_len + 1), self.stride
-        )
-        self.indices = global_indices
-        self.n_rejected_windows = 0
-        if segment_ids is not None:
-            segments = np.asarray(segment_ids, dtype=np.int64)
-            if len(segments) != len(inputs):
-                raise ValueError(
-                    f"segment_ids has {len(segments)} rows but inputs has {len(inputs)}"
-                )
-            if len(global_indices):
-                same_segment = segments[global_indices] == segments[
-                    global_indices + self.seq_len - 1
-                ]
-                self.n_rejected_windows = int(np.sum(~same_segment))
-
-            # Restart stride at each boundary. Otherwise a segment's sampling
-            # phase depends on the total length of every preceding house.
-            boundaries = np.flatnonzero(
-                np.r_[True, segments[1:] != segments[:-1], True]
+        last_start = len(inputs) - self.seq_len
+        if last_start < 0:
+            self.indices = np.zeros(0, dtype=np.int64)
+        else:
+            self.indices = np.arange(
+                0, last_start + 1, self.stride, dtype=np.int64
             )
-            starts = [
-                np.arange(start, end - self.seq_len + 1, self.stride)
-                for start, end in zip(boundaries[:-1], boundaries[1:])
-                if end - start >= self.seq_len
-            ]
-            self.indices = (
-                np.concatenate(starts).astype(np.int64, copy=False)
-                if starts
-                else np.zeros(0, dtype=np.int64)
-            )
-        self.n_candidate_windows = len(self.indices) + self.n_rejected_windows
+            # A final end-aligned window covers a tail shorter than one stride.
+            if self.indices[-1] != last_start:
+                self.indices = np.append(self.indices, np.int64(last_start))
 
     def __len__(self) -> int:
         return len(self.indices)
@@ -291,7 +267,7 @@ def resolve_mains_column(experiment_cfg: dict[str, Any], model_cfg: dict[str, An
 
 @dataclass
 class SplitArrays:
-    """Numeric model arrays plus training-only sequence boundary metadata."""
+    """Numeric model arrays plus sequence metadata used by plotting."""
 
     inputs: np.ndarray
     targets: np.ndarray
@@ -417,7 +393,6 @@ class NILMDataLoader:
             data.states,
             w,
             stride=self._stride_for_split(split),
-            segment_ids=data.segment_ids,
             target_mode=_target_mode(w, split),
             normalization=self.norm,
             state_threshold_watts=self.state_threshold_watts,
@@ -425,12 +400,9 @@ class NILMDataLoader:
             tensor_dtype=self.tensor_dtype,
         )
         if len(dataset) == 0:
-            _, segment_lengths = np.unique(data.segment_ids, return_counts=True)
-            longest_segment = int(segment_lengths.max()) if len(segment_lengths) else 0
             raise ValueError(
                 f"No valid {split} windows: input length is {dataset.seq_len}, "
-                f"but the longest contiguous segment is {longest_segment} rows. "
-                "Check sample_seconds and regenerate sequence-aware CSVs."
+                f"but the CSV contains only {len(data.inputs)} usable rows."
             )
         return dataset
 
@@ -550,7 +522,6 @@ class NILMDataLoader:
             data.states,
             w,
             stride=self._stride_for_split(split),
-            segment_ids=data.segment_ids,
             target_mode=_target_mode(w, split),
             normalization=self.norm,
             state_label_source="csv",
@@ -616,7 +587,6 @@ class NILMDataLoader:
             "stride": stride,
             "target_mode": target_mode,
             "windows": n_windows,
-            "rejected_boundary_windows": window_dataset.n_rejected_windows,
             "batch_size": batch_size,
             "batches": n_batches,
         }
