@@ -20,7 +20,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from adapters.dataloader import WindowDataset, _output_row_offset, _split_key
+from data.dataloader import WindowDataset, _output_row_offset, _split_key
 from evaluation.plots import (
     OnPeriodSelection,
     bundle_aggregate_watts,

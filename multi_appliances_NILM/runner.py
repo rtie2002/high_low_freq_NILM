@@ -21,13 +21,7 @@ High-level flow:
         5. Compute metrics
         6. Save waveform plots
 
-Model-specific math stays outside this file:
-
-    adapters/multinilm.py
-    adapters/mat_nilm.py
-
-Those adapters define what happens for one batch. This runner decides when a
-batch is training, validation, or final inference.
+Model-specific math stays outside this file in `model/*.py` (`build_model` / `step`).
 """
 
 from __future__ import annotations
@@ -44,9 +38,9 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from adapters.common import StepOutput
-from adapters.config import appliance_list, resolve_lr_scheduler_settings, resolve_tensor_dtype
-from adapters.dataloader import (
+from data.common import StepOutput
+from config import appliance_list, resolve_lr_scheduler_settings, resolve_tensor_dtype
+from data.dataloader import (
     NILMDataLoader,
     _resolve_input_length,
     _target_mode,
@@ -58,7 +52,7 @@ from adapters.dataloader import (
 from evaluation.live_monitor import LiveTrainingMonitor
 from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
 from evaluation.metrics import _macro_mae_norm, evaluate_bundle
-from evaluation.power_postprocess import apply_power_postprocess_pair, resolve_power_postprocess
+from evaluation.metrics import apply_power_postprocess_pair, resolve_power_postprocess
 from evaluation.state_postprocess import maybe_calibrate_and_apply
 from evaluation.plots import (
     bundle_aggregate_watts,

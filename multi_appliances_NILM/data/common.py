@@ -24,8 +24,8 @@ from torch.utils.data import DataLoader, Dataset
 
 import warnings
 
-from adapters.config import resolve_eval_reconstruction, resolve_lr_scheduler_settings
-from adapters.dataloader import (
+from config import resolve_eval_reconstruction, resolve_lr_scheduler_settings
+from data.dataloader import (
     NILMDataLoader,
     _resolve_input_length,
     _split_key,

@@ -14,7 +14,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from adapters.config import appliance_list, resolve_tensor_dtype, resolve_training_targets
+from config import appliance_list, resolve_tensor_dtype, resolve_training_targets
 
 SplitName = Literal["train", "validation", "test"]
 OutputAlignment = Literal["end", "center"]

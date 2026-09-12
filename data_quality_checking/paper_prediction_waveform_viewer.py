@@ -49,13 +49,14 @@ from matplotlib.widgets import Button, RadioButtons, Slider, TextBox
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-# Script may live under data_quality_checking/ or multi_appliances_NILM/scripts/.
-if (SCRIPT_DIR.parent / "adapters").is_dir():
-    ROOT = SCRIPT_DIR.parent
-elif (SCRIPT_DIR.parent / "multi_appliances_NILM" / "adapters").is_dir():
-    ROOT = SCRIPT_DIR.parent / "multi_appliances_NILM"
-else:
-    ROOT = SCRIPT_DIR.parents[0]
+
+def _package_root(start: Path) -> Path:
+    for candidate in (start, start.parent, start.parent / "multi_appliances_NILM"):
+        if (candidate / "main.py").is_file() and (candidate / "config").is_dir():
+            return candidate
+    return start.parent / "multi_appliances_NILM"
+
+ROOT = _package_root(SCRIPT_DIR)
 PROJECT_DIR = ROOT.parent
 
 if str(ROOT) not in sys.path:
@@ -63,12 +64,12 @@ if str(ROOT) not in sys.path:
 
 DEFAULT_EXPERIMENT = ROOT / "config" / "experiment_mixed_ukdale_refit_3w.yaml"
 DEFAULT_MODEL_CONFIG = ROOT / "config" / "models" / "multinilm_fractional_relational.yaml"
-from adapters.common import PredictionBundle
-from adapters.config import load_experiment, load_model_config, merge_configs, model_name_from_config
-from adapters.mat_nilm import MATNILMAdapter
-from adapters.matuda import MATUDAAdapter
-from adapters.multinilm import MultiNILMAdapter, MultiNILMFractionalAdapter
-from adapters.transfer_multi_appliance import TransferMultiApplianceAdapter
+from data.common import PredictionBundle
+from config import load_experiment, load_model_config, merge_configs, model_name_from_config
+from model.MATNILM import MATNILMAdapter
+from model.MATUDA import MATUDAAdapter
+from model.MultiNILM import MultiNILMAdapter, MultiNILMFractionalAdapter
+from model.TransferNILM import TransferMultiApplianceAdapter
 
 
 MODELS = {

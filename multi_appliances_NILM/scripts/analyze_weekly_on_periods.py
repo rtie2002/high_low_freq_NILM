@@ -23,7 +23,7 @@ import sys
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from adapters.config import load_experiment
+from config import load_experiment
 
 
 def parse_args() -> argparse.Namespace:

@@ -315,3 +315,130 @@ class TransferMultiApplianceModel(nn.Module):
             states.append(state_i)
 
         return torch.cat(powers, dim=2), torch.cat(states, dim=2)
+
+
+@dataclass
+class TransferNILMLossOutput:
+    loss: torch.Tensor
+    loss_power: torch.Tensor
+    loss_state: torch.Tensor
+    mae: torch.Tensor
+
+
+class TransferNILMLoss(nn.Module):
+    def __init__(self, power_scale: float | list[float] | torch.Tensor = 1.0):
+        super().__init__()
+        self.register_buffer("power_scale", torch.as_tensor(power_scale, dtype=torch.float32))
+        self.mse = nn.MSELoss()
+        self.bce = nn.BCELoss()
+
+    def forward(self, power_pred, state_prob, power_true, state_true) -> TransferNILMLossOutput:
+        power_true = power_true.to(dtype=power_pred.dtype)
+        state_true = state_true.to(dtype=state_prob.dtype)
+        with torch.amp.autocast(device_type=power_pred.device.type, enabled=False):
+            loss_power = self.mse(power_pred, power_true)
+            loss_state = self.bce(state_prob, state_true)
+        scale = self.power_scale.to(device=power_pred.device, dtype=power_pred.dtype)
+        mae = torch.mean(torch.abs((power_pred - power_true) * scale))
+        return TransferNILMLossOutput(loss=loss_power + loss_state, loss_power=loss_power, loss_state=loss_state, mae=mae)
+
+
+from data.common import BaseNILMAdapter, StepOutput, center_output_slice
+from config import appliance_off_norm_normalized
+from model.MultiNILM import _pred_on_from_config, _to_numpy
+import numpy as np
+from torch.utils.data import DataLoader
+
+
+class TransferMultiApplianceAdapter(BaseNILMAdapter):
+    name = "transfer_multi_appliance"
+
+    def build_model(self, device: torch.device) -> torch.nn.Module:
+        arch = self.model_cfg["architecture"]
+        windowing = self.model_cfg["windowing"]
+        cfg = transfer_nilm_config(arch, windowing)
+        appliances = self.cfg["appliances"]
+        model = TransferMultiApplianceModel(
+            cfg=cfg,
+            num_appliances=len(appliances),
+            appliance_off_norm=appliance_off_norm_normalized(self.experiment, appliances),
+        )
+        if bool(self.model_cfg.get("transfer", {}).get("freeze_encoder", False)):
+            model.freeze_encoder()
+        return model.to(device)
+
+    def build_loss(self) -> TransferNILMLoss:
+        return TransferNILMLoss(power_scale=self._data_loader().loss_scale)
+
+    def _align_loss_tensors(self, power_pred, state_prob, y, z):
+        w = self.model_cfg["windowing"]
+        out_slice = center_output_slice(w)
+        out_len = int(w.get("output_window_length", 1))
+        if power_pred.shape[1] == y.shape[1]:
+            return power_pred, state_prob, y, z
+        if y.dim() == 3 and y.shape[1] == out_len:
+            return power_pred[:, out_slice, :], state_prob[:, out_slice, :], y, z
+        if w.get("training_loss_scope") == "center_output":
+            return power_pred[:, out_slice, :], state_prob[:, out_slice, :], y[:, out_slice, :], z[:, out_slice, :]
+        return power_pred, state_prob, y, z
+
+    def step(self, model, loss_fn: TransferNILMLoss, batch):
+        x, y, z = batch
+        compute_dtype = next(model.parameters()).dtype
+        z = z.to(dtype=compute_dtype)
+        power_pred, state_prob = model(x)
+        power_pred, state_prob, y, z = self._align_loss_tensors(power_pred, state_prob, y, z)
+        out = loss_fn(power_pred, state_prob, y, z)
+        pred_state = torch.from_numpy(_pred_on_from_config(self, _to_numpy(power_pred), _to_numpy(state_prob))).long()
+        app_logs = {}
+        for app_i, app in enumerate(self.cfg["appliances"]):
+            app_logs[f"loss_power_{app}"] = float(loss_fn.mse(power_pred[..., app_i], y[..., app_i]).detach())
+            app_logs[f"loss_state_{app}"] = float(loss_fn.bce(state_prob[..., app_i], z[..., app_i]).detach())
+        return StepOutput(
+            loss=out.loss,
+            logs={
+                "loss": float(out.loss.detach()),
+                "loss_power": float(out.loss_power.detach()),
+                "loss_state": float(out.loss_state.detach()),
+                "mae": float(out.mae.detach()),
+                **app_logs,
+            },
+            aux={
+                "pred_state": pred_state.detach().cpu(),
+                "true_state": z.long().detach().cpu(),
+                "pred_power": power_pred.detach().cpu(),
+                "true_power": y.detach().cpu(),
+            },
+        )
+
+    @torch.no_grad()
+    def predict_dataloader(self, model, loader: DataLoader, device, *, max_batches=None, split="test"):
+        model.eval()
+        out_slice = center_output_slice(self.model_cfg["windowing"])
+        out_len = int(self.model_cfg["windowing"].get("output_window_length", 1))
+        pred_power, pred_state, true_power, true_state, sample_indices = [], [], [], [], []
+        offset = 0
+        for batch_idx, batch in enumerate(loader):
+            if max_batches is not None and batch_idx >= max_batches:
+                break
+            x, y, z = batch
+            power_pred, state_prob = model(x.to(device))
+            power_np = power_pred[:, out_slice, :]
+            state_np = state_prob[:, out_slice, :]
+            if y.dim() == 3 and y.shape[1] == out_len:
+                y_true, z_true = y.numpy(), z.numpy()
+            else:
+                y_true = y[:, out_slice, :].numpy() if y.dim() == 3 else y.numpy()
+                z_true = z[:, out_slice, :].numpy() if z.dim() == 3 else z.numpy()
+            n_apps = len(self.cfg["appliances"])
+            pred_power.append(_to_numpy(power_np).reshape(len(x), -1, n_apps))
+            pred_state.append(_to_numpy(state_np).reshape(len(x), -1, n_apps))
+            true_power.append(y_true.reshape(len(x), -1, n_apps))
+            true_state.append(z_true.reshape(len(x), -1, n_apps))
+            sample_indices.append(self._sample_index(offset, len(x)))
+            offset += len(x)
+        return self.finalize_prediction_bundle(
+            split=split, sample_indices=sample_indices,
+            pred_power_batches=pred_power, pred_state_batches=pred_state,
+            true_power_batches=true_power, true_state_batches=true_state,
+        )

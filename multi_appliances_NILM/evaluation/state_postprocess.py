@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-from adapters.common import PredictionBundle
+from data.common import PredictionBundle
 
 
 CALIBRATION_FILENAME = "state_calibration.json"

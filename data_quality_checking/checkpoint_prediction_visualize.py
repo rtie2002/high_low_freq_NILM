@@ -67,17 +67,17 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 from matplotlib.widgets import Button, CheckButtons, RadioButtons, Slider
 
-from adapters.config import (  # noqa: E402
+from config import (  # noqa: E402
     load_experiment,
     load_model_config,
     merge_configs,
     model_name_from_config,
     resolve_tensor_dtype,
 )
-from adapters.mat_nilm import MATNILMAdapter  # noqa: E402
-from adapters.matuda import MATUDAAdapter  # noqa: E402
-from adapters.multinilm import MultiNILMAdapter, MultiNILMFractionalAdapter  # noqa: E402
-from adapters.transfer_multi_appliance import TransferMultiApplianceAdapter  # noqa: E402
+from model.MATNILM import MATNILMAdapter  # noqa: E402
+from model.MATUDA import MATUDAAdapter  # noqa: E402
+from model.MultiNILM import MultiNILMAdapter, MultiNILMFractionalAdapter  # noqa: E402
+from model.TransferNILM import TransferMultiApplianceAdapter  # noqa: E402
 
 
 MODELS = {

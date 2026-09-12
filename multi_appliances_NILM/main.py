@@ -11,13 +11,12 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from adapters.config import load_experiment, load_model_config, merge_configs, model_name_from_config
-from adapters.mat_nilm import MATNILMAdapter
-from adapters.matuda import MATUDAAdapter
-from adapters.multinilm import MultiNILMAdapter, MultiNILMFractionalAdapter
-from adapters.transfer_multi_appliance import TransferMultiApplianceAdapter
-from evaluation.compare import compare_experiment
-from evaluation.run_summary import print_run_cost_summary, print_val_test_comparison
+from config import load_experiment, load_model_config, merge_configs, model_name_from_config
+from model.MATNILM import MATNILMAdapter
+from model.MATUDA import MATUDAAdapter
+from model.MultiNILM import MultiNILMAdapter, MultiNILMFractionalAdapter
+from model.TransferNILM import TransferMultiApplianceAdapter
+from evaluation.run_summary import compare_experiment, print_run_cost_summary, print_val_test_comparison
 from runner import evaluate_model, train_model
 
 # Register new models here: name -> adapter class

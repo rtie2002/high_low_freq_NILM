@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 
 import torch
 
-from adapters.config import load_experiment, load_model_config, merge_configs, model_name_from_config, resolve_tensor_dtype
+from config import load_experiment, load_model_config, merge_configs, model_name_from_config, resolve_tensor_dtype
 from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
 from main import MODELS, get_adapter, _default_model_config, _default_run_dir
 

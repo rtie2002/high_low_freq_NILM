@@ -1,9 +1,7 @@
-from model.MATNILM import MATconv
-from model.MATNILM_loss import MATNILMLoss
+from model.MATNILM import MATconv, MATNILMLoss
 from model.MultiNILM import MultiNILM
 from model.MultiNILM_loss import MultiNILMLoss
-from model.TransferNILM import TransferMultiApplianceModel
-from model.TransferNILM_loss import TransferNILMLoss
+from model.TransferNILM import TransferMultiApplianceModel, TransferNILMLoss
 
 __all__ = [
     "MATconv",

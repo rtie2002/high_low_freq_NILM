@@ -47,14 +47,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from adapters.config import (
+from config import (
     load_experiment,
     load_model_config,
     merge_configs,
     resolve_experiment_id,
     resolve_training_targets,
 )
-from adapters.multinilm import MultiNILMAdapter
+from model.MultiNILM import MultiNILMAdapter
 from runner import train_model
 
 
@@ -495,7 +495,7 @@ def _count_windows_for_split(
     *,
     split: str,
 ) -> int:
-    from adapters.dataloader import _count_windows
+    from data.dataloader import _count_windows
 
     stride_key = "input_stride" if split == "train" else "eval_stride"
     stride = int(windowing.get(stride_key, windowing.get("input_stride", 1)))
