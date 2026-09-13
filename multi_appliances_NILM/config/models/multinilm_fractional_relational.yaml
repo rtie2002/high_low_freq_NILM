@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: Clean Version (checkpoint_ap)
+experiment_id: Clean Version (ungated_power)
 model_name: multinilm_fractional
 
 data:
@@ -86,7 +86,9 @@ architecture:
     enabled: true
     reduction: 4
 
-  gate_mode: soft
+  # Ablation: let the power head learn the full waveform without attenuation
+  # from uncertain state probabilities. Evaluation still applies calibrated ON/OFF gating.
+  gate_mode: none
   gate_threshold: 0.5
 
   cross_appliance:
