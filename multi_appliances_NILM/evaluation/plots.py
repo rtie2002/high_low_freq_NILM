@@ -735,6 +735,7 @@ def build_val_test_comparison_frame(
         for metric in (
             "precision",
             "recall",
+            "average_precision",
             "balanced_accuracy",
             "on_mae",
             "off_mae",
@@ -784,6 +785,7 @@ def save_val_test_comparison_figure(
         ("Delta MAE\n(W)", "delta_mae", "power"),
         ("Precision", "precision", "score"),
         ("Recall", "recall", "score"),
+        ("Average\nprecision", "average_precision", "score"),
         ("Sample\nF1", "f1", "score"),
         ("Event\nprecision", "event_precision", "score"),
         ("Event\nrecall", "event_recall", "score"),
@@ -809,13 +811,14 @@ def save_val_test_comparison_figure(
     def _draw(ax, frame: pd.DataFrame, split_name: str) -> None:
         frame = _ordered(frame)
         cells = [[_cell(row, key, kind) for _, key, kind in columns] for _, row in frame.iterrows()]
+        metric_width = (1.0 - 0.16) / (len(columns) - 1)
         ax.axis("off")
         ax.set_title(split_name, fontsize=10, fontweight="bold", loc="left", pad=5)
         table = ax.table(
             cellText=cells,
             colLabels=[label for label, _, _ in columns],
             cellLoc="center",
-            colWidths=[0.16] + [0.07] * (len(columns) - 1),
+            colWidths=[0.16] + [metric_width] * (len(columns) - 1),
             bbox=[0.0, 0.0, 1.0, 0.94],
         )
         table.auto_set_font_size(False)
@@ -1322,10 +1325,10 @@ def plot_validation_metrics(
     figsize: float = 5.5,
     dpi: int = 150,
 ) -> Path:
-    """Per-epoch val F1 / Acc (left) and MAE in watts (right).
+    """Per-epoch val F1 / AP / Acc (left) and MAE in watts (right).
 
-    Matches the console line: ON-F1, Acc, MAE=… W. Prefers ``val_mae_watts``;
-    falls back to ``val_mae`` for older history.csv files.
+    Matches the console line: ON-F1, macro AP, Acc, and MAE in watts. Prefers
+    ``val_mae_watts`` and falls back to ``val_mae`` for older histories.
     """
     if not isinstance(history, pd.DataFrame):
         history = pd.read_csv(history)
@@ -1334,13 +1337,14 @@ def plot_validation_metrics(
 
     x = history[epoch_col] if epoch_col in history else np.arange(len(history))
     has_f1 = "val_f1" in history.columns and not history["val_f1"].isna().all()
+    has_ap = "val_ap" in history.columns and not history["val_ap"].isna().all()
     has_acc = "val_acc" in history.columns and not history["val_acc"].isna().all()
     mae_col = None
     for candidate in ("val_mae_watts", "val_mae"):
         if candidate in history.columns and not history[candidate].isna().all():
             mae_col = candidate
             break
-    if not (has_f1 or has_acc or mae_col):
+    if not (has_f1 or has_ap or has_acc or mae_col):
         return _ensure_parent(output_path)
 
     fig, ax = plt.subplots(1, 1, figsize=(figsize, figsize))
@@ -1360,6 +1364,18 @@ def plot_validation_metrics(
         )
         handles.append(ln)
         labels.append("val ON-F1")
+    if has_ap:
+        (ln,) = ax.plot(
+            x,
+            history["val_ap"],
+            marker="D",
+            markersize=3,
+            linewidth=1.7,
+            color="#9467bd",
+            label="val macro AP",
+        )
+        handles.append(ln)
+        labels.append("val macro AP")
     if has_acc:
         (ln,) = ax.plot(
             x,
@@ -1372,7 +1388,7 @@ def plot_validation_metrics(
         )
         handles.append(ln)
         labels.append("val Acc")
-    ax.set_ylabel("F1 / Acc")
+    ax.set_ylabel("F1 / AP / Acc")
     ax.set_ylim(0.0, 1.05)
     ax.set_xlabel("Epoch")
     ax.set_title(title)

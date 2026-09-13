@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: Clean Version (dropout035)
+experiment_id: Clean Version (checkpoint_ap)
 model_name: multinilm_fractional
 
 data:
@@ -75,8 +75,8 @@ architecture:
   num_blocks: 5
   kernel_size: 9
   max_dilation: 16
-  # Single-variable regularization ablation for the observed train/validation gap.
-  dropout: 0.35
+  # Restore the stronger baseline after dropout=0.35 hurt zero-shot detection.
+  dropout: 0.25
 
   # Two local blocks preserve the multi-stage washing-machine waveform better.
   head_local_layers: 2
@@ -141,16 +141,18 @@ training:
   cudnn_benchmark: true
   tf32: true
 
-  checkpoint_monitor: val_mae_minus_f1
+  # AP evaluates state ranking without the arbitrary 0.5 training threshold.
+  # Both terms are dimensionless and receive an equal unit-for-unit tradeoff:
+  # score = normalized validation MAE + (1 - macro validation AP), lower is better.
+  checkpoint_monitor: val_mae_plus_one_minus_ap
   checkpoint_mae_space: normalized
-  checkpoint_mae_weight: 7.0
   early_stop_patience: 55
   early_stop_min_epochs: 100
 
   scheduler: reduce_on_plateau
   lr_scheduler:
     type: reduce_on_plateau
-    monitor: val_mae_minus_f1
+    monitor: val_mae_plus_one_minus_ap
     patience: 12
     factor: 0.5
     min_lr: 0.00001

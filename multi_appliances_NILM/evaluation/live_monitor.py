@@ -141,6 +141,7 @@ class LiveTrainingMonitor:
             "val_mae_norm": float(val_logs.get("mae_norm", float("nan"))),
             "val_mae_watts": float(val_logs.get("mae_watts_epoch", val_mae)),
             "val_f1": val_logs.get("val_f1", float("nan")),
+            "val_ap": val_logs.get("val_ap", float("nan")),
             "val_acc": val_logs.get("val_acc", float("nan")),
             "val_mif1": val_logs.get("val_mif1", float("nan")),
             "val_miacc": val_logs.get("val_miacc", float("nan")),

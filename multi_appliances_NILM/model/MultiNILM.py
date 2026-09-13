@@ -812,8 +812,9 @@ class MultiNILMAdapter(BaseNILMAdapter):
         else:
             power_pred, state_logits = model(x)
             out = loss_fn(power_pred, state_logits, y, z)
+        state_prob = torch.sigmoid(state_logits)
         pred_state = torch.from_numpy(
-            _pred_on_from_config(self, _to_numpy(power_pred), _to_numpy(torch.sigmoid(state_logits)))
+            _pred_on_from_config(self, _to_numpy(power_pred), _to_numpy(state_prob))
         ).long()
         app_logs = {
             f"loss_power_{app}": float(out.loss_power_per_appliance[i].detach())
@@ -838,6 +839,8 @@ class MultiNILMAdapter(BaseNILMAdapter):
             },
             aux={
                 "pred_state": pred_state.detach().cpu(),
+                # Keep continuous scores for threshold-free validation AP.
+                "state_prob": state_prob.detach().float().cpu(),
                 "true_state": z.long().detach().cpu(),
                 "pred_power": power_pred.detach().float().cpu(),
                 "true_power": y.detach().cpu(),

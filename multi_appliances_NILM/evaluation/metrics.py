@@ -177,6 +177,56 @@ def per_appliance_f1(y_true_on: np.ndarray, y_pred_on: np.ndarray) -> np.ndarray
     return scores
 
 
+def per_appliance_average_precision(
+    y_true_on: np.ndarray,
+    y_score: np.ndarray,
+) -> np.ndarray:
+    """Threshold-free area under each appliance precision-recall curve.
+
+    Average precision is computed at every distinct score threshold. Grouping
+    equal scores makes the result independent of their input order and matches
+    the standard non-interpolated AP definition:
+
+        AP = sum_n (recall_n - recall_{n-1}) * precision_n
+
+    A column with no positive labels receives AP=0 because it provides no
+    evidence that the model can rank ON samples for that appliance.
+    """
+    y_true_on = np.asarray(y_true_on)
+    y_score = np.asarray(y_score, dtype=np.float64)
+    if y_true_on.shape != y_score.shape or y_true_on.ndim != 2:
+        raise ValueError("AP inputs must have matching (samples, appliances) shapes")
+
+    scores = np.zeros(y_true_on.shape[1], dtype=np.float64)
+    for app_i in range(y_true_on.shape[1]):
+        target = y_true_on[:, app_i].astype(bool)
+        positives = int(target.sum())
+        if positives == 0:
+            continue
+
+        probability = y_score[:, app_i]
+        if not np.isfinite(probability).all():
+            raise ValueError("AP state scores must be finite")
+
+        order = np.argsort(-probability, kind="mergesort")
+        target = target[order]
+        probability = probability[order]
+        true_positive = np.cumsum(target, dtype=np.float64)
+        false_positive = np.cumsum(~target, dtype=np.float64)
+
+        # Evaluate precision/recall after the last sample at each tied score.
+        threshold_ends = np.r_[
+            np.flatnonzero(np.diff(probability) != 0),
+            len(probability) - 1,
+        ]
+        precision = true_positive[threshold_ends] / (
+            true_positive[threshold_ends] + false_positive[threshold_ends]
+        )
+        recall = true_positive[threshold_ends] / positives
+        scores[app_i] = np.sum(np.diff(np.r_[0.0, recall]) * precision)
+    return scores
+
+
 def _on_off_labels(
     bundle: PredictionBundle,
     y_true: np.ndarray,
@@ -223,6 +273,13 @@ def evaluate_bundle(
     mae_vals = mae(y_true, y_pred)
     sae_vals = sae(y_true, y_pred, sae_period)
     f1_vals = per_appliance_f1(z_true, z_pred)
+    if bundle.y_pred_state_prob is None:
+        average_precision_vals = np.full(y_true.shape[1], np.nan)
+    else:
+        average_precision_vals = per_appliance_average_precision(
+            z_true,
+            bundle.y_pred_state_prob,
+        )
     tp, fp, fn = _tp_fp_fn(z_true, z_pred)
     precision_vals = _safe_ratio(tp, tp + fp)
     recall_vals = _safe_ratio(tp, tp + fn)
@@ -274,6 +331,7 @@ def evaluate_bundle(
             "precision": float(precision_vals[i]),
             "recall": float(recall_vals[i]),
             "balanced_accuracy": float(balanced_accuracy_vals[i]),
+            "average_precision": float(average_precision_vals[i]),
             "on_mae": float(on_mae_vals[i]),
             "off_mae": float(off_mae_vals[i]),
             "delta_mae": float(delta_mae_vals[i]),
@@ -303,6 +361,7 @@ def evaluate_bundle(
         "precision": _mean_finite(precision_vals),
         "recall": _mean_finite(recall_vals),
         "balanced_accuracy": _mean_finite(balanced_accuracy_vals),
+        "average_precision": _mean_finite(average_precision_vals),
         "on_mae": _mean_finite(on_mae_vals),
         "off_mae": _mean_finite(off_mae_vals),
         "delta_mae": _mean_finite(delta_mae_vals),

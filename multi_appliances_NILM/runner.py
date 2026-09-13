@@ -51,7 +51,11 @@ from data.dataloader import (
 )
 from evaluation.live_monitor import LiveTrainingMonitor
 from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
-from evaluation.metrics import _macro_mae_norm, evaluate_bundle
+from evaluation.metrics import (
+    _macro_mae_norm,
+    evaluate_bundle,
+    per_appliance_average_precision,
+)
 from evaluation.metrics import apply_power_postprocess_pair, resolve_power_postprocess
 from evaluation.state_postprocess import maybe_calibrate_and_apply
 from evaluation.plots import (
@@ -216,6 +220,12 @@ def _print_training_data_summary(
             space = str(train_cfg.get("checkpoint_mae_space", "normalized")).lower()
             w = _checkpoint_mae_weight(train_cfg)
             ckpt_text += f"  ({w:g}×{space} MAE - F1)"
+        elif str(ckpt).lower() in {
+            "val_mae_plus_one_minus_ap",
+            "mae_plus_one_minus_ap",
+        }:
+            space = str(train_cfg.get("checkpoint_mae_space", "normalized")).lower()
+            ckpt_text += f"  ({space} MAE + 1 - macro AP)"
         _summary_line("Checkpoint", ckpt_text)
 
     data_notes = _data_preprocess_note(model_cfg, experiment_cfg)
@@ -420,8 +430,11 @@ def _format_epoch_summary(
         lines.append(
             f"  state       raw={val_state_raw:.4f}   -> {val_state_term:.4f}   (BCE, balanced)"
         )
+    val_ap = float(val_logs.get("val_ap", float("nan")))
+    ap_text = f"   AP={val_ap:.4f}" if np.isfinite(val_ap) else ""
     lines.append(
-        f"  metrics     F1={val_f1:.4f}   Acc={val_acc:.4f}   MAE={val_mae:.2f} W"
+        f"  metrics     F1={val_f1:.4f}{ap_text}   "
+        f"Acc={val_acc:.4f}   MAE={val_mae:.2f} W"
     )
 
     epoch_time_sec = train_time_sec + val_time_sec
@@ -611,7 +624,7 @@ def _epoch_power_mae_logs(
 
 def _checkpoint_mae_for_score(monitor_key: str, train_cfg: dict, logs: dict[str, float]) -> float:
     """Pick MAE space used by checkpoint/scheduler composite scores."""
-    if monitor_key == "val_mae_minus_f1":
+    if monitor_key in {"val_mae_minus_f1", "val_mae_plus_one_minus_ap"}:
         space = str(train_cfg.get("checkpoint_mae_space", "normalized")).lower()
         if space == "watts":
             return float(logs.get("mae_watts_epoch", logs.get("mae", float("inf"))))
@@ -635,6 +648,11 @@ def _checkpoint_mae_weight(train_cfg: dict) -> float:
 
 def _mae_minus_f1_score(mae: float, f1: float, *, mae_weight: float) -> float:
     return float(mae_weight) * float(mae) - float(f1)
+
+
+def _mae_plus_one_minus_ap_score(mae: float, average_precision: float) -> float:
+    """Combine normalized power error and threshold-free state ranking."""
+    return float(mae) + 1.0 - float(average_precision)
 
 
 def _batch_to_device(
@@ -675,6 +693,7 @@ def _resolve_checkpoint_monitor(train_cfg: dict) -> tuple[str, str, float]:
         checkpoint_monitor: val_mae
         checkpoint_monitor: val_f1
         checkpoint_monitor: val_mae_minus_f1   # balanced: w*MAE - F1
+        checkpoint_monitor: val_mae_plus_one_minus_ap  # MAE + 1 - macro AP
         checkpoint_mae_space: normalized       # normalized | watts
         checkpoint_mae_weight: 7.0             # ≈ typical_F1 / typical_MAE_norm
 
@@ -692,6 +711,8 @@ def _resolve_checkpoint_monitor(train_cfg: dict) -> tuple[str, str, float]:
         "val_mae": "mae",
         "val_mae_minus_f1": "val_mae_minus_f1",
         "mae_minus_f1": "val_mae_minus_f1",
+        "val_mae_plus_one_minus_ap": "val_mae_plus_one_minus_ap",
+        "mae_plus_one_minus_ap": "val_mae_plus_one_minus_ap",
     }
     key = aliases.get(monitor, monitor)
     if key == "val_f1":
@@ -706,6 +727,13 @@ def _epoch_score(monitor_key: str, logs: dict[str, float], train_cfg: dict | Non
         mae = _checkpoint_mae_for_score(monitor_key, train_cfg, logs)
         f1 = float(logs.get("val_f1", 0.0))
         return _mae_minus_f1_score(mae, f1, mae_weight=_checkpoint_mae_weight(train_cfg))
+    if monitor_key == "val_mae_plus_one_minus_ap":
+        if "val_ap" not in logs:
+            raise ValueError(
+                "val_mae_plus_one_minus_ap requires continuous validation state probabilities"
+            )
+        mae = _checkpoint_mae_for_score(monitor_key, train_cfg, logs)
+        return _mae_plus_one_minus_ap_score(mae, float(logs["val_ap"]))
     if monitor_key in logs:
         return float(logs[monitor_key])
     if monitor_key == "val_f1":
@@ -873,6 +901,7 @@ def _run_epoch(
     # source selected in model yaml: CSV labels or thresholded watts.
     aux_batches: dict[str, list[np.ndarray]] = {
         "pred_state": [],
+        "state_prob": [],
         "true_state": [],
         "pred_power": [],
         "true_power": [],
@@ -997,14 +1026,36 @@ def _run_epoch(
     if collect_states and aux_batches["pred_state"]:
         z_true_epoch, z_pred_epoch = _epoch_state_arrays(adapter, aux_batches)
         logs.update(_state_f1_logs(z_true_epoch, z_pred_epoch))
+        if aux_batches["state_prob"]:
+            state_prob = np.concatenate(aux_batches["state_prob"], axis=0)
+            if state_prob.ndim > 2:
+                state_prob = state_prob.reshape(-1, state_prob.shape[-1])
+            ap_per_appliance = per_appliance_average_precision(
+                z_true_epoch,
+                state_prob,
+            )
+            logs["val_ap"] = float(np.mean(ap_per_appliance))
         logs.update(_epoch_power_mae_logs(adapter, aux_batches))
         if monitor_key := str(adapter.model_cfg.get("training", {}).get("checkpoint_monitor", "")).lower():
+            train_cfg = adapter.model_cfg.get("training", {})
             if monitor_key in {"val_mae_minus_f1", "mae_minus_f1"}:
-                train_cfg = adapter.model_cfg.get("training", {})
                 mae = _checkpoint_mae_for_score("val_mae_minus_f1", train_cfg, logs)
                 f1 = float(logs.get("val_f1", 0.0))
                 logs["val_mae_minus_f1"] = _mae_minus_f1_score(
                     mae, f1, mae_weight=_checkpoint_mae_weight(train_cfg)
+                )
+            elif monitor_key in {
+                "val_mae_plus_one_minus_ap",
+                "mae_plus_one_minus_ap",
+            }:
+                mae = _checkpoint_mae_for_score(
+                    "val_mae_plus_one_minus_ap",
+                    train_cfg,
+                    logs,
+                )
+                logs["val_mae_plus_one_minus_ap"] = _mae_plus_one_minus_ap_score(
+                    mae,
+                    float(logs["val_ap"]),
                 )
     logs["elapsed_sec"] = time.perf_counter() - epoch_started
     return logs
@@ -1121,6 +1172,8 @@ def _compute_scheduler_key(train_cfg: dict, monitor_key: str) -> str:
         "val_mae": "mae",
         "val_mae_minus_f1": "val_mae_minus_f1",
         "mae_minus_f1": "val_mae_minus_f1",
+        "val_mae_plus_one_minus_ap": "val_mae_plus_one_minus_ap",
+        "mae_plus_one_minus_ap": "val_mae_plus_one_minus_ap",
     }
     return scheduler_aliases.get(scheduler_raw, scheduler_raw)
 
@@ -1507,6 +1560,7 @@ def train_model(
                     **{f"train_{k}": v for k, v in train_logs.items() if k != "elapsed_sec"},
                     "val_loss": val_loss,
                     "val_f1": val_f1,
+                    "val_ap": float(val_logs.get("val_ap", 0.0)),
                     "val_mae_norm": float(val_logs.get("mae_norm", 0.0)),
                     "val_mae_watts": float(val_logs.get("mae_watts_epoch", val_mae)),
                     "val_acc": val_acc,
@@ -1534,6 +1588,14 @@ def train_model(
                 w = _checkpoint_mae_weight(train_cfg)
                 ckpt_detail = (
                     f"{w:g}×{space} mae - f1, mae={mae_ckpt:.4f}, f1={val_f1:.4f}"
+                )
+            elif monitor_key == "val_mae_plus_one_minus_ap":
+                mae_ckpt = _checkpoint_mae_for_score(monitor_key, train_cfg, val_logs)
+                space = str(train_cfg.get("checkpoint_mae_space", "normalized")).lower()
+                val_ap = float(val_logs["val_ap"])
+                ckpt_detail = (
+                    f"{space} mae + 1 - macro AP, "
+                    f"mae={mae_ckpt:.4f}, AP={val_ap:.4f}"
                 )
 
             # Prefer live lambda logged by the adapter (warmup-safe).
