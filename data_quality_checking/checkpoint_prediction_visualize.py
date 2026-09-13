@@ -191,46 +191,6 @@ def _prf(tp: int, fp: int, fn: int) -> tuple[float, float, float]:
     return float(precision), float(recall), float(f1)
 
 
-def _event_match_stats(
-    true_events: list[tuple[int, int]],
-    pred_events: list[tuple[int, int]],
-) -> dict[str, float | int]:
-    """Event-level matching by any temporal overlap.
-
-    This is intentionally separate from sample-level F1. A true event is
-    "detected" when at least one predicted ON event overlaps it. A predicted
-    event is "false" when it overlaps no true ON event.
-    """
-    matched_true = 0
-    for ts, te in true_events:
-        if any(max(ts, ps) < min(te, pe) for ps, pe in pred_events):
-            matched_true += 1
-
-    matched_pred = 0
-    for ps, pe in pred_events:
-        if any(max(ts, ps) < min(te, pe) for ts, te in true_events):
-            matched_pred += 1
-
-    missed = len(true_events) - matched_true
-    false = len(pred_events) - matched_pred
-    event_precision = matched_pred / max(len(pred_events), 1)
-    event_recall = matched_true / max(len(true_events), 1)
-    event_f1 = (
-        2 * event_precision * event_recall / max(event_precision + event_recall, 1e-12)
-    )
-    return {
-        "true_events": len(true_events),
-        "pred_events": len(pred_events),
-        "matched_true": matched_true,
-        "matched_pred": matched_pred,
-        "missed_true": missed,
-        "false_pred": false,
-        "event_precision": float(event_precision),
-        "event_recall": float(event_recall),
-        "event_f1": float(event_f1),
-    }
-
-
 def _sae_per_app(y_true: np.ndarray, y_pred: np.ndarray, period: int) -> np.ndarray:
     n = int(len(y_true))
     n_periods = n // max(1, int(period))
@@ -495,61 +455,7 @@ def interactive_prediction_viewer(
     true_segments = {app: on_segments(true_on[:, i]) for i, app in enumerate(appliances)}
     pred_segments = {app: on_segments(pred_on[:, i]) for i, app in enumerate(appliances)}
 
-    def event_time(idx: int) -> str:
-        if readable_time is not None and 0 <= idx < len(readable_time):
-            return str(readable_time[idx])
-        if 0 <= idx < len(csv_timesteps):
-            return f"csv_row={int(csv_timesteps[idx])}"
-        return str(idx)
-
-    def failed_event_records() -> list[dict[str, object]]:
-        records: list[dict[str, object]] = []
-        for app_i, app in enumerate(appliances):
-            true_mask = true_on[:, app_i].astype(bool)
-            pred_mask = pred_on[:, app_i].astype(bool)
-            for start_i, end_i in true_segments[app]:
-                span = slice(start_i, end_i)
-                if bool(pred_mask[span].any()):
-                    continue
-                records.append(
-                    {
-                        "appliance": app,
-                        "failure_type": "missed_true_event",
-                        "start_row": start_i,
-                        "end_row": end_i - 1,
-                        "start_time": event_time(start_i),
-                        "end_time": event_time(max(start_i, end_i - 1)),
-                        "duration_samples": end_i - start_i,
-                        "duration_minutes": (end_i - start_i) * 6.0 / 60.0,
-                        "true_peak_watts": float(np.max(true_watts[span, app_i])),
-                        "pred_peak_watts": float(np.max(pred_watts[span, app_i])),
-                        "true_energy_sample_watts": float(np.sum(true_watts[span, app_i])),
-                        "pred_energy_sample_watts": float(np.sum(pred_watts[span, app_i])),
-                    }
-                )
-            for start_i, end_i in pred_segments[app]:
-                span = slice(start_i, end_i)
-                if bool(true_mask[span].any()):
-                    continue
-                records.append(
-                    {
-                        "appliance": app,
-                        "failure_type": "false_pred_event",
-                        "start_row": start_i,
-                        "end_row": end_i - 1,
-                        "start_time": event_time(start_i),
-                        "end_time": event_time(max(start_i, end_i - 1)),
-                        "duration_samples": end_i - start_i,
-                        "duration_minutes": (end_i - start_i) * 6.0 / 60.0,
-                        "true_peak_watts": float(np.max(true_watts[span, app_i])),
-                        "pred_peak_watts": float(np.max(pred_watts[span, app_i])),
-                        "true_energy_sample_watts": float(np.sum(true_watts[span, app_i])),
-                        "pred_energy_sample_watts": float(np.sum(pred_watts[span, app_i])),
-                    }
-                )
-        return records
-
-    def build_report() -> tuple[list[str], Path, Path, Path]:
+    def build_report() -> tuple[list[str], Path, Path]:
         split_key = _split_key(split)
         try:
             test_csv = loader._resolve_csv_path(split_key)  # noqa: SLF001
@@ -561,8 +467,6 @@ def interactive_prediction_viewer(
         sae_vals = _sae_per_app(true_watts, pred_watts, sae_period)
         rows = []
         total_tp = total_fp = total_fn = total_tn = 0
-        failure_rows = failed_event_records()
-        failure_df = pd.DataFrame(failure_rows)
 
         lines = [
             "MultiNILM-Fractional Checkpoint Prediction Report",
@@ -581,7 +485,6 @@ def interactive_prediction_viewer(
         lines.append("Sample F1 : pointwise ON/OFF F1 over every timestep.")
         lines.append("Macro F1  : mean of per-appliance sample F1.")
         lines.append("Micro F1  : pooled TP/FP/FN over all appliances and timesteps.")
-        lines.append("Event F1  : event-level match; any overlap counts as detected.")
 
         for app_i, app in enumerate(appliances):
             tp, fp, fn, tn, f1 = _binary_f1_parts(true_on[:, app_i], pred_on[:, app_i])
@@ -590,7 +493,6 @@ def interactive_prediction_viewer(
             total_fp += fp
             total_fn += fn
             total_tn += tn
-            event_stats = _event_match_stats(true_segments[app], pred_segments[app])
             true_energy = float(np.sum(true_watts[:, app_i]))
             pred_energy = float(np.sum(pred_watts[:, app_i]))
             energy_bias_pct = (
@@ -615,7 +517,6 @@ def interactive_prediction_viewer(
                     "true_energy_sample_watts": true_energy,
                     "pred_energy_sample_watts": pred_energy,
                     "energy_bias_pct": float(energy_bias_pct),
-                    **event_stats,
                 }
             )
 
@@ -624,23 +525,6 @@ def interactive_prediction_viewer(
         sample_macro_recall = float(np.mean([r["sample_recall"] for r in rows])) if rows else 0.0
         sample_micro_precision, sample_micro_recall, sample_micro_f1 = _prf(
             total_tp, total_fp, total_fn
-        )
-        event_macro_f1 = float(np.mean([r["event_f1"] for r in rows])) if rows else 0.0
-        event_macro_precision = float(np.mean([r["event_precision"] for r in rows])) if rows else 0.0
-        event_macro_recall = float(np.mean([r["event_recall"] for r in rows])) if rows else 0.0
-        total_true_events = int(sum(r["true_events"] for r in rows))
-        total_pred_events = int(sum(r["pred_events"] for r in rows))
-        total_matched_true = int(sum(r["matched_true"] for r in rows))
-        total_missed_events = int(sum(r["missed_true"] for r in rows))
-        total_false_events = int(sum(r["false_pred"] for r in rows))
-        total_matched_pred = int(sum(r["matched_pred"] for r in rows))
-        event_micro_precision = total_matched_pred / max(total_pred_events, 1)
-        event_micro_recall = total_matched_true / max(total_true_events, 1)
-        event_micro_f1 = (
-            2
-            * event_micro_precision
-            * event_micro_recall
-            / max(event_micro_precision + event_micro_recall, 1e-12)
         )
 
         lines.extend(["", "Overall Metrics", "-" * 64])
@@ -654,57 +538,22 @@ def interactive_prediction_viewer(
             "Sample P/R/F1 micro     : "
             f"{sample_micro_precision:.4f} / {sample_micro_recall:.4f} / {sample_micro_f1:.4f}"
         )
-        lines.append(
-            "Event P/R/F1 macro      : "
-            f"{event_macro_precision:.4f} / {event_macro_recall:.4f} / {event_macro_f1:.4f}"
-        )
-        lines.append(
-            "Event P/R/F1 micro      : "
-            f"{event_micro_precision:.4f} / {event_micro_recall:.4f} / {event_micro_f1:.4f}"
-        )
         lines.append(f"Sample TP / FP / FN / TN: {total_tp:,} / {total_fp:,} / {total_fn:,} / {total_tn:,}")
-        lines.append(
-            "Events true / pred / missed / false: "
-            f"{total_true_events:,} / {total_pred_events:,} / "
-            f"{total_missed_events:,} / {total_false_events:,}"
-        )
 
         lines.extend(["", "Per-Appliance Summary", "-" * 64])
         header = (
             f"{'appliance':16s} {'MAE':>7s} {'SAE':>7s} "
-            f"{'sF1':>6s} {'eF1':>6s} {'sP':>6s} {'sR':>6s} "
-            f"{'evT':>5s} {'evP':>5s} {'miss':>5s} {'false':>5s} {'bias%':>7s}"
+            f"{'sF1':>6s} {'sP':>6s} {'sR':>6s} {'bias%':>7s}"
         )
         lines.append(header)
         lines.append("-" * len(header))
         for r in rows:
             lines.append(
                 f"{r['app']:16s} {r['mae']:7.2f} {r['sae']:7.2f} "
-                f"{r['sample_f1']:6.3f} {r['event_f1']:6.3f} "
+                f"{r['sample_f1']:6.3f} "
                 f"{r['sample_precision']:6.3f} {r['sample_recall']:6.3f} "
-                f"{r['true_events']:5d} {r['pred_events']:5d} "
-                f"{r['missed_true']:5d} {r['false_pred']:5d} "
                 f"{r['energy_bias_pct']:7.1f}"
             )
-
-        lines.extend(["", "Largest Failure Examples", "-" * 64])
-        if failure_df.empty:
-            lines.append("No completely missed true events or completely false predicted events.")
-        else:
-            failure_df["severity"] = np.maximum(
-                failure_df["true_peak_watts"].to_numpy(dtype=float),
-                failure_df["pred_peak_watts"].to_numpy(dtype=float),
-            ) * failure_df["duration_minutes"].to_numpy(dtype=float)
-            top_fail = failure_df.sort_values("severity", ascending=False).head(18)
-            for _, rec in top_fail.iterrows():
-                lines.append(
-                    f"{rec['appliance']:16s} {rec['failure_type']:18s} "
-                    f"rows {int(rec['start_row']):>7d}-{int(rec['end_row']):<7d} "
-                    f"{float(rec['duration_minutes']):>6.1f} min "
-                    f"true_peak={float(rec['true_peak_watts']):>7.1f}W "
-                    f"pred_peak={float(rec['pred_peak_watts']):>7.1f}W"
-                )
-                lines.append(f"    {rec['start_time']} -> {rec['end_time']}")
 
         lines.extend(_architecture_report_lines(model, adapter.model_cfg, appliances))
 
@@ -713,19 +562,16 @@ def interactive_prediction_viewer(
         safe_name = checkpoint.parent.parent.name.replace(" ", "_").replace("(", "").replace(")", "")
         report_txt = report_dir / f"{safe_name}_{split_key}_report.txt"
         metrics_csv = report_dir / f"{safe_name}_{split_key}_metrics_summary.csv"
-        failure_csv = report_dir / f"{safe_name}_{split_key}_failed_events.csv"
         report_txt.write_text("\n".join(lines), encoding="utf-8")
         pd.DataFrame(rows).to_csv(metrics_csv, index=False)
-        pd.DataFrame(failure_rows).to_csv(failure_csv, index=False)
         lines.extend(
             [
                 "",
                 f"Saved report       : {report_txt}",
                 f"Saved metrics CSV  : {metrics_csv}",
-                f"Saved failures CSV : {failure_csv}",
             ]
         )
-        return lines, report_txt, metrics_csv, failure_csv
+        return lines, report_txt, metrics_csv
 
     n_rows = 1 + len(appliances)
     fig_height = min(13.5, max(8.5, 1.75 * n_rows))
@@ -1003,7 +849,7 @@ def interactive_prediction_viewer(
         print("=" * 100)
 
     def show_report(_=None) -> None:
-        lines, report_txt, metrics_csv, failure_csv = build_report()
+        lines, report_txt, metrics_csv = build_report()
         print("\n".join(lines))
         try:
             import tkinter as tk
@@ -1076,7 +922,7 @@ def interactive_prediction_viewer(
             footer.pack(fill="x")
             ttk.Label(
                 footer,
-                text=f"Saved: {report_txt}    |    {metrics_csv}    |    {failure_csv}",
+                text=f"Saved: {report_txt}    |    {metrics_csv}",
                 foreground="#4b5563",
                 font=("Segoe UI", 8),
             ).pack(side="left")
@@ -1166,9 +1012,7 @@ def interactive_prediction_viewer(
     print(f"Appliances : {', '.join(appliances)}")
     for i, app in enumerate(appliances):
         print(
-            f"{app:16s} true_events={len(true_segments[app]):5d} "
-            f"pred_events={len(pred_segments[app]):5d} "
-            f"MAE={np.mean(np.abs(pred_watts[:, i] - true_watts[:, i])):8.2f} W"
+            f"{app:16s} MAE={np.mean(np.abs(pred_watts[:, i] - true_watts[:, i])):8.2f} W"
         )
 
     redraw()

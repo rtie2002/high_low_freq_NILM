@@ -739,15 +739,10 @@ def build_val_test_comparison_frame(
             "balanced_accuracy",
             "on_mae",
             "off_mae",
-            "delta_mae",
+            "sae",
+            "micro_f1",
             "energy_ratio",
             "on_energy_ratio",
-            "event_precision",
-            "event_recall",
-            "event_f1",
-            "missed_event_rate",
-            "true_events",
-            "pred_events",
         ):
             if metric in v.index and metric in t.index:
                 val_value = float(v[metric])
@@ -767,7 +762,7 @@ def save_val_test_comparison_figure(
     title: str | None = None,
     dpi: int = 200,
 ) -> Path:
-    """Paper-style side-by-side power, state, event, and energy tables."""
+    """Side-by-side val/test tables, grouped as Power / Detection / Energy."""
     if not isinstance(val_metrics, pd.DataFrame):
         val_metrics = pd.read_csv(val_metrics)
     if not isinstance(test_metrics, pd.DataFrame):
@@ -777,22 +772,44 @@ def save_val_test_comparison_figure(
     if compare.empty:
         return output_path
 
-    columns = [
-        ("Appliance", "appliance", "text"),
-        ("MAE\n(W)", "mae", "power"),
-        ("ON MAE\n(W)", "on_mae", "power"),
-        ("OFF MAE\n(W)", "off_mae", "power"),
-        ("Delta MAE\n(W)", "delta_mae", "power"),
-        ("Precision", "precision", "score"),
-        ("Recall", "recall", "score"),
-        ("Average\nprecision", "average_precision", "score"),
-        ("Sample\nF1", "f1", "score"),
-        ("Event\nprecision", "event_precision", "score"),
-        ("Event\nrecall", "event_recall", "score"),
-        ("Event\nF1", "event_f1", "score"),
-        ("Energy\nratio", "energy_ratio", "ratio"),
-        ("ON energy\nratio", "on_energy_ratio", "ratio"),
+    # Group header + metric header. Micro-F1 is defined only on the overall row.
+    groups: list[tuple[str, str, list[tuple[str, str, str]]]] = [
+        ("", "#263746", [("Appliance", "appliance", "text")]),
+        (
+            "Power",
+            "#1b4f72",
+            [
+                ("MAE\n(W)", "mae", "power"),
+                ("SAE\n(W)", "sae", "power"),
+                ("ON MAE\n(W)", "on_mae", "power"),
+                ("OFF MAE\n(W)", "off_mae", "power"),
+            ],
+        ),
+        (
+            "Detection",
+            "#1e5631",
+            [
+                ("Precision", "precision", "score"),
+                ("Recall", "recall", "score"),
+                ("AP", "average_precision", "score"),
+                ("F1", "f1", "score"),
+                ("Bal.\nacc", "balanced_accuracy", "score"),
+                ("Micro\nF1", "micro_f1", "score"),
+            ],
+        ),
+        (
+            "Energy",
+            "#6e2c00",
+            [
+                ("Ratio", "energy_ratio", "ratio"),
+                ("ON ratio", "on_energy_ratio", "ratio"),
+            ],
+        ),
     ]
+    columns: list[tuple[str, str, str, str, str]] = []
+    for group_name, group_color, items in groups:
+        for label, key, kind in items:
+            columns.append((group_name, group_color, label, key, kind))
 
     def _ordered(frame: pd.DataFrame) -> pd.DataFrame:
         if "overall" not in set(frame["appliance"]):
@@ -804,32 +821,81 @@ def save_val_test_comparison_figure(
         if kind == "text":
             return str(row[key])
         if key not in row.index or pd.isna(row[key]):
-            return "-"
+            return "—"
         value = float(row[key])
         return f"{value:.1f}" if kind == "power" else f"{value:.3f}"
 
     def _draw(ax, frame: pd.DataFrame, split_name: str) -> None:
         frame = _ordered(frame)
-        cells = [[_cell(row, key, kind) for _, key, kind in columns] for _, row in frame.iterrows()]
-        metric_width = (1.0 - 0.16) / (len(columns) - 1)
+        n_col = len(columns)
+        group_labels: list[str] = []
+        start = 0
+        while start < n_col:
+            name = columns[start][0]
+            end = start + 1
+            while end < n_col and columns[end][0] == name:
+                end += 1
+            mid = start
+            for col in range(start, end):
+                group_labels.append(name if col == mid else "")
+            start = end
+        group_labels[0] = split_name
+        metric_labels = [label for _, _, label, _, _ in columns]
+        data = [
+            [_cell(row, key, kind) for _, _, _, key, kind in columns]
+            for _, row in frame.iterrows()
+        ]
+        cells = [group_labels, metric_labels, *data]
+        metric_width = (1.0 - 0.13) / (n_col - 1)
         ax.axis("off")
-        ax.set_title(split_name, fontsize=10, fontweight="bold", loc="left", pad=5)
         table = ax.table(
             cellText=cells,
-            colLabels=[label for label, _, _ in columns],
             cellLoc="center",
-            colWidths=[0.16] + [metric_width] * (len(columns) - 1),
-            bbox=[0.0, 0.0, 1.0, 0.94],
+            colWidths=[0.13] + [metric_width] * (n_col - 1),
+            bbox=[0.0, 0.0, 1.0, 0.98],
         )
         table.auto_set_font_size(False)
-        table.set_fontsize(7.2)
-        for col in range(len(columns)):
-            table[0, col].set_facecolor("#263746")
-            table[0, col].set_text_props(color="white", weight="bold")
-            table[0, col].set_edgecolor("#ffffff")
-        for row_i, app in enumerate(frame["appliance"], start=1):
+        table.set_fontsize(6.6)
+        n_rows = 2 + len(frame)
+        group_h = 0.16
+        metric_h = 0.18
+        data_h = max(0.08, (1.0 - group_h - metric_h) / max(len(frame), 1))
+        for col in range(n_col):
+            table[0, col].set_height(group_h)
+            table[1, col].set_height(metric_h)
+            for row_i in range(2, n_rows):
+                table[row_i, col].set_height(data_h)
+        for col, (_, group_color, _, _, _) in enumerate(columns):
+            group_cell = table[0, col]
+            metric_cell = table[1, col]
+            group_cell.set_facecolor(group_color)
+            group_cell.set_text_props(color="white", weight="bold", fontsize=8.2)
+            group_cell.set_edgecolor(group_color)
+            metric_cell.set_facecolor(group_color)
+            metric_cell.set_text_props(color="white", weight="bold")
+            metric_cell.set_edgecolor("#ffffff")
+        start = 0
+        while start < n_col:
+            name = columns[start][0]
+            end = start + 1
+            while end < n_col and columns[end][0] == name:
+                end += 1
+            if name and end - start > 1:
+                for col in range(start, end):
+                    if col == start:
+                        table[0, col].visible_edges = "TBL"
+                        table[0, col].set_text_props(
+                            color="white", weight="bold", fontsize=8.2, ha="left"
+                        )
+                    elif col == end - 1:
+                        table[0, col].visible_edges = "TBR"
+                    else:
+                        table[0, col].visible_edges = "TB"
+            start = end
+        table[0, 0].set_text_props(color="white", weight="bold", fontsize=9, ha="left")
+        for row_i, app in enumerate(frame["appliance"], start=2):
             fill = "#dfe8f1" if app == "overall" else ("#f3f5f7" if row_i % 2 == 0 else "#ffffff")
-            for col in range(len(columns)):
+            for col in range(n_col):
                 table[row_i, col].set_facecolor(fill)
                 table[row_i, col].set_edgecolor("#c8d0d8")
                 table[row_i, col].set_linewidth(0.5)
@@ -837,13 +903,13 @@ def save_val_test_comparison_figure(
                     table[row_i, col].set_text_props(weight="bold")
             table[row_i, 0].set_text_props(ha="left", weight="bold" if app == "overall" else "normal")
 
-    fig, axes = plt.subplots(1, 2, figsize=(20.5, 2.65))
+    fig, axes = plt.subplots(1, 2, figsize=(22.8, 3.45))
     if title is None:
         title = f"Epoch {epoch}" if epoch is not None else "Best checkpoint"
     fig.suptitle(title, fontsize=11, fontweight="bold", x=0.01, ha="left", y=0.995)
     _draw(axes[0], val_metrics, "Validation")
     _draw(axes[1], test_metrics, "Test")
-    fig.subplots_adjust(left=0.012, right=0.988, top=0.88, bottom=0.025, wspace=0.035)
+    fig.subplots_adjust(left=0.010, right=0.990, top=0.90, bottom=0.02, wspace=0.030)
     fig.savefig(output_path, dpi=dpi, facecolor="white", bbox_inches="tight", pad_inches=0.05)
     plt.close(fig)
 

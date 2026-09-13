@@ -71,80 +71,6 @@ def _mean_finite(values: np.ndarray) -> float:
     return float(finite.mean()) if finite.size else float("nan")
 
 
-def _event_intervals(mask: np.ndarray, csv_timesteps: np.ndarray | None) -> list[tuple[int, int]]:
-    """Return inclusive ON intervals, breaking events at discontinuous CSV rows."""
-    mask = np.asarray(mask, dtype=bool).reshape(-1)
-    if mask.size == 0:
-        return []
-    if csv_timesteps is None:
-        break_before = np.r_[True, np.zeros(mask.size - 1, dtype=bool)]
-    else:
-        timeline = np.asarray(csv_timesteps).reshape(-1)
-        if timeline.size != mask.size:
-            raise ValueError("csv_timesteps must have the same length as ON/OFF states")
-        break_before = np.r_[True, np.diff(timeline) != 1]
-
-    starts = np.flatnonzero(mask & (break_before | np.r_[True, ~mask[:-1]]))
-    break_after = np.r_[break_before[1:], True]
-    ends = np.flatnonzero(mask & (break_after | np.r_[~mask[1:], True]))
-    return list(zip(starts.tolist(), ends.tolist()))
-
-
-def _match_events(
-    true_events: list[tuple[int, int]],
-    pred_events: list[tuple[int, int]],
-) -> int:
-    """One-to-one event matches using any temporal overlap."""
-    true_i = pred_i = matched = 0
-    while true_i < len(true_events) and pred_i < len(pred_events):
-        true_start, true_end = true_events[true_i]
-        pred_start, pred_end = pred_events[pred_i]
-        if true_end < pred_start:
-            true_i += 1
-        elif pred_end < true_start:
-            pred_i += 1
-        else:
-            matched += 1
-            true_i += 1
-            pred_i += 1
-    return matched
-
-
-def event_detection_metrics(
-    y_true_on: np.ndarray,
-    y_pred_on: np.ndarray,
-    csv_timesteps: np.ndarray | None = None,
-) -> dict[str, np.ndarray]:
-    """Per-appliance event metrics with one-to-one temporal-overlap matching."""
-    y_true_on = np.asarray(y_true_on)
-    y_pred_on = np.asarray(y_pred_on)
-    if y_true_on.shape != y_pred_on.shape or y_true_on.ndim != 2:
-        raise ValueError("event states must have matching (samples, appliances) shapes")
-
-    true_counts = np.zeros(y_true_on.shape[1], dtype=np.int64)
-    pred_counts = np.zeros_like(true_counts)
-    matched_counts = np.zeros_like(true_counts)
-    for app_i in range(y_true_on.shape[1]):
-        true_events = _event_intervals(y_true_on[:, app_i], csv_timesteps)
-        pred_events = _event_intervals(y_pred_on[:, app_i], csv_timesteps)
-        true_counts[app_i] = len(true_events)
-        pred_counts[app_i] = len(pred_events)
-        matched_counts[app_i] = _match_events(true_events, pred_events)
-
-    precision = _safe_ratio(matched_counts, pred_counts)
-    recall = _safe_ratio(matched_counts, true_counts)
-    f1 = _safe_ratio(2.0 * precision * recall, precision + recall)
-    return {
-        "event_precision": precision,
-        "event_recall": recall,
-        "event_f1": f1,
-        "missed_event_rate": 1.0 - recall,
-        "true_events": true_counts,
-        "pred_events": pred_counts,
-        "matched_events": matched_counts,
-    }
-
-
 def mae(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
     return np.mean(np.abs(y_true - y_pred), axis=0)
 
@@ -262,7 +188,7 @@ def evaluate_bundle(
     state_label_source: str = "auto",
     power_postprocess: PowerPostprocessConfig | None = None,
 ) -> pd.DataFrame:
-    """Per-appliance power, state, energy, and event diagnostics."""
+    """Per-appliance power, sample-state, and energy diagnostics."""
     y_true, y_pred = apply_power_postprocess_pair(
         bundle.y_true_watts,
         bundle.y_pred_watts,
@@ -297,21 +223,6 @@ def evaluate_bundle(
         (y_true * true_on).sum(axis=0),
     )
 
-    if len(y_true) > 1:
-        contiguous = np.ones(len(y_true) - 1, dtype=bool)
-        if bundle.csv_timesteps is not None:
-            timeline = np.asarray(bundle.csv_timesteps).reshape(-1)
-            if len(timeline) != len(y_true):
-                raise ValueError("bundle.csv_timesteps length must match predictions")
-            contiguous = np.diff(timeline) == 1
-        delta_error = np.abs(np.diff(y_pred, axis=0) - np.diff(y_true, axis=0))
-        delta_on = np.maximum(z_true[1:], z_true[:-1]).astype(bool)
-        delta_mae_vals = _masked_mae(delta_error, delta_on & contiguous[:, None])
-    else:
-        delta_mae_vals = np.full(y_true.shape[1], np.nan)
-
-    event = event_detection_metrics(z_true, z_pred, bundle.csv_timesteps)
-
     base = {
         "experiment_id": bundle.experiment_id,
         "model": bundle.model_name,
@@ -334,21 +245,12 @@ def evaluate_bundle(
             "average_precision": float(average_precision_vals[i]),
             "on_mae": float(on_mae_vals[i]),
             "off_mae": float(off_mae_vals[i]),
-            "delta_mae": float(delta_mae_vals[i]),
             "energy_ratio": float(energy_ratio_vals[i]),
             "on_energy_ratio": float(on_energy_ratio_vals[i]),
-            "event_precision": float(event["event_precision"][i]),
-            "event_recall": float(event["event_recall"][i]),
-            "event_f1": float(event["event_f1"][i]),
-            "missed_event_rate": float(event["missed_event_rate"][i]),
-            "true_events": int(event["true_events"][i]),
-            "pred_events": int(event["pred_events"][i]),
         })
 
     macro = float(np.mean(f1_vals)) if len(f1_vals) else 0.0
     micro = _micro_f1(tp, fp, fn)
-    true_events = int(event["true_events"].sum())
-    pred_events = int(event["pred_events"].sum())
     rows.append({
         **base,
         "appliance": "overall",
@@ -364,15 +266,8 @@ def evaluate_bundle(
         "average_precision": _mean_finite(average_precision_vals),
         "on_mae": _mean_finite(on_mae_vals),
         "off_mae": _mean_finite(off_mae_vals),
-        "delta_mae": _mean_finite(delta_mae_vals),
         "energy_ratio": _mean_finite(energy_ratio_vals),
         "on_energy_ratio": _mean_finite(on_energy_ratio_vals),
-        "event_precision": _mean_finite(event["event_precision"]),
-        "event_recall": _mean_finite(event["event_recall"]),
-        "event_f1": _mean_finite(event["event_f1"]),
-        "missed_event_rate": _mean_finite(event["missed_event_rate"]),
-        "true_events": true_events,
-        "pred_events": pred_events,
     })
     return pd.DataFrame(rows)
 

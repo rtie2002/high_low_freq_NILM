@@ -101,3 +101,10 @@ matuda_test_*.ps1
 
 
 /Clean Version (detail_branch_channels)
+/Clean Version (checkpoint_ap)
+/Clean Version (conditional_power)
+/Clean Version (dropout035)
+/Clean Version (head_local_1)
+/Clean Version (no_state_transition)
+/Clean Version (ungated_power)
+/Clean Version (window512)
