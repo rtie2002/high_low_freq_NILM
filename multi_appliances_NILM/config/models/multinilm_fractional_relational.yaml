@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: Clean Version (ch64)
+experiment_id: Clean Version (8w)
 model_name: multinilm_fractional
 
 data:
@@ -56,11 +56,11 @@ fractional:
   channel_normalize: none
 
 architecture:
-  # Width ablation vs checkpoint_ap [32, 64, 128] / hidden 128.
-  # One extra stage, TCN width 256. Keep the first stage at 32 so this is
-  # only a capacity increase, not a narrower stem mixed in.
-  channel_schedule: [16, 32, 64]
-  hidden_channels: 64
+  # Held at the checkpoint_ap baseline so the only change versus that run is the
+  # training volume (mixed 3-week -> 8-week blocks, 1862 -> 4107 train windows).
+  # Do not fold a width ablation into this run.
+  channel_schedule: [32, 64, 128]
+  hidden_channels: 128
 
   use_multiscale_stem: true
   detail_kernels: [3, 5, 9]

@@ -1,6 +1,6 @@
 {
-  "block_weeks": 3.0,
-  "step_days": 1.0,
+  "block_weeks": 8.0,
+  "step_days": 2.0,
   "sample_seconds": 8.0,
   "train_val_ratio": "80/20",
   "ukdale_source": [

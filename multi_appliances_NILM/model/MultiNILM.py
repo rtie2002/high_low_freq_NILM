@@ -1,16 +1,24 @@
-"""MultiNILM: aggregate power → A appliance powers and ON/OFF logits.
+"""Beginner path: read MultiNILMFractional.forward, then MultiNILM.forward.
 
-    x (B,T) → optional GL channels (B,C_in,T) → stem+TCN (B,C,T)
-      → heads → relation mix → power, state (B,T_out,A)
+Every Conv1d tensor is (B, C, T) = batch, channels, time.
+Relational yaml example: B=64, C_in=13, C=64, T=1024, A=5 appliances.
 
-Fractional checkpoints stay `frontend.*` / `backbone.*`. Loss is MultiNILM_loss.py.
+  mains (B, T)
+    -> FrontEnd          (B, 13, T)
+    -> stem              (B, 64, T)
+    -> TCN               (B, 64, T)
+    -> 5 heads           5 x (B, 64, T)
+    -> relation mix      5 x (B, 64, T)
+    -> power, state      (B, T, 5)
+
+Stop at "YAML / training" unless you are changing configs.
+Checkpoint names stay frontend.* / backbone.*. Loss is MultiNILM_loss.py.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import math
-from typing import Any
 
 import numpy as np
 import torch
@@ -21,10 +29,11 @@ from config import appliance_off_norm_normalized
 from data.common import BaseNILMAdapter, StepOutput
 
 
-DOMAIN_FEATURE_LAYER_ALIASES = {"shared": "aligned", "encoder": "temporal", "aggregate": "stem"}
+# ---------------------------------------------------------------------------
+# Shared pieces used by the layers below.
+# ---------------------------------------------------------------------------
 
-
-def make_norm_1d(channels: int, norm_type: str = "batch") -> nn.Module:
+def make_norm_1d(channels, norm_type="batch"):
     kind = str(norm_type or "batch").lower()
     n = int(channels)
     if kind in {"batch", "batchnorm", "bn"}:
@@ -41,48 +50,23 @@ def make_norm_1d(channels: int, norm_type: str = "batch") -> nn.Module:
     raise ValueError(f"norm_type must be batch|instance|ibn|group, got {norm_type!r}")
 
 
-def _conv_norm_relu(in_ch: int, out_ch: int, kernel: int, norm_type: str) -> list[nn.Module]:
-    return [
-        nn.Conv1d(in_ch, out_ch, kernel, padding=kernel // 2),
-        make_norm_1d(out_ch, norm_type),
-        nn.ReLU(inplace=True),
-    ]
-
-
 class IBN1d(nn.Module):
-    """Y = concat(IN(X[:, :C/2]), BN(X[:, C/2:])). Shape (B,C,T) unchanged."""
+    """IN on first half of C, BN on second half. Shape stays (B, C, T)."""
 
-    def __init__(self, channels: int) -> None:
+    def __init__(self, channels):
         super().__init__()
         self.instance_channels = int(channels) // 2
         self.batch_channels = int(channels) - self.instance_channels
         self.instance_norm = nn.InstanceNorm1d(self.instance_channels, affine=True)
         self.batch_norm = nn.BatchNorm1d(self.batch_channels)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x):
         x_in, x_bn = torch.split(x, [self.instance_channels, self.batch_channels], dim=1)
         return torch.cat([self.instance_norm(x_in), self.batch_norm(x_bn)], dim=1)
 
 
-def normalize_domain_feature_layers(layers: list[str] | None) -> list[str]:
-    if not layers:
-        return ["aligned"]
-    out: list[str] = []
-    for raw in layers:
-        name = DOMAIN_FEATURE_LAYER_ALIASES.get(str(raw).strip().lower(), str(raw).strip().lower())
-        if name not in out:
-            out.append(name)
-    return out or ["aligned"]
-
-
-def pool_domain_feature_map(features: torch.Tensor) -> torch.Tensor:
-    if features.dim() != 3:
-        raise ValueError(f"Expected (B, C, T), got {tuple(features.shape)}")
-    return features.mean(dim=-1)
-
-
 def state_gate(state_prob, *, mode="soft", threshold=0.5, training=False):
-    """none=ungated, soft=σ, hard=1{σ≥thr} with STE in train, soft_train_hard_eval."""
+    """ON probability -> gate in [0, 1]. yaml gate_mode=soft uses the sigmoid itself."""
     gate_mode = str(mode or "soft").lower()
     hard = (state_prob >= float(threshold)).to(dtype=state_prob.dtype)
     if gate_mode in {"none", "ungated"}:
@@ -98,8 +82,123 @@ def state_gate(state_prob, *, mode="soft", threshold=0.5, training=False):
     raise ValueError(f"gate_mode must be none|soft|hard|soft_train_hard_eval, got {mode!r}")
 
 
+def pool_domain_feature_map(features):
+    """(B, C, T) -> (B, C). Used by the DA loss only."""
+    if features.dim() != 3:
+        raise ValueError(f"Expected (B, C, T), got {tuple(features.shape)}")
+    return features.mean(dim=-1)
+
+
+# ===========================================================================
+# Network layers. Each class is one box on the diagram.
+# ===========================================================================
+
+class FractionalFrontEnd(nn.Module):
+    """One mains channel -> several derived channels, same T.
+
+    Relational yaml concat order:
+      raw, delta, |delta|, rolling mean[8,23,45], rolling std[8,23,45], GL x k
+    """
+
+    def __init__(self, alphas=None, *, include_raw=True, memory=None, h=1.0, max_memory=256,
+                 channel_normalize="mean_std", channel_norm_eps=1e-5, include_delta=False,
+                 include_abs_delta=False, rolling_windows=None, include_rolling_mean=False,
+                 include_rolling_std=False):
+        super().__init__()
+        if alphas is None:
+            alphas = [round((i + 1) / 8, 6) for i in range(8)]
+        self.alphas = [float(a) for a in alphas]
+        if not self.alphas and not include_raw:
+            raise ValueError("need at least one alpha or include_raw=True")
+        self.include_raw = bool(include_raw)
+        self.h = float(h)
+        self.memory = int(memory) if memory is not None else int(max_memory)
+        if self.memory < 1:
+            raise ValueError(f"memory must be >= 1, got {self.memory}")
+        self.channel_normalize = str(channel_normalize)
+        if self.channel_normalize not in {"mean_std", "none"}:
+            raise ValueError(f"channel_normalize must be mean_std|none, got {self.channel_normalize!r}")
+        self.channel_norm_eps = float(channel_norm_eps)
+        self.include_delta = bool(include_delta)
+        self.include_abs_delta = bool(include_abs_delta)
+        self.rolling_windows = [int(w) for w in (rolling_windows or [])]
+        if any(w < 1 for w in self.rolling_windows):
+            raise ValueError(f"rolling_windows must be positive, got {self.rolling_windows}")
+        self.include_rolling_mean = bool(include_rolling_mean)
+        self.include_rolling_std = bool(include_rolling_std)
+        extra = int(self.include_delta) + int(self.include_abs_delta)
+        if self.include_rolling_mean:
+            extra += len(self.rolling_windows)
+        if self.include_rolling_std:
+            extra += len(self.rolling_windows)
+        self.out_channels = (1 if self.include_raw else 0) + len(self.alphas) + extra
+
+        if not self.alphas:
+            self.gl_conv = None
+            self.register_buffer("gl_weight", torch.zeros(0), persistent=True)
+            return
+        # Grunwald–Letnikov: w[0]=1, w[j]=w[j-1]*(j-1-α)/j, then reverse for conv.
+        kernels = []
+        for alpha in self.alphas:
+            w = np.empty(self.memory + 1, dtype=np.float64)
+            w[0] = 1.0
+            for j in range(1, self.memory + 1):
+                w[j] = w[j - 1] * (j - 1 - float(alpha)) / j
+            w = w / (self.h ** alpha)
+            kernels.append(torch.tensor(w[::-1].copy(), dtype=torch.float32))
+        weight = torch.stack(kernels, dim=0).unsqueeze(1)
+        self.gl_conv = nn.Conv1d(len(self.alphas), len(self.alphas), int(weight.shape[-1]),
+                                 groups=len(self.alphas), bias=False, padding=0)
+        with torch.no_grad():
+            self.gl_conv.weight.copy_(weight)
+        self.gl_conv.weight.requires_grad_(False)
+        self.register_buffer("gl_weight", self.gl_conv.weight, persistent=False)
+
+    def forward(self, x):
+        # x: (B, 1, T) -> (B, C_in, T)
+        if x.dim() != 3:
+            raise ValueError(f"FractionalFrontEnd expected (B,C,T), got {tuple(x.shape)}")
+        if x.shape[1] != 1:
+            x = x[:, :1, :]
+
+        parts = []
+        if self.include_raw:
+            parts.append(x)
+
+        if self.include_delta or self.include_abs_delta:
+            delta = torch.cat([torch.zeros_like(x[..., :1]), x[..., 1:] - x[..., :-1]], dim=-1)
+            if self.include_delta:
+                parts.append(delta)
+            if self.include_abs_delta:
+                parts.append(delta.abs())
+
+        for window in self.rolling_windows:
+            if window <= 1:
+                mean, std = x, torch.zeros_like(x)
+            else:
+                x_pad = F.pad(x, (window - 1, 0), mode="replicate")
+                mean = F.avg_pool1d(x_pad, window, stride=1)
+                var = (F.avg_pool1d(F.pad(x * x, (window - 1, 0), mode="replicate"), window, stride=1) - mean * mean)
+                std = torch.sqrt(var.clamp_min(0.0) + self.channel_norm_eps)
+            if self.include_rolling_mean:
+                parts.append(mean)
+            if self.include_rolling_std:
+                parts.append(std)
+
+        if self.alphas:
+            pad = int(self.gl_conv.weight.shape[-1]) - 1
+            parts.append(self.gl_conv(F.pad(x, (pad, 0)).expand(-1, len(self.alphas), -1)))
+
+        out = torch.cat(parts, dim=1)
+        if self.channel_normalize == "mean_std":
+            mu = out.mean(dim=-1, keepdim=True)
+            sigma = out.std(dim=-1, keepdim=True).clamp_min(self.channel_norm_eps)
+            out = (out - mu) / sigma
+        return out
+
+
 class ResidualTemporalBlock(nn.Module):
-    """(B,C,T) residual conv. Kernel must be odd so length is unchanged."""
+    """Dilated conv + residual. (B, C, T) -> (B, C, T). Kernel must be odd."""
 
     def __init__(self, channels, kernel_size, dilation, dropout, norm_type="batch"):
         super().__init__()
@@ -116,7 +215,7 @@ class ResidualTemporalBlock(nn.Module):
 
 
 class MultiScaleWaveformStem(nn.Module):
-    """Parallel odd kernels fused with 1×1 + skip."""
+    """Parallel odd kernels, concat on C, 1x1 fuse + skip. (B, C_in, T) -> (B, C_out, T)."""
 
     def __init__(self, input_channels, out_channels, kernels=(3, 5, 9), branch_channels=12, norm_type="batch"):
         super().__init__()
@@ -128,21 +227,29 @@ class MultiScaleWaveformStem(nn.Module):
             k = int(kernel_size)
             if k < 1 or k % 2 == 0:
                 raise ValueError(f"detail kernels must be odd positive ints, got {k}")
-            branches.append(nn.Sequential(*_conv_norm_relu(in_ch, branch_ch, k, norm_type)))
+            branches.append(nn.Sequential(
+                nn.Conv1d(in_ch, branch_ch, k, padding=k // 2),
+                make_norm_1d(branch_ch, norm_type),
+                nn.ReLU(inplace=True),
+            ))
         self.branches = nn.ModuleList(branches)
-        self.fuse = nn.Sequential(*_conv_norm_relu(branch_ch * len(branches), out_ch, 1, norm_type))
-        self.skip: nn.Module = (
-            nn.Identity()
-            if in_ch == out_ch
-            else nn.Sequential(nn.Conv1d(in_ch, out_ch, 1), make_norm_1d(out_ch, norm_type))
+        self.fuse = nn.Sequential(
+            nn.Conv1d(branch_ch * len(branches), out_ch, 1),
+            make_norm_1d(out_ch, norm_type),
+            nn.ReLU(inplace=True),
         )
+        if in_ch == out_ch:
+            self.skip = nn.Identity()
+        else:
+            self.skip = nn.Sequential(nn.Conv1d(in_ch, out_ch, 1), make_norm_1d(out_ch, norm_type))
 
     def forward(self, x):
-        return self.fuse(torch.cat([b(x) for b in self.branches], dim=1)) + self.skip(x)
+        y = torch.cat([branch(x) for branch in self.branches], dim=1)
+        return self.fuse(y) + self.skip(x)
 
 
 class StagedFeatureExtractor(nn.Module):
-    """Widen channels, e.g. 1→32→64→128."""
+    """Widen channels, e.g. 16 -> 32 -> 64. T stays the same."""
 
     def __init__(self, input_channels, channel_schedule, stem_kernel_size=7, stage_kernel_size=5, norm_type="batch"):
         super().__init__()
@@ -150,8 +257,12 @@ class StagedFeatureExtractor(nn.Module):
             raise ValueError("channel_schedule must contain at least one width.")
         layers, in_ch = [], int(input_channels)
         for i, out_ch in enumerate(channel_schedule):
-            k = stem_kernel_size if i == 0 else stage_kernel_size
-            layers.extend(_conv_norm_relu(in_ch, int(out_ch), int(k), norm_type))
+            k = int(stem_kernel_size if i == 0 else stage_kernel_size)
+            layers += [
+                nn.Conv1d(in_ch, int(out_ch), k, padding=k // 2),
+                make_norm_1d(int(out_ch), norm_type),
+                nn.ReLU(inplace=True),
+            ]
             in_ch = int(out_ch)
         self.stages = nn.Sequential(*layers)
 
@@ -159,33 +270,8 @@ class StagedFeatureExtractor(nn.Module):
         return self.stages(x)
 
 
-def _build_stem(*, input_channels, hidden_channels, channel_schedule, use_multiscale_stem,
-                detail_kernels, detail_branch_channels, stem_kernel_size, stage_kernel_size, stem_norm_type):
-    ms = dict(kernels=detail_kernels, branch_channels=int(detail_branch_channels), norm_type=stem_norm_type)
-    if channel_schedule:
-        schedule = [int(w) for w in channel_schedule]
-        if schedule[-1] != hidden_channels:
-            raise ValueError(
-                f"hidden_channels must match last channel_schedule entry; "
-                f"got {hidden_channels} vs {schedule}."
-            )
-        if not use_multiscale_stem:
-            return StagedFeatureExtractor(
-                input_channels, schedule, int(stem_kernel_size), int(stage_kernel_size), stem_norm_type
-            )
-        stages: list[nn.Module] = [MultiScaleWaveformStem(input_channels, schedule[0], **ms)]
-        if schedule[1:]:
-            stages.append(StagedFeatureExtractor(
-                schedule[0], schedule[1:], int(stage_kernel_size), int(stage_kernel_size), stem_norm_type
-            ))
-        return nn.Sequential(*stages)
-    if use_multiscale_stem:
-        return MultiScaleWaveformStem(input_channels, hidden_channels, **ms)
-    return nn.Sequential(*_conv_norm_relu(input_channels, hidden_channels, int(stem_kernel_size), stem_norm_type))
-
-
 class ApplianceHead(nn.Module):
-    """Shared Z → appliance features F → gated power and state logit."""
+    """One appliance: shared z -> local features -> gated power + state logit."""
 
     def __init__(self, hidden_channels, dropout, *, gate_mode="soft_train_hard_eval", gate_threshold=0.5,
                  off_norm=0.0, head_local_layers=2, head_kernel_size=3, head_use_residual=True,
@@ -196,7 +282,7 @@ class ApplianceHead(nn.Module):
         self.register_buffer("off_norm", torch.tensor(float(off_norm), dtype=torch.float32))
         if use_task_attention:
             att_ch = max(4, int(hidden_channels) // max(int(task_attention_reduction), 1))
-            self.task_attention: nn.Module | None = nn.Sequential(
+            self.task_attention = nn.Sequential(
                 nn.Conv1d(hidden_channels, att_ch, 1), nn.ReLU(inplace=True),
                 nn.Conv1d(att_ch, hidden_channels, 1), nn.Sigmoid(),
             )
@@ -207,38 +293,47 @@ class ApplianceHead(nn.Module):
         n_local = int(head_local_layers)
         self.head_use_residual = bool(head_use_residual) and n_local > 0
         if n_local <= 0:
-            self.local_decoder = nn.Sequential(*_conv_norm_relu(hidden_channels, hidden_channels, 1, norm_type))
+            k, n_local = 1, 1
         else:
             k = int(head_kernel_size)
             if k < 1 or k % 2 == 0:
                 raise ValueError(f"head_kernel_size must be odd positive, got {k}")
-            blocks: list[nn.Module] = []
-            for _ in range(n_local):
-                blocks.extend(_conv_norm_relu(hidden_channels, hidden_channels, k, norm_type))
-            self.local_decoder = nn.Sequential(*blocks)
+        blocks = []
+        for _ in range(n_local):
+            blocks += [
+                nn.Conv1d(hidden_channels, hidden_channels, k, padding=k // 2),
+                make_norm_1d(hidden_channels, norm_type),
+                nn.ReLU(inplace=True),
+            ]
+        self.local_decoder = nn.Sequential(*blocks)
         self.dropout = nn.Dropout(dropout)
         self.power_head = nn.Conv1d(hidden_channels, 1, 1)
         self.state_head = nn.Conv1d(hidden_channels, 1, 1)
-        self.feature_refine = self.local_decoder
+        self.feature_refine = self.local_decoder  # old checkpoint alias
 
     def encode_features(self, z):
+        # z, f: (B, C, T)
         if self.task_attention is not None:
             z = z * self.task_attention(z)
         f = self.local_decoder(z)
-        return self.dropout(f + z if self.head_use_residual else f)
+        if self.head_use_residual:
+            f = f + z
+        return self.dropout(f)
 
     def decode_from_features(self, features):
-        r, s = self.power_head(features), self.state_head(features)
-        g = state_gate(torch.sigmoid(s), mode=self.gate_mode, threshold=self.gate_threshold, training=self.training)
-        # y_off is 0 W in z-score space, not numeric 0.
-        return g * r + (1.0 - g) * self.off_norm, s
+        power = self.power_head(features)                      # (B, 1, T)
+        logit = self.state_head(features)                      # (B, 1, T)
+        gate = state_gate(torch.sigmoid(logit), mode=self.gate_mode,
+                          threshold=self.gate_threshold, training=self.training)
+        # off_norm is 0 W after z-score, not the number 0.
+        return gate * power + (1.0 - gate) * self.off_norm, logit
 
     def forward(self, shared_features):
         return self.decode_from_features(self.encode_features(shared_features))
 
 
 class CrossApplianceDistill(nn.Module):
-    """F'_k = F_k + α Mix(F). Used when yaml mode is bottleneck."""
+    """yaml mode=bottleneck: mix all appliances with 1x1 convs, then residual."""
 
     def __init__(self, num_appliances, channels, *, residual_scale=0.5, dropout=0.0, mid_channels=None):
         super().__init__()
@@ -249,25 +344,20 @@ class CrossApplianceDistill(nn.Module):
         mid = int(mid_channels) if mid_channels is not None else max(2 * self.channels, 64)
         mid = max(1, min(mid, stacked))
         self.mix = nn.Sequential(
-            nn.Conv1d(stacked, mid, 1), nn.ReLU(inplace=True), nn.Dropout(float(dropout)), nn.Conv1d(mid, stacked, 1)
+            nn.Conv1d(stacked, mid, 1), nn.ReLU(inplace=True),
+            nn.Dropout(float(dropout)), nn.Conv1d(mid, stacked, 1),
         )
 
     def forward(self, features):
-        if len(features) != self.num_appliances:
-            raise ValueError(f"expected {self.num_appliances} maps, got {len(features)}")
-        stacked = torch.stack(features, dim=1)
+        stacked = torch.stack(features, dim=1)                 # (B, A, C, T)
         bsz, _, channels, time_len = stacked.shape
         mixed = self.mix(stacked.reshape(bsz, self.num_appliances * channels, time_len))
         mixed = mixed.reshape(bsz, self.num_appliances, channels, time_len)
-        return [features[k] + self.residual_scale * mixed[:, k] for k in range(self.num_appliances)]
+        return [features[i] + self.residual_scale * mixed[:, i] for i in range(self.num_appliances)]
 
 
 class CrossApplianceRelationAttention(nn.Module):
-    """Per-timestep attention over A appliance tokens, not over time.
-
-        α = softmax(Q K^T / √D)                      (B, T, A, A)
-        F'_i = F_i + ρ · σ([F_i, msg_i]) ⊙ msg_i
-    """
+    """yaml mode=relation_attention: attention over A appliances at each time (not over T)."""
 
     def __init__(self, num_appliances, channels, *, residual_scale=0.5, dropout=0.0, attention_channels=16):
         super().__init__()
@@ -285,19 +375,16 @@ class CrossApplianceRelationAttention(nn.Module):
         self.scale = math.sqrt(float(d))
 
     def forward(self, features):
-        if len(features) != self.num_appliances:
-            raise ValueError(f"expected {self.num_appliances} maps, got {len(features)}")
-        stacked = torch.stack(features, dim=1)
+        stacked = torch.stack(features, dim=1)                 # (B, A, C, T)
         batch, n_app, channels, time_len = stacked.shape
         d = self.relation_channels
         flat = stacked.reshape(batch * n_app, channels, time_len)
-
-        def proj(layer):
-            return layer(flat).reshape(batch, n_app, d, time_len).permute(0, 3, 1, 2)
-
-        q, k, v = proj(self.query), proj(self.key), proj(self.value)
-        w = torch.softmax(torch.einsum("btkd,btjd->btkj", q, k) / self.scale, dim=-1)
-        ctx = torch.einsum("btkj,btjd->btkd", w, v)
+        # Q,K,V: (B, T, A, D)
+        q = self.query(flat).reshape(batch, n_app, d, time_len).permute(0, 3, 1, 2)
+        k = self.key(flat).reshape(batch, n_app, d, time_len).permute(0, 3, 1, 2)
+        v = self.value(flat).reshape(batch, n_app, d, time_len).permute(0, 3, 1, 2)
+        weights = torch.softmax(q @ k.transpose(-1, -2) / self.scale, dim=-1)  # (B, T, A, A)
+        ctx = weights @ v                                      # (B, T, A, D)
         message = self.out(ctx.permute(0, 2, 3, 1).reshape(batch * n_app, d, time_len))
         message = message.reshape(batch, n_app, self.channels, time_len)
         out = []
@@ -307,6 +394,10 @@ class CrossApplianceRelationAttention(nn.Module):
             out.append(feat + self.residual_scale * gate * self.dropout(msg))
         return out
 
+
+# ===========================================================================
+# The model. Read these two forwards. That is the whole graph.
+# ===========================================================================
 
 class MultiNILM(nn.Module):
     def __init__(
@@ -330,20 +421,48 @@ class MultiNILM(nn.Module):
         self.hidden_channels = int(hidden_channels)
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
-        self.domain_feature_layers = normalize_domain_feature_layers(domain_feature_layers)
+        aliases = {"shared": "aligned", "encoder": "temporal", "aggregate": "stem"}
+        layers = []
+        for raw in domain_feature_layers or ["aligned"]:
+            name = aliases.get(str(raw).strip().lower(), str(raw).strip().lower())
+            if name not in layers:
+                layers.append(name)
+        self.domain_feature_layers = layers or ["aligned"]
         off_norms = list(appliance_off_norm or [0.0] * self.num_appliances)
         if len(off_norms) != self.num_appliances:
             raise ValueError(f"appliance_off_norm length {len(off_norms)} != {self.num_appliances}")
 
-        self.aggregate_feature_extractor = _build_stem(
-            input_channels=self.input_channels, hidden_channels=self.hidden_channels,
-            channel_schedule=[int(w) for w in channel_schedule] if channel_schedule else None,
-            use_multiscale_stem=bool(use_multiscale_stem),
-            detail_kernels=[int(k) for k in (detail_kernels or [3, 5, 9])],
-            detail_branch_channels=int(detail_branch_channels),
-            stem_kernel_size=int(stem_kernel_size), stage_kernel_size=int(stage_kernel_size),
-            stem_norm_type=stem_norm_type,
-        )
+        # stem: (B, C_in, T) -> (B, C, T). Name kept for checkpoints.
+        schedule = [int(w) for w in channel_schedule] if channel_schedule else None
+        detail_kernels = [int(k) for k in (detail_kernels or [3, 5, 9])]
+        ms = dict(kernels=detail_kernels, branch_channels=int(detail_branch_channels), norm_type=stem_norm_type)
+        if schedule:
+            if schedule[-1] != self.hidden_channels:
+                raise ValueError(
+                    f"hidden_channels must match last channel_schedule entry; "
+                    f"got {self.hidden_channels} vs {schedule}."
+                )
+            if use_multiscale_stem:
+                parts = [MultiScaleWaveformStem(self.input_channels, schedule[0], **ms)]
+                if schedule[1:]:
+                    parts.append(StagedFeatureExtractor(
+                        schedule[0], schedule[1:], int(stage_kernel_size), int(stage_kernel_size), stem_norm_type
+                    ))
+                self.aggregate_feature_extractor = nn.Sequential(*parts)
+            else:
+                self.aggregate_feature_extractor = StagedFeatureExtractor(
+                    self.input_channels, schedule, int(stem_kernel_size), int(stage_kernel_size), stem_norm_type
+                )
+        elif use_multiscale_stem:
+            self.aggregate_feature_extractor = MultiScaleWaveformStem(self.input_channels, self.hidden_channels, **ms)
+        else:
+            k = int(stem_kernel_size)
+            self.aggregate_feature_extractor = nn.Sequential(
+                nn.Conv1d(self.input_channels, self.hidden_channels, k, padding=k // 2),
+                make_norm_1d(self.hidden_channels, stem_norm_type),
+                nn.ReLU(inplace=True),
+            )
+
         cycle = max(1, int(max_dilation)).bit_length()
         self.temporal_encoder = nn.Sequential(*[
             ResidualTemporalBlock(self.hidden_channels, kernel_size, 2 ** (i % cycle), dropout, temporal_norm_type)
@@ -373,72 +492,91 @@ class MultiNILM(nn.Module):
             else:
                 raise ValueError(f"cross_appliance.mode must be bottleneck|relation_attention, got {cross_appliance_mode!r}")
 
-    def _format_input(self, x):
+    def forward(self, x, *, return_domain_features=False, domain_feature_layers=None):
+        # x: (B, T) or (B, C, T) or (B, T, C)
         if x.dim() == 2:
             x = x.unsqueeze(1)
         elif x.dim() == 3 and x.shape[-1] == self.input_channels:
             x = x.permute(0, 2, 1)
-        if x.dim() != 3:
-            raise ValueError(f"expected (B,T), (B,C,T) or (B,T,C), got {tuple(x.shape)}")
-        if x.shape[1] != self.input_channels:
-            raise ValueError(f"expected {self.input_channels} input channel(s), got {x.shape[1]}")
-        return x.float()
+        x = x.float()                                          # (B, C_in, T)
 
-    def _align_output_time(self, features):
-        t = features.shape[-1]
+        h = self.aggregate_feature_extractor(x)                # (B, C, T)
+        domain = {"stem": h} if return_domain_features else None
+        for i, block in enumerate(self.temporal_encoder):
+            h = block(h)                                       # (B, C, T)
+            if domain is not None:
+                domain[f"temporal_{i}"] = h
+                domain["temporal"] = h
+
+        t = h.shape[-1]
         if t == self.output_length:
-            return features
-        if t > self.output_length:
+            z = h
+        elif t > self.output_length:
             off = (t - self.output_length) // 2
-            return features[:, :, off:off + self.output_length]
-        pad = self.output_length - t
-        left = pad // 2
-        return F.pad(features, (left, pad - left))
-
-    def available_domain_feature_layers(self):
-        names = ["stem", "temporal", "aligned"]
-        names.extend(f"temporal_{i}" for i in range(len(self.temporal_encoder)))
-        return names
-
-    def _validate_domain_feature_layers(self, layers):
-        layers = normalize_domain_feature_layers(layers)
-        allowed = set(self.available_domain_feature_layers())
-        unknown = [n for n in layers if n not in allowed]
-        if unknown:
-            raise ValueError(f"Unknown domain_feature_layers {unknown}. Choose from {sorted(allowed)}.")
-        return layers
-
-    def forward(self, x, *, return_domain_features=False, domain_feature_layers=None):
-        domain_feats, want = {}, set()
-        if return_domain_features:
-            want = set(self._validate_domain_feature_layers(
-                domain_feature_layers if domain_feature_layers is not None else self.domain_feature_layers
-            ))
-        h = self.aggregate_feature_extractor(self._format_input(x))
-        if "stem" in want:
-            domain_feats["stem"] = h
-        if any(n.startswith("temporal_") for n in want) or "temporal" in want:
-            for i, block in enumerate(self.temporal_encoder):
-                h = block(h)
-                if f"temporal_{i}" in want:
-                    domain_feats[f"temporal_{i}"] = h
-            if "temporal" in want:
-                domain_feats["temporal"] = h
+            z = h[:, :, off:off + self.output_length]
         else:
-            h = self.temporal_encoder(h)
-        z = self._align_output_time(h)
-        if "aligned" in want:
-            domain_feats["aligned"] = z
-        feats = [head.encode_features(z) for head in self.appliance_heads]
+            pad = self.output_length - t
+            left = pad // 2
+            z = F.pad(h, (left, pad - left))                   # (B, C, T_out)
+        if domain is not None:
+            domain["aligned"] = z
+
+        feats = [head.encode_features(z) for head in self.appliance_heads]  # A x (B, C, T_out)
         if self.cross_appliance_distill is not None:
             feats = self.cross_appliance_distill(feats)
-        powers, states = zip(*[head.decode_from_features(f) for head, f in zip(self.appliance_heads, feats)])
-        power_pred = torch.cat(powers, dim=1).permute(0, 2, 1)
-        state_logits = torch.cat(states, dim=1).permute(0, 2, 1)
-        if return_domain_features:
-            return power_pred, state_logits, domain_feats
-        return power_pred, state_logits
 
+        powers, states = [], []
+        for head, f in zip(self.appliance_heads, feats):
+            p, s = head.decode_from_features(f)                # (B, 1, T_out)
+            powers.append(p)
+            states.append(s)
+        power = torch.cat(powers, dim=1).permute(0, 2, 1)      # (B, T_out, A)
+        logits = torch.cat(states, dim=1).permute(0, 2, 1)
+
+        if not return_domain_features:
+            return power, logits
+        want = domain_feature_layers if domain_feature_layers is not None else self.domain_feature_layers
+        aliases = {"shared": "aligned", "encoder": "temporal", "aggregate": "stem"}
+        keep = []
+        for name in want or ["aligned"]:
+            name = aliases.get(str(name).strip().lower(), str(name).strip().lower())
+            if name not in keep:
+                keep.append(name)
+        unknown = [n for n in keep if n not in domain]
+        if unknown:
+            raise ValueError(f"Unknown domain_feature_layers {unknown}. Choose from {sorted(domain)}.")
+        return power, logits, {n: domain[n] for n in keep}
+
+
+class MultiNILMFractional(nn.Module):
+    """Start here. frontend then backbone. Checkpoint prefixes: frontend.* / backbone.*."""
+
+    def __init__(self, *, backbone: MultiNILM, frontend: FractionalFrontEnd):
+        super().__init__()
+        if int(backbone.input_channels) != int(frontend.out_channels):
+            raise ValueError(
+                f"backbone input_channels must be {frontend.out_channels}, got {backbone.input_channels}."
+            )
+        self.frontend = frontend
+        self.backbone = backbone
+        self.input_channels = 1
+        self.feature_channels = int(frontend.out_channels)
+        self.num_appliances = backbone.num_appliances
+        self.output_length = backbone.output_length
+        self.domain_feature_layers = backbone.domain_feature_layers
+
+    def forward(self, x, return_domain_features=False):
+        if x.dim() == 2:
+            x = x.unsqueeze(1)                                 # (B, T) -> (B, 1, T)
+        elif x.dim() == 3 and x.shape[-1] == 1:
+            x = x.permute(0, 2, 1)                             # (B, T, 1) -> (B, 1, T)
+        x = self.frontend(x.float())                           # (B, C_in, T)
+        return self.backbone(x, return_domain_features=return_domain_features)
+
+
+# ===========================================================================
+# YAML / training. Skip this while reading the network.
+# ===========================================================================
 
 @dataclass
 class MultiNILMConfig:
@@ -474,29 +612,18 @@ class MultiNILMConfig:
     domain_feature_layers: list[str] = field(default_factory=lambda: ["temporal_2", "temporal_4", "aligned"])
 
 
-def _parse_cross_appliance(architecture):
-    block = architecture.get("cross_appliance")
-    if not isinstance(block, dict):
-        return False, "bottleneck", 0.5, None, 16
-    mid = block.get("mid_channels", None)
-    return (bool(block.get("enabled", False)), str(block.get("mode", "bottleneck")),
-            float(block.get("residual_scale", 0.5)), None if mid is None else int(mid),
-            int(block.get("attention_channels", 16)))
-
-
-def build_multinilm(cfg, *, num_appliances, output_length, appliance_off_norm=None, input_channels=None):
-    kwargs = asdict(cfg)
-    kwargs.update(num_appliances=int(num_appliances), output_length=int(output_length),
-                  appliance_off_norm=appliance_off_norm)
-    if input_channels is not None:
-        kwargs["input_channels"] = int(input_channels)
-    return MultiNILM(**kwargs)
-
-
 def multinilm_config(architecture):
     a = architecture
     task = a.get("task_attention") if isinstance(a.get("task_attention"), dict) else {}
-    en, mode, scale, mid, attn = _parse_cross_appliance(a)
+    cross = a.get("cross_appliance") if isinstance(a.get("cross_appliance"), dict) else {}
+    mid = cross.get("mid_channels", None)
+    layers = a.get("domain_feature_layers")
+    aliases = {"shared": "aligned", "encoder": "temporal", "aggregate": "stem"}
+    domain_layers = []
+    for raw in layers or ["temporal_2", "temporal_4", "aligned"]:
+        name = aliases.get(str(raw).strip().lower(), str(raw).strip().lower())
+        if name not in domain_layers:
+            domain_layers.append(name)
     return MultiNILMConfig(
         input_channels=int(a.get("input_channels", a.get("input_size", 1))),
         num_appliances=int(a.get("num_appliances", 5)),
@@ -522,163 +649,39 @@ def multinilm_config(architecture):
         head_norm_type=str(a.get("head_norm_type", "batch")),
         task_attention_enabled=bool(task.get("enabled", False)),
         task_attention_reduction=int(task.get("reduction", 4)),
-        cross_appliance_enabled=en, cross_appliance_mode=mode,
-        cross_appliance_residual_scale=scale, cross_appliance_mid_channels=mid,
-        cross_appliance_attention_channels=attn,
-        domain_feature_layers=normalize_domain_feature_layers(a.get("domain_feature_layers")),
+        cross_appliance_enabled=bool(cross.get("enabled", False)),
+        cross_appliance_mode=str(cross.get("mode", "bottleneck")),
+        cross_appliance_residual_scale=float(cross.get("residual_scale", 0.5)),
+        cross_appliance_mid_channels=None if mid is None else int(mid),
+        cross_appliance_attention_channels=int(cross.get("attention_channels", 16)),
+        domain_feature_layers=domain_layers or ["aligned"],
     )
 
 
-def gl_binomial_weights(alpha, memory):
-    """w[0]=1, w[j]=w[j-1]*(j-1-α)/j.  (D^α p)[t] ≈ Σ_j w[j] p[t-j]."""
-    if memory < 0:
-        raise ValueError(f"memory must be >= 0, got {memory}")
-    w = np.empty(memory + 1, dtype=np.float64)
-    w[0] = 1.0
-    for j in range(1, memory + 1):
-        w[j] = w[j - 1] * (j - 1 - float(alpha)) / j
-    return w
+def build_multinilm(cfg, *, num_appliances, output_length, appliance_off_norm=None, input_channels=None):
+    kwargs = asdict(cfg)
+    kwargs.update(num_appliances=int(num_appliances), output_length=int(output_length),
+                  appliance_off_norm=appliance_off_norm)
+    if input_channels is not None:
+        kwargs["input_channels"] = int(input_channels)
+    return MultiNILM(**kwargs)
 
 
-def default_schirmer_alphas(k=8):
-    if k < 1:
-        raise ValueError(f"k must be >= 1, got {k}")
-    return [1.0] if k == 1 else [round((i + 1) / k, 6) for i in range(k)]
-
-
-class FractionalFrontEnd(nn.Module):
-    """Frozen GL bank + optional raw/delta/rolling. (B,1,T) → (B,C,T)."""
-
-    def __init__(self, alphas=None, *, include_raw=True, memory=None, h=1.0, max_memory=256,
-                 channel_normalize="mean_std", channel_norm_eps=1e-5, include_delta=False,
-                 include_abs_delta=False, rolling_windows=None, include_rolling_mean=False,
-                 include_rolling_std=False):
-        super().__init__()
-        self.alphas = [float(a) for a in alphas] if alphas is not None else default_schirmer_alphas(8)
-        if not self.alphas and not include_raw:
-            raise ValueError("need at least one alpha or include_raw=True")
-        self.include_raw = bool(include_raw)
-        self.h = float(h)
-        self.memory = int(memory) if memory is not None else int(max_memory)
-        if self.memory < 1:
-            raise ValueError(f"memory must be >= 1, got {self.memory}")
-        self.channel_normalize = str(channel_normalize)
-        if self.channel_normalize not in {"mean_std", "none"}:
-            raise ValueError(f"channel_normalize must be mean_std|none, got {self.channel_normalize!r}")
-        self.channel_norm_eps = float(channel_norm_eps)
-        self.include_delta = bool(include_delta)
-        self.include_abs_delta = bool(include_abs_delta)
-        self.rolling_windows = [int(w) for w in (rolling_windows or [])]
-        if any(w < 1 for w in self.rolling_windows):
-            raise ValueError(f"rolling_windows must be positive, got {self.rolling_windows}")
-        self.include_rolling_mean = bool(include_rolling_mean)
-        self.include_rolling_std = bool(include_rolling_std)
-        extra = int(self.include_delta) + int(self.include_abs_delta)
-        if self.include_rolling_mean:
-            extra += len(self.rolling_windows)
-        if self.include_rolling_std:
-            extra += len(self.rolling_windows)
-        self.out_channels = (1 if self.include_raw else 0) + len(self.alphas) + extra
-        if self.alphas:
-            kernels = []
-            for alpha in self.alphas:
-                w = gl_binomial_weights(alpha, self.memory) / (self.h ** alpha)
-                kernels.append(torch.tensor(np.asarray(w, dtype=np.float64)[::-1].copy(), dtype=torch.float32))
-            weight = torch.stack(kernels, dim=0).unsqueeze(1)
-            n_a, k_len = len(self.alphas), int(weight.shape[-1])
-            self.gl_conv = nn.Conv1d(n_a, n_a, k_len, groups=n_a, bias=False, padding=0)
-            with torch.no_grad():
-                self.gl_conv.weight.copy_(weight)
-            self.gl_conv.weight.requires_grad_(False)
-            self.register_buffer("gl_weight", self.gl_conv.weight, persistent=False)
-        else:
-            self.gl_conv = None
-            self.register_buffer("gl_weight", torch.zeros(0), persistent=True)
-
-    def extra_repr(self):
-        w_shape = tuple(self.gl_weight.shape) if self.gl_weight.numel() else None
-        return (f"alphas={self.alphas}, include_raw={self.include_raw}, memory={self.memory}, "
-                f"out_channels={self.out_channels}, channel_normalize={self.channel_normalize!r}, "
-                f"delta={self.include_delta}, abs_delta={self.include_abs_delta}, "
-                f"rolling_windows={self.rolling_windows}, rolling_mean={self.include_rolling_mean}, "
-                f"rolling_std={self.include_rolling_std}, gl_weight={w_shape}")
-
-    @staticmethod
-    def _delta(x):
-        return torch.cat([torch.zeros_like(x[..., :1]), x[..., 1:] - x[..., :-1]], dim=-1)
-
-    @staticmethod
-    def _rolling_mean(x, window):
-        if window <= 1:
-            return x
-        return F.avg_pool1d(F.pad(x, (window - 1, 0), mode="replicate"), window, stride=1)
-
-    def _rolling_std(self, x, window):
-        if window <= 1:
-            return torch.zeros_like(x)
-        mean = self._rolling_mean(x, window)
-        var = (self._rolling_mean(x * x, window) - mean * mean).clamp_min(0.0)
-        return torch.sqrt(var + self.channel_norm_eps)
-
-    def forward(self, x):
-        if x.dim() != 3:
-            raise ValueError(f"FractionalFrontEnd expected (B,C,T), got {tuple(x.shape)}")
-        if x.shape[1] != 1:
-            x = x[:, :1, :]
-        parts = []
-        if self.include_raw:
-            parts.append(x)
-        if self.include_delta or self.include_abs_delta:
-            delta = self._delta(x)
-            if self.include_delta:
-                parts.append(delta)
-            if self.include_abs_delta:
-                parts.append(delta.abs())
-        for window in self.rolling_windows:
-            if self.include_rolling_mean:
-                parts.append(self._rolling_mean(x, window))
-            if self.include_rolling_std:
-                parts.append(self._rolling_std(x, window))
-        if self.alphas:
-            pad = int(self.gl_conv.weight.shape[-1]) - 1
-            parts.append(self.gl_conv(F.pad(x, (pad, 0)).expand(-1, len(self.alphas), -1)))
-        out = torch.cat(parts, dim=1)
-        if self.channel_normalize == "mean_std":
-            mu = out.mean(dim=-1, keepdim=True)
-            sigma = out.std(dim=-1, keepdim=True).clamp_min(self.channel_norm_eps)
-            out = (out - mu) / sigma
-        return out
-
-
-@dataclass
-class FractionalSettings:
-    enabled: bool = False
-    alphas: list[float] | None = None
-    include_raw: bool = True
-    memory: int | None = None
-    h: float = 1.0
-    channel_normalize: str = "mean_std"
-    include_delta: bool = False
-    include_abs_delta: bool = False
-    rolling_windows: list[int] = field(default_factory=list)
-    include_rolling_mean: bool = False
-    include_rolling_std: bool = False
-
-    def resolved_alphas(self):
-        return list(self.alphas) if self.alphas is not None else default_schirmer_alphas(8)
-
-
-def parse_fractional_architecture(architecture: dict[str, Any]) -> FractionalSettings:
-    block = architecture.get("fractional")
-    if not isinstance(block, dict):
-        return FractionalSettings()
-    alphas_raw = block.get("alphas", None)
-    alphas = default_schirmer_alphas(int(block.get("k", 8))) if alphas_raw is None else [float(a) for a in alphas_raw]
+def build_multinilm_fractional(architecture, *, num_appliances, output_length, appliance_off_norm=None):
+    block = architecture.get("fractional") if isinstance(architecture.get("fractional"), dict) else {}
+    if block.get("alphas") is None:
+        k = int(block.get("k", 8))
+        if k < 1:
+            raise ValueError(f"k must be >= 1, got {k}")
+        alphas = [1.0] if k == 1 else [round((i + 1) / k, 6) for i in range(k)]
+    else:
+        alphas = [float(a) for a in block["alphas"]]
     memory = block.get("memory", None)
-    return FractionalSettings(
-        enabled=bool(block.get("enabled", False)), alphas=alphas,
+    frontend = FractionalFrontEnd(
+        alphas=alphas,
         include_raw=bool(block.get("include_raw", True)),
-        memory=None if memory is None else int(memory), h=float(block.get("h", 1.0)),
+        memory=None if memory is None else int(memory),
+        h=float(block.get("h", 1.0)),
         channel_normalize=str(block.get("channel_normalize", "mean_std")),
         include_delta=bool(block.get("include_delta", False)),
         include_abs_delta=bool(block.get("include_abs_delta", False)),
@@ -686,47 +689,11 @@ def parse_fractional_architecture(architecture: dict[str, Any]) -> FractionalSet
         include_rolling_mean=bool(block.get("include_rolling_mean", False)),
         include_rolling_std=bool(block.get("include_rolling_std", False)),
     )
-
-
-class MultiNILMFractional(nn.Module):
-    """Wrapper so checkpoints stay frontend.* / backbone.*."""
-
-    def __init__(self, *, backbone: MultiNILM, frontend: FractionalFrontEnd):
-        super().__init__()
-        if int(backbone.input_channels) != int(frontend.out_channels):
-            raise ValueError(
-                f"backbone input_channels must be {frontend.out_channels}, got {backbone.input_channels}."
-            )
-        self.frontend = frontend
-        self.backbone = backbone
-        self.input_channels = 1
-        self.feature_channels = int(frontend.out_channels)
-        self.num_appliances = backbone.num_appliances
-        self.output_length = backbone.output_length
-        self.domain_feature_layers = backbone.domain_feature_layers
-
-    def forward(self, x, return_domain_features=False):
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
-        elif x.dim() == 3 and x.shape[-1] == 1:
-            x = x.permute(0, 2, 1)
-        return self.backbone(self.frontend(x.float()), return_domain_features=return_domain_features)
-
-
-def build_multinilm_fractional(architecture, *, num_appliances, output_length, appliance_off_norm=None):
-    settings = parse_fractional_architecture(architecture)
-    frontend = FractionalFrontEnd(
-        alphas=settings.resolved_alphas(), include_raw=settings.include_raw, memory=settings.memory,
-        h=settings.h, channel_normalize=settings.channel_normalize, include_delta=settings.include_delta,
-        include_abs_delta=settings.include_abs_delta, rolling_windows=settings.rolling_windows,
-        include_rolling_mean=settings.include_rolling_mean, include_rolling_std=settings.include_rolling_std,
-    )
-    feature_c = int(frontend.out_channels)
     arch = dict(architecture)
-    arch["input_channels"] = feature_c
+    arch["input_channels"] = int(frontend.out_channels)
     backbone = build_multinilm(
         multinilm_config(arch), num_appliances=num_appliances, output_length=output_length,
-        appliance_off_norm=appliance_off_norm, input_channels=feature_c,
+        appliance_off_norm=appliance_off_norm, input_channels=int(frontend.out_channels),
     )
     return MultiNILMFractional(backbone=backbone, frontend=frontend)
 
@@ -839,7 +806,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
             },
             aux={
                 "pred_state": pred_state.detach().cpu(),
-                # Keep continuous scores for threshold-free validation AP.
                 "state_prob": state_prob.detach().float().cpu(),
                 "true_state": z.long().detach().cpu(),
                 "pred_power": power_pred.detach().float().cpu(),

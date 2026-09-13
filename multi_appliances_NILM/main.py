@@ -32,7 +32,7 @@ MODELS = {
 # Edit these once, then run this file directly without command-line arguments.
 DEFAULT_MODE = "train_evaluate"
 DEFAULT_MODEL = "multinilm_fractional"
-DEFAULT_EXPERIMENT = ROOT / "config" / "experiment_ukdale.yaml"
+DEFAULT_EXPERIMENT = ROOT / "config" / "experiment_mixed_ukdale_refit_8w.yaml"
 DEFAULT_MODEL_CONFIG: Path | None = ROOT / "config" / "models" / "multinilm_fractional_relational.yaml"
 DEFAULT_DATA_PATH: Path | None = None
 DEFAULT_CHECKPOINT: Path | None = None
