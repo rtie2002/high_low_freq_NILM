@@ -82,13 +82,6 @@ def state_gate(state_prob, *, mode="soft", threshold=0.5, training=False):
     raise ValueError(f"gate_mode must be none|soft|hard|soft_train_hard_eval, got {mode!r}")
 
 
-def pool_domain_feature_map(features):
-    """(B, C, T) -> (B, C). Used by the DA loss only."""
-    if features.dim() != 3:
-        raise ValueError(f"Expected (B, C, T), got {tuple(features.shape)}")
-    return features.mean(dim=-1)
-
-
 # ===========================================================================
 # Network layers. Each class is one box on the diagram.
 # ===========================================================================
@@ -405,7 +398,7 @@ class MultiNILM(nn.Module):
         input_channels=1, num_appliances=5, output_length=64, hidden_channels=64,
         channel_schedule=None, stem_kernel_size=7, stage_kernel_size=5, num_blocks=5,
         kernel_size=5, dropout=0.1, max_dilation=128, gate_mode="soft_train_hard_eval",
-        gate_threshold=0.5, appliance_off_norm=None, domain_feature_layers=None,
+        gate_threshold=0.5, appliance_off_norm=None,
         head_local_layers=2, head_kernel_size=3, head_use_residual=True,
         use_multiscale_stem=False, detail_kernels=None, detail_branch_channels=12,
         stem_norm_type="batch", temporal_norm_type="batch", head_norm_type="batch",
@@ -421,13 +414,6 @@ class MultiNILM(nn.Module):
         self.hidden_channels = int(hidden_channels)
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
-        aliases = {"shared": "aligned", "encoder": "temporal", "aggregate": "stem"}
-        layers = []
-        for raw in domain_feature_layers or ["aligned"]:
-            name = aliases.get(str(raw).strip().lower(), str(raw).strip().lower())
-            if name not in layers:
-                layers.append(name)
-        self.domain_feature_layers = layers or ["aligned"]
         off_norms = list(appliance_off_norm or [0.0] * self.num_appliances)
         if len(off_norms) != self.num_appliances:
             raise ValueError(f"appliance_off_norm length {len(off_norms)} != {self.num_appliances}")
@@ -492,7 +478,7 @@ class MultiNILM(nn.Module):
             else:
                 raise ValueError(f"cross_appliance.mode must be bottleneck|relation_attention, got {cross_appliance_mode!r}")
 
-    def forward(self, x, *, return_domain_features=False, domain_feature_layers=None):
+    def forward(self, x):
         # x: (B, T) or (B, C, T) or (B, T, C)
         if x.dim() == 2:
             x = x.unsqueeze(1)
@@ -501,12 +487,8 @@ class MultiNILM(nn.Module):
         x = x.float()                                          # (B, C_in, T)
 
         h = self.aggregate_feature_extractor(x)                # (B, C, T)
-        domain = {"stem": h} if return_domain_features else None
-        for i, block in enumerate(self.temporal_encoder):
+        for block in self.temporal_encoder:
             h = block(h)                                       # (B, C, T)
-            if domain is not None:
-                domain[f"temporal_{i}"] = h
-                domain["temporal"] = h
 
         t = h.shape[-1]
         if t == self.output_length:
@@ -518,9 +500,6 @@ class MultiNILM(nn.Module):
             pad = self.output_length - t
             left = pad // 2
             z = F.pad(h, (left, pad - left))                   # (B, C, T_out)
-        if domain is not None:
-            domain["aligned"] = z
-
         feats = [head.encode_features(z) for head in self.appliance_heads]  # A x (B, C, T_out)
         if self.cross_appliance_distill is not None:
             feats = self.cross_appliance_distill(feats)
@@ -533,19 +512,7 @@ class MultiNILM(nn.Module):
         power = torch.cat(powers, dim=1).permute(0, 2, 1)      # (B, T_out, A)
         logits = torch.cat(states, dim=1).permute(0, 2, 1)
 
-        if not return_domain_features:
-            return power, logits
-        want = domain_feature_layers if domain_feature_layers is not None else self.domain_feature_layers
-        aliases = {"shared": "aligned", "encoder": "temporal", "aggregate": "stem"}
-        keep = []
-        for name in want or ["aligned"]:
-            name = aliases.get(str(name).strip().lower(), str(name).strip().lower())
-            if name not in keep:
-                keep.append(name)
-        unknown = [n for n in keep if n not in domain]
-        if unknown:
-            raise ValueError(f"Unknown domain_feature_layers {unknown}. Choose from {sorted(domain)}.")
-        return power, logits, {n: domain[n] for n in keep}
+        return power, logits
 
 
 class MultiNILMFractional(nn.Module):
@@ -563,15 +530,14 @@ class MultiNILMFractional(nn.Module):
         self.feature_channels = int(frontend.out_channels)
         self.num_appliances = backbone.num_appliances
         self.output_length = backbone.output_length
-        self.domain_feature_layers = backbone.domain_feature_layers
 
-    def forward(self, x, return_domain_features=False):
+    def forward(self, x):
         if x.dim() == 2:
             x = x.unsqueeze(1)                                 # (B, T) -> (B, 1, T)
         elif x.dim() == 3 and x.shape[-1] == 1:
             x = x.permute(0, 2, 1)                             # (B, T, 1) -> (B, 1, T)
         x = self.frontend(x.float())                           # (B, C_in, T)
-        return self.backbone(x, return_domain_features=return_domain_features)
+        return self.backbone(x)
 
 
 # ===========================================================================
@@ -609,7 +575,6 @@ class MultiNILMConfig:
     cross_appliance_residual_scale: float = 0.5
     cross_appliance_mid_channels: int | None = None
     cross_appliance_attention_channels: int = 16
-    domain_feature_layers: list[str] = field(default_factory=lambda: ["temporal_2", "temporal_4", "aligned"])
 
 
 def multinilm_config(architecture):
@@ -617,13 +582,6 @@ def multinilm_config(architecture):
     task = a.get("task_attention") if isinstance(a.get("task_attention"), dict) else {}
     cross = a.get("cross_appliance") if isinstance(a.get("cross_appliance"), dict) else {}
     mid = cross.get("mid_channels", None)
-    layers = a.get("domain_feature_layers")
-    aliases = {"shared": "aligned", "encoder": "temporal", "aggregate": "stem"}
-    domain_layers = []
-    for raw in layers or ["temporal_2", "temporal_4", "aligned"]:
-        name = aliases.get(str(raw).strip().lower(), str(raw).strip().lower())
-        if name not in domain_layers:
-            domain_layers.append(name)
     return MultiNILMConfig(
         input_channels=int(a.get("input_channels", a.get("input_size", 1))),
         num_appliances=int(a.get("num_appliances", 5)),
@@ -654,7 +612,6 @@ def multinilm_config(architecture):
         cross_appliance_residual_scale=float(cross.get("residual_scale", 0.5)),
         cross_appliance_mid_channels=None if mid is None else int(mid),
         cross_appliance_attention_channels=int(cross.get("attention_channels", 16)),
-        domain_feature_layers=domain_layers or ["aligned"],
     )
 
 
@@ -744,41 +701,27 @@ class MultiNILMAdapter(BaseNILMAdapter):
         from model.MultiNILM_loss import MultiNILMLoss
         cfg = self.model_cfg.get("loss", {})
         loader = self._data_loader()
-        mmd = cfg.get("mmd_sigma", None)
         return MultiNILMLoss(
             lambda_state=float(cfg.get("lambda_state", 0.1)),
             task_balance=str(cfg.get("task_balance", "none")),
             pos_weight=_resolve_pos_weight(self, cfg),
             power_scale=loader.loss_scale,
             target_mean=loader.norm.target_mean,
-            lambda_domain=float(cfg.get("lambda_domain", 0.0)),
-            domain_method=str(cfg.get("domain_method", "coral")),
-            domain_mu=float(cfg.get("domain_mu", 0.4)),
-            domain_mix=str(cfg.get("domain_mix", "convex")),
-            domain_scale=str(cfg.get("domain_scale", "none")),
             power_on_weight=float(cfg.get("power_on_weight", 0.0)),
             power_off_weight=float(cfg.get("power_off_weight", 0.0)),
             power_delta_weight=float(cfg.get("power_delta_weight", 0.0)),
             power_delta_on_only=bool(cfg.get("power_delta_on_only", True)),
-            power_energy_weight=float(cfg.get("power_energy_weight", 0.0)),
             state_fp_weight=float(cfg.get("state_fp_weight", 0.0)),
             power_energy_relative_weight=float(cfg.get("power_energy_relative_weight", 0.0)),
             energy_floor_watts=float(cfg.get("energy_floor_watts", 10.0)),
-            mmd_sigma=None if mmd in (None, "", "auto") else float(mmd),
         )
 
     def step(self, model, loss_fn, batch, target_batch=None):
         import torch
         x, y, z = batch
         z = z.float()
-        if target_batch is not None and float(getattr(loss_fn, "lambda_domain", 0.0)) != 0.0:
-            x_t = target_batch[0] if isinstance(target_batch, (tuple, list)) else target_batch
-            power_pred, state_logits, feats_s = model(x, return_domain_features=True)
-            _, _, feats_t = model(x_t, return_domain_features=True)
-            out = loss_fn(power_pred, state_logits, y, z, domain_feats_S=feats_s, domain_feats_T=feats_t)
-        else:
-            power_pred, state_logits = model(x)
-            out = loss_fn(power_pred, state_logits, y, z)
+        power_pred, state_logits = model(x)
+        out = loss_fn(power_pred, state_logits, y, z)
         state_prob = torch.sigmoid(state_logits)
         pred_state = torch.from_numpy(
             _pred_on_from_config(self, _to_numpy(power_pred), _to_numpy(state_prob))
@@ -799,8 +742,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
                 "loss_state": float(out.loss_state.detach()),
                 "loss_state_term": float(out.loss_state_term.detach()),
                 "loss_energy_relative": float(out.loss_energy_relative.detach()),
-                "loss_domain": float(out.loss_domain.detach()),
-                "loss_domain_term": float(out.loss_domain_term.detach()),
                 "mae": float(out.mae.detach()),
                 **app_logs,
             },

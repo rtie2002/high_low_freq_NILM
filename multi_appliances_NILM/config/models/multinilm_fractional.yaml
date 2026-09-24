@@ -12,15 +12,12 @@ model_name: multinilm_fractional
 # DATA / EVAL (labels + how ON is scored)
 # =============================================================================
 data:
-  mains_column: aggregate
   # csv → train/F1/plots all use CSV *_on (Algorithm-1). Never power>thr shade.
   # threshold → ON = power > experiment.evaluation.on_thresholds_watts
   state_label_source: csv           # csv | threshold
 
 evaluation:
   pred_on_source: state_head        # state_head | power_threshold | combined
-  # After overlap_mean stitch: zero watts where pred ON is false
-  regate_power_with_pred_on: true
   # Learn each appliance ON threshold from validation, then reuse it on test.
   # This fixes the heavy false-ON problem caused by one shared 0.5 threshold.
   state_calibration:
@@ -60,7 +57,6 @@ windowing:
 # FRACTIONAL / AGGREGATE FEATURE FRONT-END
 # =============================================================================
 fractional:
-  enabled: true
   k: 4                         # number of alpha channels
   include_raw: true             # always keep raw → input_channels = k + 1
   include_delta: false          # alpha=1.0 already approximates first difference
@@ -107,11 +103,9 @@ architecture:
   cross_appliance:
     enabled: true
     residual_scale: 0.25
-  # DA feature hooks (used only if domain_adaptation.enabled)
-  domain_feature_layers: [temporal_1, temporal_3, aligned]
 
 # =============================================================================
-# LOSS — task (power + state) then optional domain terms
+# LOSS — supervised power + state objective
 # =============================================================================
 loss:
   # --- task: power regression + ON/OFF classification ---
@@ -124,27 +118,6 @@ loss:
   power_off_weight: 0.5             # punish watts when appliance is truly OFF
   power_delta_weight: 0.15          # match rise/fall shape, not only average level
   power_delta_on_only: true
-  power_energy_weight: 0.03         # weak energy term; avoid hallucinated load
-
-  # --- domain (active only if domain_adaptation.enabled AND lambda_domain > 0) ---
-  domain_method: both               # coral | mmd | both
-  domain_mu: 0.4                    # L_domain = μ·MMD² + (1-μ)·CORAL
-  domain_mix: convex                # convex: (1-λ)L_task + λ L_domain
-  domain_scale: equal               # rescale L_domain toward L_task so λ matters
-  lambda_domain: 0.0
-
-  # --- DA schedule (0 = off / immediate) ---
-  da_warmup_epochs: 0               # train task only for N epochs
-  da_ramp_epochs: 0                 # then ramp λ over N epochs
-  da_freeze_patience: 0             # freeze DA if no val gain (0 = never)
-
-# =============================================================================
-# DOMAIN ADAPTATION (master switch)
-# Needs enabled: true AND loss.lambda_domain > 0
-# =============================================================================
-domain_adaptation:
-  enabled: false
-  target_split: test                # unlabeled target (e.g. UK-DALE H2 / REDD H2)
 
 # =============================================================================
 # TRAINING

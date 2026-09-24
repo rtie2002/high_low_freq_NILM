@@ -415,9 +415,12 @@ class BaseNILMAdapter(AdapterDataMixin):
         # Re-apply hard gate so plots/metrics match pred ON (eval gate semantics).
         # If validation calibration is enabled, keep raw watts here; the calibrated
         # threshold/postprocess gate is applied in runner.py after calibration.
-        eval_cfg = self.model_cfg.get("evaluation", {})
-        calibration_enabled = bool(eval_cfg.get("state_calibration", {}).get("enabled", False))
-        if bool(eval_cfg.get("regate_power_with_pred_on", True)) and not calibration_enabled:
+        calibration_enabled = bool(
+            self.model_cfg.get("evaluation", {})
+            .get("state_calibration", {})
+            .get("enabled", False)
+        )
+        if not calibration_enabled:
             y_pred = np.asarray(y_pred, dtype=np.float64) * z_pred.astype(np.float64)
 
         segment_ids = loader.segment_ids_at_timesteps(split_key, csv_timesteps)

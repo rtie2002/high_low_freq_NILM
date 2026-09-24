@@ -1,16 +1,14 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: Clean Version (8w)
+experiment_id: new one
 model_name: multinilm_fractional
 
 data:
-  mains_column: aggregate
   state_label_source: csv
 
 evaluation:
   pred_on_source: state_head
-  regate_power_with_pred_on: true
   state_calibration:
     enabled: true
     split: validation
@@ -44,7 +42,6 @@ windowing:
   training_targets: auto
 
 fractional:
-  enabled: true
   k: 4
   include_raw: true
   include_delta: true
@@ -98,8 +95,6 @@ architecture:
     attention_channels: 16
     residual_scale: 0.25
 
-  domain_feature_layers: [temporal_3, aligned]
-
 loss:
   task_balance: equal
   lambda_state: 0.8
@@ -113,22 +108,8 @@ loss:
   power_off_weight: 0.5
   power_delta_weight: 0.15
   power_delta_on_only: true
-  power_energy_weight: 0.0
   power_energy_relative_weight: 0.25
   energy_floor_watts: 10
-
-  domain_method: both
-  domain_mu: 0.4
-  domain_mix: convex
-  domain_scale: equal
-  lambda_domain: 0.0
-  da_warmup_epochs: 0
-  da_ramp_epochs: 0
-  da_freeze_patience: 0
-
-domain_adaptation:
-  enabled: false
-  target_split: test
 
 training:
   batch_size: 64

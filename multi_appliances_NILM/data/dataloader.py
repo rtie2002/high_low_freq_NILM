@@ -300,13 +300,11 @@ def _csv_column_map(csv_cfg: dict[str, Any], appliances: list[str]) -> tuple[lis
     return power_cols, state_cols
 
 
-def resolve_mains_column(experiment_cfg: dict[str, Any], model_cfg: dict[str, Any]) -> str:
-    """Model yaml can override experiment csv.mains_column."""
-    if mains_col := model_cfg.get("data", {}).get("mains_column"):
-        return str(mains_col)
+def resolve_mains_column(experiment_cfg: dict[str, Any]) -> str:
+    """Aggregate-power column belongs to the dataset experiment config."""
     if mains_col := experiment_cfg.get("csv", {}).get("mains_column"):
         return str(mains_col)
-    raise ValueError("Set csv.mains_column in experiment yaml or data.mains_column in model yaml")
+    raise ValueError("Set csv.mains_column in the experiment yaml")
 
 
 @dataclass
@@ -423,7 +421,7 @@ class NILMDataLoader:
             self._resolve_csv_path(split),
             self.csv_cfg,
             self.appliances,
-            mains_column=resolve_mains_column(self.experiment, self.model_cfg),
+            mains_column=resolve_mains_column(self.experiment),
         )
 
     def _stride_for_split(self, split: str) -> int:

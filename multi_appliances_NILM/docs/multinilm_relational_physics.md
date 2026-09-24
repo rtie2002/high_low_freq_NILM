@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-`precision_guard` has reduced indiscriminate predictions, but the remaining errors cannot be solved by a single threshold. The model simultaneously exhibits cross-domain scale shift, cross-appliance confusion, inaccurate event boundaries, and insufficient physical power constraints. The new experiment addresses these four problems separately.
+`precision_guard` has reduced indiscriminate predictions, but the remaining errors cannot be solved by a single threshold. The model simultaneously exhibits cross-domain scale shift, cross-appliance confusion, and inaccurate event boundaries.
 
 New configuration: `config/models/multinilm_fractional_relational.yaml`
 
@@ -68,8 +68,7 @@ flowchart LR
     PH --> SG
     SG --> OUT[Five appliance waveforms]
     OUT --> L1[Power / delta / relative-energy loss]
-    OUT --> L2[Aggregate over-allocation loss]
-    SH --> L3[BCE / false-ON loss]
+    SH --> L2[BCE / false-ON loss]
 ```
 
 ## 1. TCN Temporal Context
@@ -218,7 +217,7 @@ $$
 
 This follows [Subtask Gated Networks for NILM](https://ojs.aaai.org/index.php/AAAI/article/view/3908).
 
-## 5. Energy and Aggregate Physical Constraints
+## 5. Relative-Energy Constraint
 
 ### 5.1 Relative-energy loss
 
@@ -244,40 +243,6 @@ L_E=\sum_{i=1}^{A}L_{E,i}.
 $$
 
 Relative-energy loss checks only the total amount within a window, not when the event occurs. Two waveforms with completely different temporal positions but identical total energy can still obtain $L_E=0$. It therefore cannot replace pointwise MSE or state loss.
-
-### 5.2 Aggregate consistency loss
-
-The aggregate uses a one-sided constraint:
-
-$$
-L_{agg}=\operatorname{mean}_{b,t}\left[
-\frac{\operatorname{ReLU}(\sum_i\hat P_{b,t,i}-X_{b,t}-\epsilon)}{S_{agg}}
-\right]^2.
-$$
-
-The current settings are:
-
-```yaml
-aggregate_tolerance_watts: 30
-aggregate_loss_scale_watts: 1000
-aggregate_consistency_weight: 1.0
-```
-
-Consequently, a penalty is produced only when the sum of the five predicted appliances exceeds `aggregate + 30 W`. For an aggregate value of 500 W:
-
-| Sum of five appliance predictions | Excess | Per-timestep constraint value |
-|---:|---:|---:|
-| 450 W | 0 W | 0 |
-| 520 W | 0 W | 0 |
-| 800 W | 270 W | $(270/1000)^2=0.0729$ |
-
-This loss does not force the five target appliances to explain unknown load because the true aggregate also contains lighting, televisions, and other unmodelled appliances. The correct relationship is
-
-$$
-\sum_i\hat P_i(t)\le X(t)+\epsilon,
-$$
-
-rather than $\sum_i\hat P_i(t)=X(t)$. Related non-negativity and sum-constraint ideas appear in [Non-Intrusive Energy Disaggregation Using NMF With Sum-to-k Constraint](https://www.ornl.gov/publication/non-intrusive-energy-disaggregation-using-non-negative-matrix-factorization-sum-k).
 
 ## 6. Early IBN
 
@@ -628,7 +593,7 @@ $$
 L_{power}=\sum_{i=1}^{A}L_{power,i}.
 $$
 
-MSE, ON/OFF-MSE, and delta loss are calculated in normalized target space. Relative-energy loss is calculated after inverse normalization to watts. The legacy `power_energy_weight` is currently `0.0` and does not contribute to the final loss.
+MSE, ON/OFF-MSE, and delta loss are calculated in normalized target space. Relative-energy loss is calculated after inverse normalization to watts.
 
 ### 7.3 Per-Appliance State Loss
 
@@ -690,7 +655,7 @@ However, gradients still flow from $L_{state}$ into the state head. `stopgrad` a
 
 ### 7.5 Current Final Training Objective
 
-The current setting is `lambda_domain: 0.0`, so domain adaptation does not contribute. The actual optimization objective is therefore
+MultiNILM uses a supervised objective. The actual optimization objective is
 
 $$
 \boxed{
@@ -699,7 +664,6 @@ L_{NILM}
 +0.8L_{state}\operatorname{stopgrad}\left(
 \frac{L_{power}}{\max(L_{state},10^{-8})}
 \right)
-+1.0L_{agg}
 }
 $$
 
@@ -718,13 +682,9 @@ loss:
   power_off_weight: 0.5
   power_delta_weight: 0.15
   power_delta_on_only: true
-  power_energy_weight: 0.0
   power_energy_relative_weight: 0.25
   energy_floor_watts: 10
 
-  aggregate_consistency_weight: 1.0
-  aggregate_tolerance_watts: 30
-  aggregate_loss_scale_watts: 1000
 ```
 
 ### 7.6 Correspondence Between Training Logs and the Formula
@@ -735,15 +695,12 @@ loss:
 | `loss_state` | Sum of the complete raw state losses for five appliances, including the FP term | Subterm weights are applied, but dynamic balancing is not |
 | `loss_state_term` | Balanced state contribution actually added to $L_{NILM}$ | Yes |
 | `loss_energy_relative` | Sum of the raw relative-energy losses for five appliances | No; it has not yet been multiplied by 0.25 |
-| `loss_aggregate_consistency` | Raw one-sided aggregate loss | No; it has not yet been multiplied by the aggregate weight |
-| `loss_aggregate_term` | Aggregate contribution actually added to the total loss | Yes |
 
 Therefore, the current non-DA total loss should be reconstructed as
 
 $$
 L_{NILM}=\texttt{loss\_power}
-+\texttt{loss\_state\_term}
-+\texttt{loss\_aggregate\_term},
++\texttt{loss\_state\_term},
 $$
 
 Do not add `loss_state` or `loss_energy_relative` again, because doing so would double-count terms already included in the weighted contributions.

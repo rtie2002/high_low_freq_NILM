@@ -3,7 +3,7 @@
 This document derives the exact scalar loss optimized by
 `config/models/multinilm_fractional_relational.yaml`. It follows the
 implementation in `model/MultiNILM_loss.py` and the parameter wiring in
-`adapters/multinilm.py`.
+`model/MultiNILM.py`.
 
 The derivation is specific to the current configuration snapshot:
 
@@ -21,45 +21,19 @@ loss:
   power_off_weight: 0.5
   power_delta_weight: 0.15
   power_delta_on_only: true
-  power_energy_weight: 0.0
   power_energy_relative_weight: 0.25
   energy_floor_watts: 10
-  aggregate_consistency_weight: 1.0
-  aggregate_tolerance_watts: 30
-  aggregate_loss_scale_watts: 1000
-  domain_method: both
-  domain_mu: 0.4
-  domain_mix: convex
-  domain_scale: equal
-  lambda_domain: 0.0
-
-domain_adaptation:
-  enabled: false
 ```
 
 ## 1. Complete Objective at a Glance
 
-The general implementation supports supervised NILM and optional domain
-adaptation:
-
-$$
-L =
-\begin{cases}
-(1-\lambda_D)L_{\mathrm{NILM}}+\lambda_D L_{D,\mathrm{term}},
-& \text{DA enabled with convex mixing},\\
-L_{\mathrm{NILM}}+\lambda_D L_{D,\mathrm{term}},
-& \text{DA enabled with additive mixing},\\
-L_{\mathrm{NILM}}, & \text{DA disabled}.
-\end{cases}
-$$
-
-The current experiment has domain adaptation disabled and
-$\lambda_D=0$. Therefore, the scalar passed to `backward()` is exactly
+MultiNILM now has one supervised objective. The scalar passed to `backward()`
+is exactly
 
 $$
 \boxed{
 L=L_{\mathrm{NILM}}
-=L_P+L_{S,\mathrm{term}}+L_A
+=L_P+L_{S,\mathrm{term}}
 }
 $$
 
@@ -77,8 +51,7 @@ L_{S,\mathrm{term}}
 \left(\frac{L_P}{\max(L_S,10^{-8})}\right),
 $$
 
-and $L_A$ is the one-sided aggregate consistency loss. The current model has
-$A=5$ appliances.
+The current model has $A=5$ appliances.
 
 ### 1.1 Single derivation chain from the total loss to all components
 
@@ -104,27 +77,24 @@ The complete active loss can then be expanded in one chain:
 $$
 \begin{aligned}
 L
-&=L_P+L_{S,\mathrm{term}}+L_A\\
+&=L_P+L_{S,\mathrm{term}}\\
 &=L_P
 +0.8L_S\operatorname{stopgrad}
-\left(\frac{L_P}{\max(L_S,10^{-8})}\right)
-+L_A\\
+\left(\frac{L_P}{\max(L_S,10^{-8})}\right)\\
 &=\sum_{i=1}^{5}L_{P,i}
 +0.8\left(\sum_{i=1}^{5}L_{S,i}\right)
 \operatorname{stopgrad}
 \left(
 \frac{\sum_{i=1}^{5}L_{P,i}}
 {\max(\sum_{i=1}^{5}L_{S,i},10^{-8})}
-\right)
-+L_A\\
+\right)\\
 &=\sum_{i=1}^{5}\mathcal{P}_i
 +0.8\left(\sum_{i=1}^{5}\mathcal{S}_i\right)
 \operatorname{stopgrad}
 \left(
 \frac{\sum_{i=1}^{5}\mathcal{P}_i}
 {\max(\sum_{i=1}^{5}\mathcal{S}_i,10^{-8})}
-\right)
-+L_A\\
+\right)\\
 &=\sum_{i=1}^{5}
 \left[
 L_{\mathrm{base},i}
@@ -159,8 +129,7 @@ L_{\mathrm{BCE},i}
 10^{-8}
 \right)
 }
-\right)
-+L_A.
+\right).
 \end{aligned}
 $$
 
@@ -190,12 +159,7 @@ L_{\mathrm{BCE},i}
 +(1-z_{bti})\log(1-p_{bti})\right],\\
 L_{\mathrm{FP},i}
 &=\frac{\sum_{b,t}(1-z_{bti})p_{bti}^2}
-{\max(\sum_{b,t}(1-z_{bti}),1)},\\
-L_A
-&=\frac{1}{BT}\sum_{b,t}
-\left[
-\frac{\max(\sum_i\hat P_{bti}-X^W_{bt}-30,0)}{1000}
-\right]^2.
+{\max(\sum_{b,t}(1-z_{bti}),1)}.
 \end{aligned}
 $$
 
@@ -228,7 +192,7 @@ Numerically, when $L_S>10^{-8}$,
 $$
 L_{S,\mathrm{term}}=0.8L_P,
 \qquad
-L\approx1.8L_P+L_A.
+L\approx1.8L_P.
 $$
 
 This numerical identity does **not** mean that the state loss disappears. The
@@ -239,8 +203,7 @@ $$
 \nabla_\theta L
 =\nabla_\theta L_P
 +0.8\left(\frac{L_P}{L_S}\right)_{\mathrm{stopgrad}}
-\nabla_\theta L_S
-+\nabla_\theta L_A.
+\nabla_\theta L_S.
 }
 $$
 
@@ -260,7 +223,6 @@ The following sections expand every term in this expression.
 | $z_{bti}$ | true binary ON/OFF state | $(B,T,A)$ |
 | $s_{bti}$ | predicted state logit | $(B,T,A)$ |
 | $p_{bti}=\sigma(s_{bti})$ | predicted ON probability | $(B,T,A)$ |
-| $X_{bt}$ | normalized aggregate input | $(B,T)$ |
 | $\mu_i,\sigma_i$ | appliance normalization statistics | one pair per appliance |
 
 The target normalization and inverse transform are
@@ -271,9 +233,8 @@ y_{bti}=\frac{P_{bti}-\mu_i}{\sigma_i},
 P_{bti}=\max(\sigma_i y_{bti}+\mu_i,0).
 $$
 
-The clamp to zero is used only by the physical-watt energy and aggregate
-terms. The normalized pointwise losses still receive gradients for negative
-predictions.
+The clamp to zero is used by the physical-watt relative-energy term. The
+normalized pointwise losses still receive gradients for negative predictions.
 
 ## 3. Soft State-Gated Power Output
 
@@ -410,20 +371,7 @@ The mask includes any adjacent pair for which either endpoint is ON. It
 therefore supervises ON/OFF edges and power variations inside ON periods; it
 is not restricted only to true transition locations.
 
-### 4.5 Absolute energy loss: implemented but inactive
-
-The code can calculate the normalized-window energy error
-
-$$
-L_{\mathrm{absE},i}
-=\frac{1}{BT}\sum_b
-\left|\sum_t\hat y_{bti}-\sum_t y_{bti}\right|.
-$$
-
-Its configured coefficient is `power_energy_weight: 0.0`, so this term is not
-part of the current optimized loss.
-
-### 4.6 Relative energy loss in physical watts
+### 4.5 Relative energy loss in physical watts
 
 First convert the normalized predictions and targets to nonnegative watts:
 
@@ -455,7 +403,7 @@ no true appliance energy. The omitted sampling-period multiplier would appear
 in both numerator and denominator and therefore cancels in this relative
 ratio.
 
-### 4.7 Complete active power loss
+### 4.6 Complete active power loss
 
 For one appliance,
 
@@ -602,41 +550,7 @@ Therefore, changing `pos_weight_cap` does not multiply the total state gradient
 by the same factor. It mainly redistributes state gradients among appliances
 and between positive and negative samples.
 
-## 7. Aggregate Consistency Loss
-
-The normalized aggregate input is converted to watts:
-
-$$
-X^{W}_{bt}=\max(\sigma_X X_{bt}+\mu_X,0).
-$$
-
-The total predicted power of the five modeled appliances is
-
-$$
-\hat P^{\mathrm{sum}}_{bt}=\sum_{i=1}^{5}\hat P_{bti}.
-$$
-
-Only physically impossible over-allocation beyond the 30 W tolerance is
-penalized:
-
-$$
-u_{bt}=\max(
-\hat P^{\mathrm{sum}}_{bt}-X^{W}_{bt}-30,
-0),
-$$
-
-$$
-\boxed{
-L_A=1.0\frac{1}{BT}\sum_{b,t}
-\left(\frac{u_{bt}}{1000}\right)^2.
-}
-$$
-
-This loss is intentionally one-sided. It does not require the five predicted
-appliances to sum to the aggregate because unmodeled appliances and background
-load are allowed to remain.
-
-## 8. Fully Expanded Active Training Objective
+## 7. Fully Expanded Active Training Objective
 
 Substituting all active branches gives
 
@@ -682,8 +596,7 @@ L_{\mathrm{BCE},i}
 10^{-8}
 \right)
 }
-\right)\\
-&+L_A.
+\right).
 \end{aligned}
 }
 $$
@@ -692,61 +605,7 @@ All power terms above operate on the soft state-gated prediction
 $\hat y=pR+(1-p)y_{\mathrm{off}}$. Therefore, the apparently separate power
 and state branches are coupled before this total objective is evaluated.
 
-## 9. Optional Domain Adaptation Terms: Currently Inactive
-
-The code supports domain adaptation, but the current experiment does not use
-it. If enabled, each selected feature map $(B,C,T)$ is first mean-pooled over
-time to obtain $(B,C)$.
-
-For layer $l$, Deep CORAL is
-
-$$
-L_{\mathrm{CORAL},l}
-=\frac{1}{4D_l^2}
-\|C_{S,l}-C_{T,l}\|_F^2,
-$$
-
-and RBF-MMD is
-
-$$
-L_{\mathrm{MMD},l}
-=\mathbb{E}[k(Z_S,Z'_S)]
-+\mathbb{E}[k(Z_T,Z'_T)]
--2\mathbb{E}[k(Z_S,Z_T)],
-$$
-
-$$
-k(u,v)=\exp\left(-\frac{\|u-v\|^2}{2\sigma^2}\right).
-$$
-
-With `domain_method: both` and `domain_mu: 0.4`, the configured discrepancy
-would be
-
-$$
-L_D=\sum_l
-\left[0.4L_{\mathrm{MMD},l}+0.6L_{\mathrm{CORAL},l}\right].
-$$
-
-With `domain_scale: equal`,
-
-$$
-L_{D,\mathrm{term}}
-=L_D\operatorname{stopgrad}
-\left(\frac{L_{\mathrm{NILM}}}{\max(L_D,10^{-8})}\right).
-$$
-
-With convex mixing, the final objective would be
-
-$$
-L=(1-\lambda_D)L_{\mathrm{NILM}}
-+\lambda_D L_{D,\mathrm{term}}.
-$$
-
-These equations are documented for completeness only. With
-`domain_adaptation.enabled: false` and `lambda_domain: 0.0`, the implementation
-returns $L_D=0$ and optimizes only the supervised objective in Section 8.
-
-## 10. Quantities That Are Logged but Not Optimized Separately
+## 8. Quantities That Are Logged but Not Optimized Separately
 
 The reported training MAE is
 
@@ -768,15 +627,14 @@ Validation threshold calibration, minimum-ON cleanup, gap merging, final hard
 power gating, F1, SAE, and evaluation MAE are also outside the training loss.
 They cannot send gradients into the model.
 
-## 11. Gradient Paths Through the Complete Model
+## 9. Gradient Paths Through the Complete Model
 
 The power-head parameters receive gradients from
 
 * base MSE;
 * conditional ON and OFF MSE;
 * ON-adjacent delta loss;
-* relative energy loss; and
-* aggregate consistency.
+* relative energy loss.
 
 Because $\partial\hat y/\partial R=p$, all of these gradients are attenuated
 when the state probability is low.
@@ -785,13 +643,12 @@ The state-head parameters receive gradients from
 
 * weighted BCE;
 * explicit false-positive loss;
-* every power term through the soft gate; and
-* aggregate consistency through the soft gate.
+* every power term through the soft gate.
 
 The shared frontend, TCN, task-attention, and cross-appliance relation modules
 receive gradients from both task families and from all five appliance heads.
 
-## 12. Engineering Assessment
+## 10. Engineering Assessment
 
 The loss is scientifically expressive but contains overlapping constraints:
 
@@ -799,7 +656,7 @@ The loss is scientifically expressive but contains overlapping constraints:
    both errors again with different normalization.
 2. BCE already penalizes false positives; $L_{\mathrm{FP}}$ adds a second OFF
    probability penalty.
-3. Pointwise, delta, relative-energy, and aggregate terms can prefer different
+3. Pointwise, delta, and relative-energy terms can prefer different
    waveform compromises.
 4. Global task balancing couples the state scale of all appliances instead of
    balancing each appliance independently.

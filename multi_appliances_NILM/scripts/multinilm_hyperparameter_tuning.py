@@ -1,8 +1,8 @@
 #!/usr/bin/env python
-"""Bayesian-style hyperparameter tuning for MultiNILM (Optuna TPE).
+"""Bayesian-style hyperparameter tuning for supervised MultiNILM (Optuna TPE).
 
-Tunes knobs from ``config/models/multinilm.yaml`` (windows, architecture, DA loss,
-training). Every trial forces ``domain_adaptation.enabled: true``.
+Tunes windowing, architecture, and training knobs from
+``config/models/multinilm.yaml``.
 
 Run from repo root or multi_appliances_NILM:
 
@@ -12,7 +12,7 @@ Run from repo root or multi_appliances_NILM:
     python scripts/multinilm_hyperparameter_tuning.py --epochs 150
 
     # Subset of knobs (others stay at values from --model-config)
-    python scripts/multinilm_hyperparameter_tuning.py --tune learning_rate,lambda_domain,dropout
+    python scripts/multinilm_hyperparameter_tuning.py --tune learning_rate,num_blocks,dropout
 
     # List available names for --tune
     python scripts/multinilm_hyperparameter_tuning.py --list-tune-params
@@ -69,7 +69,7 @@ DEFAULT_N_TRIALS = 30
 DEFAULT_EPOCHS = 150
 
 # Channel schedule = start_width * 2^{0..depth-1}.
-# Two axes: scale (÷2 / base / ×2 vs yaml start=32) and depth (add/remove stages).
+# Two axes: scale (/2 / base / x2 vs yaml start=32) and depth (add/remove stages).
 CHANNEL_START_CHOICES = (16, 32, 64)
 CHANNEL_DEPTH_CHOICES_FAST = (2, 3, 4)
 CHANNEL_DEPTH_CHOICES_FULL = (2, 3, 4, 5)
@@ -98,14 +98,13 @@ DETAIL_KERNEL_PRESETS: dict[str, list[int]] = {
     "5_9": [5, 9],
     "3_7_11": [3, 7, 11],
 }
-DOMAIN_SCALE_CHOICES = ("none", "equal")
 # With training_targets: full_input, input and output MUST match.
 # Powers of 2 so stride = window // {2,4,8,...} stays exact.
 WINDOW_LENGTH_CHOICES = (64, 128, 256, 512, 1024, 2048)
 INPUT_WINDOW_CHOICES = WINDOW_LENGTH_CHOICES
 OUTPUT_WINDOW_CANDIDATES = WINDOW_LENGTH_CHOICES
 MIN_WINDOWS_PER_SPLIT = 8
-# Stride = window // divisor (÷2 pattern). Fixed Optuna space; absolute stride follows window.
+# Stride = window // divisor (/2 pattern). Fixed Optuna space; absolute stride follows window.
 STRIDE_DIVISOR_CHOICES_FAST = (2, 4, 8)  # 50% / 25% / 12.5% of window
 STRIDE_DIVISOR_CHOICES_FULL = (2, 4, 8, 16)
 
@@ -120,7 +119,7 @@ def _stride_from_window(window_length: int, divisor: int) -> int:
 
 
 def _nearest_stride_divisor(window_length: int, stride: int) -> int:
-    """Map a yaml stride back onto the closest ÷2 divisor."""
+    """Map a yaml stride back onto the closest /2 divisor."""
     window = max(1, int(window_length))
     target = max(1, int(stride))
     candidates = list(STRIDE_DIVISOR_CHOICES_FULL) + [32]
@@ -135,7 +134,7 @@ def _stride_choices_for_window(input_length: int, *, fast_search: bool) -> list[
     ]
 
 
-# Tunable knobs from config/models/multinilm.yaml (domain_adaptation.enabled always forced true).
+# Tunable knobs from config/models/multinilm.yaml.
 # epochs is fixed at DEFAULT_EPOCHS (not tuned).
 TUNABLE_PARAMETERS = (
     "input_window_length",
@@ -157,9 +156,6 @@ TUNABLE_PARAMETERS = (
     "use_multiscale_stem",
     "detail_kernels",
     "detail_branch_channels",
-    "domain_mu",
-    "domain_scale",
-    "lambda_domain",
     "batch_size",
     "learning_rate",
     "weight_decay",
@@ -183,10 +179,6 @@ TUNE_ALIASES = {
     "train_stride": "input_stride",
     "eval-stride": "eval_stride",
     "stride": "stride",
-    "lambda_da": "lambda_domain",
-    "lambda-domain": "lambda_domain",
-    "domain-mu": "domain_mu",
-    "domain-scale": "domain_scale",
     "batch": "batch_size",
 }
 
@@ -319,7 +311,6 @@ def _baseline_param_values(model_cfg: dict) -> dict[str, Any]:
     train_cfg = model_cfg.get("training", {})
     arch_cfg = model_cfg.get("architecture", {})
     window_cfg = model_cfg.get("windowing", {})
-    loss_cfg = model_cfg.get("loss", {})
     schedule = [int(v) for v in arch_cfg.get("channel_schedule", [32, 64, 128])]
     channel_start, channel_depth = _infer_channel_start_depth(schedule)
     detail_kernels = [int(v) for v in arch_cfg.get("detail_kernels", [3, 5, 9])]
@@ -356,9 +347,6 @@ def _baseline_param_values(model_cfg: dict) -> dict[str, Any]:
         "detail_kernels": detail_kernels,
         "detail_kernels_key": _detail_kernels_key(detail_kernels),
         "detail_branch_channels": int(arch_cfg.get("detail_branch_channels", 16)),
-        "domain_mu": float(loss_cfg.get("domain_mu", 0.4)),
-        "domain_scale": str(loss_cfg.get("domain_scale", "equal")).lower(),
-        "lambda_domain": float(loss_cfg.get("lambda_domain", 0.0)),
         "batch_size": int(train_cfg.get("batch_size", 32)),
         "epochs": DEFAULT_EPOCHS,
         "learning_rate": float(train_cfg.get("learning_rate", 1e-4)),
@@ -383,24 +371,8 @@ def _deep_copy_merged(experiment: dict, model_cfg: dict) -> dict:
     return merged
 
 
-def _domain_feature_layers_for_blocks(num_blocks: int) -> list[str]:
-    """Late TCN hooks scaled to ``num_blocks`` (yaml uses temporal_4/6 for n=8)."""
-    n = max(1, int(num_blocks))
-    if n == 1:
-        return ["temporal_0", "aligned"]
-    # Same fractions as yaml defaults for n=8 → indices 4 and 6.
-    a = min(n - 1, max(0, (n * 4) // 8))
-    b = min(n - 1, max(0, (n * 6) // 8))
-    if a == b:
-        a = max(0, b - 1)
-    return [f"temporal_{a}", f"temporal_{b}", "aligned"]
-
-
 def _apply_tuning_overrides(model_cfg: dict, trial_params: dict, *, epochs: int) -> None:
-    """Mutate model_cfg in place for one Optuna trial.
-
-    Always forces ``domain_adaptation.enabled: true`` (required for DA loss).
-    """
+    """Mutate model_cfg in place for one supervised Optuna trial."""
     arch_cfg = model_cfg.setdefault("architecture", {})
     schedule = [int(v) for v in trial_params["channel_schedule"]]
     # MultiNILM requires hidden_channels == channel_schedule[-1].
@@ -424,17 +396,6 @@ def _apply_tuning_overrides(model_cfg: dict, trial_params: dict, *, epochs: int)
     arch_cfg["use_multiscale_stem"] = bool(trial_params["use_multiscale_stem"])
     arch_cfg["detail_kernels"] = [int(v) for v in trial_params["detail_kernels"]]
     arch_cfg["detail_branch_channels"] = int(trial_params["detail_branch_channels"])
-    # Keep DA hooks valid when num_blocks changes (temporal_6 invalid if n<7).
-    arch_cfg["domain_feature_layers"] = _domain_feature_layers_for_blocks(num_blocks)
-
-    loss_cfg = model_cfg.setdefault("loss", {})
-    loss_cfg["domain_mu"] = float(trial_params["domain_mu"])
-    loss_cfg["domain_scale"] = str(trial_params["domain_scale"]).lower()
-    loss_cfg["lambda_domain"] = float(trial_params["lambda_domain"])
-
-    # Always on during tuning (yaml may have enabled: false).
-    model_cfg.setdefault("domain_adaptation", {})["enabled"] = True
-
     train_cfg = model_cfg.setdefault("training", {})
     train_cfg["batch_size"] = int(trial_params["batch_size"])
     train_cfg["learning_rate"] = float(trial_params["learning_rate"])
@@ -597,7 +558,7 @@ def _suggest_trial_params(
         elif require_equal_windows and "input_window_length" in tune_set:
             params["output_window_length"] = int(params["input_window_length"])
 
-    # Stride search = divisor (÷2 pattern); absolute stride = window // divisor.
+    # Stride search = divisor (/2 pattern); absolute stride = window // divisor.
     divisor_choices = _stride_divisor_choices(fast_search=fast_search)
     tune_stride_together = "input_stride" in tune_set and "eval_stride" in tune_set
     if tune_stride_together:
@@ -615,7 +576,7 @@ def _suggest_trial_params(
             )
 
     if "channel_schedule" in tune_set:
-        # Two axes: scale start (÷2/base/×2) and depth (add/remove ×2 stages).
+        # Two axes: scale start (/2/base/x2) and depth (add/remove x2 stages).
         channel_start = trial.suggest_categorical(
             "channel_start", list(CHANNEL_START_CHOICES)
         )
@@ -702,24 +663,6 @@ def _suggest_trial_params(
         params["detail_branch_channels"] = trial.suggest_categorical(
             "detail_branch_channels", [8, 16, 24, 32]
         )
-
-    if "domain_mu" in tune_set:
-        if fast_search:
-            params["domain_mu"] = trial.suggest_float("domain_mu", 0.2, 0.6)
-        else:
-            params["domain_mu"] = trial.suggest_float("domain_mu", 0.1, 0.8)
-
-    if "domain_scale" in tune_set:
-        params["domain_scale"] = trial.suggest_categorical(
-            "domain_scale", list(DOMAIN_SCALE_CHOICES)
-        )
-
-    if "lambda_domain" in tune_set:
-        # Keep > 0 so enabled DA actually contributes (yaml comment: needs lambda_domain > 0).
-        if fast_search:
-            params["lambda_domain"] = trial.suggest_float("lambda_domain", 0.2, 0.8)
-        else:
-            params["lambda_domain"] = trial.suggest_float("lambda_domain", 0.1, 0.9)
 
     if "batch_size" in tune_set:
         params["batch_size"] = trial.suggest_categorical("batch_size", [16, 32, 64])
@@ -1143,14 +1086,12 @@ def _print_search_space_info(fast_search: bool, *, model_cfg: dict | None = None
     print("\nDefault search spaces (from multinilm.yaml knobs):")
     print(f"  gate_mode: {list(GATE_MODE_CHOICES)}")
     print(
-        "  channel_schedule: start∈"
-        f"{list(CHANNEL_START_CHOICES)} (÷2/base/×2) × depth∈"
+        "  channel_schedule: start in "
+        f"{list(CHANNEL_START_CHOICES)} (/2/base/x2) x depth in "
         f"{list(CHANNEL_DEPTH_CHOICES_FAST if fast_search else CHANNEL_DEPTH_CHOICES_FULL)} "
         f"-> {list(channel_presets.values())}"
     )
     print(f"  detail_kernels: {list(DETAIL_KERNEL_PRESETS.keys())}")
-    print(f"  domain_scale: {list(DOMAIN_SCALE_CHOICES)}")
-    print("  domain_adaptation.enabled: always true")
     print(f"  epochs: fixed at {DEFAULT_EPOCHS} (not tuned)")
     if require_equal:
         print(f"  window_length (input=output): {list(WINDOW_LENGTH_CHOICES)}")
@@ -1172,8 +1113,7 @@ def main() -> None:
         print("Tunable hyperparameters (--tune accepts comma-separated names):")
         for name in TUNABLE_PARAMETERS:
             print(f"  - {name}")
-        print("\nAlways forced:")
-        print("  - domain_adaptation.enabled = true")
+        print("\nAlways fixed:")
         print(f"  - epochs = {DEFAULT_EPOCHS} (constant; not tuned)")
         print("\nSpecial aliases:")
         print("  - window_length -> input_window_length + output_window_length (kept equal for full_input)")
@@ -1233,7 +1173,6 @@ def main() -> None:
         "fast_search_space": fast_search,
         "seed": int(args.seed),
         "checkpoint_monitor": checkpoint_monitor,
-        "domain_adaptation_enabled": True,
         "appliances": appliances,
         "objective_metric": {
             "name": checkpoint_monitor,
@@ -1260,7 +1199,6 @@ def main() -> None:
         "tuned_parameters": sorted(tune_set),
         "fixed_parameters": fixed_params,
         "fixed_settings": {
-            "domain_adaptation.enabled": True,
             "scheduler": "none",
             "training_plots": "disabled during tuning",
             "search_space": {
@@ -1271,7 +1209,6 @@ def main() -> None:
                 ),
                 "channel_schedule": _channel_schedule_presets(fast_search=fast_search),
                 "detail_kernels": DETAIL_KERNEL_PRESETS,
-                "domain_scale": list(DOMAIN_SCALE_CHOICES),
                 "input_window_length": list(INPUT_WINDOW_CHOICES),
                 "window_length_choices_when_full_input": list(WINDOW_LENGTH_CHOICES),
                 "window_safety_rule": (
@@ -1290,7 +1227,6 @@ def main() -> None:
     print(f"Experiment: {args.experiment}")
     print(f"Model config: {args.model_config}")
     print(f"Trials: {args.n_trials} | Epochs/trial: {fixed_epochs} (fixed) | Fast space: {fast_search}")
-    print("domain_adaptation.enabled: always true")
     print(f"Tuning: {', '.join(sorted(tune_set))}")
     print(f"Fixed from yaml: {', '.join(f'{k}={v}' for k, v in sorted(fixed_params.items()))}")
     print(f"Objective: minimize {checkpoint_monitor}")
@@ -1464,16 +1400,6 @@ def main() -> None:
             arch_patch[key] = best_params[key]
     if "channel_schedule" in tune_set or "num_blocks" in tune_set:
         arch_patch["hidden_channels"] = best_params["hidden_channels"]
-    if "num_blocks" in tune_set:
-        arch_patch["domain_feature_layers"] = _domain_feature_layers_for_blocks(
-            int(best_params["num_blocks"])
-        )
-
-    loss_patch: dict[str, Any] = {}
-    for key in ("domain_mu", "domain_scale", "lambda_domain"):
-        if key in tune_set:
-            loss_patch[key] = best_params[key]
-
     window_patch: dict[str, Any] = {}
     for key in ("input_window_length", "output_window_length", "input_stride", "eval_stride"):
         if key in tune_set:
@@ -1504,9 +1430,7 @@ def main() -> None:
         },
         "recommended_yaml_patch": {
             **({"architecture": arch_patch} if arch_patch else {}),
-            **({"loss": loss_patch} if loss_patch else {}),
             **({"windowing": window_patch} if window_patch else {}),
-            "domain_adaptation": {"enabled": True},
             "training": train_patch,
         },
         **study_config,

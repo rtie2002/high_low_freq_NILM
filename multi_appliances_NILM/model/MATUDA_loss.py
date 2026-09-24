@@ -189,9 +189,6 @@ class MATUDACriterion(nn.Module):
             pos_weight=pos_weight,
             power_scale=power_scale,
             task_balance=str(task_balance or "equal"),
-            lambda_domain=0.0,
-            domain_mix=self.domain_mix,
-            domain_scale=self.domain_scale,
         )
 
     def _on_masked_power_loss(

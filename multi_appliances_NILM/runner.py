@@ -132,7 +132,7 @@ def _data_preprocess_note(
     experiment_cfg: dict[str, Any],
 ) -> list[str]:
     data_cfg = model_cfg.get("data", {})
-    lines = [f"mains column: {resolve_mains_column(experiment_cfg, model_cfg)}"]
+    lines = [f"mains column: {resolve_mains_column(experiment_cfg)}"]
     if norm := get_normalization_cfg(experiment_cfg):
         lines.append("preprocess: dataset z-score (experiment yaml)")
         agg = norm.get("aggregate", {})
@@ -429,11 +429,11 @@ def _format_epoch_summary(
             method_label = f"MMD+CORAL mu={domain_mu:g}"
         elif method == "mmd":
             method_label = "MMD"
-        else:
+        elif method == "coral":
             method_label = "CORAL"
+        else:
+            method_label = method.upper()
         lines.append(f"  domain      {dom_arrow}, {method_label})")
-    else:
-        lines.append("  domain      (off)")
 
     lines.append("  -- validation (same L_NILM scale, no DA) --")
     lines.append(f"  L_NILM      {val_nilm:.4f}   = power + state_term")
@@ -820,7 +820,7 @@ def _configure_cuda(train_cfg: dict) -> None:
 
 
 def _resolve_domain_adaptation(adapter) -> tuple[bool, str]:
-    """Return (active, target_split) for Lin-style unlabeled target-domain DA.
+    """Return (active, target_split) for MATUDA's unlabeled target-domain DA.
 
     Active only when both:
       domain_adaptation.enabled: true
@@ -830,9 +830,16 @@ def _resolve_domain_adaptation(adapter) -> tuple[bool, str]:
     aggregate ``x`` is used; appliance labels from that split are ignored.
     """
     da_cfg = adapter.model_cfg.get("domain_adaptation") or {}
+    lambda_domain = float(adapter.model_cfg.get("loss", {}).get("lambda_domain", 0.0))
+    if adapter.name != "matuda":
+        if bool(da_cfg.get("enabled", False)) or lambda_domain != 0.0:
+            raise ValueError(
+                "Generic MultiNILM domain adaptation was removed; use --model matuda"
+            )
+        return False, "test"
+
     enabled = bool(da_cfg.get("enabled", False))
     target_split = str(da_cfg.get("target_split", "test"))
-    lambda_domain = float(adapter.model_cfg.get("loss", {}).get("lambda_domain", 0.0))
 
     if enabled and lambda_domain == 0.0:
         print(
@@ -1315,11 +1322,11 @@ def train_model(
     print("Loading CSV splits into memory (train, val, test)...", flush=True)
     train_loader, val_loader, test_loaders = _build_loaders(adapter)
 
-    # Optional unlabeled target-domain loader for CORAL/MMD (Lin-style).
+    # Optional unlabeled target-domain loader used only by MATUDA.
     da_active, da_target_split = _resolve_domain_adaptation(adapter)
     target_loader = None
     da_lambda = float(adapter.model_cfg.get("loss", {}).get("lambda_domain", 0.0))
-    da_method = str(adapter.model_cfg.get("loss", {}).get("domain_method", "coral"))
+    da_method = str(adapter.model_cfg.get("loss", {}).get("da_mode", "global"))
     da_mu = float(adapter.model_cfg.get("loss", {}).get("domain_mu", 0.4))
     if da_active:
         if da_target_split == "train":
@@ -1348,11 +1355,10 @@ def train_model(
             f"  Target split   {da_target_split}  (aggregates only; labels unused)\n"
             f"  Method         {method_note}\n"
             f"  lambda_domain  {da_lambda:g}\n"
-            f"  domain_mix     {str(adapter.model_cfg.get('loss', {}).get('domain_mix', 'convex'))}\n"
-            f"  Feature layers {adapter.model_cfg.get('architecture', {}).get('domain_feature_layers', ['aligned'])}",
+            f"  domain_mix     {str(adapter.model_cfg.get('loss', {}).get('domain_mix', 'convex'))}",
             flush=True,
         )
-    else:
+    elif adapter.name == "matuda":
         print(
             "------------------------------------------------------------------------------\n"
             "DOMAIN ADAPTATION\n"
@@ -1386,32 +1392,27 @@ def train_model(
     best_path = run_dir / "best.pt"
 
     param_stats = count_model_parameters(model)
-    save_run_manifest(
-        run_dir / "run_manifest.json",
-        {
-            "experiment_id": adapter.experiment["experiment_id"],
-            "model_name": adapter.name,
-            "seed": int(seed_int),
-            "batch_size": int(train_loader.batch_size),
-            "epochs_configured": int(epochs),
-            "checkpoint_monitor": str(train_cfg.get("checkpoint_monitor", "val_loss")),
-            "checkpoint_mae_space": str(train_cfg.get("checkpoint_mae_space", "normalized")),
-            "windowing": adapter.model_cfg.get("windowing", {}),
-            "appliances": adapter.cfg["appliances"],
-            "domain_adaptation": {
-                "enabled": bool(da_active),
-                "target_split": da_target_split if da_active else None,
-                "lambda_domain": float(
-                    adapter.model_cfg.get("loss", {}).get("lambda_domain", 0.0)
-                ),
-                "domain_method": str(
-                    adapter.model_cfg.get("loss", {}).get("domain_method", "coral")
-                ),
-            },
-            **param_stats,
-            **build_hardware_info(device),
-        },
-    )
+    manifest = {
+        "experiment_id": adapter.experiment["experiment_id"],
+        "model_name": adapter.name,
+        "seed": int(seed_int),
+        "batch_size": int(train_loader.batch_size),
+        "epochs_configured": int(epochs),
+        "checkpoint_monitor": str(train_cfg.get("checkpoint_monitor", "val_loss")),
+        "checkpoint_mae_space": str(train_cfg.get("checkpoint_mae_space", "normalized")),
+        "windowing": adapter.model_cfg.get("windowing", {}),
+        "appliances": adapter.cfg["appliances"],
+        **param_stats,
+        **build_hardware_info(device),
+    }
+    if adapter.name == "matuda":
+        manifest["domain_adaptation"] = {
+            "enabled": bool(da_active),
+            "target_split": da_target_split if da_active else None,
+            "lambda_domain": da_lambda,
+            "mode": da_method,
+        }
+    save_run_manifest(run_dir / "run_manifest.json", manifest)
     try:
         import yaml
 

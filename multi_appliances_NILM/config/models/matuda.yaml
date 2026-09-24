@@ -3,7 +3,6 @@
 model_name: matuda
 
 data:
-  mains_column: aggregate
   state_label_source: threshold
 
 evaluation:
