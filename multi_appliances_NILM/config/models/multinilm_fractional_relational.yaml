@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: Random Mix 0.5 (8w)
+experiment_id: Random Mix 0.5 (8w) second try
 model_name: multinilm_fractional
 
 data:
