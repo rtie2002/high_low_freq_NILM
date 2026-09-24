@@ -25,21 +25,44 @@ def _events(mask: np.ndarray) -> list[tuple[int, int]]:
     return list(zip(starts.tolist(), ends.tolist()))
 
 
-def _cleanup_mask(mask: np.ndarray, *, min_on: int = 1, merge_gap: int = 0) -> np.ndarray:
+def _segment_slices(segment_ids: np.ndarray | None, length: int) -> list[slice]:
+    """Return contiguous slices that temporal rules may process independently."""
+    if segment_ids is None:
+        return [slice(0, length)]
+
+    segments = np.asarray(segment_ids, dtype=np.int64).reshape(-1)
+    if len(segments) != length:
+        raise ValueError(
+            f"segment_ids has {len(segments)} rows but state timeline has {length}"
+        )
+    boundaries = np.flatnonzero(np.r_[True, segments[1:] != segments[:-1], True])
+    return [slice(int(start), int(end)) for start, end in zip(boundaries[:-1], boundaries[1:])]
+
+
+def _cleanup_mask(
+    mask: np.ndarray,
+    *,
+    min_on: int = 1,
+    merge_gap: int = 0,
+    segment_ids: np.ndarray | None = None,
+) -> np.ndarray:
+    """Clean a binary state mask without joining independent time sequences."""
     out = np.asarray(mask, dtype=bool).copy()
 
     gap = int(merge_gap)
-    if gap > 0:
-        ev = _events(out)
-        for (_, end), (next_start, _) in zip(ev, ev[1:]):
-            if next_start - end <= gap:
-                out[end:next_start] = True
-
     min_len = int(min_on)
-    if min_len > 1:
-        for start, end in _events(out):
-            if end - start < min_len:
-                out[start:end] = False
+    for segment in _segment_slices(segment_ids, len(out)):
+        local = out[segment]
+        if gap > 0:
+            ev = _events(local)
+            for (_, end), (next_start, _) in zip(ev, ev[1:]):
+                if next_start - end <= gap:
+                    local[end:next_start] = True
+
+        if min_len > 1:
+            for start, end in _events(local):
+                if end - start < min_len:
+                    local[start:end] = False
 
     return out.astype(np.int32)
 
@@ -194,6 +217,7 @@ def calibrate_state_postprocess(
                         pred,
                         min_on=min_on[app_i],
                         merge_gap=merge_gap[app_i],
+                        segment_ids=bundle.segment_ids,
                     )
                 score = _f1(y_true, pred)
                 if score > best_f1:
@@ -207,6 +231,7 @@ def calibrate_state_postprocess(
         thresholds=thresholds,
         min_on_samples=min_on if post_enabled else [1] * len(appliances),
         merge_gap_samples=merge_gap if post_enabled else [0] * len(appliances),
+        segment_ids=bundle.segment_ids,
     )
     scores = [
         _f1(bundle.y_true_on[:, app_i], calibrated[:, app_i])
@@ -246,6 +271,7 @@ def apply_state_postprocess_arrays(
     thresholds: list[float],
     min_on_samples: list[int],
     merge_gap_samples: list[int],
+    segment_ids: np.ndarray | None = None,
 ) -> np.ndarray:
     prob = np.asarray(state_prob, dtype=np.float64)
     if prob.ndim != 2:
@@ -260,6 +286,7 @@ def apply_state_postprocess_arrays(
             raw,
             min_on=int(min_on_samples[app_i]),
             merge_gap=int(merge_gap_samples[app_i]),
+            segment_ids=segment_ids,
         )
     return out
 
@@ -293,6 +320,7 @@ def apply_state_calibration(
         thresholds=thresholds,
         min_on_samples=min_on,
         merge_gap_samples=merge_gap,
+        segment_ids=bundle.segment_ids,
     )
     y_pred_watts = np.asarray(bundle.y_pred_watts, dtype=np.float64)
     if apply_to_power:

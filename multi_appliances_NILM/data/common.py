@@ -52,6 +52,7 @@ class PredictionBundle:
         y_true_on    : (N, A)
         y_pred_on    : (N, A)
         y_pred_state_prob : (N, A), optional raw sigmoid probabilities
+        segment_ids  : (N,), optional continuous-sequence identifiers
 
     where:
 
@@ -70,6 +71,7 @@ class PredictionBundle:
     y_pred_on: np.ndarray | None = None
     y_pred_state_prob: np.ndarray | None = None
     csv_timesteps: np.ndarray | None = None
+    segment_ids: np.ndarray | None = None
 
     def save(self, path: Path) -> None:
         """Save predictions to a compressed .npz file.
@@ -93,6 +95,7 @@ class PredictionBundle:
                 self.y_pred_state_prob if self.y_pred_state_prob is not None else np.array([])
             ),
             csv_timesteps=self.csv_timesteps if self.csv_timesteps is not None else np.array([]),
+            segment_ids=self.segment_ids if self.segment_ids is not None else np.array([]),
         )
 
     @classmethod
@@ -106,6 +109,7 @@ class PredictionBundle:
         y_pred_on = data["y_pred_on"]
         y_pred_state_prob = data["y_pred_state_prob"] if "y_pred_state_prob" in data else np.array([])
         csv_ts = data["csv_timesteps"] if "csv_timesteps" in data else np.array([])
+        segment_ids = data["segment_ids"] if "segment_ids" in data else np.array([])
         return cls(
             experiment_id=str(data["experiment_id"]),
             model_name=str(data["model_name"]),
@@ -118,6 +122,7 @@ class PredictionBundle:
             y_pred_on=None if y_pred_on.size == 0 else y_pred_on,
             y_pred_state_prob=None if y_pred_state_prob.size == 0 else y_pred_state_prob,
             csv_timesteps=None if csv_ts.size == 0 else csv_ts,
+            segment_ids=None if segment_ids.size == 0 else segment_ids,
         )
 
 
@@ -415,6 +420,8 @@ class BaseNILMAdapter(AdapterDataMixin):
         if bool(eval_cfg.get("regate_power_with_pred_on", True)) and not calibration_enabled:
             y_pred = np.asarray(y_pred, dtype=np.float64) * z_pred.astype(np.float64)
 
+        segment_ids = loader.segment_ids_at_timesteps(split_key, csv_timesteps)
+
         # Return the standard prediction object used everywhere else in the repo.
         return build_prediction_bundle(
             experiment_id=self.experiment["experiment_id"],
@@ -428,6 +435,7 @@ class BaseNILMAdapter(AdapterDataMixin):
             y_pred_on=z_pred,
             y_pred_state_prob=state_prob,
             csv_timesteps=csv_timesteps,
+            segment_ids=segment_ids,
         )
 
 
@@ -444,6 +452,7 @@ def build_prediction_bundle(
     y_pred_on: np.ndarray,
     y_pred_state_prob: np.ndarray | None = None,
     csv_timesteps: np.ndarray | None = None,
+    segment_ids: np.ndarray | None = None,
 ) -> PredictionBundle:
     """Create a PredictionBundle with consistent dtype handling.
 
@@ -463,4 +472,5 @@ def build_prediction_bundle(
         y_pred_on=y_pred_on.astype(np.int32),
         y_pred_state_prob=y_pred_state_prob,
         csv_timesteps=csv_timesteps,
+        segment_ids=segment_ids,
     )
