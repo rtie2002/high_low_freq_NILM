@@ -182,20 +182,8 @@ If `channel_schedule` is omitted, the model falls back to the old single Conv1d 
 - Input window: **864** samples; output window: **256** (center-aligned).
 - Shared TCN with dilations **1, 2, 4, 8, 16, 32** (6 blocks).
 - Per-appliance heads with state-gated power: `power = power_raw × sigmoid(state)`.
-- Loss, training loop, evaluation, and feature-map hooks (still on `feature_refine` in each head).
+- Loss, training loop, and evaluation.
 - Multi-appliance design: one model, **A** heads (vs seq2point’s one model per appliance).
-
----
-
-## Feature maps
-
-Feature maps are still taken from each appliance head’s `feature_refine` output (post Conv+BN+GELU):
-
-| | Before | After |
-|---|--------|-------|
-| Hook location | `appliance_heads[i].feature_refine` | same |
-| Channels (Y-axis) | 192 | **64** |
-| Time axis | 256 (cropped center window) | 256 |
 
 ---
 

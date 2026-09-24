@@ -13,7 +13,6 @@ import torch
 from torch.utils.data import DataLoader
 
 from data.dataloader import get_state_label_source, resolve_state_thresholds_watts
-from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
 from evaluation.metrics import evaluate_bundle
 from evaluation.plots import (
     FULL_CYCLE_APPLIANCES,
@@ -248,12 +247,6 @@ class LiveTrainingMonitor:
                     figsize=figsize,
                 )
 
-    def feature_map_cfg(self) -> FeatureMapConfig:
-        return FeatureMapConfig.from_dict(self.plot_cfg.get("feature_maps"))
-
-    def should_plot_feature_maps(self) -> bool:
-        return self.feature_map_cfg().enabled
-
     @torch.no_grad()
     def save_waveforms(
         self,
@@ -267,92 +260,40 @@ class LiveTrainingMonitor:
         include_best: bool = False,
     ) -> list[Path]:
         self._prune_legacy_epoch_waveform_dirs()
-        self._prune_legacy_epoch_feature_map_dirs()
         saved: list[Path] = []
         test_loaders = test_loaders or {}
-        if not include_best:
+        tag = "best" if include_best else "latest"
+
+        saved.extend(
+            self._save_split_waveforms(
+                adapter, model, val_loader, device, split="validation", epoch=epoch, tag=tag
+            )
+        )
+        for test_split, test_loader in test_loaders.items():
             saved.extend(
                 self._save_split_waveforms(
-                    adapter, model, val_loader, device, split="validation", epoch=epoch, tag="latest"
+                    adapter,
+                    model,
+                    test_loader,
+                    device,
+                    split=test_split,
+                    epoch=epoch,
+                    tag=tag,
                 )
             )
-            for test_split, test_loader in test_loaders.items():
-                saved.extend(
-                    self._save_split_waveforms(
-                        adapter,
-                        model,
-                        test_loader,
-                        device,
-                        split=test_split,
-                        epoch=epoch,
-                        tag="latest",
-                    )
-                )
+            if not include_best:
                 fig_path = self._save_epoch_val_test_comparison_figure(epoch, test_split)
                 if fig_path is not None:
                     saved.append(fig_path)
-            if test_loaders:
-                # One-picture dashboards so you don't jump epoch folders.
-                saved.extend(
-                    self._save_epoch_comparison_dashboards(
-                        epoch,
-                        tuple(test_loaders),
-                    )
-                )
-            if self.should_plot_feature_maps():
-                saved.extend(
-                    self._save_feature_maps(
-                        adapter, model, val_loader, device, split="validation", epoch=epoch, tag="latest"
-                    )
-                )
-                for test_split, test_loader in test_loaders.items():
-                    saved.extend(
-                        self._save_feature_maps(
-                            adapter,
-                            model,
-                            test_loader,
-                            device,
-                            split=test_split,
-                            epoch=epoch,
-                            tag="latest",
-                        )
-                    )
-        else:
+
+        if not include_best and test_loaders:
+            # One-picture dashboards so you do not need to jump between epoch folders.
             saved.extend(
-                self._save_split_waveforms(
-                    adapter, model, val_loader, device, split="validation", epoch=epoch, tag="best"
+                self._save_epoch_comparison_dashboards(
+                    epoch,
+                    tuple(test_loaders),
                 )
             )
-            for test_split, test_loader in test_loaders.items():
-                saved.extend(
-                    self._save_split_waveforms(
-                        adapter,
-                        model,
-                        test_loader,
-                        device,
-                        split=test_split,
-                        epoch=epoch,
-                        tag="best",
-                    )
-                )
-            if self.should_plot_feature_maps():
-                saved.extend(
-                    self._save_feature_maps(
-                        adapter, model, val_loader, device, split="validation", epoch=epoch, tag="best"
-                    )
-                )
-                for test_split, test_loader in test_loaders.items():
-                    saved.extend(
-                        self._save_feature_maps(
-                            adapter,
-                            model,
-                            test_loader,
-                            device,
-                            split=test_split,
-                            epoch=epoch,
-                            tag="best",
-                        )
-                    )
         return saved
 
     @staticmethod
@@ -361,58 +302,8 @@ class LiveTrainingMonitor:
             return root / split
         return root / "test" / split
 
-    def _feature_map_tag_dir(self, split: str, tag: str) -> Path:
-        return self._split_output_dir(self.run_dir / "feature_maps", split) / tag
-
     def _epoch_tag(self, epoch: int) -> str:
         return f"epoch_{int(epoch):04d}"
-
-    def _prune_legacy_epoch_feature_map_dirs(self) -> None:
-        """Remove obsolete ``live/`` feature-map folders only (keep epoch_* history)."""
-        feature_root = self.run_dir / "feature_maps"
-        if not feature_root.exists():
-            return
-        for split_dir in feature_root.iterdir():
-            if not split_dir.is_dir():
-                continue
-            live = split_dir / "live"
-            if live.is_dir():
-                shutil.rmtree(live, ignore_errors=True)
-
-    def _save_feature_maps(
-        self,
-        adapter,
-        model: torch.nn.Module,
-        loader: DataLoader,
-        device: torch.device,
-        *,
-        split: str,
-        epoch: int,
-        tag: str,
-    ) -> list[Path]:
-        cfg = self.feature_map_cfg()
-        if not cfg.enabled:
-            return []
-        # Keep a durable epoch copy + refresh latest/best pointer tag.
-        tags = [self._epoch_tag(epoch), tag] if tag in {"latest", "best"} else [tag]
-        saved: list[Path] = []
-        for out_tag in tags:
-            output_dir = self._feature_map_tag_dir(split, out_tag)
-            if output_dir.exists():
-                shutil.rmtree(output_dir)
-            saved.extend(
-                save_feature_maps(
-                    adapter,
-                    model,
-                    loader,
-                    output_dir,
-                    split=split,
-                    device=device,
-                    cfg=cfg,
-                    max_batches=self.plot_max_batches(),
-                )
-            )
-        return saved
 
     def _waveform_tag_dir(self, split: str, tag: str) -> Path:
         return self._split_output_dir(self.waveforms_dir, split) / tag

@@ -55,6 +55,17 @@ def get_state_label_source(model_cfg: dict[str, Any]) -> str:
     return source
 
 
+def get_random_mix_prob(model_cfg: dict[str, Any]) -> float:
+    """Share of training windows replaced by random mixes (0 when disabled)."""
+    mix = model_cfg.get("training", {}).get("random_mix") or {}
+    if not mix.get("enabled", False):
+        return 0.0
+    prob = float(mix.get("prob", 0.5))
+    if not 0.0 < prob <= 1.0:
+        raise ValueError(f"training.random_mix.prob must be in (0, 1], got {prob}")
+    return prob
+
+
 def get_power_scale(model_cfg: dict[str, Any]) -> float:
     """Legacy divide-by-scale fallback when experiment has no normalization block."""
     return float(model_cfg.get("data", {}).get("power_scale", 1.0))
@@ -210,8 +221,10 @@ class WindowDataset(Dataset):
         state_threshold_watts: float | np.ndarray | None = None,
         state_label_source: str = "auto",
         tensor_dtype: np.dtype = np.float32,
+        random_mix_prob: float = 0.0,
     ):
         norm = normalization or NormalizationStats()
+        self.norm = norm
         self.inputs = np.ascontiguousarray(norm.normalize_inputs(inputs), dtype=tensor_dtype)
         self.targets = np.ascontiguousarray(targets, dtype=tensor_dtype)
         self.states = np.ascontiguousarray(states, dtype=np.int64)
@@ -225,6 +238,15 @@ class WindowDataset(Dataset):
                 )
             threshold = np.asarray(state_threshold_watts, dtype=np.float32)
             self.states = (self.targets > threshold).astype(np.int64)
+
+        self.random_mix_prob = float(random_mix_prob)
+        if self.random_mix_prob > 0.0:
+            # Mixes are summed in watts. Clip the background at 0: mains can dip
+            # below the submeter sum when the channels are slightly misaligned.
+            self.targets_watts = self.targets
+            self.residual_watts = np.clip(
+                inputs - self.targets.sum(axis=1), 0.0, None
+            ).astype(tensor_dtype)
 
         self.targets = np.ascontiguousarray(norm.normalize_targets(self.targets), dtype=tensor_dtype)
 
@@ -273,20 +295,51 @@ class WindowDataset(Dataset):
         return len(self.indices)
 
     def __getitem__(self, index: int):
-        start = int(self.indices[index])
-        end = start + self.seq_len
-        x = self.inputs_t[start:end].unsqueeze(-1)
+        if self.random_mix_prob > 0.0 and float(torch.rand(())) < self.random_mix_prob:
+            x, y, z = self._random_mix_window()
+        else:
+            start = int(self.indices[index])
+            end = start + self.seq_len
+            x = self.inputs_t[start:end].unsqueeze(-1)
+            y = self.targets_t[start:end]
+            z = self.states_t[start:end]
 
         if self.target_mode == "full_input":
-            return x, self.targets_t[start:end], self.states_t[start:end]
+            return x, y, z
 
-        out = _output_slice(start, self.seq_len, self.windowing)
-        y = self.targets_t[out]
-        z = self.states_t[out]
+        out = _output_slice(0, self.seq_len, self.windowing)
+        y = y[out]
+        z = z[out]
         if int(self.windowing.get("output_window_length", 1)) == 1:
             y = y.squeeze(0)
             z = z.squeeze(0)
         return x, y, z
+
+    def _random_mix_window(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Sum appliance traces and a background residual from independent windows.
+
+        Each appliance (power and ON labels) and the background are drawn from
+        separately sampled training windows, so neither the background nor the
+        other appliances carry information about a given appliance. The input is
+        the exact sum, so all labels stay valid. Uses torch RNG so DataLoader
+        workers draw different mixes.
+        """
+        n_apps = self.targets_watts.shape[1]
+        seq_len = self.seq_len
+        picks = torch.randint(len(self.indices), (n_apps + 1,)).numpy()
+        *app_starts, bg = self.indices[picks].tolist()
+
+        power = np.stack(
+            [self.targets_watts[s:s + seq_len, a] for a, s in enumerate(app_starts)], axis=1
+        )
+        states = np.stack(
+            [self.states[s:s + seq_len, a] for a, s in enumerate(app_starts)], axis=1
+        )
+        mains = power.sum(axis=1) + self.residual_watts[bg:bg + seq_len]
+
+        x = np.asarray(self.norm.normalize_inputs(mains), dtype=self.inputs.dtype)
+        y = np.asarray(self.norm.normalize_targets(power), dtype=self.targets.dtype)
+        return torch.from_numpy(x).unsqueeze(-1), torch.from_numpy(y), torch.from_numpy(states)
 
 
 def _csv_column_map(csv_cfg: dict[str, Any], appliances: list[str]) -> tuple[list[str], list[str]]:
@@ -401,6 +454,7 @@ class NILMDataLoader:
         self.norm = NormalizationStats.from_config(experiment_cfg, model_cfg, self.appliances)
         self.loss_scale = self.norm.loss_scale
         self.tensor_dtype, _ = resolve_tensor_dtype(model_cfg)
+        self.random_mix_prob = get_random_mix_prob(model_cfg)
         self._splits: dict[SplitName, SplitArrays] = {}
 
     def _resolve_csv_path(self, split: SplitName) -> Path:
@@ -446,6 +500,7 @@ class NILMDataLoader:
             state_threshold_watts=self.state_threshold_watts,
             state_label_source=self.state_label_source,
             tensor_dtype=self.tensor_dtype,
+            random_mix_prob=self.random_mix_prob if split == "train" else 0.0,
         )
         if len(dataset) == 0:
             _, segment_lengths = np.unique(data.segment_ids, return_counts=True)

@@ -51,7 +51,6 @@ from data.dataloader import (
     resolve_test_scenarios,
 )
 from evaluation.live_monitor import LiveTrainingMonitor
-from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
 from evaluation.metrics import (
     _macro_mae_norm,
     evaluate_bundle,
@@ -225,6 +224,8 @@ def _print_training_data_summary(
         early_stop_text += f" after epoch {train_cfg.get('early_stop_min_epochs')}"
     _summary_line("Early stop", early_stop_text)
     _summary_line("Train shuffle", str(train_cfg.get("train_shuffle", True)))
+    mix_prob = data_loader.random_mix_prob
+    _summary_line("Random mix", f"p={mix_prob:g} (train only)" if mix_prob else "off")
     _summary_line("Tensor dtype", str(train_cfg.get("tensor_dtype", "float32")))
 
     ckpt = train_cfg.get("checkpoint_monitor")
@@ -1684,11 +1685,6 @@ def train_model(
                     f"  {epoch_tag} | saved one-picture comparisons -> "
                     f".../comparisons/<scenario>/metrics_all_epochs.png + waveforms_by_epoch/"
                 )
-                if FeatureMapConfig.from_dict(plot_cfg.get("feature_maps")).enabled:
-                    tqdm.write(
-                        f"  {epoch_tag} | saved feature maps -> "
-                        f".../feature_maps/validation + .../feature_maps/test/<scenario>/"
-                    )
 
             # 6g. Save best checkpoint when validation metric improves.
             if improved:
@@ -1712,11 +1708,6 @@ def train_model(
                         f"  {epoch_tag} | saved best waveforms -> "
                         ".../waveforms/validation + .../waveforms/test/<scenario>/best/"
                     )
-                    if FeatureMapConfig.from_dict(plot_cfg.get("feature_maps")).enabled:
-                        tqdm.write(
-                            f"  {epoch_tag} | saved best feature maps -> "
-                            ".../feature_maps/validation + .../feature_maps/test/<scenario>/best/"
-                        )
             else:
                 epochs_without_improvement += 1
 
@@ -1976,22 +1967,5 @@ def evaluate_model(
 
     print_evaluation_report(metrics, run_dir, split=split, show_cost_summary=show_cost_summary)
     print(f"Saved {len(saved)} waveform PNGs under {waveform_dir}/<appliance>/")
-
-    feature_cfg = FeatureMapConfig.from_dict(plot_cfg.get("feature_maps"))
-    if feature_cfg.enabled:
-        feature_dir = (
-            run_dir / "feature_maps" / split
-            if split in {"validation", "test"}
-            else run_dir / "feature_maps" / "test" / split
-        )
-        save_feature_maps(
-            adapter,
-            model,
-            loader,
-            feature_dir,
-            split=split,
-            device=device,
-            cfg=feature_cfg,
-        )
 
     return pred_path

@@ -414,8 +414,6 @@ def _apply_tuning_overrides(model_cfg: dict, trial_params: dict, *, epochs: int)
     plots = train_cfg.setdefault("plots", {})
     plots["enabled"] = False
     plots["plot_mode"] = "end"
-    feature_maps = plots.setdefault("feature_maps", {})
-    feature_maps["enabled"] = False
 
 
 def _output_window_choices(input_length: int, *, require_equal: bool) -> list[int]:

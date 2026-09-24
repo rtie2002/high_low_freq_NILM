@@ -169,10 +169,3 @@ training:
     on_period_margin_frac: 0.08
     waveform_context_scale: 10      # ×10 context PNG; <=1 disables
     comparison_dpi: 600             # collage dashboards under comparisons/
-    feature_maps:
-      enabled: false
-      max_examples: 2
-      cmap: magma
-      display_activation: relu
-      min_on_duration: 10
-      dpi: 200

@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: new one
+experiment_id: Random Mix 0.5 (8w)
 model_name: multinilm_fractional
 
 data:
@@ -120,6 +120,14 @@ training:
   train_shuffle: true
   gradient_clip: 1.0
 
+  # Each training window is replaced with probability prob by a random mix:
+  # every appliance trace (with its ON labels) and the background residual
+  # (mains - sum of appliances) come from independent training windows.
+  # Validation and test windows are never mixed.
+  random_mix:
+    enabled: true
+    prob: 0.5
+
   use_amp: false
   amp_dtype: bf16
   cudnn_benchmark: true
@@ -153,10 +161,3 @@ training:
     on_period_margin_frac: 0.08
     waveform_context_scale: 10
     comparison_dpi: 300
-    feature_maps:
-      enabled: false
-      max_examples: 2
-      cmap: magma
-      display_activation: relu
-      min_on_duration: 10
-      dpi: 200
