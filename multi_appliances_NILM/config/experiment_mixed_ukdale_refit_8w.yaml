@@ -20,6 +20,11 @@ csv:
   train_file: training/multi_appliance_training.csv
   validation_file: validating/multi_appliance_validating.csv
   test_file: testing/multi_appliance_testing.csv
+  # Independent zero-shot scenarios. They use the same validation calibration
+  # but are evaluated and saved in separate output folders.
+  test_scenarios:
+    refit_house20: testing/refit_house20/multi_appliance_testing.csv
+    ukdale_house2: testing/ukdale_house2/multi_appliance_testing.csv
   mains_column: aggregate
   appliances:
     kettle:         {power: kettle_power,         state: kettle_on}

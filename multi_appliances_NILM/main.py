@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from config import load_experiment, load_model_config, merge_configs, model_name_from_config
+from data.dataloader import resolve_test_scenarios
 from model.MATNILM import MATNILMAdapter
 from model.MATUDA import MATUDAAdapter
 from model.MultiNILM import MultiNILMAdapter, MultiNILMFractionalAdapter
@@ -131,8 +132,10 @@ def main() -> None:
         ckpt = args.checkpoint or (run_dir / "best.pt")
         if not ckpt.exists():
             raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
-        for split in ("validation", "test"):
-            print(f"\n{split.capitalize()} evaluation ({ckpt.name}):", flush=True)
+        evaluation_splits = ["validation", *resolve_test_scenarios(experiment)]
+        for split in evaluation_splits:
+            label = "Validation" if split == "validation" else f"Test scenario: {split}"
+            print(f"\n{label} evaluation ({ckpt.name}):", flush=True)
             pred_path = evaluate_model(
                 adapter,
                 ckpt,
@@ -141,7 +144,10 @@ def main() -> None:
                 show_cost_summary=False,
             )
             print(f"Saved predictions: {pred_path}")
-        print_val_test_comparison(run_dir)
+        print_val_test_comparison(
+            run_dir,
+            test_scenarios=resolve_test_scenarios(experiment),
+        )
         print_run_cost_summary(run_dir)
 
 

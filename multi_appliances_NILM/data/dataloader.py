@@ -16,7 +16,7 @@ from torch.utils.data import Dataset
 
 from config import appliance_list, resolve_tensor_dtype, resolve_training_targets
 
-SplitName = Literal["train", "validation", "test"]
+SplitName = str
 OutputAlignment = Literal["end", "center"]
 TargetMode = Literal["output_window", "full_input"]
 
@@ -141,7 +141,27 @@ class NormalizationStats:
 def _split_key(split: str) -> SplitName:
     if split in ("val", "validation"):
         return "validation"
-    return split  # type: ignore[return-value]
+    return str(split)
+
+
+def resolve_test_scenarios(experiment_cfg: dict[str, Any]) -> list[str]:
+    """Configured independent test splits, falling back to the legacy test file."""
+    scenarios = experiment_cfg.get("csv", {}).get("test_scenarios", {})
+    if not isinstance(scenarios, dict) or not scenarios:
+        return ["test"]
+    names = [str(name) for name in scenarios]
+    reserved = {"train", "val", "validation", "test", ".", ".."}
+    invalid = [
+        name
+        for name in names
+        if not name
+        or name.lower() in reserved
+        or name != name.strip()
+        or any(c in name for c in "/\\:")
+    ]
+    if invalid:
+        raise ValueError(f"test scenario names must be folder-safe: {invalid}")
+    return names
 
 
 def _resolve_input_length(windowing: dict[str, Any]) -> int:
@@ -383,13 +403,18 @@ class NILMDataLoader:
         self.norm = NormalizationStats.from_config(experiment_cfg, model_cfg, self.appliances)
         self.loss_scale = self.norm.loss_scale
         self.tensor_dtype, _ = resolve_tensor_dtype(model_cfg)
-        self._splits: dict[SplitName, SplitArrays] | None = None
+        self._splits: dict[SplitName, SplitArrays] = {}
 
     def _resolve_csv_path(self, split: SplitName) -> Path:
-        key = _SPLIT_FILE_KEYS[split]
-        name = self.csv_cfg.get(key)
+        if split in _SPLIT_FILE_KEYS:
+            key = _SPLIT_FILE_KEYS[split]
+            name = self.csv_cfg.get(key)
+        else:
+            key = f"test_scenarios.{split}"
+            scenarios = self.csv_cfg.get("test_scenarios", {})
+            name = scenarios.get(split) if isinstance(scenarios, dict) else None
         if not name:
-            raise ValueError(f"csv.{key} required — point to your pre-split CSV")
+            raise ValueError(f"csv.{key} required - point to a pre-split CSV")
         path = Path(name)
         return path if path.is_absolute() else self.data_root / path
 
@@ -409,7 +434,7 @@ class NILMDataLoader:
 
     def _make_window_dataset(self, split: str) -> WindowDataset:
         key = _split_key(split)
-        data = self.get_splits()[key]
+        data = self.get_split(key)
         w = self.model_cfg["windowing"]
         dataset = WindowDataset(
             data.inputs,
@@ -456,7 +481,7 @@ class NILMDataLoader:
         Averaging removes window-boundary pulses in plots and test metrics.
         """
         key = _split_key(split)
-        total = len(self.get_splits()[key].inputs)
+        total = len(self.get_split(key).inputs)
         window_values = np.asarray(window_values, dtype=np.float64)
         if window_values.ndim != 3:
             raise ValueError(f"Expected (n_windows, out_len, A), got {window_values.shape}")
@@ -488,7 +513,7 @@ class NILMDataLoader:
 
     def csv_on_labels_at_timesteps(self, split: str, csv_timesteps: np.ndarray) -> np.ndarray:
         """Dataset CSV *_on labels at the same CSV rows as a prediction bundle."""
-        z_csv = self.get_splits()[_split_key(split)].states
+        z_csv = self.get_split(split).states
         indices = np.asarray(csv_timesteps, dtype=np.int64)
         return z_csv[indices].astype(np.int32)
 
@@ -500,13 +525,13 @@ class NILMDataLoader:
         """Continuous-sequence IDs aligned with a prediction bundle timeline."""
         if csv_timesteps is None:
             return None
-        segment_ids = self.get_splits()[_split_key(split)].segment_ids
+        segment_ids = self.get_split(split).segment_ids
         indices = np.asarray(csv_timesteps, dtype=np.int64)
         return segment_ids[indices].astype(np.int64)
 
     def get_raw_csv_arrays(self, split: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return raw CSV mains/power/state arrays (watts / labels, not z-scored)."""
-        data = self.get_splits()[_split_key(split)]
+        data = self.get_split(split)
         return data.inputs, data.targets, data.states
 
     def mains_watts_at_timesteps(self, split: str, csv_timesteps: np.ndarray) -> np.ndarray:
@@ -542,7 +567,7 @@ class NILMDataLoader:
         may still follow data.state_label_source in the model yaml.
         """
         key = _split_key(split)
-        data = self.get_splits()[key]
+        data = self.get_split(key)
         w = self.model_cfg["windowing"]
         ds = WindowDataset(
             data.inputs,
@@ -566,14 +591,15 @@ class NILMDataLoader:
         flat = np.concatenate(rows, axis=0)
         return flat[: int(n_points)].astype(np.int32)
 
+    def get_split(self, split: str) -> SplitArrays:
+        """Load one split on demand and cache it for later windows/plots."""
+        key = _split_key(split)
+        if key not in self._splits:
+            self._splits[key] = self._load_split_csv(key)
+        return self._splits[key]
+
     def get_splits(self) -> dict[SplitName, SplitArrays]:
-        if self._splits is not None:
-            return self._splits
-        self._splits = {
-            "train": self._load_split_csv("train"),
-            "validation": self._load_split_csv("validation"),
-            "test": self._load_split_csv("test"),
-        }
+        """Return the splits loaded so far; prefer get_split() for lazy access."""
         return self._splits
 
     def build_dataset(self, split: str) -> Dataset:
@@ -585,7 +611,7 @@ class NILMDataLoader:
 
     def estimate_state_pos_weights(self, split: str = "train") -> np.ndarray:
         """Per-appliance BCE pos_weight = (1 - p) / p from training ON rate p."""
-        data = self.get_splits()[_split_key(split)]
+        data = self.get_split(split)
         y, z = data.targets, data.states
         if self.state_threshold_watts is not None:
             on = (y > self.state_threshold_watts).astype(np.float64)
@@ -597,7 +623,7 @@ class NILMDataLoader:
     def describe_split(self, split: str, *, batch_size: int) -> dict[str, Any]:
         key = _split_key(split)
         csv_path = self._resolve_csv_path(key)
-        x = self.get_splits()[key].inputs
+        x = self.get_split(key).inputs
         w = self.model_cfg["windowing"]
         stride = self._stride_for_split(split)
         target_mode = _target_mode(w, split)

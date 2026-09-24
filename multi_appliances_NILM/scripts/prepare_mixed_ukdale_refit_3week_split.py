@@ -33,6 +33,8 @@ Outputs (under datasets/mixed_ukdale_refit_3w/ by default)
   training/multi_appliance_training.csv
   validating/multi_appliance_validating.csv
   testing/multi_appliance_testing.csv
+  testing/refit_house20/multi_appliance_testing.csv
+  testing/ukdale_house2/multi_appliance_testing.csv
   selection_summary.csv   (chosen windows + ON stats)
 
 Example
@@ -712,6 +714,13 @@ def main() -> None:
     train_df.to_csv(train_out, index=False)
     val_df.to_csv(val_out, index=False)
     test_df.to_csv(test_out, index=False)
+    scenario_outputs: list[Path] = []
+    for (dataset, house), scenario_df in test_df.groupby(["dataset", "house"], sort=False):
+        scenario = f"{str(dataset).lower()}_house{house}"
+        scenario_out = out_dir / "testing" / scenario / "multi_appliance_testing.csv"
+        scenario_out.parent.mkdir(parents=True, exist_ok=True)
+        scenario_df.to_csv(scenario_out, index=False)
+        scenario_outputs.append(scenario_out)
     normalization_path = out_dir / "normalization_stats.json"
     normalization_path.write_text(
         json.dumps(training_normalization(train_df, apps), indent=2), encoding="utf-8"
@@ -724,6 +733,8 @@ def main() -> None:
     print(f"  {train_out}", flush=True)
     print(f"  {val_out}", flush=True)
     print(f"  {test_out}", flush=True)
+    for scenario_out in scenario_outputs:
+        print(f"  {scenario_out}", flush=True)
     print(f"  {normalization_path}", flush=True)
 
 

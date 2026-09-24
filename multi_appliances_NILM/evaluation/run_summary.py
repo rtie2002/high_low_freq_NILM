@@ -232,13 +232,88 @@ def print_evaluation_report(
         print_run_cost_summary(run_dir, title="Training cost & model size")
 
 
-def print_val_test_comparison(run_dir: Path) -> None:
+def print_val_test_comparison(
+    run_dir: Path,
+    *,
+    test_scenarios: list[str] | None = None,
+) -> None:
     """Compare validation vs test metrics to inspect generalization gap."""
     from evaluation.plots import (
         build_val_test_comparison_frame,
         save_multi_epoch_metrics_collage,
         save_val_test_comparison_figure,
     )
+
+    scenarios = list(test_scenarios or ["test"])
+    if scenarios != ["test"]:
+        val_path = run_dir / "validation_metrics.csv"
+        if not val_path.exists():
+            print("\nTest-scenario comparison skipped: validation_metrics.csv is missing", flush=True)
+            return
+
+        val_df = pd.read_csv(val_path)
+        summary = load_run_summary(run_dir)
+        scenario_frames: list[tuple[str, pd.DataFrame]] = []
+        for scenario in scenarios:
+            test_path = run_dir / "test" / scenario / "metrics.csv"
+            if not test_path.exists():
+                print(f"\nTest scenario skipped (missing): {test_path}", flush=True)
+                continue
+
+            test_df = pd.read_csv(test_path)
+            scenario_frames.append((scenario, test_df))
+            comparison_dir = run_dir / "comparisons" / scenario
+            comparison_dir.mkdir(parents=True, exist_ok=True)
+            compare_df = build_val_test_comparison_frame(val_df, test_df)
+            compare_path = comparison_dir / "validation_test_comparison.csv"
+            compare_df.to_csv(compare_path, index=False)
+            fig_path = comparison_dir / "validation_test_comparison.png"
+            save_val_test_comparison_figure(
+                val_df,
+                test_df,
+                fig_path,
+                title=f"Best checkpoint | {scenario}",
+                section_names=("Validation", scenario),
+            )
+            save_multi_epoch_metrics_collage(
+                run_dir,
+                output_path=comparison_dir / "metrics_all_epochs.png",
+                title=f"NILM diagnostics by epoch | {scenario}",
+                dpi=300,
+                best_epoch=summary.get("best_epoch"),
+                test_split=scenario,
+            )
+
+            overall = test_df[test_df["appliance"] == "overall"]
+            if not overall.empty:
+                row = overall.iloc[0]
+                print(
+                    f"Test {scenario}: MAE={float(row['mae']):.2f} W, "
+                    f"F1={float(row['f1']):.4f}, AP={float(row['average_precision']):.4f}",
+                    flush=True,
+                )
+
+        if scenario_frames:
+            combined = []
+            for scenario, frame in scenario_frames:
+                copy = frame.copy()
+                copy.insert(0, "test_scenario", scenario)
+                combined.append(copy)
+            scenario_summary = pd.concat(combined, ignore_index=True)
+            summary_path = run_dir / "comparisons" / "test_scenarios_metrics.csv"
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            scenario_summary.to_csv(summary_path, index=False)
+
+        if len(scenario_frames) == 2:
+            (left_name, left), (right_name, right) = scenario_frames
+            save_val_test_comparison_figure(
+                left,
+                right,
+                run_dir / "comparisons" / "test_scenarios_final.png",
+                title="Final zero-shot test scenarios",
+                section_names=(left_name, right_name),
+            )
+        return
 
     val_path = run_dir / "validation_metrics.csv"
     test_path = run_dir / "test_metrics.csv"
@@ -365,7 +440,7 @@ def compare_experiment(runs_dir: Path, experiment_id: str, config_dir: Path | No
     """Compare test metrics across models for one experiment_id."""
     import yaml
     from data.common import PredictionBundle
-    from data.dataloader import resolve_state_thresholds_watts
+    from data.dataloader import get_state_label_source, resolve_state_thresholds_watts
     from evaluation.metrics import evaluate_bundle, resolve_power_postprocess
 
     exp_dir = runs_dir / experiment_id
@@ -383,29 +458,46 @@ def compare_experiment(runs_dir: Path, experiment_id: str, config_dir: Path | No
 
     frames = []
     for model_dir in sorted(p for p in exp_dir.iterdir() if p.is_dir()):
-        pred_path = model_dir / "test_predictions.npz"
-        if not pred_path.exists():
+        scenario_paths = sorted((model_dir / "test").glob("*/predictions.npz"))
+        prediction_paths = scenario_paths or [model_dir / "test_predictions.npz"]
+        prediction_paths = [path for path in prediction_paths if path.is_file()]
+        if not prediction_paths:
             continue
-        bundle = PredictionBundle.load(pred_path)
-        experiment_cfg = _experiment_cfg_for_bundle(bundle)
-        eval_cfg = experiment_cfg.get("evaluation", {})
-        power_postprocess = (
-            resolve_power_postprocess(experiment_cfg, bundle.appliances) if experiment_cfg else None
-        )
-        on_thresholds = (
-            resolve_state_thresholds_watts(experiment_cfg, bundle.appliances) if experiment_cfg else None
-        )
-        frames.append(
-            evaluate_bundle(
+
+        merged_path = model_dir / "config_merged.yaml"
+        merged_cfg = {}
+        if merged_path.is_file():
+            with merged_path.open(encoding="utf-8") as file:
+                merged_cfg = yaml.safe_load(file) or {}
+
+        for pred_path in prediction_paths:
+            bundle = PredictionBundle.load(pred_path)
+            experiment_cfg = merged_cfg.get("experiment") or _experiment_cfg_for_bundle(bundle)
+            model_cfg = merged_cfg.get("model") or {}
+            eval_cfg = experiment_cfg.get("evaluation", {})
+            state_source = get_state_label_source(model_cfg)
+            power_postprocess = (
+                resolve_power_postprocess(experiment_cfg, bundle.appliances, model_cfg)
+                if experiment_cfg
+                else None
+            )
+            on_thresholds = (
+                resolve_state_thresholds_watts(experiment_cfg, bundle.appliances)
+                if experiment_cfg and state_source == "threshold"
+                else None
+            )
+            metrics = evaluate_bundle(
                 bundle,
                 sae_period=int(eval_cfg.get("sae_period", 1200)),
                 on_threshold_watts=on_thresholds,
-                state_label_source="threshold" if on_thresholds is not None else "auto",
+                state_label_source=state_source,
                 power_postprocess=power_postprocess,
             )
-        )
+            scenario = pred_path.parent.name if scenario_paths else "test"
+            metrics.insert(3, "test_scenario", scenario)
+            frames.append(metrics)
     if not frames:
-        raise FileNotFoundError(f"No test_predictions.npz under {exp_dir}")
+        raise FileNotFoundError(f"No test prediction files under {exp_dir}")
     table = pd.concat(frames, ignore_index=True)
     table = enrich_compare_table(table, runs_dir, experiment_id)
     out_path = exp_dir / "compare_results.csv"
@@ -414,7 +506,7 @@ def compare_experiment(runs_dir: Path, experiment_id: str, config_dir: Path | No
     if not overall.empty:
         show_cols = [
             c for c in [
-                "model", "mae", "sae", "f1", "micro_f1", "parameters_m",
+                "model", "test_scenario", "mae", "sae", "f1", "micro_f1", "parameters_m",
                 "training_time", "checkpoint_mb", "best_epoch", "best_score",
             ] if c in overall.columns
         ]

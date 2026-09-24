@@ -48,6 +48,7 @@ from data.dataloader import (
     get_state_label_source,
     resolve_mains_column,
     resolve_state_thresholds_watts,
+    resolve_test_scenarios,
 )
 from evaluation.live_monitor import LiveTrainingMonitor
 from evaluation.feature_maps import FeatureMapConfig, save_feature_maps
@@ -94,6 +95,19 @@ def _reset_dir(path: Path) -> Path:
             shutil.rmtree(trash, ignore_errors=True)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _evaluation_output_dir(run_dir: Path, split: str) -> Path:
+    """Keep each configured test scenario isolated under run_dir/test/<scenario>."""
+    if split in {"validation", "test"}:
+        return Path(run_dir)
+    return Path(run_dir) / "test" / split
+
+
+def _evaluation_waveform_dir(run_dir: Path, split: str, tag: str) -> Path:
+    if split in {"validation", "test"}:
+        return Path(run_dir) / "waveforms" / split / tag
+    return Path(run_dir) / "waveforms" / "test" / split / tag
 
 
 def seed_everything(seed: int) -> None:
@@ -248,20 +262,21 @@ def _print_training_data_summary(
     print("DATA SPLITS", flush=True)
     print(rule, flush=True)
 
+    splits = ["train", "validation", *resolve_test_scenarios(data_loader.experiment)]
     split_infos = {
         split: data_loader.describe_split(split, batch_size=batch_size)
-        for split in ("train", "validation", "test")
+        for split in splits
     }
 
     print("  CSV files", flush=True)
-    for split in ("train", "validation", "test"):
+    for split in splits:
         info = split_infos[split]
         _summary_line(split, _display_csv_path(info["csv_path"]), width=12)
     print(flush=True)
 
     headers = ("Split", "Timesteps", "Windows", "Batches", "Stride", "Target")
     rows: list[tuple[str, ...]] = []
-    for split in ("train", "validation", "test"):
+    for split in splits:
         info = split_infos[split]
         rows.append(
             (
@@ -1148,17 +1163,20 @@ def _build_loss_and_optimizer(
 
 
 def _build_loaders(adapter):
-    """Build the three standard dataloaders used by the pipeline.
+    """Build train/validation plus each independent test-scenario loader.
 
     Notes:
         - train_loader is used for weight updates
         - val_loader is used for checkpoint selection
-        - test_loader is loaded here so live monitoring can also draw test plots
+        - each test loader is evaluated and saved under its own scenario folder
     """
     train_loader = adapter.build_dataloader("train")
     val_loader = adapter.build_dataloader("validation")
-    test_loader = adapter.build_dataloader("test")
-    return train_loader, val_loader, test_loader
+    test_loaders = {
+        scenario: adapter.build_dataloader(scenario)
+        for scenario in resolve_test_scenarios(adapter.experiment)
+    }
+    return train_loader, val_loader, test_loaders
 
 
 def _compute_scheduler_key(train_cfg: dict, monitor_key: str) -> str:
@@ -1191,7 +1209,7 @@ def _save_latest_waveforms(
     adapter,
     model: torch.nn.Module,
     val_loader,
-    test_loader,
+    test_loaders,
     device: torch.device,
     epoch_no: int,
     best_epoch: int,
@@ -1202,7 +1220,7 @@ def _save_latest_waveforms(
         adapter,
         model,
         val_loader=val_loader,
-        test_loader=test_loader,
+        test_loaders=test_loaders,
         device=device,
         epoch=epoch_no,
     )
@@ -1214,7 +1232,7 @@ def _save_best_waveforms(
     adapter,
     model: torch.nn.Module,
     val_loader,
-    test_loader,
+    test_loaders,
     device: torch.device,
     best_epoch_no: int,
 ) -> None:
@@ -1223,7 +1241,7 @@ def _save_best_waveforms(
         adapter,
         model,
         val_loader=val_loader,
-        test_loader=test_loader,
+        test_loaders=test_loaders,
         device=device,
         epoch=best_epoch_no,
         include_best=True,
@@ -1295,7 +1313,7 @@ def train_model(
     # Step 4:
     # Build the standard train/validation/test dataloaders.
     print("Loading CSV splits into memory (train, val, test)...", flush=True)
-    train_loader, val_loader, test_loader = _build_loaders(adapter)
+    train_loader, val_loader, test_loaders = _build_loaders(adapter)
 
     # Optional unlabeled target-domain loader for CORAL/MMD (Lin-style).
     da_active, da_target_split = _resolve_domain_adaptation(adapter)
@@ -1309,7 +1327,14 @@ def train_model(
         elif da_target_split in {"validation", "val"}:
             target_loader = val_loader
         elif da_target_split == "test":
-            target_loader = test_loader
+            if len(test_loaders) != 1:
+                raise ValueError(
+                    "domain_adaptation.target_split='test' is ambiguous with multiple "
+                    "test scenarios; configure the scenario name explicitly"
+                )
+            target_loader = next(iter(test_loaders.values()))
+        elif da_target_split in test_loaders:
+            target_loader = test_loaders[da_target_split]
         else:
             target_loader = adapter.build_dataloader(da_target_split)
         method_note = da_method
@@ -1637,14 +1662,14 @@ def train_model(
                     adapter=adapter,
                     model=model,
                     val_loader=val_loader,
-                    test_loader=test_loader,
+                    test_loaders=test_loaders,
                     device=device,
                     epoch_no=epoch_no,
                     best_epoch=best_epoch,
                 )
                 tqdm.write(
                     f"  {epoch_tag} | saved waveforms -> "
-                    f".../waveforms/{{validation,test}}/epoch_{epoch_no:04d}/ (+ latest/)"
+                    f".../waveforms/validation + .../waveforms/test/<scenario>/"
                 )
                 tqdm.write(
                     f"  {epoch_tag} | saved metrics tables -> "
@@ -1652,17 +1677,16 @@ def train_model(
                 )
                 tqdm.write(
                     f"  {epoch_tag} | saved val/test table figure -> "
-                    f".../metrics_by_epoch/epoch_{epoch_no:04d}/validation_test_comparison.png"
+                    f".../metrics_by_epoch/epoch_{epoch_no:04d}/test/<scenario>/"
                 )
                 tqdm.write(
                     f"  {epoch_tag} | saved one-picture comparisons -> "
-                    f".../comparisons/metrics_all_epochs.png + "
-                    f".../waveforms_by_epoch/ALL_appliances_period{{01..N}}_by_epoch_{{validation,test}}.png"
+                    f".../comparisons/<scenario>/metrics_all_epochs.png + waveforms_by_epoch/"
                 )
                 if FeatureMapConfig.from_dict(plot_cfg.get("feature_maps")).enabled:
                     tqdm.write(
                         f"  {epoch_tag} | saved feature maps -> "
-                        f".../feature_maps/{{validation,test}}/epoch_{epoch_no:04d}/ (+ latest/)"
+                        f".../feature_maps/validation + .../feature_maps/test/<scenario>/"
                     )
 
             # 6g. Save best checkpoint when validation metric improves.
@@ -1679,14 +1703,18 @@ def train_model(
                         adapter=adapter,
                         model=model,
                         val_loader=val_loader,
-                        test_loader=test_loader,
+                        test_loaders=test_loaders,
                         device=device,
                         best_epoch_no=best_epoch,
                     )
-                    tqdm.write(f"  {epoch_tag} | saved best waveforms -> .../waveforms/{{validation,test}}/best/")
+                    tqdm.write(
+                        f"  {epoch_tag} | saved best waveforms -> "
+                        ".../waveforms/validation + .../waveforms/test/<scenario>/best/"
+                    )
                     if FeatureMapConfig.from_dict(plot_cfg.get("feature_maps")).enabled:
                         tqdm.write(
-                            f"  {epoch_tag} | saved best feature maps -> .../feature_maps/{{validation,test}}/best/"
+                            f"  {epoch_tag} | saved best feature maps -> "
+                            ".../feature_maps/validation + .../feature_maps/test/<scenario>/best/"
                         )
             else:
                 epochs_without_improvement += 1
@@ -1720,7 +1748,7 @@ def train_model(
                     adapter=adapter,
                     model=model,
                     val_loader=val_loader,
-                    test_loader=test_loader,
+                    test_loaders=test_loaders,
                     device=device,
                     epoch_no=last_epoch,
                     best_epoch=best_epoch,
@@ -1734,7 +1762,7 @@ def train_model(
                     adapter=adapter,
                     model=model,
                     val_loader=val_loader,
-                    test_loader=test_loader,
+                    test_loaders=test_loaders,
                     device=device,
                     best_epoch_no=best_epoch,
                 )
@@ -1833,8 +1861,13 @@ def evaluate_model(
 
     # Step 5:
     # Save final predictions so later code can reload them without rerunning the model.
-    run_dir.mkdir(parents=True, exist_ok=True)
-    pred_path = run_dir / f"{split}_predictions.npz"
+    result_dir = _evaluation_output_dir(run_dir, split)
+    result_dir.mkdir(parents=True, exist_ok=True)
+    pred_path = (
+        result_dir / f"{split}_predictions.npz"
+        if split in {"validation", "test"}
+        else result_dir / "predictions.npz"
+    )
     bundle.save(pred_path)
 
     # Step 6:
@@ -1851,14 +1884,23 @@ def evaluate_model(
         state_label_source=get_state_label_source(adapter.model_cfg),
         power_postprocess=power_postprocess,
     )
-    metrics_path = run_dir / f"{split}_metrics.csv"
+    metrics_path = (
+        result_dir / f"{split}_metrics.csv"
+        if split in {"validation", "test"}
+        else result_dir / "metrics.csv"
+    )
     metrics.to_csv(metrics_path, index=False)
     # Also archive under metrics_by_epoch for comparison with mid-training tables.
     ckpt_epoch = int(ckpt.get("epoch", -1)) if isinstance(ckpt, dict) else -1
     if ckpt_epoch > 0:
         archive_dir = run_dir / "metrics_by_epoch" / f"evaluate_epoch_{ckpt_epoch:04d}"
-        archive_dir.mkdir(parents=True, exist_ok=True)
-        metrics.to_csv(archive_dir / f"{split}_metrics.csv", index=False)
+        archive_path = (
+            archive_dir / f"{split}_metrics.csv"
+            if split in {"validation", "test"}
+            else archive_dir / "test" / split / "metrics.csv"
+        )
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        metrics.to_csv(archive_path, index=False)
 
     # Step 7:
     # Waveform plots always use dataset CSV *_on labels for true ON periods.
@@ -1867,7 +1909,7 @@ def evaluate_model(
     # Keep training-time epoch_* waveform history; only refresh the evaluate/ slot.
     # On Windows, rmtree(dir) then immediate recreate can race (delayed deletes) and
     # cause FileNotFoundError on savefig — wipe children or replace via rename.
-    waveform_dir = run_dir / "waveforms" / split / "evaluate"
+    waveform_dir = _evaluation_waveform_dir(run_dir, split, "evaluate")
     _reset_dir(waveform_dir)
 
     raw_period = plot_cfg.get("on_period_samples", 0)
@@ -1936,7 +1978,11 @@ def evaluate_model(
 
     feature_cfg = FeatureMapConfig.from_dict(plot_cfg.get("feature_maps"))
     if feature_cfg.enabled:
-        feature_dir = run_dir / "feature_maps" / split
+        feature_dir = (
+            run_dir / "feature_maps" / split
+            if split in {"validation", "test"}
+            else run_dir / "feature_maps" / "test" / split
+        )
         save_feature_maps(
             adapter,
             model,

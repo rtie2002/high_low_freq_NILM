@@ -760,6 +760,7 @@ def save_val_test_comparison_figure(
     *,
     epoch: int | None = None,
     title: str | None = None,
+    section_names: tuple[str, str] = ("Validation", "Test"),
     dpi: int = 300,
 ) -> Path:
     """Readable full-width val/test table grouped by metric family."""
@@ -833,7 +834,7 @@ def save_val_test_comparison_figure(
         return f"{value:.1f}" if kind == "power" else f"{value:.3f}"
 
     frames = []
-    for split_name, frame in (("Validation", val_metrics), ("Test", test_metrics)):
+    for split_name, frame in zip(section_names, (val_metrics, test_metrics)):
         ordered = _ordered(frame).copy()
         ordered["split"] = split_name
         frames.append(ordered)
@@ -960,6 +961,8 @@ def _list_metric_epoch_dirs(run_dir: Path) -> list[tuple[int, Path]]:
 
 def _list_waveform_epoch_dirs(run_dir: Path, split: str) -> list[tuple[int, Path]]:
     root = Path(run_dir) / "waveforms" / split
+    if not root.is_dir() and split not in {"train", "validation", "test"}:
+        root = Path(run_dir) / "waveforms" / "test" / split
     if not root.is_dir():
         return []
     out: list[tuple[int, Path]] = []
@@ -1075,9 +1078,12 @@ def _vstack_trimmed_images(
     return np.concatenate(chunks, axis=0)
 
 
-def _overall_from_epoch_comparison(ep_dir: Path) -> dict | None:
+def _overall_from_epoch_comparison(
+    ep_dir: Path,
+    comparison_relative: Path = Path("validation_test_comparison.csv"),
+) -> dict | None:
     """Load overall row from an epoch's val/test comparison CSV (if present)."""
-    csv_path = ep_dir / "validation_test_comparison.csv"
+    csv_path = ep_dir / comparison_relative
     if not csv_path.is_file():
         return None
     try:
@@ -1097,6 +1103,7 @@ def _resolve_best_epoch_for_collage(
     epoch_dirs: list[tuple[int, Path]],
     *,
     best_epoch: int | None = None,
+    comparison_relative: Path = Path("validation_test_comparison.csv"),
 ) -> tuple[int | None, dict | None, str]:
     """Pick best plotted epoch + overall metrics for the collage footer.
 
@@ -1109,7 +1116,11 @@ def _resolve_best_epoch_for_collage(
 
     def _stats(ep: int) -> dict | None:
         d = by_ep.get(ep)
-        return _overall_from_epoch_comparison(d) if d is not None else None
+        return (
+            _overall_from_epoch_comparison(d, comparison_relative)
+            if d is not None
+            else None
+        )
 
     if best_epoch is not None and int(best_epoch) > 0:
         ep = int(best_epoch)
@@ -1142,7 +1153,7 @@ def _resolve_best_epoch_for_collage(
     best_st: dict | None = None
     best_f1 = float("-inf")
     for ep, ep_dir in epoch_dirs:
-        st = _overall_from_epoch_comparison(ep_dir)
+        st = _overall_from_epoch_comparison(ep_dir, comparison_relative)
         if st is None:
             continue
         f1 = st.get("val_maF1", st.get("val_F1"))
@@ -1192,20 +1203,30 @@ def save_multi_epoch_metrics_collage(
     title: str | None = None,
     dpi: int = 600,
     best_epoch: int | None = None,
+    test_split: str = "test",
 ) -> Path | None:
     """Build a stacked diagnostic dashboard at each configured plot epoch."""
     from PIL import Image, ImageDraw, ImageFont
 
     run_dir = Path(run_dir)
     epoch_dirs = _list_metric_epoch_dirs(run_dir)
+    scenario_relative = (
+        Path("test_metrics.csv")
+        if test_split == "test"
+        else Path("test") / test_split / "metrics.csv"
+    )
+    comparison_relative = scenario_relative.parent / "validation_test_comparison.csv"
     best_ep, best_stats, best_rule = _resolve_best_epoch_for_collage(
-        run_dir, epoch_dirs, best_epoch=best_epoch
+        run_dir,
+        epoch_dirs,
+        best_epoch=best_epoch,
+        comparison_relative=comparison_relative,
     )
     panels: list[tuple[str, np.ndarray]] = []
     for ep, ep_dir in epoch_dirs:
         val_csv = ep_dir / "validation_metrics.csv"
-        test_csv = ep_dir / "test_metrics.csv"
-        png = ep_dir / "validation_test_comparison.png"
+        test_csv = ep_dir / scenario_relative
+        png = ep_dir / comparison_relative.with_suffix(".png")
         if not val_csv.exists() or not test_csv.exists():
             continue
         save_val_test_comparison_figure(
@@ -1214,21 +1235,27 @@ def save_multi_epoch_metrics_collage(
             png,
             epoch=ep,
             title=f"Epoch {ep}",
+            section_names=("Validation", test_split),
             dpi=dpi,
         )
         panels.append((f"epoch {ep}", plt.imread(png)))
 
     plotted_epochs = {ep for ep, _ in epoch_dirs}
     root_val = run_dir / "validation_metrics.csv"
-    root_test = run_dir / "test_metrics.csv"
+    root_test = (
+        run_dir / "test_metrics.csv"
+        if test_split == "test"
+        else run_dir / "test" / test_split / "metrics.csv"
+    )
     if best_ep not in plotted_epochs and root_val.exists() and root_test.exists():
-        best_png = run_dir / "validation_test_comparison.png"
+        best_png = root_test.parent / "validation_test_comparison.png"
         save_val_test_comparison_figure(
             root_val,
             root_test,
             best_png,
             epoch=best_ep,
             title=f"Best checkpoint | epoch {best_ep}",
+            section_names=("Validation", test_split),
             dpi=dpi,
         )
         root_comparison = build_val_test_comparison_frame(root_val, root_test)
@@ -1244,7 +1271,11 @@ def save_multi_epoch_metrics_collage(
     output_path = _ensure_parent(
         output_path
         if output_path is not None
-        else run_dir / "comparisons" / "metrics_all_epochs.png"
+        else (
+            run_dir / "comparisons" / "metrics_all_epochs.png"
+            if test_split == "test"
+            else run_dir / "comparisons" / test_split / "metrics_all_epochs.png"
+        )
     )
     # Optional tiny header; empty string skips it.
     if title is None:
@@ -1318,6 +1349,7 @@ def save_multi_epoch_waveform_collages(
     prefer_context: bool = False,
     dpi: int = 600,
     title_prefix: str = "",
+    splits: tuple[str, ...] = ("validation", "test"),
 ) -> list[Path]:
     """Two high-res PNGs per period: validation-only and test-only across epochs.
 
@@ -1336,7 +1368,7 @@ def save_multi_epoch_waveform_collages(
         return []
 
     saved: list[Path] = []
-    for split in ("validation", "test"):
+    for split in splits:
         ep_map = {ep: p for ep, p in _list_waveform_epoch_dirs(run_dir, split)}
         epochs = sorted(ep_map)
         if not epochs:

@@ -261,7 +261,7 @@ class LiveTrainingMonitor:
         model: torch.nn.Module,
         *,
         val_loader: DataLoader,
-        test_loader: DataLoader | None,
+        test_loaders: dict[str, DataLoader] | None,
         device: torch.device,
         epoch: int,
         include_best: bool = False,
@@ -269,33 +269,52 @@ class LiveTrainingMonitor:
         self._prune_legacy_epoch_waveform_dirs()
         self._prune_legacy_epoch_feature_map_dirs()
         saved: list[Path] = []
+        test_loaders = test_loaders or {}
         if not include_best:
             saved.extend(
                 self._save_split_waveforms(
                     adapter, model, val_loader, device, split="validation", epoch=epoch, tag="latest"
                 )
             )
-            if test_loader is not None:
+            for test_split, test_loader in test_loaders.items():
                 saved.extend(
                     self._save_split_waveforms(
-                        adapter, model, test_loader, device, split="test", epoch=epoch, tag="latest"
+                        adapter,
+                        model,
+                        test_loader,
+                        device,
+                        split=test_split,
+                        epoch=epoch,
+                        tag="latest",
                     )
                 )
-                fig_path = self._save_epoch_val_test_comparison_figure(epoch)
+                fig_path = self._save_epoch_val_test_comparison_figure(epoch, test_split)
                 if fig_path is not None:
                     saved.append(fig_path)
+            if test_loaders:
                 # One-picture dashboards so you don't jump epoch folders.
-                saved.extend(self._save_epoch_comparison_dashboards(epoch))
+                saved.extend(
+                    self._save_epoch_comparison_dashboards(
+                        epoch,
+                        tuple(test_loaders),
+                    )
+                )
             if self.should_plot_feature_maps():
                 saved.extend(
                     self._save_feature_maps(
                         adapter, model, val_loader, device, split="validation", epoch=epoch, tag="latest"
                     )
                 )
-                if test_loader is not None:
+                for test_split, test_loader in test_loaders.items():
                     saved.extend(
                         self._save_feature_maps(
-                            adapter, model, test_loader, device, split="test", epoch=epoch, tag="latest"
+                            adapter,
+                            model,
+                            test_loader,
+                            device,
+                            split=test_split,
+                            epoch=epoch,
+                            tag="latest",
                         )
                     )
         else:
@@ -304,10 +323,16 @@ class LiveTrainingMonitor:
                     adapter, model, val_loader, device, split="validation", epoch=epoch, tag="best"
                 )
             )
-            if test_loader is not None:
+            for test_split, test_loader in test_loaders.items():
                 saved.extend(
                     self._save_split_waveforms(
-                        adapter, model, test_loader, device, split="test", epoch=epoch, tag="best"
+                        adapter,
+                        model,
+                        test_loader,
+                        device,
+                        split=test_split,
+                        epoch=epoch,
+                        tag="best",
                     )
                 )
             if self.should_plot_feature_maps():
@@ -316,16 +341,28 @@ class LiveTrainingMonitor:
                         adapter, model, val_loader, device, split="validation", epoch=epoch, tag="best"
                     )
                 )
-                if test_loader is not None:
+                for test_split, test_loader in test_loaders.items():
                     saved.extend(
                         self._save_feature_maps(
-                            adapter, model, test_loader, device, split="test", epoch=epoch, tag="best"
+                            adapter,
+                            model,
+                            test_loader,
+                            device,
+                            split=test_split,
+                            epoch=epoch,
+                            tag="best",
                         )
                     )
         return saved
 
+    @staticmethod
+    def _split_output_dir(root: Path, split: str) -> Path:
+        if split in {"train", "validation", "test"}:
+            return root / split
+        return root / "test" / split
+
     def _feature_map_tag_dir(self, split: str, tag: str) -> Path:
-        return self.run_dir / "feature_maps" / split / tag
+        return self._split_output_dir(self.run_dir / "feature_maps", split) / tag
 
     def _epoch_tag(self, epoch: int) -> str:
         return f"epoch_{int(epoch):04d}"
@@ -378,10 +415,16 @@ class LiveTrainingMonitor:
         return saved
 
     def _waveform_tag_dir(self, split: str, tag: str) -> Path:
-        return self.waveforms_dir / split / tag
+        return self._split_output_dir(self.waveforms_dir, split) / tag
 
     def _metrics_epoch_dir(self, epoch: int) -> Path:
         return self.run_dir / "metrics_by_epoch" / self._epoch_tag(epoch)
+
+    @staticmethod
+    def _metrics_path(root: Path, split: str) -> Path:
+        if split in {"validation", "test"}:
+            return root / f"{split}_metrics.csv"
+        return root / "test" / split / "metrics.csv"
 
     def _prune_legacy_epoch_waveform_dirs(self) -> None:
         """Remove obsolete ``live/`` waveform folders only (keep epoch_* history)."""
@@ -445,69 +488,98 @@ class LiveTrainingMonitor:
             power_postprocess=power_postprocess,
         )
         epoch_dir = self._metrics_epoch_dir(epoch)
-        epoch_dir.mkdir(parents=True, exist_ok=True)
-        path = epoch_dir / f"{split}_metrics.csv"
+        path = self._metrics_path(epoch_dir, split)
+        path.parent.mkdir(parents=True, exist_ok=True)
         metrics.to_csv(path, index=False)
         # Also keep a rolling "latest" copy of the table for this split.
         latest_dir = self.run_dir / "metrics_by_epoch" / "latest"
-        latest_dir.mkdir(parents=True, exist_ok=True)
-        metrics.to_csv(latest_dir / f"{split}_metrics.csv", index=False)
+        latest_path = self._metrics_path(latest_dir, split)
+        latest_path.parent.mkdir(parents=True, exist_ok=True)
+        metrics.to_csv(latest_path, index=False)
         self._append_metrics_history(epoch=epoch, split=split, metrics=metrics)
         return path
 
-    def _save_epoch_val_test_comparison_figure(self, epoch: int) -> Path | None:
+    def _save_epoch_val_test_comparison_figure(
+        self,
+        epoch: int,
+        test_split: str,
+    ) -> Path | None:
         """PNG table of validation vs test metrics for this plot-interval epoch."""
         epoch_dir = self._metrics_epoch_dir(epoch)
-        val_path = epoch_dir / "validation_metrics.csv"
-        test_path = epoch_dir / "test_metrics.csv"
+        val_path = self._metrics_path(epoch_dir, "validation")
+        test_path = self._metrics_path(epoch_dir, test_split)
         if not val_path.exists() or not test_path.exists():
             return None
-        out = epoch_dir / "validation_test_comparison.png"
+        out = test_path.parent / "validation_test_comparison.png"
         save_val_test_comparison_figure(
             val_path,
             test_path,
             out,
             epoch=epoch,
             title=f"Epoch {epoch}",
+            section_names=("Validation", test_split),
             dpi=int(self.plot_cfg.get("comparison_dpi", 300)),
         )
         latest_dir = self.run_dir / "metrics_by_epoch" / "latest"
-        latest_dir.mkdir(parents=True, exist_ok=True)
-        latest_png = latest_dir / "validation_test_comparison.png"
-        latest_csv = latest_dir / "validation_test_comparison.csv"
+        latest_base = self._metrics_path(latest_dir, test_split).parent
+        latest_base.mkdir(parents=True, exist_ok=True)
+        latest_png = latest_base / "validation_test_comparison.png"
+        latest_csv = latest_base / "validation_test_comparison.csv"
         shutil.copy2(out, latest_png)
         csv_src = out.with_suffix(".csv")
         if csv_src.exists():
             shutil.copy2(csv_src, latest_csv)
         return out
 
-    def _save_epoch_comparison_dashboards(self, epoch: int) -> list[Path]:
-        """Build single-picture comparisons across epochs (metrics XOR waveforms)."""
+    def _save_epoch_comparison_dashboards(
+        self,
+        epoch: int,
+        test_splits: tuple[str, ...],
+    ) -> list[Path]:
+        """Build independent across-epoch dashboards for every test scenario."""
         saved: list[Path] = []
         dpi = int(self.plot_cfg.get("comparison_dpi", 600))
-        # One collage per ON-period example (same count as plot_on_periods).
         n_periods = max(1, self.plot_on_periods())
 
-        # Metrics only (no waveforms mixed in).
-        metrics_all = save_multi_epoch_metrics_collage(
-            self.run_dir,
-            title="NILM diagnostics by epoch",
-            dpi=dpi,
-            best_epoch=self.best_epoch,
-        )
-        if metrics_all is not None:
-            saved.append(metrics_all)
+        for test_split in test_splits:
+            comparison_dir = self.run_dir / "comparisons" / test_split
+            metrics_all = save_multi_epoch_metrics_collage(
+                self.run_dir,
+                output_path=comparison_dir / "metrics_all_epochs.png",
+                title=f"NILM diagnostics by epoch | {test_split}",
+                dpi=dpi,
+                best_epoch=self.best_epoch,
+                test_split=test_split,
+            )
+            if metrics_all is not None:
+                saved.append(metrics_all)
 
-        # Waveforms: separate PNG for each ON-period case (01..N).
+            for period_index in range(1, n_periods + 1):
+                saved.extend(
+                    save_multi_epoch_waveform_collages(
+                        self.run_dir,
+                        self.appliances,
+                        output_dir=comparison_dir / "waveforms_by_epoch",
+                        period_index=period_index,
+                        prefer_context=False,
+                        dpi=dpi,
+                        title_prefix=f"{self.model_name} ",
+                        splits=(test_split,),
+                    )
+                )
+
+        # Validation is shared by all scenarios, so save its waveform progression once.
         for period_index in range(1, n_periods + 1):
             saved.extend(
                 save_multi_epoch_waveform_collages(
                     self.run_dir,
                     self.appliances,
+                    output_dir=self.run_dir / "comparisons" / "validation_waveforms_by_epoch",
                     period_index=period_index,
                     prefer_context=False,
                     dpi=dpi,
                     title_prefix=f"{self.model_name} ",
+                    splits=("validation",),
                 )
             )
         return saved
@@ -553,7 +625,7 @@ class LiveTrainingMonitor:
             else None
         )
         # Epoch-stable seed → same ON periods every plot interval (fair collage).
-        split_id = 0 if split == "validation" else 1
+        split_id = sum(ord(char) for char in split) % 10_000
         rng = np.random.default_rng(self.seed + 17 * split_id)
 
         # Durable epoch folder + pointer tag (latest / best).
@@ -631,10 +703,15 @@ class LiveTrainingMonitor:
                 adapter, bundle, split=split, epoch=epoch
             )
             # Touch a small README so the epoch folder is self-describing.
-            note = self._metrics_epoch_dir(epoch) / "README.txt"
+            note = metrics_path.parent / "README.txt"
+            waveform_path = self._waveform_tag_dir(split, self._epoch_tag(epoch))
+            try:
+                waveform_display = waveform_path.relative_to(self.run_dir)
+            except ValueError:
+                waveform_display = waveform_path
             note.write_text(
                 f"Metrics and waveforms for training epoch {epoch}.\n"
-                f"Waveforms: waveforms/{{validation,test}}/epoch_{epoch:04d}/\n"
+                f"Waveforms: {waveform_display}\n"
                 f"Table: {metrics_path.name}\n"
                 f"All epochs appended to metrics_history.csv\n",
                 encoding="utf-8",
