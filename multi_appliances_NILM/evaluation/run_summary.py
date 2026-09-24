@@ -260,7 +260,7 @@ def print_val_test_comparison(run_dir: Path) -> None:
         val_df,
         test_df,
         fig_path,
-        title="best ckpt val vs test",
+        title="Best checkpoint",
     )
     summary = load_run_summary(run_dir)
     save_multi_epoch_metrics_collage(

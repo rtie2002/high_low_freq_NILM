@@ -14,7 +14,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.patches import Patch
+from matplotlib.patches import Patch, Rectangle
 
 WAVEFORM_DPI = 300
 
@@ -760,9 +760,9 @@ def save_val_test_comparison_figure(
     *,
     epoch: int | None = None,
     title: str | None = None,
-    dpi: int = 200,
+    dpi: int = 300,
 ) -> Path:
-    """Side-by-side val/test tables, grouped as Power / Detection / Energy."""
+    """Readable full-width val/test table grouped by metric family."""
     if not isinstance(val_metrics, pd.DataFrame):
         val_metrics = pd.read_csv(val_metrics)
     if not isinstance(test_metrics, pd.DataFrame):
@@ -772,9 +772,16 @@ def save_val_test_comparison_figure(
     if compare.empty:
         return output_path
 
-    # Group header + metric header. Micro-F1 is defined only on the overall row.
+    # Micro-F1 is defined only on the overall row.
     groups: list[tuple[str, str, list[tuple[str, str, str]]]] = [
-        ("", "#263746", [("Appliance", "appliance", "text")]),
+        (
+            "Data",
+            "#263746",
+            [
+                ("Split", "split", "text"),
+                ("Appliance", "appliance", "text"),
+            ],
+        ),
         (
             "Power",
             "#1b4f72",
@@ -793,16 +800,16 @@ def save_val_test_comparison_figure(
                 ("Recall", "recall", "score"),
                 ("AP", "average_precision", "score"),
                 ("F1", "f1", "score"),
-                ("Bal.\nacc", "balanced_accuracy", "score"),
-                ("Micro\nF1", "micro_f1", "score"),
+                ("Balanced\naccuracy", "balanced_accuracy", "score"),
+                ("Micro-F1", "micro_f1", "score"),
             ],
         ),
         (
             "Energy",
             "#6e2c00",
             [
-                ("Ratio", "energy_ratio", "ratio"),
-                ("ON ratio", "on_energy_ratio", "ratio"),
+                ("Energy\nratio", "energy_ratio", "ratio"),
+                ("ON energy\nratio", "on_energy_ratio", "ratio"),
             ],
         ),
     ]
@@ -821,96 +828,114 @@ def save_val_test_comparison_figure(
         if kind == "text":
             return str(row[key])
         if key not in row.index or pd.isna(row[key]):
-            return "—"
+            return "-"
         value = float(row[key])
         return f"{value:.1f}" if kind == "power" else f"{value:.3f}"
 
-    def _draw(ax, frame: pd.DataFrame, split_name: str) -> None:
-        frame = _ordered(frame)
-        n_col = len(columns)
-        group_labels: list[str] = []
-        start = 0
-        while start < n_col:
-            name = columns[start][0]
-            end = start + 1
-            while end < n_col and columns[end][0] == name:
-                end += 1
-            mid = start
-            for col in range(start, end):
-                group_labels.append(name if col == mid else "")
-            start = end
-        group_labels[0] = split_name
-        metric_labels = [label for _, _, label, _, _ in columns]
-        data = [
-            [_cell(row, key, kind) for _, _, _, key, kind in columns]
-            for _, row in frame.iterrows()
-        ]
-        cells = [group_labels, metric_labels, *data]
-        metric_width = (1.0 - 0.13) / (n_col - 1)
-        ax.axis("off")
-        table = ax.table(
-            cellText=cells,
-            cellLoc="center",
-            colWidths=[0.13] + [metric_width] * (n_col - 1),
-            bbox=[0.0, 0.0, 1.0, 0.98],
-        )
-        table.auto_set_font_size(False)
-        table.set_fontsize(6.6)
-        n_rows = 2 + len(frame)
-        group_h = 0.16
-        metric_h = 0.18
-        data_h = max(0.08, (1.0 - group_h - metric_h) / max(len(frame), 1))
-        for col in range(n_col):
-            table[0, col].set_height(group_h)
-            table[1, col].set_height(metric_h)
-            for row_i in range(2, n_rows):
-                table[row_i, col].set_height(data_h)
-        for col, (_, group_color, _, _, _) in enumerate(columns):
-            group_cell = table[0, col]
-            metric_cell = table[1, col]
-            group_cell.set_facecolor(group_color)
-            group_cell.set_text_props(color="white", weight="bold", fontsize=8.2)
-            group_cell.set_edgecolor(group_color)
-            metric_cell.set_facecolor(group_color)
-            metric_cell.set_text_props(color="white", weight="bold")
-            metric_cell.set_edgecolor("#ffffff")
-        start = 0
-        while start < n_col:
-            name = columns[start][0]
-            end = start + 1
-            while end < n_col and columns[end][0] == name:
-                end += 1
-            if name and end - start > 1:
-                for col in range(start, end):
-                    if col == start:
-                        table[0, col].visible_edges = "TBL"
-                        table[0, col].set_text_props(
-                            color="white", weight="bold", fontsize=8.2, ha="left"
-                        )
-                    elif col == end - 1:
-                        table[0, col].visible_edges = "TBR"
-                    else:
-                        table[0, col].visible_edges = "TB"
-            start = end
-        table[0, 0].set_text_props(color="white", weight="bold", fontsize=9, ha="left")
-        for row_i, app in enumerate(frame["appliance"], start=2):
-            fill = "#dfe8f1" if app == "overall" else ("#f3f5f7" if row_i % 2 == 0 else "#ffffff")
-            for col in range(n_col):
-                table[row_i, col].set_facecolor(fill)
-                table[row_i, col].set_edgecolor("#c8d0d8")
-                table[row_i, col].set_linewidth(0.5)
-                if app == "overall":
-                    table[row_i, col].set_text_props(weight="bold")
-            table[row_i, 0].set_text_props(ha="left", weight="bold" if app == "overall" else "normal")
+    frames = []
+    for split_name, frame in (("Validation", val_metrics), ("Test", test_metrics)):
+        ordered = _ordered(frame).copy()
+        ordered["split"] = split_name
+        frames.append(ordered)
+    display = pd.concat(frames, ignore_index=True)
 
-    fig, axes = plt.subplots(1, 2, figsize=(22.8, 3.45))
+    metric_labels = [label for _, _, label, _, _ in columns]
+    cells = [
+        [_cell(row, key, kind) for _, _, _, key, kind in columns]
+        for _, row in display.iterrows()
+    ]
+    col_widths = [0.08, 0.12] + [0.80 / (len(columns) - 2)] * (len(columns) - 2)
+
+    fig, ax = plt.subplots(figsize=(18.0, 6.4))
     if title is None:
         title = f"Epoch {epoch}" if epoch is not None else "Best checkpoint"
-    fig.suptitle(title, fontsize=11, fontweight="bold", x=0.01, ha="left", y=0.995)
-    _draw(axes[0], val_metrics, "Validation")
-    _draw(axes[1], test_metrics, "Test")
-    fig.subplots_adjust(left=0.010, right=0.990, top=0.90, bottom=0.02, wspace=0.030)
-    fig.savefig(output_path, dpi=dpi, facecolor="white", bbox_inches="tight", pad_inches=0.05)
+    fig.suptitle(title, fontsize=15, fontweight="bold", x=0.015, ha="left", y=0.992)
+    ax.axis("off")
+
+    table_top = 0.88
+    table = ax.table(
+        cellText=[metric_labels, *cells],
+        cellLoc="center",
+        colWidths=col_widths,
+        bbox=[0.0, 0.0, 1.0, table_top],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8.6)
+
+    for col, (_, group_color, _, _, _) in enumerate(columns):
+        cell = table[0, col]
+        cell.set_facecolor(group_color)
+        cell.set_edgecolor("#ffffff")
+        cell.set_linewidth(0.8)
+        cell.set_text_props(color="white", weight="bold", fontsize=8.8)
+
+    test_start = 1 + len(frames[0])
+    for row_i, row in display.iterrows():
+        table_row = row_i + 1
+        app = str(row["appliance"])
+        is_test = row["split"] == "Test"
+        if app == "overall":
+            fill = "#dce8f2" if not is_test else "#e0eee5"
+        else:
+            even = row_i % 2 == 0
+            fill = ("#f3f6f9" if even else "#ffffff") if not is_test else (
+                "#f3f7f4" if even else "#ffffff"
+            )
+        for col in range(len(columns)):
+            cell = table[table_row, col]
+            cell.set_facecolor(fill)
+            cell.set_edgecolor("#c5ced6")
+            cell.set_linewidth(0.55)
+            if app == "overall":
+                cell.set_text_props(weight="bold")
+            if table_row == test_start:
+                cell.set_edgecolor("#647482")
+                cell.set_linewidth(1.2)
+        table[table_row, 0].set_text_props(weight="bold", ha="left")
+        table[table_row, 1].set_text_props(
+            ha="left", weight="bold" if app == "overall" else "normal"
+        )
+
+    # Use real group bands rather than simulating merged table cells. This avoids
+    # diagonal clipping artifacts and clearly separates each metric family.
+    x = 0.0
+    start = 0
+    band_y = table_top + 0.012
+    band_h = 0.075
+    while start < len(columns):
+        group_name, group_color = columns[start][0], columns[start][1]
+        end = start + 1
+        while end < len(columns) and columns[end][0] == group_name:
+            end += 1
+        width = sum(col_widths[start:end])
+        ax.add_patch(
+            Rectangle(
+                (x, band_y),
+                width,
+                band_h,
+                transform=ax.transAxes,
+                facecolor=group_color,
+                edgecolor="white",
+                linewidth=1.0,
+                clip_on=False,
+            )
+        )
+        ax.text(
+            x + width / 2,
+            band_y + band_h / 2,
+            group_name,
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            color="white",
+            fontsize=10.5,
+            fontweight="bold",
+        )
+        x += width
+        start = end
+
+    fig.subplots_adjust(left=0.012, right=0.988, top=0.93, bottom=0.025)
+    fig.savefig(output_path, dpi=dpi, facecolor="white", bbox_inches="tight", pad_inches=0.08)
     plt.close(fig)
 
     compare.to_csv(Path(output_path).with_suffix(".csv"), index=False)

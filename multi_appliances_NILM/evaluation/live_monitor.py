@@ -468,7 +468,7 @@ class LiveTrainingMonitor:
             test_path,
             out,
             epoch=epoch,
-            title=f"ep{epoch} val vs test",
+            title=f"Epoch {epoch}",
             dpi=int(self.plot_cfg.get("comparison_dpi", 300)),
         )
         latest_dir = self.run_dir / "metrics_by_epoch" / "latest"
