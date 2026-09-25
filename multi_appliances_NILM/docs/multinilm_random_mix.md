@@ -35,6 +35,8 @@ Validation and test use this same path. They still do.
 
 ## 2. Pipeline after this change
 
+![Random Mix Pipeline](random_mix_pipeline.png)
+
 ```text
 training CSV
     -> same window cutting as before
@@ -75,7 +77,66 @@ Validation and test call the dataset with mix probability 0, so they stay on the
 
 ---
 
-## 3. One timestep, in watts
+## 3. Pseudocode
+
+This is `WindowDataset` in `data/dataloader.py`. The training CSV is unchanged. One epoch still asks for one sample per legal window.
+
+```text
+# Built once, only for the training dataset, before any z-score.
+# inputs[t]           = real aggregate at timestep t, in watts
+# targets[t, 0..4]    = kettle, fridge, dishwasher, washing machine, microwave, in watts
+# states[t, 0..4]     = the five CSV ON labels, 0 or 1
+
+background[t] = max(inputs[t] - sum(targets[t, 0..4]), 0)
+
+
+# Called once per training sample. index is the window the loader asked for.
+function get_item(index):
+    if random() < 0.5:
+        start = legal_starts[index]
+        x = zscore(inputs[start : start + 1024])
+        y = zscore(targets[start : start + 1024, 0..4])
+        z = states[start : start + 1024, 0..4]
+    else:
+        x, y, z = random_mix_window()      # index is not used
+    return x, y, z                         # shapes (1024, 1), (1024, 5), (1024, 5)
+
+
+# Validation and test call the same function with probability 0,
+# so they always take the first branch.
+
+
+function random_mix_window():
+    # Six independent legal starts. Each start is 1024 consecutive
+    # samples inside one house. The six houses may differ.
+    s_kettle, s_fridge, s_dishwasher, s_washing, s_microwave, s_background
+        = draw 6 starts from legal_starts
+
+    kettle_w,     kettle_on     = column 0 of the window at s_kettle
+    fridge_w,     fridge_on     = column 1 of the window at s_fridge
+    dishwasher_w, dishwasher_on = column 2 of the window at s_dishwasher
+    washing_w,    washing_on    = column 3 of the window at s_washing
+    microwave_w,  microwave_on  = column 4 of the window at s_microwave
+    background_w                = background[s_background : s_background + 1024]
+    # The other four appliances and the background of the kettle window
+    # are discarded. The five appliances of the background window are discarded.
+
+    aggregate_w = kettle_w + fridge_w + dishwasher_w
+                + washing_w + microwave_w + background_w
+
+    y_w = stack(kettle_w, fridge_w, dishwasher_w, washing_w, microwave_w)
+    z   = stack(kettle_on, fridge_on, dishwasher_on, washing_on, microwave_on)
+
+    x = zscore(aggregate_w)                # same training mean and std as a real window
+    y = zscore(y_w)
+    return x, y, z
+```
+
+`legal_starts` already stops at a house boundary or a time gap, so one copied column never crosses two houses. A batch of 64 can contain both branches.
+
+---
+
+## 4. One timestep, in watts
 
 Old path. One house, one window. The loader returns this row as-is:
 
@@ -112,7 +173,7 @@ After this table, both paths do the same z-score and the same crop. Current yaml
 
 ---
 
-## 4. Where each step lives
+## 5. Where each step lives
 
 The run order is:
 
@@ -142,7 +203,7 @@ The batch size is still 64. A batch can contain a mixture of real windows and mi
 
 ---
 
-## 5. What you should see when you train
+## 6. What you should see when you train
 
 At startup the summary line is:
 
@@ -156,7 +217,7 @@ No new checkpoint key, no new loss term, and no new metric. The test metrics are
 
 ---
 
-## 6. Where the idea comes from
+## 7. Where the idea comes from
 
 The code follows the additive NILM measurement, aggregate = sum of target appliances + other load (Hart, *Proceedings of the IEEE*, 1992). The training trick is to rebuild that sum from pieces of real recordings:
 

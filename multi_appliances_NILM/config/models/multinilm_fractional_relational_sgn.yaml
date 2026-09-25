@@ -1,0 +1,169 @@
+# Multi-appliance relational NILM with the simplified SGN-style loss.
+# Random mix and the model architecture are unchanged from the full-loss run.
+experiment_id: Random Mix 0.5 SGN Simple Loss (8w)
+model_name: multinilm_fractional
+
+data:
+  state_label_source: csv
+
+evaluation:
+  pred_on_source: state_head
+  state_calibration:
+    enabled: true
+    split: validation
+    threshold_grid: [0.05, 0.98, 0.01]
+    apply_to_power: true
+    postprocess:
+      enabled: true
+      # Use physical seconds so validation calibration keeps the same temporal
+      # meaning if sample_seconds changes. Short-event loads stay permissive.
+      min_on_seconds:
+        kettle: 12
+        fridge: 120
+        dishwasher: 960
+        washingmachine: 960
+        microwave: 8
+      merge_gap_seconds:
+        kettle: 0
+        fridge: 240
+        dishwasher: 1800
+        washingmachine: 960
+        microwave: 16
+
+windowing:
+  # At 8 s/sample, each 1024-sample window spans about 136.5 min.
+  input_window_length: 1024
+  output_window_length: 1024
+  output_alignment: end
+  input_stride: 512
+  eval_stride: 512
+  eval_reconstruction: auto
+  training_targets: auto
+
+fractional:
+  k: 4
+  include_raw: true
+  include_delta: true
+  include_abs_delta: true
+  include_rolling_mean: true
+  include_rolling_std: true
+  rolling_windows: [8, 23, 45]
+  memory: 24
+  channel_normalize: none
+
+architecture:
+  # Keep the full-loss architecture unchanged so this run isolates the loss.
+  # Do not fold a width or architecture ablation into this experiment.
+  channel_schedule: [32, 64, 128]
+  hidden_channels: 128
+
+  use_multiscale_stem: true
+  detail_kernels: [3, 5, 9]
+  detail_branch_channels: 16
+  stem_kernel_size: 7
+  stage_kernel_size: 5
+
+  # IBN in the early feature extractor improves cross-house robustness while
+  # retaining amplitude-sensitive BatchNorm channels for appliance identity.
+  stem_norm_type: ibn
+  temporal_norm_type: batch
+  head_norm_type: batch
+
+  # Receptive-field ablation: k=9 with dilations 1,2,4,8,16 gives a 249-sample TCN RF.
+  num_blocks: 5
+  kernel_size: 9
+  max_dilation: 16
+  # Restore the stronger baseline after dropout=0.35 hurt zero-shot detection.
+  dropout: 0.25
+
+  # Two local blocks preserve the multi-stage washing-machine waveform better.
+  head_local_layers: 2
+  head_kernel_size: 3
+  head_use_residual: true
+  task_attention:
+    enabled: true
+    reduction: 4
+
+  gate_mode: soft
+  gate_threshold: 0.5
+
+  cross_appliance:
+    enabled: true
+    mode: relation_attention
+    attention_channels: 16
+    residual_scale: 0.25
+
+# Simplified SGN-style loss. For appliance i, p_i = sigmoid(s_i) and the soft
+# gated power is y_hat_i = p_i * R_i + (1 - p_i) * y_off_i.
+#
+#   L_power = sum_i MSE(y_hat_i, y_i)
+#   L_state = sum_i weighted_BCE(s_i, z_i)
+#   L_NILM  = L_power + lambda_state * L_state
+#
+# task_balance: none keeps lambda_state fixed instead of rescaling BCE on every
+# batch. The zero weights below explicitly disable all auxiliary loss terms.
+loss:
+  task_balance: none
+  lambda_state: 1.0
+
+  # pos_weight_i = min(N_OFF / N_ON, 12), estimated from the training split.
+  pos_weight: auto
+  pos_weight_cap: 12
+
+  state_fp_weight: 0.0
+  state_smooth_weight: 0.0
+  power_on_weight: 0.0
+  power_off_weight: 0.0
+  power_delta_weight: 0.0
+  power_energy_relative_weight: 0.0
+
+training:
+  batch_size: 64
+  epochs: 200
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  num_workers: 0
+  train_shuffle: true
+  gradient_clip: 1.0
+
+  # Each training window is replaced with probability prob by a random mix:
+  # every appliance trace (with its ON labels) and the background residual
+  # (mains - sum of appliances) come from independent training windows.
+  # Validation and test windows are never mixed.
+  random_mix:
+    enabled: true
+    prob: 0.5
+
+  use_amp: false
+  amp_dtype: bf16
+  cudnn_benchmark: true
+  tf32: true
+
+  # AP evaluates state ranking without the arbitrary 0.5 training threshold.
+  # Both terms are dimensionless and receive an equal unit-for-unit tradeoff:
+  # score = normalized validation MAE + (1 - macro validation AP), lower is better.
+  checkpoint_monitor: val_mae_plus_one_minus_ap
+  checkpoint_mae_space: normalized
+  early_stop_patience: 55
+  early_stop_min_epochs: 100
+
+  scheduler: reduce_on_plateau
+  lr_scheduler:
+    type: reduce_on_plateau
+    monitor: val_mae_plus_one_minus_ap
+    patience: 12
+    factor: 0.5
+    min_lr: 0.00001
+
+  plots:
+    plot_mode: interval
+    plot_interval: 50
+    plot_on_periods: 5
+    plot_max_batches: 16
+    waveform_figsize: 5.5
+    waveform_dpi: 300
+    waveform_dynamic_figsize: true
+    on_period_margin_min: 40
+    on_period_margin_frac: 0.08
+    waveform_context_scale: 10
+    comparison_dpi: 300
