@@ -160,6 +160,7 @@ No new checkpoint key, no new loss term, and no new metric. The test metrics are
 
 The code follows the additive NILM measurement, aggregate = sum of target appliances + other load (Hart, *Proceedings of the IEEE*, 1992). The training trick is to rebuild that sum from pieces of real recordings:
 
+- Kelly and Knottenbelt, "Neural NILM: Deep Neural Networks Applied to Energy Disaggregation", ACM BuildSys 2015 (arXiv:1507.06594). This is the closest precedent. They trained on a **50:50 mix of real and synthetic aggregates**, built the synthetic ones by adding real appliance activations, reported that the synthetic half acts as a regulariser and improves generalisation to unseen houses, and validated and tested on real data only. `prob: 0.5`, the train-only switch, and the unseen-house goal follow that recipe. Two differences: they placed whole activations into an empty window, one network per appliance, while this code copies whole 1024-sample windows per appliance and keeps a real background residual under them.
 - Rafiq et al., *IEEE Transactions on Smart Grid*, 2021: make a synthetic aggregate whose submeter labels are exactly the pieces you added, so the model has to work on houses it was not trained on.
 - Kamyshev et al., arXiv:2106.02352 (SNS / COLD): choose which loads are on together by a random draw, then add their measured signatures.
 - Nour et al., HAL hal-03513298, 2021: build the multi-load signal by adding real recordings.

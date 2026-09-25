@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: Random Mix 0.5 (8w) second try
+experiment_id: Random Mix 0.5 + Smooth 0.15 (8w)
 model_name: multinilm_fractional
 
 data:
@@ -95,19 +95,82 @@ architecture:
     attention_channels: 16
     residual_scale: 0.25
 
+# ---------------------------------------------------------------------------
+# Training loss (model/MultiNILM_loss.py). Tensors are (B, T, A) = batch, time,
+# appliance. For appliance i at time t the model outputs a raw power R, a state
+# logit s, and p = sigmoid(s) = ON probability. With gate_mode: soft the power
+# prediction is y_hat = p * R + (1 - p) * y_off (y_off = 0 W after z-scoring),
+# so every power term below also trains p.
+#
+#   L_NILM  = L_power + state_term                  <- scalar used for backward()
+#
+#   L_power = sum_i [ MSE_i                                   all samples
+#                   + power_on_weight    * ON_MSE_i           true-ON samples only
+#                   + power_off_weight   * OFF_MSE_i          true-OFF samples only
+#                   + power_delta_weight * DELTA_i            sample-to-sample change
+#                   + power_energy_relative_weight * REL_ENERGY_i ]
+#
+#   L_state = sum_i [ BCE_i                                   ON samples x pos_weight_i
+#                   + state_fp_weight     * FP_i              p^2 on true-OFF samples
+#                   + state_smooth_weight * SMOOTH_i ]        MS-TCN smoothing
+#
+#   state_term = lambda_state * L_state * stopgrad(L_power / L_state)
+#
+# The stop-grad ratio fixes the value of state_term at lambda_state * L_power,
+# so the logged L_NILM is always (1 + lambda_state) * L_power = 1.8 * L_power
+# and only shows power error. L_state still sends gradients to the state head.
+# To follow ON/OFF learning, read val_loss_state and val_loss_state_<app> in
+# loss_detail.csv, and val_ap in history.csv.
+#
+# Each term is averaged over the batch, then summed over the 5 appliances.
+# MSE, ON_MSE, OFF_MSE and DELTA use z-scored power (watts / appliance std), so
+# a 1 kW microwave miss (std 111 W) costs far more than a 100 W fridge miss
+# (std 60 W). REL_ENERGY is computed in watts.
+# ---------------------------------------------------------------------------
 loss:
+  # equal: rescale L_state to the magnitude of L_power every batch, then apply
+  #        lambda_state as a preference. none: lambda_state * raw L_state.
   task_balance: equal
+  # After balancing, state_term = 0.8 * L_power in value.
   lambda_state: 0.8
+
+  # BCE weight on ON samples: pos_weight_i = min(N_OFF / N_ON, cap), from the
+  # training split ON rate. OFF samples keep weight 1. Rare appliances reach the cap.
   pos_weight: auto
-  # ON-class BCE weight: min(N_OFF / N_ON, cap); negatives keep weight 1.
   pos_weight_cap: 12
 
-  state_fp_weight: 1.0  # Keep explicit false-ON suppression; removing it reduced test performance.
+  # FP_i = mean of p^2 over true-OFF samples: extra push against false ON on top
+  # of BCE. Removing it (0.0) reduced test performance.
+  state_fp_weight: 1.0
 
+  # SMOOTH_i = MS-TCN truncated MSE (Abu Farha & Gall, CVPR 2019) on the ON and
+  # OFF log-probabilities of appliance i:
+  #   SMOOTH_i = mean_{b,t,c} min(|log p_c[t] - log p_c[t-1]|, tau)^2,  c in {ON, OFF}
+  # The t-1 term is detached, as in the official code. It penalises flicker of p
+  # between neighbouring samples, so a short ON blip needs strong evidence. Past
+  # tau the penalty is constant (no gradient), so decisive ON/OFF edges are kept.
+  # It needs no labels. It sits inside L_state, so it shares the state budget
+  # set by lambda_state with BCE and FP. 0.0 turns it off (previous runs).
+  # Paper values are weight 0.15, tau 4; our BCE scale differs from the paper's
+  # cross-entropy, so treat 0.15 as a starting point.
+  # Logs: loss_state now includes 0.15 * SMOOTH; loss_state_smooth is the raw
+  # sum over appliances before the weight.
+  state_smooth_weight: 0.15
+  state_smooth_tau: 4.0
+
+  # ON_MSE_i / OFF_MSE_i are means over true-ON / true-OFF samples only. Added on
+  # top of the all-sample MSE so the few ON samples are not drowned out.
   power_on_weight: 1.0
   power_off_weight: 0.5
+  # DELTA_i = mean of ((y_hat[t] - y_hat[t-1]) - (y[t] - y[t-1]))^2. With
+  # power_delta_on_only it only counts pairs where either sample is truly ON,
+  # i.e. ON edges and the shape inside ON periods.
   power_delta_weight: 0.15
   power_delta_on_only: true
+  # REL_ENERGY_i = mean over windows of |sum_t P_hat - sum_t P| / (sum_t P + T * floor),
+  # in watts, with floor = energy_floor_watts per sample. The floor avoids division
+  # by zero and still charges false power in all-OFF windows. It checks window
+  # totals, not timing.
   power_energy_relative_weight: 0.25
   energy_floor_watts: 10
 

@@ -712,6 +712,8 @@ class MultiNILMAdapter(BaseNILMAdapter):
             power_delta_weight=float(cfg.get("power_delta_weight", 0.0)),
             power_delta_on_only=bool(cfg.get("power_delta_on_only", True)),
             state_fp_weight=float(cfg.get("state_fp_weight", 0.0)),
+            state_smooth_weight=float(cfg.get("state_smooth_weight", 0.0)),
+            state_smooth_tau=float(cfg.get("state_smooth_tau", 4.0)),
             power_energy_relative_weight=float(cfg.get("power_energy_relative_weight", 0.0)),
             energy_floor_watts=float(cfg.get("energy_floor_watts", 10.0)),
         )
@@ -734,17 +736,20 @@ class MultiNILMAdapter(BaseNILMAdapter):
             f"loss_state_{app}": float(out.loss_state_per_appliance[i].detach())
             for i, app in enumerate(self.cfg["appliances"])
         })
+        logs = {
+            "loss": float(out.loss.detach()),
+            "loss_power": float(out.loss_power.detach()),
+            "loss_state": float(out.loss_state.detach()),
+            "loss_state_term": float(out.loss_state_term.detach()),
+            "loss_energy_relative": float(out.loss_energy_relative.detach()),
+            "mae": float(out.mae.detach()),
+            **app_logs,
+        }
+        if out.loss_state_smooth is not None:
+            logs["loss_state_smooth"] = float(out.loss_state_smooth)
         return StepOutput(
             loss=out.loss,
-            logs={
-                "loss": float(out.loss.detach()),
-                "loss_power": float(out.loss_power.detach()),
-                "loss_state": float(out.loss_state.detach()),
-                "loss_state_term": float(out.loss_state_term.detach()),
-                "loss_energy_relative": float(out.loss_energy_relative.detach()),
-                "mae": float(out.mae.detach()),
-                **app_logs,
-            },
+            logs=logs,
             aux={
                 "pred_state": pred_state.detach().cpu(),
                 "state_prob": state_prob.detach().float().cpu(),

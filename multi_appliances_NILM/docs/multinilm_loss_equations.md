@@ -17,6 +17,8 @@ loss:
   pos_weight: auto
   pos_weight_cap: 12
   state_fp_weight: 1.0
+  state_smooth_weight: 0.15
+  state_smooth_tau: 4.0
   power_on_weight: 1.0
   power_off_weight: 0.5
   power_delta_weight: 0.15
@@ -69,7 +71,8 @@ $$
 $$
 \mathcal{S}_i
 =L_{\mathrm{BCE},i}
-+L_{\mathrm{FP},i}.
++L_{\mathrm{FP},i}
++0.15L_{\mathrm{smooth},i}.
 $$
 
 The complete active loss can then be expanded in one chain:
@@ -107,6 +110,7 @@ L_{\mathrm{base},i}
 \left[
 L_{\mathrm{BCE},i}
 +L_{\mathrm{FP},i}
++0.15L_{\mathrm{smooth},i}
 \right]
 \operatorname{stopgrad}
 \left(
@@ -125,6 +129,7 @@ L_{\mathrm{base},i}
 \left[
 L_{\mathrm{BCE},i}
 +L_{\mathrm{FP},i}
++0.15L_{\mathrm{smooth},i}
 \right],
 10^{-8}
 \right)
@@ -159,7 +164,10 @@ L_{\mathrm{BCE},i}
 +(1-z_{bti})\log(1-p_{bti})\right],\\
 L_{\mathrm{FP},i}
 &=\frac{\sum_{b,t}(1-z_{bti})p_{bti}^2}
-{\max(\sum_{b,t}(1-z_{bti}),1)}.
+{\max(\sum_{b,t}(1-z_{bti}),1)},\\
+L_{\mathrm{smooth},i}
+&=\frac{1}{2B(T-1)}\sum_{b}\sum_{t=2}^{T}\sum_{c\in\{\mathrm{on},\mathrm{off}\}}
+\min\left(\left|\ell_{btic}-\operatorname{stopgrad}(\ell_{b,t-1,ic})\right|,4\right)^2.
 \end{aligned}
 $$
 
@@ -172,6 +180,8 @@ $i$.
 $$
 \begin{aligned}
 p_{bti}&=\sigma(s_{bti}),\\
+\ell_{bti,\mathrm{on}}&=\log p_{bti},\qquad
+\ell_{bti,\mathrm{off}}=\log(1-p_{bti}),\\
 \hat y_{bti}&=p_{bti}R_{bti}+(1-p_{bti})y_{\mathrm{off},i},\\
 \hat P_{bti}&=\max(\sigma_i\hat y_{bti}+\mu_i,0),\\
 P_{bti}&=\max(\sigma_i y_{bti}+\mu_i,0),\\
@@ -506,7 +516,58 @@ $$
 This overlaps with the negative part of BCE. BCE penalizes
 $-\log(1-p)$ at true OFF samples, while this term separately penalizes $p^2$.
 
-### 5.4 Complete active state loss
+### 5.4 Temporal smoothing loss (MS-TCN)
+
+Source: Y. Abu Farha and J. Gall, "MS-TCN: Multi-Stage Temporal Convolutional
+Network for Action Segmentation", CVPR 2019, and the official implementation
+(`yabufarha/ms-tcn`). Action segmentation has the same failure as our ON/OFF
+heads: many very short spurious segments. The loss penalizes changes of the
+predicted log-probabilities between neighbouring timesteps.
+
+Each appliance state is a two-class distribution (ON, OFF) with
+
+$$
+\ell_{bti,\mathrm{on}}=\log p_{bti}=\log\sigma(s_{bti}),
+\qquad
+\ell_{bti,\mathrm{off}}=\log(1-p_{bti})=\log\sigma(-s_{bti}).
+$$
+
+For $t=2,\ldots,T$,
+
+$$
+\Delta_{btic}=\left|\ell_{btic}-\operatorname{stopgrad}(\ell_{b,t-1,ic})\right|,
+$$
+
+$$
+L_{\mathrm{smooth},i}
+=\frac{1}{2B(T-1)}\sum_{b}\sum_{t=2}^{T}\sum_{c\in\{\mathrm{on},\mathrm{off}\}}
+\min(\Delta_{btic},\tau)^2,
+\qquad \tau=4.
+$$
+
+Properties that follow from this form:
+
+* The previous timestep is detached, as in the official code, so each term only
+  moves the current timestep towards the previous one.
+* Truncation: once $\Delta>\tau$ the term is the constant $\tau^2$ with zero
+  gradient. A decisive change such as $p:0.001\to0.999$ ($\Delta\approx6.9$ for
+  both classes) is not penalized further. A moderate jump such as
+  $p:0.01\to0.97$ gives $\Delta_{\mathrm{on}}\approx4.6$ (capped) and
+  $\Delta_{\mathrm{off}}\approx3.5$ (penalized, $\approx12.2$). The loss therefore
+  mainly suppresses uncertain flicker; very confident false blips are left to
+  BCE and $L_{\mathrm{FP}}$.
+* It uses no labels, so it also acts at true ON/OFF edges; the truncation limits
+  that cost.
+* The weight is `state_smooth_weight` (paper value 0.15) and $\tau$ is
+  `state_smooth_tau` (paper value 4). In the paper the weight is relative to a
+  frame-wise cross-entropy; here it is relative to $L_{\mathrm{BCE},i}+L_{\mathrm{FP},i}$.
+* The term is part of $L_S$. It changes the ratio $L_P/L_S$ in Section 6, but the
+  value of $L_{S,\mathrm{term}}$ stays $0.8L_P$; smoothing takes a share of the
+  state-gradient budget instead of adding a new one.
+
+`state_smooth_weight: 0.0` removes the term and restores the earlier objective exactly.
+
+### 5.5 Complete active state loss
 
 For one appliance,
 
@@ -514,7 +575,8 @@ $$
 \boxed{
 L_{S,i}
 =L_{\mathrm{BCE},i}
-+1.0L_{\mathrm{FP},i}.
++1.0L_{\mathrm{FP},i}
++0.15L_{\mathrm{smooth},i}.
 }
 $$
 
@@ -572,6 +634,7 @@ L_{\mathrm{base},i}
 \left(
 L_{\mathrm{BCE},i}
 +L_{\mathrm{FP},i}
++0.15L_{\mathrm{smooth},i}
 \right)
 \right]\\
 &\quad\times
@@ -592,6 +655,7 @@ L_{\mathrm{base},i}
 \left[
 L_{\mathrm{BCE},i}
 +L_{\mathrm{FP},i}
++0.15L_{\mathrm{smooth},i}
 \right],
 10^{-8}
 \right)
@@ -620,8 +684,11 @@ It is for logging only and is not added to $L$.
 
 `loss_power_per_appliance` contains the complete $L_{P,i}$, including delta
 and relative-energy terms; it is not pure MSE. `loss_state_per_appliance`
-contains BCE and false-positive terms. These values are detached
-for logging after the differentiable total loss has already been assembled.
+contains BCE, false-positive, and weighted smoothing terms. `loss_state_smooth`
+(column `train_loss_state_smooth` / `val_loss_state_smooth` in `loss_detail.csv`)
+is the raw $\sum_i L_{\mathrm{smooth},i}$ before the weight; it is only logged when
+`state_smooth_weight > 0`. These values are detached for logging after the
+differentiable total loss has already been assembled.
 
 Validation threshold calibration, minimum-ON cleanup, gap merging, final hard
 power gating, F1, SAE, and evaluation MAE are also outside the training loss.
@@ -643,6 +710,7 @@ The state-head parameters receive gradients from
 
 * weighted BCE;
 * explicit false-positive loss;
+* temporal smoothing loss (label-free);
 * every power term through the soft gate.
 
 The shared frontend, TCN, task-attention, and cross-appliance relation modules
