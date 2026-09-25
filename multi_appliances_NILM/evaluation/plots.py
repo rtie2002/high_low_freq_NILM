@@ -773,13 +773,11 @@ def save_val_test_comparison_figure(
     if compare.empty:
         return output_path
 
-    # Micro-F1 is defined only on the overall row.
     groups: list[tuple[str, str, list[tuple[str, str, str]]]] = [
         (
             "Data",
             "#263746",
             [
-                ("Split", "split", "text"),
                 ("Appliance", "appliance", "text"),
             ],
         ),
@@ -802,7 +800,6 @@ def save_val_test_comparison_figure(
                 ("AP", "average_precision", "score"),
                 ("F1", "f1", "score"),
                 ("Balanced\naccuracy", "balanced_accuracy", "score"),
-                ("Micro-F1", "micro_f1", "score"),
             ],
         ),
         (
@@ -834,31 +831,41 @@ def save_val_test_comparison_figure(
         return f"{value:.1f}" if kind == "power" else f"{value:.3f}"
 
     frames = []
+    micro_f1_notes: list[str] = []
     for split_name, frame in zip(section_names, (val_metrics, test_metrics)):
         ordered = _ordered(frame).copy()
         ordered["split"] = split_name
         frames.append(ordered)
-    display = pd.concat(frames, ignore_index=True)
-
+        overall = ordered[ordered["appliance"] == "overall"]
+        if not overall.empty and "micro_f1" in overall.columns:
+            value = overall.iloc[0]["micro_f1"]
+            if pd.notna(value):
+                micro_f1_notes.append(f"{split_name} {float(value):.3f}")
     metric_labels = [label for _, _, label, _, _ in columns]
-    cells = [
-        [_cell(row, key, kind) for _, _, _, key, kind in columns]
-        for _, row in display.iterrows()
-    ]
-    col_widths = [0.08, 0.12] + [0.80 / (len(columns) - 2)] * (len(columns) - 2)
+    cells: list[list[str]] = []
+    row_specs: list[tuple[str, int, int, pd.Series | None]] = []
+    for split_i, (split_name, frame) in enumerate(zip(section_names, frames)):
+        # A full-width section row replaces the repeated Split column.
+        cells.append([str(split_name), *("" for _ in range(len(columns) - 1))])
+        row_specs.append(("section", split_i, 0, None))
+        for app_i, (_, row) in enumerate(frame.iterrows()):
+            cells.append([_cell(row, key, kind) for _, _, _, key, kind in columns])
+            row_specs.append(("data", split_i, app_i, row))
+    col_widths = [0.14] + [0.86 / (len(columns) - 1)] * (len(columns) - 1)
 
-    fig, ax = plt.subplots(figsize=(18.0, 6.4))
+    fig, ax = plt.subplots(figsize=(18.0, 6.8))
     if title is None:
         title = f"Epoch {epoch}" if epoch is not None else "Best checkpoint"
     fig.suptitle(title, fontsize=15, fontweight="bold", x=0.015, ha="left", y=0.992)
     ax.axis("off")
 
+    table_bottom = 0.065
     table_top = 0.88
     table = ax.table(
         cellText=[metric_labels, *cells],
         cellLoc="center",
         colWidths=col_widths,
-        bbox=[0.0, 0.0, 1.0, table_top],
+        bbox=[0.0, table_bottom, 1.0, table_top - table_bottom],
     )
     table.auto_set_font_size(False)
     table.set_fontsize(8.6)
@@ -870,15 +877,25 @@ def save_val_test_comparison_figure(
         cell.set_linewidth(0.8)
         cell.set_text_props(color="white", weight="bold", fontsize=8.8)
 
-    test_start = 1 + len(frames[0])
-    for row_i, row in display.iterrows():
-        table_row = row_i + 1
+    for table_row, (row_kind, split_i, app_i, row) in enumerate(row_specs, start=1):
+        if row_kind == "section":
+            for col in range(len(columns)):
+                cell = table[table_row, col]
+                cell.set_facecolor("#526677")
+                cell.set_edgecolor("#526677")
+                cell.set_linewidth(0.8)
+            table[table_row, 0].set_text_props(
+                color="white", weight="bold", ha="left", fontsize=9.2
+            )
+            continue
+
+        assert row is not None
         app = str(row["appliance"])
-        is_test = row["split"] == "Test"
+        is_test = split_i == 1
         if app == "overall":
             fill = "#dce8f2" if not is_test else "#e0eee5"
         else:
-            even = row_i % 2 == 0
+            even = app_i % 2 == 0
             fill = ("#f3f6f9" if even else "#ffffff") if not is_test else (
                 "#f3f7f4" if even else "#ffffff"
             )
@@ -889,13 +906,7 @@ def save_val_test_comparison_figure(
             cell.set_linewidth(0.55)
             if app == "overall":
                 cell.set_text_props(weight="bold")
-            if table_row == test_start:
-                cell.set_edgecolor("#647482")
-                cell.set_linewidth(1.2)
         table[table_row, 0].set_text_props(weight="bold", ha="left")
-        table[table_row, 1].set_text_props(
-            ha="left", weight="bold" if app == "overall" else "normal"
-        )
 
     # Use real group bands rather than simulating merged table cells. This avoids
     # diagonal clipping artifacts and clearly separates each metric family.
@@ -935,7 +946,18 @@ def save_val_test_comparison_figure(
         x += width
         start = end
 
-    fig.subplots_adjust(left=0.012, right=0.988, top=0.93, bottom=0.025)
+    if micro_f1_notes:
+        fig.text(
+            0.012,
+            0.012,
+            "Overall F1 is Macro-F1. Micro-F1: " + ", ".join(micro_f1_notes),
+            ha="left",
+            va="bottom",
+            fontsize=8.5,
+            color="#263746",
+        )
+
+    fig.subplots_adjust(left=0.012, right=0.988, top=0.93, bottom=0.055)
     fig.savefig(output_path, dpi=dpi, facecolor="white", bbox_inches="tight", pad_inches=0.08)
     plt.close(fig)
 
