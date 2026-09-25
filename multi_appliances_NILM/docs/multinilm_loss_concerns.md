@@ -321,13 +321,13 @@ the state weight is a fixed number (Section 1).
 
 ## 5. Simpler objective to test
 
-Match SGN's two-term form. This is a yaml change; every weight already exists
-in `MultiNILM_loss.py`.
+Keep SGN's two terms and keep the balance rule of the full-loss run. This is a
+yaml change; every weight already exists in `MultiNILM_loss.py`.
 
 ```yaml
 loss:
-  task_balance: none          # state_term = lambda_state * L_S, fixed
-  lambda_state: 1.0
+  task_balance: equal         # same balance rule as the full-loss run
+  lambda_state: 0.8
   pos_weight: auto
   pos_weight_cap: 12
   state_fp_weight: 0.0
@@ -344,13 +344,47 @@ The optimized scalar becomes
 \boxed{
 L
 =\sum_{i=1}^{5} L_{\mathrm{MSE},i}
-+\lambda\sum_{i=1}^{5} L_{\mathrm{BCE},i},
-\qquad \lambda=1.
++0.8\sum_{i=1}^{5} L_{\mathrm{BCE},i}\,
+\operatorname{stopgrad}\!\left(
+\frac{\sum_{i} L_{\mathrm{MSE},i}}{\sum_{i} L_{\mathrm{BCE},i}}
+\right).
 }
 \]
 
-`L_NILM` in the log is then the real sum, and it can fall because the state
-term improved. The two knobs left are `lambda_state` and `pos_weight_cap`.
+In value, the state term is always 0.8 times the power term, as in the
+full-loss run. The only change from that run is removing the six extra terms,
+so a difference in the result belongs to those terms. The logged `L_NILM` is
+again 1.8 times the power loss.
+
+### 5.1 Why not a fixed λ = 1
+
+`Random Mix 0.5 SGN Simple Loss (8w)` used the same two terms with
+`task_balance: none` and `lambda_state: 1.0`, and did worse than the full
+loss. That run changed two things at once: it removed the six terms, and the
+fixed \(\lambda=1\) made the BCE weight much smaller than before.
+
+The BCE loss is much smaller than the power loss. At epoch 200 of the
+random-mix run, the power loss was 21.2 and the state loss 1.18. With a
+coefficient of 1, the state part would have been about 5% of the total. The
+balance rule multiplied it by 14.4, so it became 17.0, which is 0.8 times the
+power loss. Over the run that multiplier went from 24.4 (epoch 1) to 17.4
+(epoch 100) to 14.4 (epoch 200). \(\lambda=1\) trained the state head with
+about 1/14 to 1/25 of that weight.
+
+Removing ON-MSE pushed the same way: a missed microwave ON sample cost the same
+as a false ON of the same size, instead of about 131 times more
+(Section 3.1). Both changes make predicting OFF cheap for rare appliances.
+
+SGN can use \(\lambda=1\) because it averages \(\mathcal{L}_{\mathrm{output}}\)
+over the window and sums \(\mathcal{L}_{\mathrm{on}}\) over it (Section 4.1).
+This code averages both.
+
+A fixed weight can come later, once the terms are settled. Read it from a
+finished run with the same terms: \(\lambda = 0.8\,L_P/L_S\), using
+`train_loss_power` and `train_loss_state` over the last epochs of
+`loss_detail.csv`. That keeps the same balance without the per-batch change.
+
+### 5.2 How to compare
 
 Compare this run with the current full loss, both with random mix on and
 smoothing off, two seeds each. Read validation average precision first: it
