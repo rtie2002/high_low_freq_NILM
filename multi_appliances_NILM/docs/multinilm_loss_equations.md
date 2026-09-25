@@ -3,7 +3,10 @@
 This document derives the exact scalar loss optimized by
 `config/models/multinilm_fractional_relational.yaml`. It follows the
 implementation in `model/MultiNILM_loss.py` and the parameter wiring in
-`model/MultiNILM.py`.
+`model/MultiNILM.py`. The formulas are what the code computes.
+`docs/multinilm_loss_concerns.md` explains where this objective is hard to
+tune, with the gradient weight measured on the finished runs, and records the
+two-term objective to test next.
 
 The derivation is specific to the current configuration snapshot:
 
@@ -17,7 +20,7 @@ loss:
   pos_weight: auto
   pos_weight_cap: 12
   state_fp_weight: 1.0
-  state_smooth_weight: 0.15
+  state_smooth_weight: 0.0
   state_smooth_tau: 4.0
   power_on_weight: 1.0
   power_off_weight: 0.5
@@ -71,8 +74,7 @@ $$
 $$
 \mathcal{S}_i
 =L_{\mathrm{BCE},i}
-+L_{\mathrm{FP},i}
-+0.15L_{\mathrm{smooth},i}.
++L_{\mathrm{FP},i}.
 $$
 
 The complete active loss can then be expanded in one chain:
@@ -110,7 +112,6 @@ L_{\mathrm{base},i}
 \left[
 L_{\mathrm{BCE},i}
 +L_{\mathrm{FP},i}
-+0.15L_{\mathrm{smooth},i}
 \right]
 \operatorname{stopgrad}
 \left(
@@ -129,7 +130,6 @@ L_{\mathrm{base},i}
 \left[
 L_{\mathrm{BCE},i}
 +L_{\mathrm{FP},i}
-+0.15L_{\mathrm{smooth},i}
 \right],
 10^{-8}
 \right)
@@ -164,10 +164,7 @@ L_{\mathrm{BCE},i}
 +(1-z_{bti})\log(1-p_{bti})\right],\\
 L_{\mathrm{FP},i}
 &=\frac{\sum_{b,t}(1-z_{bti})p_{bti}^2}
-{\max(\sum_{b,t}(1-z_{bti}),1)},\\
-L_{\mathrm{smooth},i}
-&=\frac{1}{2B(T-1)}\sum_{b}\sum_{t=2}^{T}\sum_{c\in\{\mathrm{on},\mathrm{off}\}}
-\min\left(\left|\ell_{btic}-\operatorname{stopgrad}(\ell_{b,t-1,ic})\right|,4\right)^2.
+{\max(\sum_{b,t}(1-z_{bti}),1)}.
 \end{aligned}
 $$
 
@@ -561,9 +558,9 @@ Properties that follow from this form:
 * The weight is `state_smooth_weight` (paper value 0.15) and $\tau$ is
   `state_smooth_tau` (paper value 4). In the paper the weight is relative to a
   frame-wise cross-entropy; here it is relative to $L_{\mathrm{BCE},i}+L_{\mathrm{FP},i}$.
-* The term is part of $L_S$. It changes the ratio $L_P/L_S$ in Section 6, but the
-  value of $L_{S,\mathrm{term}}$ stays $0.8L_P$; smoothing takes a share of the
-  state-gradient budget instead of adding a new one.
+* With a positive weight the term is part of $L_S$. It changes the ratio
+  $L_P/L_S$ in Section 6, but the value of $L_{S,\mathrm{term}}$ stays $0.8L_P$;
+  smoothing takes a share of the state-gradient budget instead of adding a new one.
 
 `state_smooth_weight: 0.0` removes the term and restores the earlier objective exactly.
 
@@ -575,8 +572,7 @@ $$
 \boxed{
 L_{S,i}
 =L_{\mathrm{BCE},i}
-+1.0L_{\mathrm{FP},i}
-+0.15L_{\mathrm{smooth},i}.
++1.0L_{\mathrm{FP},i}.
 }
 $$
 
@@ -634,7 +630,6 @@ L_{\mathrm{base},i}
 \left(
 L_{\mathrm{BCE},i}
 +L_{\mathrm{FP},i}
-+0.15L_{\mathrm{smooth},i}
 \right)
 \right]\\
 &\quad\times
@@ -655,7 +650,6 @@ L_{\mathrm{base},i}
 \left[
 L_{\mathrm{BCE},i}
 +L_{\mathrm{FP},i}
-+0.15L_{\mathrm{smooth},i}
 \right],
 10^{-8}
 \right)
@@ -684,7 +678,8 @@ It is for logging only and is not added to $L$.
 
 `loss_power_per_appliance` contains the complete $L_{P,i}$, including delta
 and relative-energy terms; it is not pure MSE. `loss_state_per_appliance`
-contains BCE, false-positive, and weighted smoothing terms. `loss_state_smooth`
+contains BCE and the false-positive term while `state_smooth_weight` is 0.
+`loss_state_smooth`
 (column `train_loss_state_smooth` / `val_loss_state_smooth` in `loss_detail.csv`)
 is the raw $\sum_i L_{\mathrm{smooth},i}$ before the weight; it is only logged when
 `state_smooth_weight > 0`. These values are detached for logging after the
@@ -710,7 +705,7 @@ The state-head parameters receive gradients from
 
 * weighted BCE;
 * explicit false-positive loss;
-* temporal smoothing loss (label-free);
+* temporal smoothing loss, only when `state_smooth_weight` is above 0;
 * every power term through the soft gate.
 
 The shared frontend, TCN, task-attention, and cross-appliance relation modules

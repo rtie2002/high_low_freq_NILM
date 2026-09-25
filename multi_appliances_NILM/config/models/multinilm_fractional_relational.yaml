@@ -1,7 +1,7 @@
 # Multi-appliance relational NILM experiment.
 # Keeps the precision_guard baseline reproducible while testing:
 #   task attention + cross-appliance relation attention + physical losses.
-experiment_id: Random Mix 0.5 + Smooth 0.15 (8w)
+experiment_id: Random Mix 0.5 (8w) second try
 model_name: multinilm_fractional
 
 data:
@@ -111,8 +111,8 @@ architecture:
 #                   + power_energy_relative_weight * REL_ENERGY_i ]
 #
 #   L_state = sum_i [ BCE_i                                   ON samples x pos_weight_i
-#                   + state_fp_weight     * FP_i              p^2 on true-OFF samples
-#                   + state_smooth_weight * SMOOTH_i ]        MS-TCN smoothing
+#                   + state_fp_weight     * FP_i ]            p^2 on true-OFF samples
+#   SMOOTH is implemented but state_smooth_weight is 0, so it is not in L_state.
 #
 #   state_term = lambda_state * L_state * stopgrad(L_power / L_state)
 #
@@ -149,13 +149,10 @@ loss:
   # The t-1 term is detached, as in the official code. It penalises flicker of p
   # between neighbouring samples, so a short ON blip needs strong evidence. Past
   # tau the penalty is constant (no gradient), so decisive ON/OFF edges are kept.
-  # It needs no labels. It sits inside L_state, so it shares the state budget
-  # set by lambda_state with BCE and FP. 0.0 turns it off (previous runs).
-  # Paper values are weight 0.15, tau 4; our BCE scale differs from the paper's
-  # cross-entropy, so treat 0.15 as a starting point.
-  # Logs: loss_state now includes 0.15 * SMOOTH; loss_state_smooth is the raw
-  # sum over appliances before the weight.
-  state_smooth_weight: 0.15
+  # It needs no labels. Weight 0.15 made test performance fall back, so it is
+  # off. 0.0 removes the term and restores the random-mix objective exactly.
+  # tau is unused while the weight is 0.
+  state_smooth_weight: 0.0
   state_smooth_tau: 4.0
 
   # ON_MSE_i / OFF_MSE_i are means over true-ON / true-OFF samples only. Added on
