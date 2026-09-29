@@ -13,7 +13,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from data.dataloader import get_state_label_source, resolve_state_thresholds_watts
-from evaluation.metrics import evaluate_bundle
+from evaluation.metrics import background_fpr_table, evaluate_bundle
 from evaluation.plots import (
     FULL_CYCLE_APPLIANCES,
     bundle_aggregate_watts,
@@ -367,26 +367,71 @@ class LiveTrainingMonitor:
             bundle.appliances,
             adapter.model_cfg,
         )
+        state_source = get_state_label_source(adapter.model_cfg)
+        on_thresholds = (
+            resolve_state_thresholds_watts(adapter.experiment, self.appliances)
+            if state_source == "threshold"
+            else None
+        )
+        sample_seconds = adapter.experiment.get("csv", {}).get("sample_seconds")
         metrics = evaluate_bundle(
             bundle,
             sae_period=int(adapter.experiment["evaluation"].get("sae_period", 1200)),
-            on_threshold_watts=(
-                resolve_state_thresholds_watts(adapter.experiment, self.appliances)
-                if get_state_label_source(adapter.model_cfg) == "threshold"
-                else None
-            ),
-            state_label_source=get_state_label_source(adapter.model_cfg),
+            on_threshold_watts=on_thresholds,
+            state_label_source=state_source,
             power_postprocess=power_postprocess,
+            sample_seconds=sample_seconds,
         )
+        aggregate = bundle_aggregate_watts(
+            adapter._data_loader(),
+            split,
+            n_points=len(bundle.y_true_watts),
+            csv_timesteps=bundle.csv_timesteps,
+        )
+        raw_appliance_watts = bundle_csv_appliance_watts(
+            adapter._data_loader(),
+            split,
+            n_points=len(bundle.y_true_watts),
+            csv_timesteps=bundle.csv_timesteps,
+        )
+        background_metrics = (
+            background_fpr_table(
+                bundle,
+                aggregate,
+                sample_seconds=sample_seconds,
+                true_appliance_watts=raw_appliance_watts,
+                on_threshold_watts=on_thresholds,
+                state_label_source=state_source,
+                power_postprocess=power_postprocess,
+            )
+            if aggregate is not None
+            else None
+        )
+        if aggregate is None:
+            print(
+                f"Background FPR skipped ({split}, epoch {epoch}): prediction rows "
+                "could not be aligned to the aggregate CSV.",
+                flush=True,
+            )
         epoch_dir = self._metrics_epoch_dir(epoch)
         path = self._metrics_path(epoch_dir, split)
         path.parent.mkdir(parents=True, exist_ok=True)
         metrics.to_csv(path, index=False)
+        if background_metrics is not None:
+            background_path = path.with_name(
+                path.name.replace("metrics.csv", "background_fpr.csv")
+            )
+            background_metrics.to_csv(background_path, index=False)
         # Also keep a rolling "latest" copy of the table for this split.
         latest_dir = self.run_dir / "metrics_by_epoch" / "latest"
         latest_path = self._metrics_path(latest_dir, split)
         latest_path.parent.mkdir(parents=True, exist_ok=True)
         metrics.to_csv(latest_path, index=False)
+        if background_metrics is not None:
+            latest_background_path = latest_path.with_name(
+                latest_path.name.replace("metrics.csv", "background_fpr.csv")
+            )
+            background_metrics.to_csv(latest_background_path, index=False)
         self._append_metrics_history(epoch=epoch, split=split, metrics=metrics)
         return path
 

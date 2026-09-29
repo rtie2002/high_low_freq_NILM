@@ -19,6 +19,7 @@ from config import appliance_list, resolve_tensor_dtype, resolve_training_target
 SplitName = str
 OutputAlignment = Literal["end", "center"]
 TargetMode = Literal["output_window", "full_input"]
+RandomMixMode = Literal["full", "background_swap"]
 
 _SPLIT_FILE_KEYS = {
     "train": "train_file",
@@ -64,6 +65,23 @@ def get_random_mix_prob(model_cfg: dict[str, Any]) -> float:
     if not 0.0 < prob <= 1.0:
         raise ValueError(f"training.random_mix.prob must be in (0, 1], got {prob}")
     return prob
+
+
+def get_random_mix_mode(model_cfg: dict[str, Any]) -> RandomMixMode:
+    """How a synthetic training window is assembled.
+
+    ``full`` keeps the original behaviour: every appliance and the residual
+    background come from independent windows. ``background_swap`` keeps all
+    appliance targets from the requested real window and replaces only its
+    residual background.
+    """
+    mix = model_cfg.get("training", {}).get("random_mix") or {}
+    mode = str(mix.get("mode", "full")).strip().lower()
+    if mode not in {"full", "background_swap"}:
+        raise ValueError(
+            "training.random_mix.mode must be one of: full, background_swap"
+        )
+    return mode  # type: ignore[return-value]
 
 
 def get_power_scale(model_cfg: dict[str, Any]) -> float:
@@ -222,6 +240,7 @@ class WindowDataset(Dataset):
         state_label_source: str = "auto",
         tensor_dtype: np.dtype = np.float32,
         random_mix_prob: float = 0.0,
+        random_mix_mode: RandomMixMode = "full",
     ):
         norm = normalization or NormalizationStats()
         self.norm = norm
@@ -240,6 +259,11 @@ class WindowDataset(Dataset):
             self.states = (self.targets > threshold).astype(np.int64)
 
         self.random_mix_prob = float(random_mix_prob)
+        self.random_mix_mode = str(random_mix_mode)
+        if self.random_mix_mode not in {"full", "background_swap"}:
+            raise ValueError(
+                "random_mix_mode must be one of: full, background_swap"
+            )
         if self.random_mix_prob > 0.0:
             # Mixes are summed in watts. Clip the background at 0: mains can dip
             # below the submeter sum when the channels are slightly misaligned.
@@ -296,7 +320,10 @@ class WindowDataset(Dataset):
 
     def __getitem__(self, index: int):
         if self.random_mix_prob > 0.0 and float(torch.rand(())) < self.random_mix_prob:
-            x, y, z = self._random_mix_window()
+            if self.random_mix_mode == "background_swap":
+                x, y, z = self._background_swap_window(index)
+            else:
+                x, y, z = self._random_mix_window()
         else:
             start = int(self.indices[index])
             end = start + self.seq_len
@@ -336,6 +363,32 @@ class WindowDataset(Dataset):
             [self.states[s:s + seq_len, a] for a, s in enumerate(app_starts)], axis=1
         )
         mains = power.sum(axis=1) + self.residual_watts[bg:bg + seq_len]
+
+        x = np.asarray(self.norm.normalize_inputs(mains), dtype=self.inputs.dtype)
+        y = np.asarray(self.norm.normalize_targets(power), dtype=self.targets.dtype)
+        return torch.from_numpy(x).unsqueeze(-1), torch.from_numpy(y), torch.from_numpy(states)
+
+    def _background_swap_window(
+        self,
+        index: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Keep one real target window and replace only its residual background.
+
+        If the requested window is ``sum(appliances) + background_a``, this
+        returns ``sum(the same appliances) + background_b``. Therefore all
+        appliance power and ON/OFF labels remain exact while the nuisance
+        background changes.
+        """
+        seq_len = self.seq_len
+        anchor = int(self.indices[index])
+        background_index = int(torch.randint(len(self.indices), ()).item())
+        if len(self.indices) > 1 and background_index == index:
+            background_index = (background_index + 1) % len(self.indices)
+        background = int(self.indices[background_index])
+
+        power = self.targets_watts[anchor:anchor + seq_len]
+        states = self.states[anchor:anchor + seq_len]
+        mains = power.sum(axis=1) + self.residual_watts[background:background + seq_len]
 
         x = np.asarray(self.norm.normalize_inputs(mains), dtype=self.inputs.dtype)
         y = np.asarray(self.norm.normalize_targets(power), dtype=self.targets.dtype)
@@ -455,6 +508,7 @@ class NILMDataLoader:
         self.loss_scale = self.norm.loss_scale
         self.tensor_dtype, _ = resolve_tensor_dtype(model_cfg)
         self.random_mix_prob = get_random_mix_prob(model_cfg)
+        self.random_mix_mode = get_random_mix_mode(model_cfg)
         self._splits: dict[SplitName, SplitArrays] = {}
 
     def _resolve_csv_path(self, split: SplitName) -> Path:
@@ -501,6 +555,7 @@ class NILMDataLoader:
             state_label_source=self.state_label_source,
             tensor_dtype=self.tensor_dtype,
             random_mix_prob=self.random_mix_prob if split == "train" else 0.0,
+            random_mix_mode=self.random_mix_mode,
         )
         if len(dataset) == 0:
             _, segment_lengths = np.unique(data.segment_ids, return_counts=True)

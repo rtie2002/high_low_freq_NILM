@@ -492,6 +492,7 @@ def compare_experiment(runs_dir: Path, experiment_id: str, config_dir: Path | No
                 on_threshold_watts=on_thresholds,
                 state_label_source=state_source,
                 power_postprocess=power_postprocess,
+                sample_seconds=experiment_cfg.get("csv", {}).get("sample_seconds"),
             )
             scenario = pred_path.parent.name if scenario_paths else "test"
             metrics.insert(3, "test_scenario", scenario)

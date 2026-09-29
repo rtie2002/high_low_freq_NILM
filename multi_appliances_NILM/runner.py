@@ -53,6 +53,7 @@ from data.dataloader import (
 from evaluation.live_monitor import LiveTrainingMonitor
 from evaluation.metrics import (
     _macro_mae_norm,
+    background_fpr_table,
     evaluate_bundle,
     per_appliance_average_precision,
 )
@@ -225,7 +226,12 @@ def _print_training_data_summary(
     _summary_line("Early stop", early_stop_text)
     _summary_line("Train shuffle", str(train_cfg.get("train_shuffle", True)))
     mix_prob = data_loader.random_mix_prob
-    _summary_line("Random mix", f"p={mix_prob:g} (train only)" if mix_prob else "off")
+    mix_text = (
+        f"p={mix_prob:g}, mode={data_loader.random_mix_mode} (train only)"
+        if mix_prob
+        else "off"
+    )
+    _summary_line("Random mix", mix_text)
     _summary_line("Tensor dtype", str(train_cfg.get("tensor_dtype", "float32")))
 
     ckpt = train_cfg.get("checkpoint_monitor")
@@ -1864,6 +1870,20 @@ def evaluate_model(
 
     # Step 6:
     # Compute the standard metrics from the shared PredictionBundle format.
+    data_loader = adapter._data_loader()
+    aggregate = bundle_aggregate_watts(
+        data_loader,
+        split,
+        n_points=len(bundle.y_true_watts),
+        csv_timesteps=bundle.csv_timesteps,
+    )
+    raw_appliance_watts = bundle_csv_appliance_watts(
+        data_loader,
+        split,
+        n_points=len(bundle.y_true_watts),
+        csv_timesteps=bundle.csv_timesteps,
+    )
+    sample_seconds = adapter.experiment.get("csv", {}).get("sample_seconds")
     power_postprocess = resolve_power_postprocess(
         adapter.experiment,
         bundle.appliances,
@@ -1875,6 +1895,7 @@ def evaluate_model(
         on_threshold_watts=_state_eval_thresholds(adapter.model_cfg, adapter.experiment, bundle.appliances),
         state_label_source=get_state_label_source(adapter.model_cfg),
         power_postprocess=power_postprocess,
+        sample_seconds=sample_seconds,
     )
     metrics_path = (
         result_dir / f"{split}_metrics.csv"
@@ -1882,6 +1903,31 @@ def evaluate_model(
         else result_dir / "metrics.csv"
     )
     metrics.to_csv(metrics_path, index=False)
+    background_metrics = None
+    background_metrics_path = metrics_path.with_name(
+        metrics_path.name.replace("metrics.csv", "background_fpr.csv")
+    )
+    if aggregate is not None:
+        background_metrics = background_fpr_table(
+            bundle,
+            aggregate,
+            sample_seconds=sample_seconds,
+            true_appliance_watts=raw_appliance_watts,
+            on_threshold_watts=_state_eval_thresholds(
+                adapter.model_cfg,
+                adapter.experiment,
+                bundle.appliances,
+            ),
+            state_label_source=get_state_label_source(adapter.model_cfg),
+            power_postprocess=power_postprocess,
+        )
+        background_metrics.to_csv(background_metrics_path, index=False)
+    else:
+        print(
+            f"Background FPR skipped ({split}): prediction rows could not be aligned "
+            "to the aggregate CSV.",
+            flush=True,
+        )
     # Also archive under metrics_by_epoch for comparison with mid-training tables.
     ckpt_epoch = int(ckpt.get("epoch", -1)) if isinstance(ckpt, dict) else -1
     if ckpt_epoch > 0:
@@ -1893,6 +1939,11 @@ def evaluate_model(
         )
         archive_path.parent.mkdir(parents=True, exist_ok=True)
         metrics.to_csv(archive_path, index=False)
+        if background_metrics is not None:
+            archive_background_path = archive_path.with_name(
+                archive_path.name.replace("metrics.csv", "background_fpr.csv")
+            )
+            background_metrics.to_csv(archive_background_path, index=False)
 
     # Step 7:
     # Waveform plots always use dataset CSV *_on labels for true ON periods.
@@ -1907,12 +1958,12 @@ def evaluate_model(
     raw_period = plot_cfg.get("on_period_samples", 0)
     period_samples = None if raw_period is None or int(raw_period) <= 0 else int(raw_period)
     waveform_true_on = dataset_on_labels_for_bundle(
-        adapter._data_loader(),
+        data_loader,
         split,
         len(bundle.y_true_watts),
         bundle.csv_timesteps,
     )
-    waveform_segments = adapter._data_loader().segment_ids_at_timesteps(
+    waveform_segments = data_loader.segment_ids_at_timesteps(
         split,
         bundle.csv_timesteps,
     )
@@ -1922,18 +1973,7 @@ def evaluate_model(
         bundle.y_pred_watts,
         power_postprocess,
     )
-    aggregate = bundle_aggregate_watts(
-        adapter._data_loader(),
-        split,
-        n_points=len(y_true_watts),
-        csv_timesteps=bundle.csv_timesteps,
-    )
-    y_true_plot = bundle_csv_appliance_watts(
-        adapter._data_loader(),
-        split,
-        n_points=len(y_true_watts),
-        csv_timesteps=bundle.csv_timesteps,
-    )
+    y_true_plot = raw_appliance_watts
     if y_true_plot is None:
         y_true_plot = y_true_watts
     # Match training label source strictly (csv → CSV *_on shade; never power>thr).

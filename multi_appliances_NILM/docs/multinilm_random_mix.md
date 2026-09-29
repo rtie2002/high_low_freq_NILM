@@ -1,5 +1,10 @@
 # What random mix changes in the code and the training pipeline
 
+> The project now supports two modes. `mode: full` is the original method
+> described below. The current first ablation uses `mode: background_swap`,
+> which keeps all five targets from one real window and replaces only the
+> residual background. See [background_swap.md](background_swap.md).
+
 Random mix is a change to **how a training sample is built**. The model, the loss, the validation set, and the test set are the same as Clean Version (8w).
 
 One switch turns it on:
@@ -9,6 +14,7 @@ One switch turns it on:
 training:
   random_mix:
     enabled: true
+    mode: full
     prob: 0.5
 ```
 
@@ -208,7 +214,7 @@ The batch size is still 64. A batch can contain a mixture of real windows and mi
 At startup the summary line is:
 
 ```text
-Random mix    p=0.5 (train only)
+Random mix    p=0.5, mode=full (train only)
 ```
 
 If that line says `off`, the yaml block was not loaded and every training window is real.

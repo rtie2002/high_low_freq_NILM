@@ -71,6 +71,12 @@ def _mean_finite(values: np.ndarray) -> float:
     return float(finite.mean()) if finite.size else float("nan")
 
 
+def _sum_finite(values: np.ndarray) -> float:
+    values = np.asarray(values, dtype=np.float64)
+    finite = values[np.isfinite(values)]
+    return float(finite.sum()) if finite.size else float("nan")
+
+
 def mae(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
     return np.mean(np.abs(y_true - y_pred), axis=0)
 
@@ -180,6 +186,61 @@ def _on_off_labels(
     return z_true, z_pred
 
 
+def _sequence_breaks(bundle: PredictionBundle, n_samples: int) -> np.ndarray:
+    """Mark the first sample after a house/segment/time discontinuity."""
+    breaks = np.zeros(n_samples, dtype=bool)
+    if n_samples == 0:
+        return breaks
+    breaks[0] = True
+
+    if bundle.segment_ids is not None:
+        segments = np.asarray(bundle.segment_ids).reshape(-1)
+        if len(segments) != n_samples:
+            raise ValueError("Prediction segment_ids length does not match predictions")
+        breaks[1:] |= segments[1:] != segments[:-1]
+
+    if bundle.csv_timesteps is not None:
+        timesteps = np.asarray(bundle.csv_timesteps).reshape(-1)
+        if len(timesteps) != n_samples:
+            raise ValueError("Prediction csv_timesteps length does not match predictions")
+        breaks[1:] |= np.diff(timesteps) != 1
+    return breaks
+
+
+def _false_event_counts(
+    bundle: PredictionBundle,
+    z_true: np.ndarray,
+    z_pred: np.ndarray,
+) -> np.ndarray:
+    """Count predicted ON runs that never overlap a true ON sample."""
+    n_samples, n_apps = z_true.shape
+    counts = np.zeros(n_apps, dtype=np.int64)
+    if n_samples == 0:
+        return counts
+    breaks = _sequence_breaks(bundle, n_samples)
+
+    for app_i in range(n_apps):
+        predicted = z_pred[:, app_i].astype(bool)
+        truth = z_true[:, app_i].astype(bool)
+        starts = predicted & (breaks | ~np.r_[False, predicted[:-1]])
+        for start in np.flatnonzero(starts):
+            end = int(start) + 1
+            while end < n_samples and predicted[end] and not breaks[end]:
+                end += 1
+            if not np.any(truth[start:end]):
+                counts[app_i] += 1
+    return counts
+
+
+def _sample_seconds_or_nan(sample_seconds: float | None) -> float:
+    if sample_seconds is None:
+        return float("nan")
+    value = float(sample_seconds)
+    if value <= 0:
+        raise ValueError("sample_seconds must be positive")
+    return value
+
+
 def evaluate_bundle(
     bundle: PredictionBundle,
     *,
@@ -187,6 +248,7 @@ def evaluate_bundle(
     on_threshold_watts: float | np.ndarray | None = None,
     state_label_source: str = "auto",
     power_postprocess: PowerPostprocessConfig | None = None,
+    sample_seconds: float | None = None,
 ) -> pd.DataFrame:
     """Per-appliance power, sample-state, and energy diagnostics."""
     y_true, y_pred = apply_power_postprocess_pair(
@@ -212,6 +274,8 @@ def evaluate_bundle(
     tn = np.sum((1 - z_true) * (1 - z_pred), axis=0).astype(np.float64)
     specificity_vals = _safe_ratio(tn, tn + fp)
     balanced_accuracy_vals = 0.5 * (recall_vals + specificity_vals)
+    false_positive_rate_vals = _safe_ratio(fp, fp + tn)
+    false_negative_rate_vals = _safe_ratio(fn, fn + tp)
 
     abs_error = np.abs(y_pred - y_true)
     true_on = z_true.astype(bool)
@@ -222,6 +286,14 @@ def evaluate_bundle(
         (y_pred * true_on).sum(axis=0),
         (y_true * true_on).sum(axis=0),
     )
+    false_positive_mask = (~true_on) & z_pred.astype(bool)
+    seconds = _sample_seconds_or_nan(sample_seconds)
+    false_positive_energy_wh_vals = (
+        (y_pred * false_positive_mask).sum(axis=0) * seconds / 3600.0
+        if np.isfinite(seconds)
+        else np.full(y_true.shape[1], np.nan)
+    )
+    false_event_count_vals = _false_event_counts(bundle, z_true, z_pred)
 
     base = {
         "experiment_id": bundle.experiment_id,
@@ -243,6 +315,10 @@ def evaluate_bundle(
             "recall": float(recall_vals[i]),
             "balanced_accuracy": float(balanced_accuracy_vals[i]),
             "average_precision": float(average_precision_vals[i]),
+            "false_positive_rate": float(false_positive_rate_vals[i]),
+            "false_negative_rate": float(false_negative_rate_vals[i]),
+            "false_positive_energy_wh": float(false_positive_energy_wh_vals[i]),
+            "false_event_count": int(false_event_count_vals[i]),
             "on_mae": float(on_mae_vals[i]),
             "off_mae": float(off_mae_vals[i]),
             "energy_ratio": float(energy_ratio_vals[i]),
@@ -264,11 +340,122 @@ def evaluate_bundle(
         "recall": _mean_finite(recall_vals),
         "balanced_accuracy": _mean_finite(balanced_accuracy_vals),
         "average_precision": _mean_finite(average_precision_vals),
+        "false_positive_rate": _mean_finite(false_positive_rate_vals),
+        "false_negative_rate": _mean_finite(false_negative_rate_vals),
+        "false_positive_energy_wh": _sum_finite(false_positive_energy_wh_vals),
+        "false_event_count": int(false_event_count_vals.sum()),
         "on_mae": _mean_finite(on_mae_vals),
         "off_mae": _mean_finite(off_mae_vals),
         "energy_ratio": _mean_finite(energy_ratio_vals),
         "on_energy_ratio": _mean_finite(on_energy_ratio_vals),
     })
+    return pd.DataFrame(rows)
+
+
+def background_fpr_table(
+    bundle: PredictionBundle,
+    aggregate_watts: np.ndarray,
+    *,
+    sample_seconds: float | None,
+    true_appliance_watts: np.ndarray | None = None,
+    on_threshold_watts: float | np.ndarray | None = None,
+    state_label_source: str = "auto",
+    power_postprocess: PowerPostprocessConfig | None = None,
+    bin_edges_watts: tuple[float, ...] = (0.0, 100.0, 200.0, 400.0, 800.0, np.inf),
+) -> pd.DataFrame:
+    """False-positive diagnostics grouped by residual-background power.
+
+    Residual background is ``max(aggregate - sum(true target appliances), 0)``.
+    Rates and probabilities use only samples where the selected appliance is
+    truly OFF. Bins are left-inclusive and right-exclusive.
+    """
+    y_true_raw = np.maximum(
+        np.asarray(
+            bundle.y_true_watts
+            if true_appliance_watts is None
+            else true_appliance_watts,
+            dtype=np.float64,
+        ),
+        0.0,
+    )
+    if y_true_raw.shape != np.asarray(bundle.y_true_watts).shape:
+        raise ValueError("true_appliance_watts shape does not match predictions")
+    _, y_pred = apply_power_postprocess_pair(
+        y_true_raw,
+        bundle.y_pred_watts,
+        power_postprocess,
+    )
+    aggregate = np.asarray(aggregate_watts, dtype=np.float64).reshape(-1)
+    if len(aggregate) != len(y_true_raw):
+        raise ValueError("aggregate_watts length does not match predictions")
+
+    edges = np.asarray(bin_edges_watts, dtype=np.float64)
+    if edges.ndim != 1 or len(edges) < 2 or edges[0] != 0 or np.any(np.diff(edges) <= 0):
+        raise ValueError("bin_edges_watts must be strictly increasing and start at 0")
+
+    z_true, z_pred = _on_off_labels(
+        bundle,
+        y_true_raw,
+        y_pred,
+        on_threshold_watts,
+        state_label_source,
+    )
+    state_prob = (
+        None
+        if bundle.y_pred_state_prob is None
+        else np.asarray(bundle.y_pred_state_prob, dtype=np.float64)
+    )
+    if state_prob is not None and state_prob.shape != z_true.shape:
+        raise ValueError("Prediction state-probability shape does not match ON/OFF labels")
+
+    background = np.maximum(aggregate - y_true_raw.sum(axis=1), 0.0)
+    seconds = _sample_seconds_or_nan(sample_seconds)
+    base = {
+        "experiment_id": bundle.experiment_id,
+        "model": bundle.model_name,
+        "split": bundle.split,
+    }
+    rows: list[dict[str, Any]] = []
+
+    for app_i, appliance in enumerate(bundle.appliances):
+        true_off = ~z_true[:, app_i].astype(bool)
+        predicted_on = z_pred[:, app_i].astype(bool)
+        app_off_total = int(true_off.sum())
+        for low, high in zip(edges[:-1], edges[1:]):
+            in_bin = (background >= low) & (background < high)
+            off_mask = true_off & in_bin
+            false_positive_mask = off_mask & predicted_on
+            off_samples = int(off_mask.sum())
+            false_positive_samples = int(false_positive_mask.sum())
+            fp_energy = (
+                float(y_pred[false_positive_mask, app_i].sum() * seconds / 3600.0)
+                if np.isfinite(seconds)
+                else float("nan")
+            )
+            upper_label = "inf" if np.isinf(high) else f"{high:g}"
+            rows.append({
+                **base,
+                "appliance": appliance,
+                "background_bin_w": f"[{low:g}, {upper_label})",
+                "background_min_w": float(low),
+                "background_max_w": float(high),
+                "off_samples": off_samples,
+                "off_sample_share": (
+                    float(off_samples / app_off_total) if app_off_total else float("nan")
+                ),
+                "false_positive_samples": false_positive_samples,
+                "false_positive_rate": (
+                    float(false_positive_samples / off_samples)
+                    if off_samples
+                    else float("nan")
+                ),
+                "mean_state_probability": (
+                    float(state_prob[off_mask, app_i].mean())
+                    if state_prob is not None and off_samples
+                    else float("nan")
+                ),
+                "false_positive_energy_wh": fp_energy,
+            })
     return pd.DataFrame(rows)
 
 

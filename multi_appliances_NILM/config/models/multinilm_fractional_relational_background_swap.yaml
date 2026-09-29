@@ -1,7 +1,7 @@
-# Multi-appliance relational NILM experiment.
-# Keeps the precision_guard baseline reproducible while testing:
-#   task attention + cross-appliance relation attention + physical losses.
-experiment_id: background_swap_8w_1
+# Background-only swap ablation of the full random-mix baseline.
+# Only experiment_id and training.random_mix.mode differ from
+# multinilm_fractional_relational.yaml.
+experiment_id: background_swap_8w
 model_name: multinilm_fractional
 
 data:
@@ -72,7 +72,7 @@ architecture:
   head_norm_type: batch
 
   # Receptive-field ablation: k=9 with dilations 1,2,4,8,16 gives a 249-sample TCN RF.
-  num_blocks: 5 
+  num_blocks: 5
   kernel_size: 9
   max_dilation: 16
   # Restore the stronger baseline after dropout=0.35 hurt zero-shot detection.
@@ -180,13 +180,13 @@ training:
   train_shuffle: true
   gradient_clip: 1.0
 
-  # Each training window is replaced with probability prob by a random mix:
-  # every appliance trace (with its ON labels) and the background residual
-  # (mains - sum of appliances) come from independent training windows.
+  # Each selected real window keeps all five appliance powers and ON labels;
+  # only the residual background (mains - sum of appliances) is replaced by
+  # the residual from another legal training window.
   # Validation and test windows are never mixed.
   random_mix:
     enabled: true
-    mode: full
+    mode: background_swap
     prob: 0.5
 
   use_amp: false
