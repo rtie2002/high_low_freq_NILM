@@ -1,6 +1,6 @@
-# Background-swap baseline with cross-appliance relation attention retained.
-# Use an explicit run name so a new run cannot overwrite the no-relation ablation.
-experiment_id: background_swap_8w_relation
+# Controlled Stage-B experiment: add local/context expert routing while keeping
+# the proven relation attention, data, loss and postprocessing unchanged.
+experiment_id: background_swap_8w_relation_dual_expert
 model_name: multinilm_fractional
 
 data:
@@ -87,6 +87,20 @@ architecture:
 
   gate_mode: soft
   gate_threshold: 0.5
+
+  # Shared local expert + one independent temporal gate per appliance.
+  # The existing multiscale stem and TCN remain the long-context expert.
+  dual_expert:
+    enabled: true
+    # raw aggregate + signed delta + absolute delta -> short-range features
+    local_channels: 32
+    local_kernel_size: 5
+    local_dilations: [1, 2, 4]
+    local_norm_type: group
+    gate_hidden_channels: 32
+    # Start close to the existing context-only baseline; the gate can then
+    # increase local usage where short edges are genuinely useful.
+    gate_initial_local_weight: 0.10
 
   cross_appliance:
     # The no-relation ablation reduced microwave AP/F1 and increased high-

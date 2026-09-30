@@ -1,7 +1,7 @@
 # MultiNILM 下一阶段架构设计：当前模型与建议模型对比
 
-> **文档状态：设计提案，尚未实现。**  
-> 当前正在运行的实验是 `background_swap_8w_no_relation`：它只关闭了 cross-appliance relation attention，其他设置保持不变。本文提出的 dual-expert、private adapter、split decoder 和 background head 都必须在该实验完成后按阶段验证，不能一次全部加入。
+> **文档状态：Stage B-R 已实现，尚未训练。**
+> `background_swap_8w_no_relation` 已完成并且整体变差，尤其 microwave AP/F1 和高背景 FPR 恶化。因此新实验保留 relation attention，只加入 dual experts 与 appliance-specific gates。Private adapter、split decoder 和 background head 仍未加入。
 
 ## 1. 执行摘要
 
@@ -15,9 +15,11 @@
 - 在同一个 checkpoint 中，microwave 主导 power loss，而 fridge 主导 state loss，多个目标通过同一个 shared encoder 和动态 loss balance 互相影响；
 - 五种电器需要的时间尺度不同：microwave 依赖分钟级局部边缘，fridge 依赖启动边缘和周期上下文，dishwasher 与 washing machine 需要更长的过程信息。
 
-因此，建议的核心不是继续增加普通 attention，而是采用：
+因此，本次实现的核心不是继续增加普通 attention，而是采用：
 
-> **两个共享时间专家（local transient expert + long-context expert），每个电器使用自己的 gate 选择专家，再通过轻量 appliance-private adapter 和分离的 state/power decoder 输出结果。**
+> **两个共享时间专家（local transient expert + long-context expert），每个电器使用自己的 gate 选择时间表示；之后继续使用原有 appliance heads 和 relation attention。**
+
+本次没有加入 private adapter、split state/power decoder 或 background head，避免一次改变多个因素。
 
 该设计仍然是一个 joint multi-appliance model：输入一次 aggregate，同时输出五个电器。它不会退化成五个独立模型。
 
@@ -28,16 +30,59 @@
 | 状态 | Relation attention | Background swap | 说明 |
 |---|---:|---:|---|
 | 原始 background-swap baseline | 开启 | 开启 | 已有结果，fridge/microwave 仍存在失败 |
-| 当前运行：`background_swap_8w_no_relation` | **关闭** | 开启 | 单变量消融，用于判断跨电器特征交换是否有害 |
-| 本文 proposed architecture | 关闭 | 开启 | 尚未实现；必须等待 no-relation 结果后分阶段测试 |
+| 已完成：`background_swap_8w_no_relation` | **关闭** | 开启 | 整体变差，说明 relation attention 提供有用信息 |
+| 当前实现：`background_swap_8w_relation_dual_expert` | **开启** | 开启 | 只增加 local/context routing，尚未训练 |
 
-当前 no-relation 实验非常重要，因为它回答：
+No-relation 消融已经回答：
 
 \[
-\text{当前失败是否主要来自 cross-appliance relation attention？}
+\text{当前失败并不主要由 relation attention 引起；删除它反而造成负迁移。}
 \]
 
-如果直接加入新架构，就无法区分改善来自删除 relation attention，还是来自新模块。
+所以接下来的 controlled experiment 必须保留 relation attention。这样相对原始 baseline 的唯一架构变化就是 temporal expert routing。
+
+### 2.1 本次实现的 Before / After
+
+#### Before：所有电器共享同一时间表示
+
+```mermaid
+flowchart LR
+    X["Aggregate x<br/>(B,1,T)"] --> FE["Fractional features<br/>(B,13,T)"]
+    FE --> C["Shared stem + long TCN<br/>(B,128,T)"]
+    C --> H["Five appliance heads"]
+    H --> R["Relation attention<br/>kept"]
+    R --> O["Power + state<br/>(B,T,5)"]
+```
+
+所有 appliance heads 都收到相同的 (h_C)。Microwave 的短边缘、fridge 的周期和 washing-machine 的长过程必须共用同一种 temporal representation。
+
+#### After：每个电器独立选择 local/context expert
+
+```mermaid
+flowchart LR
+    X["Aggregate x<br/>(B,1,T)"]
+
+    X --> LI["raw + delta + abs-delta"]
+    LI --> L["Local transient expert<br/>32 channels, k=5<br/>dilation 1,2,4<br/>RF about 4.4 min"]
+
+    X --> FE["Fractional features<br/>(B,13,T)"]
+    FE --> C["Existing stem + TCN<br/>Context expert<br/>(B,128,T)"]
+
+    L --> G["Five appliance-specific gates<br/>gL + gC = 1"]
+    C --> G
+    G --> H["Existing appliance heads"]
+    H --> R["Existing relation attention<br/>enabled, residual scale 0.25"]
+    R --> O["Power + state<br/>(B,T,5)"]
+```
+
+本次实现的融合公式是：
+
+\[
+z_i(t)=g_{i,L}(t)h_L(t)+g_{i,C}(t)h_C(t),
+\qquad g_{i,L}(t)+g_{i,C}(t)=1.
+\]
+
+Gate 初始值设为 (g_L=0.1, g_C=0.9)，使训练开始时接近原来的 context-only baseline，而不是突然用 50:50 混合随机初始化的 local expert。
 
 ---
 
@@ -68,7 +113,7 @@ flowchart TB
     W["Washing-machine head<br/>task attention + 2 local convs"]
     M["Microwave head<br/>task attention + 2 local convs"]
 
-    R["Optional relation attention<br/>feature exchange across 5 heads<br/>enabled in original baseline<br/>disabled in current ablation"]
+    R["Relation attention<br/>feature exchange across 5 heads<br/>enabled in the retained baseline"]
 
     O["Per-appliance power + state outputs<br/>(B, 1024, 5)"]
     G["Soft state gate during training"]
@@ -171,7 +216,7 @@ g_{\mathrm{shared}}
 
 ---
 
-## 5. After：建议的 Dual-Expert Multi-Appliance 架构
+## 5. After：已实现的 Stage B-R Dual-Expert 架构
 
 ### 5.1 总体结构
 
@@ -182,8 +227,8 @@ flowchart TB
     LF["Local input<br/>raw + signed delta + abs-delta"]
     CF["Context input<br/>current full feature set"]
 
-    LE["Local Transient Expert<br/>small residual CNN<br/>short receptive field: about 1-4 min"]
-    CE["Long-Context Expert<br/>reduced shared TCN<br/>long receptive field: about 20-40 min"]
+    LE["Local Transient Expert<br/>small residual CNN<br/>receptive field: about 4.4 min"]
+    CE["Long-Context Expert<br/>existing shared TCN<br/>long receptive field: about 20-40 min"]
 
     HL["Local features h_L"]
     HC["Context features h_C"]
@@ -194,21 +239,15 @@ flowchart TB
     GW["Washing-machine gate"]
     GM["Microwave gate"]
 
-    AK["Small kettle adapter"]
-    AF["Small fridge adapter"]
-    AD["Small dishwasher adapter"]
-    AW["Small washing-machine adapter"]
-    AM["Small microwave adapter"]
+    HK["Existing kettle head"]
+    HF["Existing fridge head"]
+    HD["Existing dishwasher head"]
+    HW["Existing washing-machine head"]
+    HM["Existing microwave head"]
 
-    HK["Kettle state/power decoders"]
-    HF["Fridge state/power decoders"]
-    HD["Dishwasher state/power decoders"]
-    HW["Washing-machine state/power decoders"]
-    HM["Microwave state/power decoders"]
+    R["Existing cross-appliance<br/>relation attention"]
 
     OUT["Joint five-appliance output<br/>(B, 1024, 5)"]
-
-    BG["Optional Phase-2 background head<br/>predict residual/unmonitored load"]
 
     X --> LF --> LE --> HL
     X --> CF --> CE --> HC
@@ -224,14 +263,15 @@ flowchart TB
     HL --> GM
     HC --> GM
 
-    GK --> AK --> HK --> OUT
-    GF --> AF --> HF --> OUT
-    GD --> AD --> HD --> OUT
-    GW --> AW --> HW --> OUT
-    GM --> AM --> HM --> OUT
-
-    HC -. "later ablation only" .-> BG
+    GK --> HK --> R
+    GF --> HF --> R
+    GD --> HD --> R
+    GW --> HW --> R
+    GM --> HM --> R
+    R --> OUT
 ```
+
+图中的 private adapter、split decoder 和 background head 均未加入本次代码。它们仍然是后续独立消融，不能用于解释当前 Stage B-R 的结果。
 
 ### 5.2 Local Transient Expert
 
@@ -309,7 +349,7 @@ Gate 不是在五个电器之间交换信息，而是让每个电器决定当前
 
 该思想与 Multi-gate Mixture-of-Experts 相近：共享多个 experts，但为每个任务学习独立 gate，以处理不同任务相关性。
 
-### 5.5 Lightweight appliance-private adapters
+### 5.5 Future Stage C：Lightweight appliance-private adapters
 
 Gate fusion 后使用一个很小的 appliance-specific residual adapter：
 
@@ -328,7 +368,7 @@ z_i+alpha_i A_i(z_i),
 
 这给不同电器有限的专用容量，但主要参数仍由两个 experts 共享，因此依然是 multi-appliance model，不是五个 single-appliance networks 的拼接。
 
-### 5.6 Separate state and power decoders
+### 5.6 Future Stage D：Separate state and power decoders
 
 当前结果出现 state ranking 与 power waveform 不同步，因此建议 fusion 后先共享一个很小的 appliance representation，再分成两条轻量路径：
 
@@ -433,12 +473,12 @@ Background head 给模型一个明确的 nuisance/output channel：
 | 输入路径 | 所有 features 进入同一 shared encoder | raw/delta local path + full-feature context path | 分离快速边缘与长时上下文 |
 | Shared representation | 一个统一 \(z\) | 两个 shared experts | 避免一种时间表示服务所有电器 |
 | Appliance routing | 每个 head 都收到相同 \(z\) | 每个 appliance 独立选择 expert 权重 | 适应 heterogeneous appliances |
-| Appliance-specific capacity | head 中两个 local conv blocks | gate + small residual adapter | 减少 shared-gradient negative transfer |
-| Cross-appliance interaction | 原始 baseline 使用 relation attention | 默认不做 head-to-head feature exchange | 降低 house-specific co-occurrence shortcut |
-| State/power separation | 最终仅用两个 \(1\times1\) heads 区分 | 各自一个轻量 decoder | 缓解 state 与 waveform 目标冲突 |
-| Background representation | 没有显式 background output | 可选 auxiliary residual head | 给未监测负载独立解释位置 |
+| Appliance-specific capacity | head 中两个 local conv blocks | 每电器 gate；head 暂时保持不变 | 先隔离 temporal routing 的作用 |
+| Cross-appliance interaction | Relation attention 开启 | **继续开启且位置不变** | 保留已由消融证明有用的跨电器关系 |
+| State/power separation | 最终仅用两个 \(1\times1\) heads 区分 | 本阶段保持不变 | 避免与 split-decoder 消融混合 |
+| Background representation | 没有显式 background output | 本阶段保持不变 | Background head 留到独立后续实验 |
 | Multi-appliance novelty | 一次输入、五个输出 | 仍然一次输入、五个输出 | 完整保留 joint multi-appliance setting |
-| 参数规模 | 约 1.376M | 预计小幅增加，具体需实现后统计 | 避免五套完整 encoder |
+| 参数规模 | 1,376,574 | 1,438,728（+62,154，+4.52%） | 避免五套完整 encoder |
 
 ---
 
@@ -493,7 +533,7 @@ flowchart LR
 
 ## 10. 分阶段实验计划
 
-### Stage A：完成当前 no-relation ablation
+### Stage A：No-relation ablation（已完成）
 
 实验 ID：
 
@@ -508,7 +548,9 @@ cross_appliance:
   enabled: false
 ```
 
-决定：
+实际结论：relation attention 关闭后整体结果变差，microwave 在两个测试房屋上的 AP/F1 下降，高背景 FPR 上升。因此后续保留 relation attention。
+
+原决策规则保留如下：
 
 | 结果 | 解释 | 下一步 |
 |---|---|---|
@@ -518,12 +560,12 @@ cross_appliance:
 | 两者都无改善 | 问题更可能在 shared temporal representation、loss/sampling 或可辨识性 | 进入 Stage B，但不宣称 relation attention 有害 |
 | 明显变差 | relation attention 提供有用信息 | 后续可以研究受控 residual relation，但不要恢复原始无限制结构并同时加入新模块 |
 
-### Stage B：只加入 dual experts 与 appliance gates
+### Stage B-R：只加入 dual experts 与 appliance gates，并保留 relation
 
 建议实验 ID：
 
 ```text
-background_swap_8w_dual_expert
+background_swap_8w_relation_dual_expert
 ```
 
 保持：
@@ -532,6 +574,7 @@ background_swap_8w_dual_expert
 - loss 不变；
 - activation 不变；
 - postprocessing 不变；
+- relation attention 保持开启，参数不变；
 - 不加入 private adapter；
 - 不加入 background head；
 - 不拆分 state/power decoder。
@@ -627,6 +670,8 @@ g_{i,L}(t),\qquad g_{i,C}(t).
 
 将它们与 aggregate、true power、predicted power 一起画图。这样可以检验模型是否真的按设计使用专家，而不是所有 appliances 都固定选择同一个 expert。
 
+当前实现已经把每个 appliance 的平均 local gate，以及 true-ON / true-OFF 条件下的平均 local gate 写入 `history.csv`。逐时间 gate waveform 图保留为训练结果出来后的诊断步骤。
+
 ### 12.2 Shared-gradient cosine similarity
 
 在少量训练 batches 上记录 appliance losses 对 shared experts 的梯度：
@@ -666,7 +711,7 @@ g_{i,L}(t),\qquad g_{i,C}(t).
 
 ## 13. 实现影响范围
 
-如果 Stage B 获准实现，主要修改应集中在：
+Stage B-R 的实现修改集中在：
 
 - `model/MultiNILM.py`
   - 增加 local transient expert；
@@ -686,7 +731,7 @@ g_{i,L}(t),\qquad g_{i,C}(t).
 
 第一版不应同时修改 dataloader、loss、threshold 和 evaluation semantics。这样才能把性能变化归因于 architecture。
 
-旧 checkpoint 与新架构预计不兼容，因此必须从头训练，并使用新的 experiment ID。
+旧 checkpoint 与新架构不兼容，因此必须从头训练，并使用新的 experiment ID。关闭 `dual_expert.enabled` 时仍保留旧 forward 行为。
 
 ---
 
@@ -741,13 +786,13 @@ g_{i,L}(t),\qquad g_{i,C}(t).
 
 ## 17. 最终建议
 
-当前不要立即实现整套 After architecture。正确顺序是：
+当前 Stage B-R 已完成代码实现，但尚未训练。正确顺序是：
 
-1. 等待 `background_swap_8w_no_relation`；
-2. 根据结果决定 relation attention 是否永久移除；
-3. 只实现 dual local/context experts + appliance gates；
-4. 验证后才加入 private adapters；
-5. 只有 state 与 power 明确解耦失败时才 split decoders；
+1. 从头训练 `background_swap_8w_relation_dual_expert`；
+2. 检查每个 appliance 的 local gate、AP、ON MAE 和高背景 FPR；
+3. 如果一个 seed 明显改善，再跑第二个 seed；
+4. 只有 dual routing 有稳定改善后，才加入 private adapters；
+5. 只有 state AP 改善而 power waveform 恶化时才 split decoders；
 6. 只有 fridge background false positives 仍然严重时才加入 background head。
 
 推荐的第一版核心保持简单：

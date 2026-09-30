@@ -1602,6 +1602,11 @@ def train_model(
                     "val_maf1": float(val_logs.get("val_maf1", val_f1)),
                     "val_mif1": float(val_logs.get("val_mif1", 0.0)),
                     "val_miacc": float(val_logs.get("val_miacc", val_acc)),
+                    **{
+                        f"val_{k}": v
+                        for k, v in val_logs.items()
+                        if k.startswith("gate_local_")
+                    },
                     "train_time_sec": train_time_sec,
                     "val_time_sec": val_time_sec,
                     "epoch_time_sec": epoch_time_sec,

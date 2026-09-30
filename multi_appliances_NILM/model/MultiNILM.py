@@ -1,14 +1,16 @@
 """Beginner path: read MultiNILMFractional.forward, then MultiNILM.forward.
 
 Every Conv1d tensor is (B, C, T) = batch, channels, time.
-Relational yaml example: B=64, C_in=13, C=64, T=1024, A=5 appliances.
+Relational dual-expert yaml example: B=64, C_in=13, C=128, T=1024,
+A=5 appliances.
 
   mains (B, T)
+    -> local expert      (B, 128, T)  raw + delta + |delta|
     -> FrontEnd          (B, 13, T)
-    -> stem              (B, 64, T)
-    -> TCN               (B, 64, T)
-    -> 5 heads           5 x (B, 64, T)
-    -> relation mix      5 x (B, 64, T)
+    -> stem + TCN        (B, 128, T)  context expert
+    -> 5 expert gates    5 x (B, 128, T)
+    -> 5 heads           5 x (B, 128, T)
+    -> relation mix      5 x (B, 128, T)
     -> power, state      (B, T, 5)
 
 Stop at "YAML / training" unless you are changing configs.
@@ -205,6 +207,117 @@ class ResidualTemporalBlock(nn.Module):
 
     def forward(self, x):
         return x + self.dropout(self.activation(self.norm(self.conv(x))))
+
+
+class LocalTransientExpert(nn.Module):
+    """Short-range expert over raw aggregate, signed delta and absolute delta.
+
+    The configured 5-tap input convolution followed by residual dilations
+    1, 2 and 4 has a 33-sample receptive field (about 4.4 minutes at 8 s).
+    It is deliberately small: the existing stem + TCN remains the main context
+    expert and this branch only preserves appliance edges and short plateaus.
+    """
+
+    def __init__(
+        self,
+        local_channels,
+        output_channels,
+        *,
+        kernel_size=5,
+        dilations=(1, 2, 4),
+        dropout=0.0,
+        norm_type="group",
+    ):
+        super().__init__()
+        k = int(kernel_size)
+        if k < 1 or k % 2 == 0:
+            raise ValueError(f"dual_expert.local_kernel_size must be odd positive, got {k}")
+        dilation_values = [int(d) for d in dilations]
+        if not dilation_values or any(d < 1 for d in dilation_values):
+            raise ValueError("dual_expert.local_dilations must contain positive integers")
+
+        local_channels = int(local_channels)
+        output_channels = int(output_channels)
+        self.input_projection = nn.Sequential(
+            nn.Conv1d(3, local_channels, k, padding=k // 2),
+            make_norm_1d(local_channels, norm_type),
+            nn.ReLU(inplace=True),
+        )
+        self.temporal_blocks = nn.Sequential(*[
+            ResidualTemporalBlock(
+                local_channels,
+                k,
+                dilation,
+                float(dropout),
+                norm_type,
+            )
+            for dilation in dilation_values
+        ])
+        self.output_projection = nn.Sequential(
+            nn.Conv1d(local_channels, output_channels, 1),
+            make_norm_1d(output_channels, norm_type),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, raw_aggregate):
+        # raw_aggregate is already normalized by the dataset loader: (B, 1, T).
+        delta = torch.cat(
+            [
+                torch.zeros_like(raw_aggregate[..., :1]),
+                raw_aggregate[..., 1:] - raw_aggregate[..., :-1],
+            ],
+            dim=-1,
+        )
+        local_input = torch.cat([raw_aggregate, delta, delta.abs()], dim=1)
+        h = self.input_projection(local_input)
+        return self.output_projection(self.temporal_blocks(h))
+
+
+class ApplianceExpertGate(nn.Module):
+    """Per-appliance, per-timestep soft routing between local and context experts."""
+
+    def __init__(self, channels, hidden_channels, *, initial_local_weight=0.1):
+        super().__init__()
+        initial_local_weight = float(initial_local_weight)
+        if not 0.0 < initial_local_weight < 1.0:
+            raise ValueError("dual_expert.gate_initial_local_weight must be between 0 and 1")
+        self.network = nn.Sequential(
+            nn.Conv1d(2 * int(channels), int(hidden_channels), 1),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(int(hidden_channels), 2, 1),
+        )
+        # Start close to the proven context baseline instead of abruptly mixing
+        # two randomly initialized experts 50:50.
+        with torch.no_grad():
+            nn.init.normal_(self.network[2].weight, mean=0.0, std=1e-3)
+            self.network[2].bias.copy_(torch.log(torch.tensor([
+                initial_local_weight,
+                1.0 - initial_local_weight,
+            ])))
+
+    def forward(self, local_features, context_features):
+        weights = torch.softmax(
+            self.network(torch.cat([local_features, context_features], dim=1)),
+            dim=1,
+        )
+        fused = (
+            weights[:, 0:1] * local_features
+            + weights[:, 1:2] * context_features
+        )
+        return fused, weights
+
+
+def _match_time_length(features, output_length):
+    """Center crop or pad a (B, C, T) feature sequence to ``output_length``."""
+    time_len = features.shape[-1]
+    if time_len == output_length:
+        return features
+    if time_len > output_length:
+        offset = (time_len - output_length) // 2
+        return features[:, :, offset:offset + output_length]
+    pad = output_length - time_len
+    left = pad // 2
+    return F.pad(features, (left, pad - left))
 
 
 class MultiScaleWaveformStem(nn.Module):
@@ -406,6 +519,10 @@ class MultiNILM(nn.Module):
         cross_appliance_enabled=False, cross_appliance_mode="bottleneck",
         cross_appliance_residual_scale=0.5, cross_appliance_mid_channels=None,
         cross_appliance_attention_channels=16,
+        dual_expert_enabled=False, dual_expert_local_channels=32,
+        dual_expert_local_kernel_size=5, dual_expert_local_dilations=None,
+        dual_expert_local_norm_type="group", dual_expert_gate_hidden_channels=32,
+        dual_expert_gate_initial_local_weight=0.1,
     ):
         super().__init__()
         self.input_channels = int(input_channels)
@@ -414,6 +531,8 @@ class MultiNILM(nn.Module):
         self.hidden_channels = int(hidden_channels)
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
+        self.dual_expert_enabled = bool(dual_expert_enabled)
+        self.last_expert_gates = None
         off_norms = list(appliance_off_norm or [0.0] * self.num_appliances)
         if len(off_norms) != self.num_appliances:
             raise ValueError(f"appliance_off_norm length {len(off_norms)} != {self.num_appliances}")
@@ -454,6 +573,25 @@ class MultiNILM(nn.Module):
             ResidualTemporalBlock(self.hidden_channels, kernel_size, 2 ** (i % cycle), dropout, temporal_norm_type)
             for i in range(num_blocks)
         ])
+        self.local_expert = None
+        self.expert_gates = None
+        if self.dual_expert_enabled:
+            self.local_expert = LocalTransientExpert(
+                int(dual_expert_local_channels),
+                self.hidden_channels,
+                kernel_size=int(dual_expert_local_kernel_size),
+                dilations=dual_expert_local_dilations or [1, 2, 4],
+                dropout=float(dropout),
+                norm_type=str(dual_expert_local_norm_type),
+            )
+            self.expert_gates = nn.ModuleList([
+                ApplianceExpertGate(
+                    self.hidden_channels,
+                    int(dual_expert_gate_hidden_channels),
+                    initial_local_weight=float(dual_expert_gate_initial_local_weight),
+                )
+                for _ in range(self.num_appliances)
+            ])
         self.appliance_heads = nn.ModuleList([
             ApplianceHead(
                 self.hidden_channels, dropout, gate_mode=self.gate_mode, gate_threshold=self.gate_threshold,
@@ -478,7 +616,7 @@ class MultiNILM(nn.Module):
             else:
                 raise ValueError(f"cross_appliance.mode must be bottleneck|relation_attention, got {cross_appliance_mode!r}")
 
-    def forward(self, x):
+    def forward(self, x, raw_input=None):
         # x: (B, T) or (B, C, T) or (B, T, C)
         if x.dim() == 2:
             x = x.unsqueeze(1)
@@ -490,17 +628,40 @@ class MultiNILM(nn.Module):
         for block in self.temporal_encoder:
             h = block(h)                                       # (B, C, T)
 
-        t = h.shape[-1]
-        if t == self.output_length:
-            z = h
-        elif t > self.output_length:
-            off = (t - self.output_length) // 2
-            z = h[:, :, off:off + self.output_length]
-        else:
-            pad = self.output_length - t
-            left = pad // 2
-            z = F.pad(h, (left, pad - left))                   # (B, C, T_out)
-        feats = [head.encode_features(z) for head in self.appliance_heads]  # A x (B, C, T_out)
+        context_features = _match_time_length(h, self.output_length)  # (B, C, T_out)
+        routed_features = [context_features] * self.num_appliances
+        self.last_expert_gates = None
+        if self.dual_expert_enabled:
+            if raw_input is None:
+                if x.shape[1] != 1:
+                    raise ValueError(
+                        "dual_expert requires raw_input=(B,1,T) when encoded input has multiple channels"
+                    )
+                raw_input = x
+            elif raw_input.dim() == 2:
+                raw_input = raw_input.unsqueeze(1)
+            elif raw_input.dim() == 3 and raw_input.shape[-1] == 1:
+                raw_input = raw_input.permute(0, 2, 1)
+            if raw_input.dim() != 3 or raw_input.shape[1] != 1:
+                raise ValueError(
+                    f"dual_expert raw_input must have shape (B,1,T), got {tuple(raw_input.shape)}"
+                )
+            local_features = _match_time_length(
+                self.local_expert(raw_input.float()),
+                self.output_length,
+            )
+            routed_features, gate_weights = [], []
+            for gate in self.expert_gates:
+                fused, weights = gate(local_features, context_features)
+                routed_features.append(fused)
+                gate_weights.append(weights)
+            # (B, A, 2, T_out), stored detached for training diagnostics only.
+            self.last_expert_gates = torch.stack(gate_weights, dim=1).detach()
+
+        feats = [
+            head.encode_features(z_i)
+            for head, z_i in zip(self.appliance_heads, routed_features)
+        ]  # A x (B, C, T_out)
         if self.cross_appliance_distill is not None:
             feats = self.cross_appliance_distill(feats)
 
@@ -536,8 +697,13 @@ class MultiNILMFractional(nn.Module):
             x = x.unsqueeze(1)                                 # (B, T) -> (B, 1, T)
         elif x.dim() == 3 and x.shape[-1] == 1:
             x = x.permute(0, 2, 1)                             # (B, T, 1) -> (B, 1, T)
-        x = self.frontend(x.float())                           # (B, C_in, T)
-        return self.backbone(x)
+        raw_input = x.float()                                 # (B, 1, T)
+        features = self.frontend(raw_input)                    # (B, C_in, T)
+        return self.backbone(features, raw_input=raw_input)
+
+    @property
+    def last_expert_gates(self):
+        return self.backbone.last_expert_gates
 
 
 # ===========================================================================
@@ -575,12 +741,20 @@ class MultiNILMConfig:
     cross_appliance_residual_scale: float = 0.5
     cross_appliance_mid_channels: int | None = None
     cross_appliance_attention_channels: int = 16
+    dual_expert_enabled: bool = False
+    dual_expert_local_channels: int = 32
+    dual_expert_local_kernel_size: int = 5
+    dual_expert_local_dilations: list[int] = field(default_factory=lambda: [1, 2, 4])
+    dual_expert_local_norm_type: str = "group"
+    dual_expert_gate_hidden_channels: int = 32
+    dual_expert_gate_initial_local_weight: float = 0.1
 
 
 def multinilm_config(architecture):
     a = architecture
     task = a.get("task_attention") if isinstance(a.get("task_attention"), dict) else {}
     cross = a.get("cross_appliance") if isinstance(a.get("cross_appliance"), dict) else {}
+    dual = a.get("dual_expert") if isinstance(a.get("dual_expert"), dict) else {}
     mid = cross.get("mid_channels", None)
     return MultiNILMConfig(
         input_channels=int(a.get("input_channels", a.get("input_size", 1))),
@@ -612,6 +786,13 @@ def multinilm_config(architecture):
         cross_appliance_residual_scale=float(cross.get("residual_scale", 0.5)),
         cross_appliance_mid_channels=None if mid is None else int(mid),
         cross_appliance_attention_channels=int(cross.get("attention_channels", 16)),
+        dual_expert_enabled=bool(dual.get("enabled", False)),
+        dual_expert_local_channels=int(dual.get("local_channels", 32)),
+        dual_expert_local_kernel_size=int(dual.get("local_kernel_size", 5)),
+        dual_expert_local_dilations=[int(d) for d in dual.get("local_dilations", [1, 2, 4])],
+        dual_expert_local_norm_type=str(dual.get("local_norm_type", "group")),
+        dual_expert_gate_hidden_channels=int(dual.get("gate_hidden_channels", 32)),
+        dual_expert_gate_initial_local_weight=float(dual.get("gate_initial_local_weight", 0.1)),
     )
 
 
@@ -747,6 +928,22 @@ class MultiNILMAdapter(BaseNILMAdapter):
         }
         if out.loss_state_smooth is not None:
             logs["loss_state_smooth"] = float(out.loss_state_smooth)
+        expert_gates = getattr(model, "last_expert_gates", None)
+        if expert_gates is not None:
+            # Stored gate shape is (B, A, 2, T); logs use local-expert weight.
+            local_gate = expert_gates[:, :, 0, :].permute(0, 2, 1)
+            if local_gate.shape[:2] != z.shape[:2]:
+                raise ValueError(
+                    f"expert gate timeline {tuple(local_gate.shape)} does not match labels {tuple(z.shape)}"
+                )
+            for app_i, app in enumerate(self.cfg["appliances"]):
+                weights = local_gate[:, :, app_i]
+                on_mask = z[:, :, app_i] >= 0.5
+                logs[f"gate_local_{app}"] = float(weights.mean())
+                if bool(on_mask.any()):
+                    logs[f"gate_local_on_{app}"] = float(weights[on_mask].mean())
+                if bool((~on_mask).any()):
+                    logs[f"gate_local_off_{app}"] = float(weights[~on_mask].mean())
         return StepOutput(
             loss=out.loss,
             logs=logs,
