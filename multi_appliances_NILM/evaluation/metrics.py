@@ -352,6 +352,9 @@ def evaluate_bundle(
     return pd.DataFrame(rows)
 
 
+BACKGROUND_BIN_EDGES_WATTS = (0.0, 100.0, 200.0, 400.0, 800.0, np.inf)
+
+
 def background_fpr_table(
     bundle: PredictionBundle,
     aggregate_watts: np.ndarray,
@@ -361,7 +364,7 @@ def background_fpr_table(
     on_threshold_watts: float | np.ndarray | None = None,
     state_label_source: str = "auto",
     power_postprocess: PowerPostprocessConfig | None = None,
-    bin_edges_watts: tuple[float, ...] = (0.0, 100.0, 200.0, 400.0, 800.0, np.inf),
+    bin_edges_watts: tuple[float, ...] = BACKGROUND_BIN_EDGES_WATTS,
 ) -> pd.DataFrame:
     """False-positive diagnostics grouped by residual-background power.
 

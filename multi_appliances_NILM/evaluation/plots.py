@@ -684,6 +684,303 @@ def save_appliance_on_waveforms(
     return saved
 
 
+def _representative_event_in_background_bin(
+    events: list[tuple[int, int]],
+    background_watts: np.ndarray,
+    low: float,
+    high: float,
+) -> tuple[tuple[int, int] | None, int]:
+    """Choose the event with the most typical median background in one bin."""
+    candidates: list[tuple[int, int, float]] = []
+    for start, end in events:
+        median_background = float(np.median(background_watts[start : end + 1]))
+        if low <= median_background < high:
+            candidates.append((start, end, median_background))
+    if not candidates:
+        return None, 0
+
+    target = float(np.median([item[2] for item in candidates]))
+    start, end, _ = min(
+        candidates,
+        key=lambda item: (abs(item[2] - target), -(item[1] - item[0] + 1)),
+    )
+    return (start, end), len(candidates)
+
+
+def _strongest_false_positive_in_background_bin(
+    *,
+    true_on: np.ndarray,
+    pred_on: np.ndarray,
+    pred_watts: np.ndarray,
+    background_watts: np.ndarray,
+    low: float,
+    high: float,
+    segment_ids: np.ndarray,
+) -> tuple[tuple[int, int] | None, int]:
+    """Return the false-positive episode with the largest predicted energy."""
+    mask = (
+        (~np.asarray(true_on, dtype=bool))
+        & np.asarray(pred_on, dtype=bool)
+        & (background_watts >= low)
+        & (background_watts < high)
+    )
+    events = _find_on_events(mask, min_duration=1, segment_ids=segment_ids)
+    if not events:
+        return None, 0
+    event = max(
+        events,
+        key=lambda bounds: float(np.maximum(pred_watts[bounds[0] : bounds[1] + 1], 0).sum()),
+    )
+    return event, len(events)
+
+
+def _background_example_window(
+    event: tuple[int, int],
+    *,
+    series_len: int,
+    segment_ids: np.ndarray,
+    margin_samples: int,
+    max_samples: int,
+) -> tuple[int, int]:
+    start, end = _window_for_on_event(
+        event[0],
+        event[1],
+        series_len,
+        margin_min=margin_samples,
+        margin_frac=0.08,
+        max_samples=max_samples,
+    )
+    segment_id = int(segment_ids[(event[0] + event[1]) // 2])
+    segment_positions = np.flatnonzero(segment_ids == segment_id)
+    if len(segment_positions):
+        start = max(start, int(segment_positions[0]))
+        end = min(end, int(segment_positions[-1]) + 1)
+    return start, max(start + 1, end)
+
+
+def _plot_background_range_example(
+    ax,
+    *,
+    event: tuple[int, int] | None,
+    event_count: int,
+    aggregate_watts: np.ndarray,
+    background_watts: np.ndarray,
+    true_watts: np.ndarray,
+    pred_watts: np.ndarray,
+    segment_ids: np.ndarray,
+    sample_seconds: float,
+    margin_samples: int,
+    max_samples: int,
+    event_label: str,
+    event_color: str,
+) -> None:
+    if event is None:
+        ax.text(0.5, 0.5, f"No {event_label.lower()} example", ha="center", va="center")
+        ax.set_axis_off()
+        return
+
+    start, end = _background_example_window(
+        event,
+        series_len=len(aggregate_watts),
+        segment_ids=segment_ids,
+        margin_samples=margin_samples,
+        max_samples=max_samples,
+    )
+    sl = slice(start, end)
+    x_minutes = np.arange(end - start, dtype=float) * float(sample_seconds) / 60.0
+    app_ax = ax.twinx()
+
+    ax.plot(x_minutes, aggregate_watts[sl], color="#7f7f7f", linewidth=0.9, label="aggregate")
+    ax.plot(
+        x_minutes,
+        background_watts[sl],
+        color="#e69500",
+        linewidth=1.0,
+        alpha=0.9,
+        label="residual background",
+    )
+    app_ax.plot(x_minutes, true_watts[sl], color="#1f77b4", linewidth=1.5, label="true")
+    app_ax.plot(
+        x_minutes,
+        np.maximum(pred_watts[sl], 0.0),
+        color="#d62728",
+        linewidth=1.25,
+        alpha=0.9,
+        label="pred",
+    )
+
+    event_x0 = max(0.0, (event[0] - start) * float(sample_seconds) / 60.0)
+    event_x1 = min(x_minutes[-1], (event[1] - start + 1) * float(sample_seconds) / 60.0)
+    ax.axvspan(event_x0, event_x1, color=event_color, alpha=0.12, linewidth=0)
+
+    event_bg = float(np.median(background_watts[event[0] : event[1] + 1]))
+    event_agg = float(np.median(aggregate_watts[event[0] : event[1] + 1]))
+    ax.set_title(
+        f"{event_label} (n={event_count}) | median bg={event_bg:.0f} W, aggregate={event_agg:.0f} W",
+        fontsize=9,
+    )
+    ax.set_ylabel("Aggregate / bg (W)", color="#7f6000", fontsize=8)
+    app_ax.set_ylabel("Appliance (W)", color="#8b1a1a", fontsize=8)
+    ax.tick_params(axis="y", labelsize=7)
+    app_ax.tick_params(axis="y", labelsize=7)
+    ax.tick_params(axis="x", labelsize=7)
+    ax.grid(True, alpha=0.2)
+
+    lines = ax.get_lines() + app_ax.get_lines()
+    ax.legend(lines, [line.get_label() for line in lines], loc="upper right", fontsize=6, ncol=2)
+
+
+def save_background_range_waveforms(
+    output_dir: str | Path,
+    *,
+    appliances: list[str],
+    aggregate_watts: np.ndarray,
+    y_true_watts: np.ndarray,
+    y_pred_watts: np.ndarray,
+    y_true_on: np.ndarray,
+    y_pred_on: np.ndarray,
+    sample_seconds: float,
+    csv_timesteps: np.ndarray | None = None,
+    segment_ids: np.ndarray | None = None,
+    bin_edges_watts: tuple[float, ...] = (0.0, 100.0, 200.0, 400.0, 800.0, np.inf),
+    margin_samples: int = 24,
+    max_samples: int = 1200,
+    dpi: int = WAVEFORM_DPI,
+    title_prefix: str = "",
+) -> list[Path]:
+    """Plot typical ON shapes and worst false positives across background bins.
+
+    The diagnostic bins by residual background,
+    ``max(aggregate - sum(true target appliance powers), 0)``, rather than raw
+    aggregate. This avoids assigning a kettle event to a high-background bin
+    merely because the kettle itself draws high power.
+
+    One figure is saved per appliance. Rows are background-power bins. The left
+    column shows a representative true-ON event; the right column shows the
+    highest predicted-energy false-positive episode in the same bin.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    aggregate = np.asarray(aggregate_watts, dtype=float).reshape(-1)
+    y_true = np.maximum(np.asarray(y_true_watts, dtype=float), 0.0)
+    y_pred = np.maximum(np.asarray(y_pred_watts, dtype=float), 0.0)
+    true_on = np.asarray(y_true_on, dtype=bool)
+    pred_on = np.asarray(y_pred_on, dtype=bool)
+    n_points, n_appliances = y_true.shape
+    expected_shape = (n_points, n_appliances)
+    if len(aggregate) != n_points:
+        raise ValueError("aggregate_watts length must match waveform timeline")
+    for name, values in (
+        ("y_pred_watts", y_pred),
+        ("y_true_on", true_on),
+        ("y_pred_on", pred_on),
+    ):
+        if values.shape != expected_shape:
+            raise ValueError(f"{name} shape {values.shape} != {expected_shape}")
+    if len(appliances) != n_appliances:
+        raise ValueError("appliances length must match waveform columns")
+
+    edges = np.asarray(bin_edges_watts, dtype=float)
+    if edges.ndim != 1 or len(edges) < 2 or edges[0] != 0 or np.any(np.diff(edges) <= 0):
+        raise ValueError("bin_edges_watts must be strictly increasing and start at 0")
+
+    plot_segments = _plot_segment_ids(
+        n_points,
+        csv_timesteps=csv_timesteps,
+        source_segment_ids=segment_ids,
+    )
+    background = np.maximum(aggregate - y_true.sum(axis=1), 0.0)
+    saved: list[Path] = []
+
+    for app_i, appliance in enumerate(appliances):
+        on_events = _find_on_events(
+            true_on[:, app_i],
+            min_duration=1,
+            segment_ids=plot_segments,
+        )
+        fig, axes = plt.subplots(
+            len(edges) - 1,
+            2,
+            figsize=(14.0, 2.65 * (len(edges) - 1)),
+            squeeze=False,
+            constrained_layout=True,
+        )
+        for row_i, (low, high) in enumerate(zip(edges[:-1], edges[1:])):
+            on_event, on_count = _representative_event_in_background_bin(
+                on_events,
+                background,
+                float(low),
+                float(high),
+            )
+            fp_event, fp_count = _strongest_false_positive_in_background_bin(
+                true_on=true_on[:, app_i],
+                pred_on=pred_on[:, app_i],
+                pred_watts=y_pred[:, app_i],
+                background_watts=background,
+                low=float(low),
+                high=float(high),
+                segment_ids=plot_segments,
+            )
+            upper = "inf" if np.isinf(high) else f"{high:g}"
+            bin_label = f"Residual background [{low:g}, {upper}) W"
+            axes[row_i, 0].text(
+                -0.13,
+                0.5,
+                bin_label,
+                transform=axes[row_i, 0].transAxes,
+                rotation=90,
+                ha="center",
+                va="center",
+                fontsize=9,
+                fontweight="bold",
+            )
+            _plot_background_range_example(
+                axes[row_i, 0],
+                event=on_event,
+                event_count=on_count,
+                aggregate_watts=aggregate,
+                background_watts=background,
+                true_watts=y_true[:, app_i],
+                pred_watts=y_pred[:, app_i],
+                segment_ids=plot_segments,
+                sample_seconds=float(sample_seconds),
+                margin_samples=int(margin_samples),
+                max_samples=int(max_samples),
+                event_label="Representative true ON",
+                event_color="#1f77b4",
+            )
+            _plot_background_range_example(
+                axes[row_i, 1],
+                event=fp_event,
+                event_count=fp_count,
+                aggregate_watts=aggregate,
+                background_watts=background,
+                true_watts=y_true[:, app_i],
+                pred_watts=y_pred[:, app_i],
+                segment_ids=plot_segments,
+                sample_seconds=float(sample_seconds),
+                margin_samples=int(margin_samples),
+                max_samples=min(int(max_samples), 500),
+                event_label="Worst false positive",
+                event_color="#d62728",
+            )
+            axes[row_i, 0].set_xlabel("Relative time (min)", fontsize=8)
+            axes[row_i, 1].set_xlabel("Relative time (min)", fontsize=8)
+
+        prefix = f"{title_prefix} - " if title_prefix else ""
+        fig.suptitle(
+            f"{prefix}{appliance}: waveform behaviour by residual-background range",
+            fontsize=13,
+            fontweight="bold",
+        )
+        output_path = output_dir / f"{appliance}_background_ranges.png"
+        fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+        saved.append(output_path)
+    return saved
+
+
 def build_val_test_comparison_frame(
     val_metrics: pd.DataFrame | str | Path,
     test_metrics: pd.DataFrame | str | Path,

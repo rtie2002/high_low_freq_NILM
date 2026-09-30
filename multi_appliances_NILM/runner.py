@@ -52,6 +52,7 @@ from data.dataloader import (
 )
 from evaluation.live_monitor import LiveTrainingMonitor
 from evaluation.metrics import (
+    BACKGROUND_BIN_EDGES_WATTS,
     _macro_mae_norm,
     background_fpr_table,
     evaluate_bundle,
@@ -64,6 +65,7 @@ from evaluation.plots import (
     bundle_csv_appliance_watts,
     dataset_on_labels_for_bundle,
     save_appliance_on_waveforms,
+    save_background_range_waveforms,
 )
 from evaluation.run_summary import (
     build_hardware_info,
@@ -2005,7 +2007,36 @@ def evaluate_model(
         title_prefix=f"{adapter.name} {split} — ",
     )
 
+    background_waveforms: list[Path] = []
+    if (
+        split != "validation"
+        and aggregate is not None
+        and raw_appliance_watts is not None
+        and bundle.y_pred_on is not None
+    ):
+        background_waveform_dir = _reset_dir(result_dir / "background_range_waveforms")
+        background_waveforms = save_background_range_waveforms(
+            background_waveform_dir,
+            appliances=bundle.appliances,
+            aggregate_watts=aggregate,
+            y_true_watts=raw_appliance_watts,
+            y_pred_watts=y_pred_watts,
+            y_true_on=waveform_true_on,
+            y_pred_on=bundle.y_pred_on,
+            sample_seconds=float(sample_seconds or 1.0),
+            csv_timesteps=bundle.csv_timesteps,
+            segment_ids=waveform_segments,
+            bin_edges_watts=BACKGROUND_BIN_EDGES_WATTS,
+            dpi=int(plot_cfg.get("waveform_dpi", 300)),
+            title_prefix=f"{adapter.name} {split}",
+        )
+
     print_evaluation_report(metrics, run_dir, split=split, show_cost_summary=show_cost_summary)
     print(f"Saved {len(saved)} waveform PNGs under {waveform_dir}/<appliance>/")
+    if background_waveforms:
+        print(
+            f"Saved {len(background_waveforms)} background-range waveform PNGs under "
+            f"{result_dir / 'background_range_waveforms'}/"
+        )
 
     return pred_path

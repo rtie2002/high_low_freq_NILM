@@ -1,7 +1,7 @@
-# Background-only swap ablation of the full random-mix baseline.
-# Only experiment_id and training.random_mix.mode differ from
-# multinilm_fractional_relational.yaml.
-experiment_id: background_swap_8w
+# No-relation ablation of the background-swap baseline.
+# The only training-behavior change is disabling cross-appliance relation
+# attention; data, loss, features, augmentation, and training stay unchanged.
+experiment_id: background_swap_8w_no_relation
 model_name: multinilm_fractional
 
 data:
@@ -90,7 +90,9 @@ architecture:
   gate_threshold: 0.5
 
   cross_appliance:
-    enabled: true
+    # Keep the five appliance-specific heads, but disable feature exchange
+    # between them to test whether relational coupling causes negative transfer.
+    enabled: false
     mode: relation_attention
     attention_channels: 16
     residual_scale: 0.25
