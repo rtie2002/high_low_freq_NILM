@@ -6,10 +6,23 @@ from pathlib import Path
 
 import numpy as np
 
-from evaluation.plots import save_background_range_waveforms
+from evaluation.plots import _background_example_window, save_background_range_waveforms
 
 
 class BackgroundRangePlotTests(unittest.TestCase):
+    def test_long_event_crop_keeps_requested_focus_position(self) -> None:
+        start, end = _background_example_window(
+            (100, 900),
+            series_len=1000,
+            segment_ids=np.zeros(1000, dtype=np.int64),
+            margin_samples=24,
+            max_samples=200,
+            focus_index=500,
+            focus_fraction=0.5,
+        )
+
+        self.assertEqual((start, end), (400, 600))
+
     def test_saves_one_diagnostic_figure_per_appliance(self) -> None:
         backgrounds = np.repeat([50.0, 150.0, 300.0, 600.0, 900.0], 20)
         n_points = len(backgrounds)

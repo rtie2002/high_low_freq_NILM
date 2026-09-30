@@ -741,25 +741,36 @@ def _background_example_window(
     segment_ids: np.ndarray,
     margin_samples: int,
     max_samples: int,
+    focus_index: int | None = None,
+    focus_fraction: float = 0.5,
 ) -> tuple[int, int]:
-    start, end = _window_for_on_event(
-        event[0],
-        event[1],
-        series_len,
-        margin_min=margin_samples,
-        margin_frac=0.08,
-        max_samples=max_samples,
-    )
     segment_id = int(segment_ids[(event[0] + event[1]) // 2])
     segment_positions = np.flatnonzero(segment_ids == segment_id)
-    if len(segment_positions):
-        start = max(start, int(segment_positions[0]))
-        end = min(end, int(segment_positions[-1]) + 1)
+    segment_start = int(segment_positions[0]) if len(segment_positions) else 0
+    segment_end = int(segment_positions[-1]) + 1 if len(segment_positions) else series_len
+
+    event_len = event[1] - event[0] + 1
+    margin = max(int(margin_samples), int(round(0.08 * event_len)))
+    natural_start = max(segment_start, event[0] - margin)
+    natural_end = min(segment_end, event[1] + margin + 1)
+    if natural_end - natural_start <= max_samples:
+        return natural_start, max(natural_start + 1, natural_end)
+
+    # Long events are cropped around the informative point instead of showing
+    # an hour-long plateau. For true events this is the turn-on edge; for false
+    # positives it is the largest predicted-power error.
+    anchor = int(event[0] if focus_index is None else focus_index)
+    focus_fraction = float(np.clip(focus_fraction, 0.0, 1.0))
+    start = anchor - int(round(max_samples * focus_fraction))
+    start = max(segment_start, min(start, segment_end - max_samples))
+    end = min(segment_end, start + max_samples)
+    start = max(segment_start, end - max_samples)
     return start, max(start + 1, end)
 
 
 def _plot_background_range_example(
-    ax,
+    target_ax,
+    context_ax,
     *,
     event: tuple[int, int] | None,
     event_count: int,
@@ -771,13 +782,34 @@ def _plot_background_range_example(
     sample_seconds: float,
     margin_samples: int,
     max_samples: int,
-    event_label: str,
+    event_kind: str,
     event_color: str,
+    show_legend: bool = False,
 ) -> None:
     if event is None:
-        ax.text(0.5, 0.5, f"No {event_label.lower()} example", ha="center", va="center")
-        ax.set_axis_off()
+        label = "true-ON" if event_kind == "true_on" else "false-positive"
+        target_ax.text(
+            0.5,
+            0.5,
+            f"No {label} event in this background range",
+            ha="center",
+            va="center",
+            color="#666666",
+        )
+        target_ax.set_axis_off()
+        context_ax.set_axis_off()
         return
+
+    if event_kind not in {"true_on", "false_positive"}:
+        raise ValueError(f"Unknown background example kind: {event_kind}")
+
+    event_pred = pred_watts[event[0] : event[1] + 1]
+    if event_kind == "false_positive":
+        focus_index = event[0] + int(np.argmax(event_pred))
+        focus_fraction = 0.5
+    else:
+        focus_index = event[0]
+        focus_fraction = 0.2
 
     start, end = _background_example_window(
         event,
@@ -785,49 +817,89 @@ def _plot_background_range_example(
         segment_ids=segment_ids,
         margin_samples=margin_samples,
         max_samples=max_samples,
+        focus_index=focus_index,
+        focus_fraction=focus_fraction,
     )
     sl = slice(start, end)
     x_minutes = np.arange(end - start, dtype=float) * float(sample_seconds) / 60.0
-    app_ax = ax.twinx()
 
-    ax.plot(x_minutes, aggregate_watts[sl], color="#7f7f7f", linewidth=0.9, label="aggregate")
-    ax.plot(
+    target_ax.plot(
         x_minutes,
-        background_watts[sl],
-        color="#e69500",
-        linewidth=1.0,
-        alpha=0.9,
-        label="residual background",
+        true_watts[sl],
+        color="#1769aa",
+        linewidth=2.0,
+        label="Target true",
+        zorder=3,
     )
-    app_ax.plot(x_minutes, true_watts[sl], color="#1f77b4", linewidth=1.5, label="true")
-    app_ax.plot(
+    target_ax.plot(
         x_minutes,
         np.maximum(pred_watts[sl], 0.0),
         color="#d62728",
-        linewidth=1.25,
-        alpha=0.9,
-        label="pred",
+        linewidth=1.55,
+        linestyle="--",
+        label="Target predicted",
+        zorder=4,
+    )
+    context_ax.plot(
+        x_minutes,
+        aggregate_watts[sl],
+        color="#777777",
+        linewidth=0.9,
+        alpha=0.75,
+        label="Aggregate",
+    )
+    context_ax.plot(
+        x_minutes,
+        background_watts[sl],
+        color="#d58900",
+        linewidth=1.0,
+        alpha=0.95,
+        label="Residual background",
     )
 
     event_x0 = max(0.0, (event[0] - start) * float(sample_seconds) / 60.0)
-    event_x1 = min(x_minutes[-1], (event[1] - start + 1) * float(sample_seconds) / 60.0)
-    ax.axvspan(event_x0, event_x1, color=event_color, alpha=0.12, linewidth=0)
+    event_x1 = min(
+        x_minutes[-1],
+        (event[1] - start + 1) * float(sample_seconds) / 60.0,
+    )
+    for ax in (target_ax, context_ax):
+        ax.axvspan(event_x0, event_x1, color=event_color, alpha=0.10, linewidth=0)
 
     event_bg = float(np.median(background_watts[event[0] : event[1] + 1]))
-    event_agg = float(np.median(aggregate_watts[event[0] : event[1] + 1]))
-    ax.set_title(
-        f"{event_label} (n={event_count}) | median bg={event_bg:.0f} W, aggregate={event_agg:.0f} W",
-        fontsize=9,
-    )
-    ax.set_ylabel("Aggregate / bg (W)", color="#7f6000", fontsize=8)
-    app_ax.set_ylabel("Appliance (W)", color="#8b1a1a", fontsize=8)
-    ax.tick_params(axis="y", labelsize=7)
-    app_ax.tick_params(axis="y", labelsize=7)
-    ax.tick_params(axis="x", labelsize=7)
-    ax.grid(True, alpha=0.2)
+    if event_kind == "true_on":
+        error = float(np.mean(np.abs(true_watts[event[0] : event[1] + 1] - event_pred)))
+        title = (
+            f"Representative true ON (n={event_count})  |  "
+            f"median residual={event_bg:.0f} W  |  event MAE={error:.1f} W"
+        )
+    else:
+        false_power = float(np.mean(np.maximum(event_pred, 0.0)))
+        title = (
+            f"Highest-energy false ON (n={event_count})  |  "
+            f"median residual={event_bg:.0f} W  |  mean false power={false_power:.1f} W"
+        )
+    target_ax.set_title(title, fontsize=9, pad=5)
 
-    lines = ax.get_lines() + app_ax.get_lines()
-    ax.legend(lines, [line.get_label() for line in lines], loc="upper right", fontsize=6, ncol=2)
+    target_peak = float(
+        max(
+            np.max(true_watts[sl], initial=0.0),
+            np.max(np.maximum(pred_watts[sl], 0.0), initial=0.0),
+        )
+    )
+    target_ax.set_ylim(0.0, max(1.0, target_peak * 1.10))
+    target_ax.set_ylabel("Target power (W)", fontsize=8)
+    context_ax.set_ylabel("Context (W)", fontsize=7, color="#555555")
+    context_ax.set_xlabel("Relative time (min)", fontsize=8)
+    target_ax.tick_params(axis="both", labelsize=7)
+    context_ax.tick_params(axis="both", labelsize=7)
+    target_ax.tick_params(axis="x", labelbottom=False)
+    target_ax.grid(axis="y", alpha=0.22)
+    context_ax.grid(axis="y", alpha=0.16)
+    target_ax.spines["bottom"].set_visible(False)
+    context_ax.spines["top"].set_visible(False)
+    if show_legend:
+        target_ax.legend(loc="upper right", fontsize=7, frameon=False, ncol=2)
+        context_ax.legend(loc="upper right", fontsize=6, frameon=False, ncol=2)
 
 
 def save_background_range_waveforms(
@@ -857,7 +929,9 @@ def save_background_range_waveforms(
 
     One figure is saved per appliance. Rows are background-power bins. The left
     column shows a representative true-ON event; the right column shows the
-    highest predicted-energy false-positive episode in the same bin.
+    highest predicted-energy false-positive episode in the same bin. Each cell
+    uses a dominant target-power panel plus a smaller context strip, so mains
+    scale cannot visually hide the target appliance waveform.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -899,13 +973,12 @@ def save_background_range_waveforms(
             min_duration=1,
             segment_ids=plot_segments,
         )
-        fig, axes = plt.subplots(
-            len(edges) - 1,
-            2,
-            figsize=(14.0, 2.65 * (len(edges) - 1)),
-            squeeze=False,
+        n_rows = len(edges) - 1
+        fig = plt.figure(
+            figsize=(15.5, 3.15 * n_rows + 0.8),
             constrained_layout=True,
         )
+        outer = fig.add_gridspec(n_rows, 2)
         for row_i, (low, high) in enumerate(zip(edges[:-1], edges[1:])):
             on_event, on_count = _representative_event_in_background_bin(
                 on_events,
@@ -924,19 +997,45 @@ def save_background_range_waveforms(
             )
             upper = "inf" if np.isinf(high) else f"{high:g}"
             bin_label = f"Residual background [{low:g}, {upper}) W"
-            axes[row_i, 0].text(
-                -0.13,
+            row_axes = []
+            for col_i in range(2):
+                cell = outer[row_i, col_i].subgridspec(
+                    2,
+                    1,
+                    height_ratios=(3.2, 1.0),
+                    hspace=0.04,
+                )
+                target_ax = fig.add_subplot(cell[0, 0])
+                context_ax = fig.add_subplot(cell[1, 0], sharex=target_ax)
+                row_axes.append((target_ax, context_ax))
+
+            row_axes[0][0].text(
+                -0.115,
                 0.5,
                 bin_label,
-                transform=axes[row_i, 0].transAxes,
+                transform=row_axes[0][0].transAxes,
                 rotation=90,
                 ha="center",
                 va="center",
                 fontsize=9,
                 fontweight="bold",
             )
+
+            appliance_minutes = {
+                "kettle": 12.0,
+                "microwave": 16.0,
+                "fridge": 40.0,
+                "dishwasher": 120.0,
+                "washingmachine": 120.0,
+            }.get(appliance)
+            display_cap = int(max_samples)
+            if appliance_minutes is not None:
+                display_cap = min(
+                    display_cap,
+                    max(20, int(round(appliance_minutes * 60.0 / float(sample_seconds)))),
+                )
             _plot_background_range_example(
-                axes[row_i, 0],
+                *row_axes[0],
                 event=on_event,
                 event_count=on_count,
                 aggregate_watts=aggregate,
@@ -946,12 +1045,13 @@ def save_background_range_waveforms(
                 segment_ids=plot_segments,
                 sample_seconds=float(sample_seconds),
                 margin_samples=int(margin_samples),
-                max_samples=int(max_samples),
-                event_label="Representative true ON",
+                max_samples=display_cap,
+                event_kind="true_on",
                 event_color="#1f77b4",
+                show_legend=row_i == 0,
             )
             _plot_background_range_example(
-                axes[row_i, 1],
+                *row_axes[1],
                 event=fp_event,
                 event_count=fp_count,
                 aggregate_watts=aggregate,
@@ -961,16 +1061,18 @@ def save_background_range_waveforms(
                 segment_ids=plot_segments,
                 sample_seconds=float(sample_seconds),
                 margin_samples=int(margin_samples),
-                max_samples=min(int(max_samples), 500),
-                event_label="Worst false positive",
+                max_samples=min(
+                    display_cap,
+                    max(20, int(round(40.0 * 60.0 / float(sample_seconds)))),
+                ),
+                event_kind="false_positive",
                 event_color="#d62728",
+                show_legend=row_i == 0,
             )
-            axes[row_i, 0].set_xlabel("Relative time (min)", fontsize=8)
-            axes[row_i, 1].set_xlabel("Relative time (min)", fontsize=8)
 
         prefix = f"{title_prefix} - " if title_prefix else ""
         fig.suptitle(
-            f"{prefix}{appliance}: waveform behaviour by residual-background range",
+            f"{prefix}{appliance}: target waveform robustness by residual-background range",
             fontsize=13,
             fontweight="bold",
         )
