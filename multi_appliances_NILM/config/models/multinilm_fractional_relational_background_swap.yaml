@@ -1,6 +1,6 @@
-# Controlled architecture ablation: retain relational multi-appliance learning,
-# but allow only microwave to receive a small local transient residual.
-experiment_id: background_swap_8w_relation_microwave_adapter
+# Controlled architecture ablation: keep the relational five-appliance baseline
+# and explicitly model the unobserved household/background load.
+experiment_id: background_swap_8w_relation_background_head
 model_name: multinilm_fractional
 
 data:
@@ -88,19 +88,11 @@ architecture:
   gate_mode: soft
   gate_threshold: 0.5
 
-  # The local branch is a microwave-only residual adapter. It is applied after
-  # relation attention, so it cannot replace the context path or directly inject
-  # noisy aggregate features into the fridge and other appliance branches.
-  dual_expert:
+  # Auxiliary nuisance/source-separation output. It predicts
+  # aggregate - sum(five target appliances), but is not reported as appliance 6
+  # and does not participate in cross-appliance relation attention.
+  background_head:
     enabled: true
-    fusion: residual
-    enabled_appliances: [microwave]
-    residual_scale: 0.25
-    # raw aggregate + signed delta + absolute delta -> short-range features
-    local_channels: 32
-    local_kernel_size: 5
-    local_dilations: [1, 2, 4]
-    local_norm_type: group
 
   cross_appliance:
     # The no-relation ablation reduced microwave AP/F1 and increased high-
@@ -117,7 +109,8 @@ architecture:
 # prediction is y_hat = p * R + (1 - p) * y_off (y_off = 0 W after z-scoring),
 # so every power term below also trains p.
 #
-#   L_NILM  = L_power + state_term                  <- scalar used for backward()
+#   L_total = L_NILM + 0.10 * L_background + 0.05 * L_reconstruction
+#   L_NILM  = L_power + state_term
 #
 #   L_power = sum_i [ MSE_i                                   all samples
 #                   + power_on_weight    * ON_MSE_i           true-ON samples only
@@ -185,6 +178,15 @@ loss:
   # totals, not timing.
   power_energy_relative_weight: 0.25
   energy_floor_watts: 10
+
+  # b = max(0, aggregate - sum_i true_appliance_i). The background head and
+  # aggregate are compared in aggregate-normalized units using SmoothL1.
+  # Reconstruction is aggregate ~= predicted_background + sum_i predicted_i.
+  # These fixed auxiliary weights are outside dynamic power/state balancing.
+  background_weight: 0.10
+  reconstruction_weight: 0.05
+  # SmoothL1 transition in normalized aggregate units (~91 W here).
+  background_huber_beta: 0.10
 
 training:
   batch_size: 64

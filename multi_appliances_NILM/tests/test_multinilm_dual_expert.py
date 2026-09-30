@@ -109,69 +109,6 @@ class MultiNILMDualExpertTests(unittest.TestCase):
         self.assertEqual(tuple(logits.shape), (2, 32, 2))
         self.assertEqual(tuple(model.last_expert_gates.shape), (2, 2, 2, 32))
 
-    def test_microwave_only_residual_adapter_is_resolved_by_name(self) -> None:
-        architecture = {
-            "hidden_channels": 16,
-            "channel_schedule": [8, 16],
-            "num_blocks": 1,
-            "kernel_size": 3,
-            "dropout": 0.0,
-            "fractional": {"k": 2, "include_raw": True},
-            "dual_expert": {
-                "enabled": True,
-                "fusion": "residual",
-                "enabled_appliances": ["microwave"],
-                "residual_scale": 0.25,
-                "local_channels": 8,
-            },
-            "cross_appliance": {
-                "enabled": True,
-                "mode": "relation_attention",
-                "attention_channels": 8,
-                "residual_scale": 0.25,
-            },
-        }
-        appliances = ["kettle", "fridge", "microwave"]
-        model = build_multinilm_fractional(
-            architecture,
-            num_appliances=len(appliances),
-            output_length=32,
-            appliance_off_norm=[0.0] * len(appliances),
-            appliance_names=appliances,
-        )
-
-        power, logits = model(torch.randn(2, 32))
-
-        self.assertEqual(tuple(power.shape), (2, 32, 3))
-        self.assertEqual(tuple(logits.shape), (2, 32, 3))
-        self.assertEqual(model.backbone.dual_expert_enabled_indices, (2,))
-        self.assertEqual(model.backbone.dual_expert_fusion, "residual")
-        self.assertIsNone(model.last_expert_gates)
-
-        (power.square().mean() + logits.square().mean()).backward()
-        local_grad = model.backbone.local_expert.input_projection[0].weight.grad
-        self.assertIsNotNone(local_grad)
-        self.assertGreater(float(local_grad.abs().sum()), 0.0)
-
-    def test_named_residual_adapter_rejects_unknown_appliance(self) -> None:
-        architecture = {
-            "hidden_channels": 8,
-            "fractional": {"k": 1},
-            "dual_expert": {
-                "enabled": True,
-                "fusion": "residual",
-                "enabled_appliances": ["microwave"],
-            },
-        }
-        with self.assertRaisesRegex(ValueError, "Unknown dual_expert.enabled_appliances"):
-            build_multinilm_fractional(
-                architecture,
-                num_appliances=2,
-                output_length=16,
-                appliance_off_norm=[0.0, 0.0],
-                appliance_names=["kettle", "fridge"],
-            )
-
     def test_old_configuration_keeps_single_context_path(self) -> None:
         cfg = multinilm_config({"hidden_channels": 8})
         self.assertFalse(cfg.dual_expert_enabled)
@@ -208,7 +145,7 @@ class MultiNILMDualExpertTests(unittest.TestCase):
             dual_expert_gate_hidden_channels=4,
         )
 
-        def fake_loss(power, logits, true_power, true_state):
+        def fake_loss(power, logits, true_power, true_state, **kwargs):
             loss = power.square().mean() + logits.square().mean()
             per_app = power.square().mean(dim=(0, 1))
             return SimpleNamespace(

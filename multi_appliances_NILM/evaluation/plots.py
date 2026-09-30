@@ -2066,7 +2066,7 @@ def plot_loss_components(
             [
                 ("train_loss_nilm", "train L_NILM"),
                 ("val_loss_nilm", "val L_NILM"),
-                ("train_loss", "train L_total (+DA)"),
+                ("train_loss", "train L_total (+aux/DA)"),
             ],
         ),
         (
@@ -2085,7 +2085,16 @@ def plot_loss_components(
                 ("val_loss_state", "val raw"),
             ],
         ),
-        ("Domain (train only)", [("train_loss_domain", "train L_domain")]),
+        (
+            "Background / auxiliary",
+            [
+                ("train_loss_background", "train background"),
+                ("val_loss_background", "val background"),
+                ("train_loss_reconstruction", "train reconstruction"),
+                ("val_loss_reconstruction", "val reconstruction"),
+                ("train_loss_domain", "train domain"),
+            ],
+        ),
     ]
 
     # 2×2 grid; each cell ≈ old single-figure size (figsize × figsize).

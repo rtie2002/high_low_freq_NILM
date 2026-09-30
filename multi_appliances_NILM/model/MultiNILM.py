@@ -1,14 +1,13 @@
 """Beginner path: read MultiNILMFractional.forward, then MultiNILM.forward.
 
 Every Conv1d tensor is (B, C, T) = batch, channels, time.
-Relational dual-expert yaml example: B=64, C_in=13, C=128, T=1024,
-A=5 appliances.
+Relational multi-appliance example: B=64, C_in=13, C=128, T=1024,
+A=5 reported appliances plus one optional unobserved-background output.
 
   mains (B, T)
-    -> local expert      (B, 128, T)  raw + delta + |delta|
     -> FrontEnd          (B, 13, T)
-    -> stem + TCN        (B, 128, T)  context expert
-    -> 5 expert gates    5 x (B, 128, T)
+    -> stem + TCN        (B, 128, T)
+       -> background     (B, T, 1)    training nuisance output
     -> 5 heads           5 x (B, 128, T)
     -> relation mix      5 x (B, 128, T)
     -> power, state      (B, T, 5)
@@ -522,8 +521,8 @@ class MultiNILM(nn.Module):
         dual_expert_enabled=False, dual_expert_local_channels=32,
         dual_expert_local_kernel_size=5, dual_expert_local_dilations=None,
         dual_expert_local_norm_type="group", dual_expert_gate_hidden_channels=32,
-        dual_expert_gate_initial_local_weight=0.1, dual_expert_fusion="gated",
-        dual_expert_residual_scale=0.25, dual_expert_enabled_indices=None,
+        dual_expert_gate_initial_local_weight=0.1,
+        background_head_enabled=False,
     ):
         super().__init__()
         self.input_channels = int(input_channels)
@@ -533,23 +532,9 @@ class MultiNILM(nn.Module):
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
         self.dual_expert_enabled = bool(dual_expert_enabled)
-        self.dual_expert_fusion = str(dual_expert_fusion or "gated").lower()
-        if self.dual_expert_fusion not in {"gated", "residual"}:
-            raise ValueError("dual_expert.fusion must be gated or residual")
-        self.dual_expert_residual_scale = float(dual_expert_residual_scale)
-        if self.dual_expert_residual_scale < 0.0:
-            raise ValueError("dual_expert.residual_scale must be non-negative")
-        if dual_expert_enabled_indices is None:
-            enabled_indices = list(range(self.num_appliances))
-        else:
-            enabled_indices = sorted({int(i) for i in dual_expert_enabled_indices})
-        if any(i < 0 or i >= self.num_appliances for i in enabled_indices):
-            raise ValueError(
-                f"dual_expert.enabled_indices must be within [0, {self.num_appliances}), "
-                f"got {enabled_indices}"
-            )
-        self.dual_expert_enabled_indices = tuple(enabled_indices)
+        self.background_head_enabled = bool(background_head_enabled)
         self.last_expert_gates = None
+        self.last_background_pred = None
         off_norms = list(appliance_off_norm or [0.0] * self.num_appliances)
         if len(off_norms) != self.num_appliances:
             raise ValueError(f"appliance_off_norm length {len(off_norms)} != {self.num_appliances}")
@@ -601,15 +586,21 @@ class MultiNILM(nn.Module):
                 dropout=float(dropout),
                 norm_type=str(dual_expert_local_norm_type),
             )
-            if self.dual_expert_fusion == "gated":
-                self.expert_gates = nn.ModuleList([
-                    ApplianceExpertGate(
-                        self.hidden_channels,
-                        int(dual_expert_gate_hidden_channels),
-                        initial_local_weight=float(dual_expert_gate_initial_local_weight),
-                    )
-                    for _ in range(self.num_appliances)
-                ])
+            self.expert_gates = nn.ModuleList([
+                ApplianceExpertGate(
+                    self.hidden_channels,
+                    int(dual_expert_gate_hidden_channels),
+                    initial_local_weight=float(dual_expert_gate_initial_local_weight),
+                )
+                for _ in range(self.num_appliances)
+            ])
+        # Predict the residual household load in aggregate-normalized units.
+        # It is a nuisance/source-separation head, not a sixth reported appliance,
+        # and therefore stays outside cross-appliance relation attention.
+        self.background_head = (
+            nn.Conv1d(self.hidden_channels, 1, 1)
+            if self.background_head_enabled else None
+        )
         self.appliance_heads = nn.ModuleList([
             ApplianceHead(
                 self.hidden_channels, dropout, gate_mode=self.gate_mode, gate_threshold=self.gate_threshold,
@@ -647,6 +638,11 @@ class MultiNILM(nn.Module):
             h = block(h)                                       # (B, C, T)
 
         context_features = _match_time_length(h, self.output_length)  # (B, C, T_out)
+        self.last_background_pred = None
+        if self.background_head is not None:
+            self.last_background_pred = self.background_head(
+                context_features
+            ).permute(0, 2, 1)                              # (B, T_out, 1)
         routed_features = [context_features] * self.num_appliances
         self.last_expert_gates = None
         if self.dual_expert_enabled:
@@ -668,21 +664,13 @@ class MultiNILM(nn.Module):
                 self.local_expert(raw_input.float()),
                 self.output_length,
             )
-            if self.dual_expert_fusion == "gated":
-                routed_features, gate_weights = [], []
-                for app_i, gate in enumerate(self.expert_gates):
-                    if app_i in self.dual_expert_enabled_indices:
-                        fused, weights = gate(local_features, context_features)
-                    else:
-                        fused = context_features
-                        weights = torch.cat([
-                            torch.zeros_like(context_features[:, :1]),
-                            torch.ones_like(context_features[:, :1]),
-                        ], dim=1)
-                    routed_features.append(fused)
-                    gate_weights.append(weights)
-                # (B, A, 2, T_out), stored detached for training diagnostics only.
-                self.last_expert_gates = torch.stack(gate_weights, dim=1).detach()
+            routed_features, gate_weights = [], []
+            for gate in self.expert_gates:
+                fused, weights = gate(local_features, context_features)
+                routed_features.append(fused)
+                gate_weights.append(weights)
+            # (B, A, 2, T_out), stored detached for training diagnostics only.
+            self.last_expert_gates = torch.stack(gate_weights, dim=1).detach()
 
         feats = [
             head.encode_features(z_i)
@@ -690,17 +678,6 @@ class MultiNILM(nn.Module):
         ]  # A x (B, C, T_out)
         if self.cross_appliance_distill is not None:
             feats = self.cross_appliance_distill(feats)
-
-        # In residual mode the local branch is applied after relational feature
-        # exchange. This keeps the shared multi-appliance reasoning intact while
-        # preventing a local shortcut from replacing the context path or leaking
-        # into unrelated appliance branches through relation attention.
-        if self.dual_expert_enabled and self.dual_expert_fusion == "residual":
-            feats = [
-                feature + self.dual_expert_residual_scale * local_features
-                if app_i in self.dual_expert_enabled_indices else feature
-                for app_i, feature in enumerate(feats)
-            ]
 
         powers, states = [], []
         for head, f in zip(self.appliance_heads, feats):
@@ -741,6 +718,10 @@ class MultiNILMFractional(nn.Module):
     @property
     def last_expert_gates(self):
         return self.backbone.last_expert_gates
+
+    @property
+    def last_background_pred(self):
+        return self.backbone.last_background_pred
 
 
 # ===========================================================================
@@ -785,9 +766,7 @@ class MultiNILMConfig:
     dual_expert_local_norm_type: str = "group"
     dual_expert_gate_hidden_channels: int = 32
     dual_expert_gate_initial_local_weight: float = 0.1
-    dual_expert_fusion: str = "gated"
-    dual_expert_residual_scale: float = 0.25
-    dual_expert_enabled_indices: list[int] | None = None
+    background_head_enabled: bool = False
 
 
 def multinilm_config(architecture):
@@ -795,6 +774,7 @@ def multinilm_config(architecture):
     task = a.get("task_attention") if isinstance(a.get("task_attention"), dict) else {}
     cross = a.get("cross_appliance") if isinstance(a.get("cross_appliance"), dict) else {}
     dual = a.get("dual_expert") if isinstance(a.get("dual_expert"), dict) else {}
+    background = a.get("background_head") if isinstance(a.get("background_head"), dict) else {}
     mid = cross.get("mid_channels", None)
     return MultiNILMConfig(
         input_channels=int(a.get("input_channels", a.get("input_size", 1))),
@@ -833,12 +813,7 @@ def multinilm_config(architecture):
         dual_expert_local_norm_type=str(dual.get("local_norm_type", "group")),
         dual_expert_gate_hidden_channels=int(dual.get("gate_hidden_channels", 32)),
         dual_expert_gate_initial_local_weight=float(dual.get("gate_initial_local_weight", 0.1)),
-        dual_expert_fusion=str(dual.get("fusion", "gated")),
-        dual_expert_residual_scale=float(dual.get("residual_scale", 0.25)),
-        dual_expert_enabled_indices=(
-            None if dual.get("enabled_indices") is None
-            else [int(i) for i in dual.get("enabled_indices")]
-        ),
+        background_head_enabled=bool(background.get("enabled", False)),
     )
 
 
@@ -851,10 +826,7 @@ def build_multinilm(cfg, *, num_appliances, output_length, appliance_off_norm=No
     return MultiNILM(**kwargs)
 
 
-def build_multinilm_fractional(
-    architecture, *, num_appliances, output_length, appliance_off_norm=None,
-    appliance_names=None,
-):
+def build_multinilm_fractional(architecture, *, num_appliances, output_length, appliance_off_norm=None):
     block = architecture.get("fractional") if isinstance(architecture.get("fractional"), dict) else {}
     if block.get("alphas") is None:
         k = int(block.get("k", 8))
@@ -877,21 +849,6 @@ def build_multinilm_fractional(
         include_rolling_std=bool(block.get("include_rolling_std", False)),
     )
     arch = dict(architecture)
-    dual = dict(arch.get("dual_expert") or {})
-    enabled_appliances = dual.pop("enabled_appliances", None)
-    if enabled_appliances is not None:
-        if appliance_names is None:
-            raise ValueError(
-                "dual_expert.enabled_appliances requires appliance_names when building the model"
-            )
-        names = list(appliance_names)
-        unknown = [name for name in enabled_appliances if name not in names]
-        if unknown:
-            raise ValueError(
-                f"Unknown dual_expert.enabled_appliances {unknown}; available appliances are {names}"
-            )
-        dual["enabled_indices"] = [names.index(name) for name in enabled_appliances]
-        arch["dual_expert"] = dual
     arch["input_channels"] = int(frontend.out_channels)
     backbone = build_multinilm(
         multinilm_config(arch), num_appliances=num_appliances, output_length=output_length,
@@ -930,6 +887,34 @@ def _pred_on_from_config(adapter, power_norm, state_prob):
     raise ValueError("evaluation.pred_on_source must be state_head, power_threshold, or combined")
 
 
+def _aggregate_target_window(x, target_length, windowing):
+    """Align normalized aggregate input to the supervised output timeline."""
+    if x.dim() == 2:
+        aggregate = x
+    elif x.dim() == 3 and x.shape[-1] == 1:
+        aggregate = x[..., 0]
+    elif x.dim() == 3 and x.shape[1] == 1:
+        aggregate = x[:, 0, :]
+    else:
+        raise ValueError(f"Expected aggregate input with one channel, got {tuple(x.shape)}")
+
+    target_length = int(target_length)
+    if aggregate.shape[1] < target_length:
+        raise ValueError(
+            f"Aggregate timeline {aggregate.shape[1]} is shorter than target {target_length}"
+        )
+    if aggregate.shape[1] != target_length:
+        alignment = str(windowing.get("output_alignment", "end")).lower()
+        if alignment == "end":
+            aggregate = aggregate[:, -target_length:]
+        elif alignment == "center":
+            start = (aggregate.shape[1] - target_length) // 2
+            aggregate = aggregate[:, start:start + target_length]
+        else:
+            raise ValueError(f"Unsupported output_alignment: {alignment}")
+    return aggregate.unsqueeze(-1)
+
+
 class MultiNILMAdapter(BaseNILMAdapter):
     name = "multinilm"
 
@@ -946,6 +931,12 @@ class MultiNILMAdapter(BaseNILMAdapter):
         from model.MultiNILM_loss import MultiNILMLoss
         cfg = self.model_cfg.get("loss", {})
         loader = self._data_loader()
+        aggregate_mean = loader.norm.input_mean
+        aggregate_scale = loader.norm.input_std
+        if aggregate_mean is None:
+            aggregate_mean = 0.0
+        if aggregate_scale is None:
+            aggregate_scale = loader.norm.legacy_scale
         return MultiNILMLoss(
             lambda_state=float(cfg.get("lambda_state", 0.1)),
             task_balance=str(cfg.get("task_balance", "none")),
@@ -961,6 +952,11 @@ class MultiNILMAdapter(BaseNILMAdapter):
             state_smooth_tau=float(cfg.get("state_smooth_tau", 4.0)),
             power_energy_relative_weight=float(cfg.get("power_energy_relative_weight", 0.0)),
             energy_floor_watts=float(cfg.get("energy_floor_watts", 10.0)),
+            background_weight=float(cfg.get("background_weight", 0.0)),
+            reconstruction_weight=float(cfg.get("reconstruction_weight", 0.0)),
+            background_huber_beta=float(cfg.get("background_huber_beta", 0.1)),
+            aggregate_mean=float(aggregate_mean),
+            aggregate_scale=float(aggregate_scale),
         )
 
     def step(self, model, loss_fn, batch, target_batch=None):
@@ -968,7 +964,23 @@ class MultiNILMAdapter(BaseNILMAdapter):
         x, y, z = batch
         z = z.float()
         power_pred, state_logits = model(x)
-        out = loss_fn(power_pred, state_logits, y, z)
+        background_pred = getattr(model, "last_background_pred", None)
+        aggregate_true = (
+            None if background_pred is None
+            else _aggregate_target_window(
+                x,
+                power_pred.shape[1],
+                self.model_cfg["windowing"],
+            )
+        )
+        out = loss_fn(
+            power_pred,
+            state_logits,
+            y,
+            z,
+            background_pred=background_pred,
+            aggregate_true=aggregate_true,
+        )
         state_prob = torch.sigmoid(state_logits)
         pred_state = torch.from_numpy(
             _pred_on_from_config(self, _to_numpy(power_pred), _to_numpy(state_prob))
@@ -992,6 +1004,10 @@ class MultiNILMAdapter(BaseNILMAdapter):
         }
         if out.loss_state_smooth is not None:
             logs["loss_state_smooth"] = float(out.loss_state_smooth)
+        if getattr(out, "loss_background", None) is not None:
+            logs["loss_background"] = float(out.loss_background)
+        if getattr(out, "loss_reconstruction", None) is not None:
+            logs["loss_reconstruction"] = float(out.loss_reconstruction)
         expert_gates = getattr(model, "last_expert_gates", None)
         if expert_gates is not None:
             # Stored gate shape is (B, A, 2, T); logs use local-expert weight.
@@ -1057,5 +1073,4 @@ class MultiNILMFractionalAdapter(MultiNILMAdapter):
             num_appliances=len(apps),
             output_length=int(self.model_cfg["windowing"].get("output_window_length", 1)),
             appliance_off_norm=appliance_off_norm_normalized(self.experiment, apps),
-            appliance_names=apps,
         ).to(device)
