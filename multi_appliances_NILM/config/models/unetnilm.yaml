@@ -54,7 +54,7 @@ loss:
 training:
   # Paper Section 2.3: 50 training iterations (epochs).
   epochs: 50
-  batch_size: 128
+  batch_size: 256
   learning_rate: 0.001
   adam_betas: [0.9, 0.98]
   weight_decay: 0.0
