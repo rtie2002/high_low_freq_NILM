@@ -1,0 +1,243 @@
+experiment:
+  dataset_id: mixed_ukdale_refit_8w
+  seed: 2026
+  data_root: datasets/mixed_ukdale_refit_8w
+  csv:
+    sample_seconds: 8
+    train_file: training/multi_appliance_training.csv
+    validation_file: validating/multi_appliance_validating.csv
+    test_file: testing/multi_appliance_testing.csv
+    test_scenarios:
+      refit_house20: testing/refit_house20/multi_appliance_testing.csv
+      ukdale_house2: testing/ukdale_house2/multi_appliance_testing.csv
+    mains_column: aggregate
+    appliances:
+      kettle:
+        power: kettle_power
+        state: kettle_on
+      fridge:
+        power: fridge_power
+        state: fridge_on
+      dishwasher:
+        power: dishwasher_power
+        state: dishwasher_on
+      washingmachine:
+        power: washingmachine_power
+        state: washingmachine_on
+      microwave:
+        power: microwave_power
+        state: microwave_on
+  normalization_file: ../datasets/mixed_ukdale_refit_8w/normalization_stats.json
+  evaluation: &id001
+    on_thresholds_watts:
+      kettle: 40
+      fridge: 50
+      dishwasher: 30
+      washingmachine: 30
+      microwave: 100
+    max_on_power_watts:
+      kettle: 4000
+      fridge: 4000
+      dishwasher: 4000
+      washingmachine: 3999
+      microwave: 4000
+    power_postprocess:
+      enabled: true
+      min_power_watts: 5
+    sae_period: 1200
+    power_unit: watts
+  normalization:
+    aggregate:
+      mean: 578.2050163223494
+      std: 906.1434501164772
+    appliances:
+      kettle:
+        mean: 22.8061279746107
+        std: 231.17933282286927
+      fridge:
+        mean: 38.53285757190207
+        std: 60.17133610735583
+      dishwasher:
+        mean: 37.77656418136115
+        std: 274.724834781699
+      washingmachine:
+        mean: 23.78048716091129
+        std: 183.63239588108001
+      microwave:
+        mean: 14.51591274836713
+        std: 110.55334686413659
+  experiment_id: background_swap_8w_relation_dual_expert_hard_negative
+model:
+  experiment_id: background_swap_8w_relation_dual_expert_hard_negative
+  model_name: multinilm_fractional
+  data:
+    state_label_source: csv
+  evaluation:
+    pred_on_source: state_head
+    state_calibration:
+      enabled: true
+      split: validation
+      threshold_grid:
+      - 0.05
+      - 0.98
+      - 0.01
+      apply_to_power: true
+      postprocess:
+        enabled: true
+        min_on_seconds:
+          kettle: 12
+          fridge: 120
+          dishwasher: 960
+          washingmachine: 960
+          microwave: 8
+        merge_gap_seconds:
+          kettle: 0
+          fridge: 240
+          dishwasher: 1800
+          washingmachine: 960
+          microwave: 16
+  windowing:
+    input_window_length: 1024
+    output_window_length: 1024
+    output_alignment: end
+    input_stride: 512
+    eval_stride: 512
+    eval_reconstruction: auto
+    training_targets: auto
+  fractional:
+    k: 4
+    include_raw: true
+    include_delta: true
+    include_abs_delta: true
+    include_rolling_mean: true
+    include_rolling_std: true
+    rolling_windows:
+    - 8
+    - 23
+    - 45
+    memory: 24
+    channel_normalize: none
+  architecture:
+    channel_schedule:
+    - 32
+    - 64
+    - 128
+    hidden_channels: 128
+    use_multiscale_stem: true
+    detail_kernels:
+    - 3
+    - 5
+    - 9
+    detail_branch_channels: 16
+    stem_kernel_size: 7
+    stage_kernel_size: 5
+    stem_norm_type: ibn
+    temporal_norm_type: batch
+    head_norm_type: batch
+    num_blocks: 5
+    kernel_size: 9
+    max_dilation: 16
+    dropout: 0.25
+    head_local_layers: 2
+    head_kernel_size: 3
+    head_use_residual: true
+    task_attention:
+      enabled: true
+      reduction: 4
+    gate_mode: soft
+    gate_threshold: 0.5
+    background_head:
+      enabled: false
+    dual_expert:
+      enabled: true
+      local_channels: 32
+      local_kernel_size: 5
+      local_dilations:
+      - 1
+      - 2
+      - 4
+      local_norm_type: group
+      gate_hidden_channels: 32
+      gate_initial_local_weight: 0.1
+    cross_appliance:
+      enabled: true
+      mode: relation_attention
+      attention_channels: 16
+      residual_scale: 0.25
+  loss:
+    task_balance: equal
+    lambda_state: 0.8
+    pos_weight: auto
+    pos_weight_cap: 12
+    state_fp_weight: 1.0
+    state_smooth_weight: 0.0
+    state_smooth_tau: 4.0
+    power_on_weight: 1.0
+    power_off_weight: 0.5
+    power_delta_weight: 0.15
+    power_delta_on_only: true
+    power_energy_relative_weight: 0.25
+    energy_floor_watts: 10
+    background_weight: 0.0
+    reconstruction_weight: 0.0
+    background_huber_beta: 0.1
+    hard_negative:
+      enabled: true
+      appliances:
+      - fridge
+      - microwave
+      fraction: 0.05
+      weight: 0.05
+      warmup_epochs: 20
+      ramp_epochs: 10
+      exclusion_samples: 2
+  training:
+    batch_size: 64
+    epochs: 150
+    learning_rate: 0.0001
+    weight_decay: 0.0001
+    num_workers: 0
+    train_shuffle: true
+    gradient_clip: 1.0
+    random_mix:
+      enabled: true
+      mode: background_swap
+      prob: 0.5
+    use_amp: false
+    amp_dtype: bf16
+    cudnn_benchmark: true
+    tf32: true
+    checkpoint_monitor: val_mae_plus_one_minus_ap
+    checkpoint_mae_space: normalized
+    early_stop_patience: 55
+    early_stop_min_epochs: 100
+    scheduler: reduce_on_plateau
+    lr_scheduler:
+      type: reduce_on_plateau
+      monitor: val_mae_plus_one_minus_ap
+      patience: 12
+      factor: 0.5
+      min_lr: 1.0e-05
+    plots:
+      plot_mode: interval
+      plot_interval: 50
+      plot_on_periods: 5
+      plot_max_batches: 16
+      waveform_figsize: 5.5
+      waveform_dpi: 300
+      waveform_dynamic_figsize: true
+      on_period_margin_min: 40
+      on_period_margin_frac: 0.08
+      waveform_context_scale: 10
+      comparison_dpi: 300
+model_name: multinilm_fractional
+experiment_id: background_swap_8w_relation_dual_expert_hard_negative
+appliances:
+- kettle
+- fridge
+- dishwasher
+- washingmachine
+- microwave
+data_root: datasets/mixed_ukdale_refit_8w
+evaluation: *id001
+seed: 2026

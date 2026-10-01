@@ -1,0 +1,16 @@
+{
+  "total_seconds": 1489.4245584999444,
+  "total_formatted": "24m 49s",
+  "epochs_completed": 150,
+  "best_epoch": 145,
+  "best_score": 0.41478593543250797,
+  "checkpoint_monitor": "val_mae_plus_one_minus_ap",
+  "avg_epoch_seconds": 9.929497056666296,
+  "avg_epoch_formatted": "10s",
+  "parameters_total": 1438728,
+  "parameters_trainable": 1438628,
+  "parameters_total_millions": 1.439,
+  "parameters_trainable_millions": 1.439,
+  "checkpoint_file": "best.pt",
+  "checkpoint_size_mb": 5.6
+}

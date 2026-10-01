@@ -420,7 +420,10 @@ class BaseNILMAdapter(AdapterDataMixin):
             .get("state_calibration", {})
             .get("enabled", False)
         )
-        if not calibration_enabled:
+        gate_power_by_state = bool(
+            self.model_cfg.get("evaluation", {}).get("gate_power_by_state", True)
+        )
+        if gate_power_by_state and not calibration_enabled:
             y_pred = np.asarray(y_pred, dtype=np.float64) * z_pred.astype(np.float64)
 
         segment_ids = loader.segment_ids_at_timesteps(split_key, csv_timesteps)

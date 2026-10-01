@@ -17,6 +17,7 @@ from model.MATNILM import MATNILMAdapter
 from model.MATUDA import MATUDAAdapter
 from model.MultiNILM import MultiNILMAdapter, MultiNILMFractionalAdapter
 from model.TransferNILM import TransferMultiApplianceAdapter
+from model.UNETNILM import UNetNILMAdapter
 from evaluation.run_summary import compare_experiment, print_run_cost_summary, print_val_test_comparison
 from runner import evaluate_model, train_model
 
@@ -27,6 +28,7 @@ MODELS = {
     "multinilm": MultiNILMAdapter,
     "multinilm_fractional": MultiNILMFractionalAdapter,
     "transfer_multi_appliance": TransferMultiApplianceAdapter,
+    "unetnilm": UNetNILMAdapter,
 }
 
 # Default run settings for "click Run on main.py".
