@@ -1,0 +1,129 @@
+\documentclass[conference]{IEEEtran}
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+
+\begin{document}
+
+\title{Non-Intrusive Load Monitoring of Multiple Household Appliances}
+
+\author{\IEEEauthorblockN{Raymond Tie Siou Hin}
+\IEEEauthorblockA{\textit{Department of Electrical and Robotics} \\
+\textit{Centre for Net-Zero Technology} \\
+\textit{Monash University Malaysia} \\
+Bandar Sunway, Malaysia}
+\and
+\IEEEauthorblockN{Tan Wen Shan}
+\IEEEauthorblockA{\textit{Department of Electrical and Robotics} \\
+\textit{Centre for Net-Zero Technology} \\
+\textit{Monash University Malaysia} \\
+Bandar Sunway, Malaysia \\
+tan.wenshan@monash.edu}
+\and
+\IEEEauthorblockN{Ding Ze Yang}
+\IEEEauthorblockA{\textit{Department of Electrical and Robotics} \\
+\textit{Centre for Net-Zero Technology} \\
+\textit{Monash University Malaysia} \\
+Bandar Sunway, Malaysia}
+\and
+\IEEEauthorblockN{Mirza Rayana Sanzana}
+\IEEEauthorblockA{\textit{School of Information Technology} \\
+\textit{Monash University Malaysia} \\
+Bandar Sunway, Malaysia}
+\and
+\IEEEauthorblockN{Haval Kamil}
+\IEEEauthorblockA{\textit{Department of Air Conditioning and Refrigeration} \\
+\textit{College of Engineering Technology} \\
+\textit{Al-Kitab University} \\
+Kirkuk, Iraq}
+}
+
+\maketitle
+
+\begin{abstract}
+\end{abstract}
+
+\begin{IEEEkeywords}
+non-intrusive load monitoring, energy disaggregation, household appliances
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+\section{Related Work}
+
+UNet-NILM estimates the on-off state and the power of several appliances with one network~\cite{faustine2020unet}.
+
+\section{Method}
+
+\subsection{Evaluation Metrics}
+\label{sec:metrics}
+
+Each appliance is evaluated on both power and on-off state. $a$ is the appliance and $t$ is the sample. $y_{a,t}$ is the recorded power in watts, and $\hat{y}_{a,t}$ is the predicted power. $T$ is the number of samples. $z_{a,t}=1$ when the appliance is recorded on, and $z_{a,t}=0$ when it is off. $\hat{z}_{a,t}$ is the predicted on-off label. The Average column in Table~\ref{tab:results} is the mean of the five appliance scores.
+
+\subsubsection{Power}
+The same absolute error is reported in three cases. MAE uses every sample. ON MAE uses only samples with $z_{a,t}=1$. OFF MAE uses only samples with $z_{a,t}=0$.
+\begin{equation}
+\mathrm{MAE}_{a}=\frac{1}{T}\sum_{t=1}^{T}\left|y_{a,t}-\hat{y}_{a,t}\right|.
+\label{eq:mae}
+\end{equation}
+SAE splits the record into consecutive windows of $P=1200$ samples, which is 160~minutes at 8~s. $k$ is the window index, and $K=\lfloor T/P\rfloor$ is the number of complete windows. A leftover shorter than $P$ is ignored. SAE is the mean absolute error of the average power in each window,
+\begin{equation}
+\mathrm{SAE}_{a}=\frac{1}{K}\sum_{k=1}^{K}\left|\frac{1}{P}\sum_{t=(k-1)P+1}^{kP}\left(y_{a,t}-\hat{y}_{a,t}\right)\right|.
+\label{eq:sae}
+\end{equation}
+
+\subsubsection{On-Off State}
+$\mathrm{TP}_{a}$ counts samples with $z_{a,t}=1$ and $\hat{z}_{a,t}=1$. $\mathrm{FP}_{a}$ counts samples with $z_{a,t}=0$ and $\hat{z}_{a,t}=1$. $\mathrm{FN}_{a}$ counts samples with $z_{a,t}=1$ and $\hat{z}_{a,t}=0$.
+\begin{align}
+\mathrm{Precision}_{a}&=\frac{\mathrm{TP}_{a}}{\mathrm{TP}_{a}+\mathrm{FP}_{a}}, \label{eq:precision}\\
+\mathrm{Recall}_{a}&=\frac{\mathrm{TP}_{a}}{\mathrm{TP}_{a}+\mathrm{FN}_{a}}, \label{eq:recall}\\
+\mathrm{F1}_{a}&=\frac{2\cdot\mathrm{Precision}_{a}\cdot\mathrm{Recall}_{a}}{\mathrm{Precision}_{a}+\mathrm{Recall}_{a}}. \label{eq:f1}
+\end{align}
+Precision is the fraction of predicted on samples that are truly on. Recall is the fraction of recorded on samples that are detected. F1 is their harmonic mean, so it is high only when both precision and recall are high.
+
+\section{Results}
+
+Table~\ref{tab:results} compares each model on the five appliances. The scores are defined in Section~\ref{sec:metrics}.
+
+\begin{table*}[!t]
+\caption{Power error and on-off detection for each appliance. Lower power error is better. Higher precision, recall, and F1 are better.}
+\label{tab:results}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{llcccccc}
+\toprule
+\textbf{Model} & \textbf{Metric} & \textbf{Kettle} & \textbf{Fridge} & \textbf{Dishwasher} & \textbf{Washing machine} & \textbf{Microwave} & \textbf{Average} \\
+\midrule
+UNet-NILM~\cite{faustine2020unet} & MAE (W) &  &  &  &  &  &  \\
+ & SAE (W) &  &  &  &  &  &  \\
+ & ON MAE (W) &  &  &  &  &  &  \\
+ & OFF MAE (W) &  &  &  &  &  &  \\
+\cmidrule(lr){2-8}
+ & Precision &  &  &  &  &  &  \\
+ & Recall &  &  &  &  &  &  \\
+ & F1 &  &  &  &  &  &  \\
+\midrule
+Proposed & MAE (W) &  &  &  &  &  &  \\
+ & SAE (W) &  &  &  &  &  &  \\
+ & ON MAE (W) &  &  &  &  &  &  \\
+ & OFF MAE (W) &  &  &  &  &  &  \\
+\cmidrule(lr){2-8}
+ & Precision &  &  &  &  &  &  \\
+ & Recall &  &  &  &  &  &  \\
+ & F1 &  &  &  &  &  &  \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\section{Conclusion}
+
+\bibliographystyle{IEEEtran}
+\bibliography{references/references}
+
+\end{document}

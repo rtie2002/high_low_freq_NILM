@@ -1,49 +1,93 @@
-# MATNILM — 4-appliance architecture (REDD default). Windowing/training tuned for practical runs.
+# MAT-Conv baseline from Xiong et al., IEEE TII 2024.
+# Architecture, loss, and training arguments follow
+# https://github.com/jxiong22/MATNilm (modules.py, main.py, utils.py).
+# REDD in the paper uses four appliances. UK-DALE adds kettle, and this
+# config follows the five-appliance UK-DALE/REFIT experiment order:
+# kettle, fridge, dishwasher, washing machine, microwave.
+# Window lengths stay at the paper's REDD setting (Section IV-C). The
+# released dataset class has the center crop commented out; this config
+# supervises the center 64 samples. UK-DALE in the same section is 464/64.
+# DOI: 10.1109/TII.2023.3301026
+experiment_id: comparison_8w_matnilm_paper
 model_name: mat_nilm
 
+data:
+  # utils.SubSet: ON if raw power > 15 W. Labels are rebuilt from watts in
+  # the adapter, because the experiment yaml uses other thresholds.
+  state_label_source: threshold
+  # utils.SubSet and evaluateResult: every channel is divided by 612.
+  power_scale: 612
+
+evaluation:
+  pred_on_source: state_head
+  # Power is already multiplied by the sigmoid inside MATconv. The released
+  # evaluator does not apply a second hard gate.
+  gate_power_by_state: false
+  # evaluateResult only clips negative predictions to 0 W.
+  power_postprocess: false
+  state_calibration:
+    enabled: false
+
 windowing:
+  # Paper Section IV-C, REDD: input 864, output 64, so w = (864-64)/2 = 400.
+  # UK-DALE in the same section is input 464 and output 64.
   input_window_length: 864
   output_window_length: 64
   output_alignment: center
-  input_stride: 32
+  # Train indices step by 1. Evaluation steps by outputLength (utils.testSampler).
+  input_stride: 1
   eval_stride: 64
+  eval_reconstruction: flat
   training_targets: output_window
 
 architecture:
   input_size: 1
   hidden: 32
   dropout: 0.1
+  attention_heads: 2
+  feedforward: 1024
+  num_blocks: 3
+  # modules.MATconv shared encoder. The last convolution maps to 2 * hidden.
+  conv_channels: [30, 30, 40, 50, 50]
+  conv_kernels: [10, 8, 6, 5, 5, 5]
+  power_scale: 612
+  on_threshold_watts: 15
+  # np.round on the sigmoid, which is a threshold of 0.5.
+  gate_threshold: 0.5
 
-data:
-  # Appliance order now comes from the selected experiment yaml.
-  # MATconv itself is still fixed to 4 outputs, so the experiment must define 4 appliances.
-  state_label_source: threshold
+loss:
+  regression: mse
+  classification: bce
 
 training:
-  epochs: 50
-  batch_size: 256
+  # main.py uses 200 epochs unless --debug. Early stopping patience is 30.
+  epochs: 200
+  batch_size: 32
   learning_rate: 0.001
   weight_decay: 0.0
   gradient_clip: 0.0
-  num_workers: 8
-  prefetch_factor: 4
-  persistent_workers: true
-  use_amp: true
-  amp_dtype: bf16
-  tf32: true
-  cudnn_benchmark: true
-  torch_compile: true
+  tensor_dtype: float32
+  train_shuffle: true
+  num_workers: 1
+  prefetch_factor: 2
+  persistent_workers: false
+  use_amp: false
   checkpoint_monitor: val_mae
-  early_stop_patience: 15
-  plots:
-    plot_mode: interval
-    plot_interval: 10
-    plot_on_periods: 3
-    on_period_samples: 0
-    full_cycle_appliances: [washingmachine, dishwasher]
-    on_period_margin_min: 40
-    on_period_margin_frac: 0.08
-    waveform_figsize: 5.5
-    waveform_dynamic_figsize: true
-    waveform_dpi: 200
-    plot_max_batches: 32
+  early_stop_patience: 30
+  scheduler: none
+
+  # README reproduction command is `python main.py --dataAug`.
+  # argparse defaults: dishwasher 0.3, fridge 0.6, microwave 0.3, wash 0.3.
+  # The public repository does not ship REDD_pool.pkl, poolx.pkl, or
+  # offduration.pkl, so augmentation cannot be run from that checkout.
+  random_mix:
+    enabled: false
+    prob: 0.0
+
+data_augmentation:
+  enabled: false
+  prob_kettle: 0.1
+  prob_dishwasher: 0.3
+  prob_fridge: 0.6
+  prob_microwave: 0.3
+  prob_washingmachine: 0.3
