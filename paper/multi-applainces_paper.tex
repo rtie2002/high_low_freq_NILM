@@ -121,21 +121,22 @@ Proposed & MAE (W) &  &  &  &  &  &  \\
 \end{tabular}
 \end{table*}
 
-Table~\ref{tab:cost} reports the computational cost of the same models. The parameter count is the number of trainable weights, in millions. The window is the number of aggregate-power samples in one input, and the stride is the number of samples between successive inputs. The time is the wall-clock time, in seconds, required to disaggregate one common test recording on one GPU. Each model uses its own window and stride, so this time already includes the number of passes needed to cover that recording.
+Table~\ref{tab:cost} reports the computational cost of the same models. The parameter count is the number of trainable weights, in millions. The window is the number of aggregate-power samples in one input, and the stride is the number of samples between successive inputs. The epoch count is the configured maximum. UNet-NILM trains for 50 epochs with early stopping disabled. MAT-Conv trains for at most 200 epochs and stops after 30 epochs without improvement. The proposed model trains for at most 150 epochs, does not stop before epoch 100, and then stops after 55 epochs without improvement. The time is the wall-clock training time, in seconds, on one GPU, excluding waveform and loss plots.
 
 \begin{table}[!t]
-\caption{Computational cost. Time is the wall-clock time to disaggregate the same test recording on one GPU, using each model's own window and stride.}
+\caption{Computational cost. Epochs is the configured maximum. Time is the training time on one GPU, excluding plots.}
 \label{tab:cost}
 \centering
-\footnotesize
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}lcccc@{}}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lcccccc@{}}
 \toprule
-\textbf{Model} & \textbf{Params (M)} & \textbf{Window} & \textbf{Stride} & \textbf{Time (s)} \\
+\textbf{Model} & \textbf{Params} & \textbf{Window} & \textbf{Stride} & \textbf{Batch} & \textbf{Epochs} & \textbf{Time} \\
+ & \textbf{(M)} & & & & & \textbf{(s)} \\
 \midrule
-UNet-NILM~\cite{faustine2020unet} &  & 100 & 1 &  \\
-MAT-Conv~\cite{xiong2024matnilm} &  & 864 & 64 &  \\
-Proposed &  &  &  &  \\
+UNet-NILM~\cite{faustine2020unet} & 5.832 & 100 & 1 & 256 & 50 &  \\
+MAT-Conv~\cite{xiong2024matnilm} & 3.022 & 864 & 64 & 64 & 200 &  \\
+Proposed & 1.376 & 1024 & 512 & 64 & 150 &  \\
 \bottomrule
 \end{tabular}
 \end{table}

@@ -68,6 +68,7 @@ from evaluation.plots import (
     save_background_range_waveforms,
 )
 from evaluation.run_summary import (
+    build_cost_record,
     build_hardware_info,
     checkpoint_size_mb,
     count_model_parameters,
@@ -1412,17 +1413,21 @@ def train_model(
     best_path = run_dir / "best.pt"
 
     param_stats = count_model_parameters(model)
+    cost = build_cost_record(
+        adapter.model_cfg,
+        batch_size=int(train_loader.batch_size),
+        epochs=int(epochs),
+        param_stats=param_stats,
+    )
     manifest = {
         "experiment_id": adapter.experiment["experiment_id"],
         "model_name": adapter.name,
         "seed": int(seed_int),
-        "batch_size": int(train_loader.batch_size),
-        "epochs_configured": int(epochs),
         "checkpoint_monitor": str(train_cfg.get("checkpoint_monitor", "val_loss")),
         "checkpoint_mae_space": str(train_cfg.get("checkpoint_mae_space", "normalized")),
         "windowing": adapter.model_cfg.get("windowing", {}),
         "appliances": adapter.cfg["appliances"],
-        **param_stats,
+        **cost,
         **build_hardware_info(device),
     }
     if adapter.name == "matuda":
@@ -1464,6 +1469,8 @@ def train_model(
     early_stop_min_epochs = int(train_cfg.get("early_stop_min_epochs", 0))
     epochs_without_improvement = 0
     training_started = time.perf_counter()
+    # Waveform and loss figures are not part of the reported training time.
+    plot_seconds = 0.0
 
     try:
         # Step 7:
@@ -1570,7 +1577,7 @@ def train_model(
             train_time_sec = float(train_logs.get("elapsed_sec", 0.0))
             val_time_sec = float(val_logs.get("elapsed_sec", 0.0))
             epoch_time_sec = train_time_sec + val_time_sec
-            cumulative_time_sec = time.perf_counter() - training_started
+            cumulative_time_sec = time.perf_counter() - training_started - plot_seconds
 
             # Optional: freeze DA if source-val raw BCE keeps rising (negative transfer).
             # Default patience=0 → never freeze (Lin-style: keep λ fixed all epochs).
@@ -1688,6 +1695,7 @@ def train_model(
 
             # 6f. Save live loss/waveform plots at configured intervals.
             if monitor.should_plot(epoch_no):
+                plot_started = time.perf_counter()
                 _save_latest_waveforms(
                     monitor=monitor,
                     adapter=adapter,
@@ -1698,6 +1706,7 @@ def train_model(
                     epoch_no=epoch_no,
                     best_epoch=best_epoch,
                 )
+                plot_seconds += time.perf_counter() - plot_started
                 tqdm.write(
                     f"  {epoch_tag} | saved waveforms -> "
                     f".../waveforms/validation + .../waveforms/test/<scenario>/"
@@ -1724,6 +1733,7 @@ def train_model(
                 # Waveform PNG export is expensive (full val+test infer + 300dpi).
                 # Only refresh waveforms/best on plot_interval; best.pt still updates every improve.
                 if monitor.should_plot(epoch_no):
+                    plot_started = time.perf_counter()
                     _save_best_waveforms(
                         monitor=monitor,
                         adapter=adapter,
@@ -1733,6 +1743,7 @@ def train_model(
                         device=device,
                         best_epoch_no=best_epoch,
                     )
+                    plot_seconds += time.perf_counter() - plot_started
                     tqdm.write(
                         f"  {epoch_tag} | saved best waveforms -> "
                         ".../waveforms/validation + .../waveforms/test/<scenario>/best/"
@@ -1756,7 +1767,7 @@ def train_model(
 
         # Step 8:
         # Save the final history file and close out the live monitor state.
-        total_training_sec = time.perf_counter() - training_started
+        total_training_sec = time.perf_counter() - training_started - plot_seconds
         epochs_completed = len(history)
         last_epoch = int(history[-1]["epoch"]) if history else 0
         # Early stop / natural end may land between plot_interval epochs.
@@ -1795,13 +1806,14 @@ def train_model(
         timing_summary = {
             "total_seconds": total_training_sec,
             "total_formatted": _format_duration(total_training_sec),
+            "plot_seconds_excluded": plot_seconds,
             "epochs_completed": epochs_completed,
             "best_epoch": best_epoch,
             "best_score": float(best_score) if best_epoch > 0 else None,
             "checkpoint_monitor": monitor_key,
             "avg_epoch_seconds": total_training_sec / max(epochs_completed, 1),
             "avg_epoch_formatted": _format_duration(total_training_sec / max(epochs_completed, 1)),
-            **param_stats,
+            **cost,
             "checkpoint_file": best_path.name,
             "checkpoint_size_mb": checkpoint_size_mb(best_path),
         }
@@ -1813,7 +1825,7 @@ def train_model(
         ckpt_mb = timing_summary["checkpoint_size_mb"]
         ckpt_note = f"checkpoint {ckpt_mb:.2f} MB" if ckpt_mb is not None else "checkpoint n/a"
         tqdm.write(
-            f"Training finished in {timing_summary['total_formatted']} "
+            f"Training finished in {timing_summary['total_formatted']} (plots excluded) "
             f"({epochs_completed} epochs, best epoch {best_epoch}, "
             f"avg {_format_duration(timing_summary['avg_epoch_seconds'])}/epoch) | "
             f"params {format_parameter_count(param_stats['parameters_total'])} | "

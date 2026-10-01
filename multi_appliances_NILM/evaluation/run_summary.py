@@ -23,6 +23,37 @@ def count_model_parameters(model: nn.Module) -> dict[str, int]:
     }
 
 
+def build_cost_record(
+    model_cfg: dict[str, Any],
+    *,
+    batch_size: int,
+    epochs: int,
+    param_stats: dict[str, Any],
+) -> dict[str, Any]:
+    """Flat cost fields written into each run folder for the paper table.
+
+    Epochs here is the configured maximum. Early stopping can finish sooner;
+    the completed count is stored separately as epochs_completed.
+    """
+    windowing = model_cfg.get("windowing", {})
+    training = model_cfg.get("training", {})
+    train_stride = int(windowing["input_stride"])
+    return {
+        "parameters_total": int(param_stats["parameters_total"]),
+        "parameters_trainable": int(param_stats["parameters_trainable"]),
+        "parameters_total_millions": param_stats["parameters_total_millions"],
+        "parameters_trainable_millions": param_stats["parameters_trainable_millions"],
+        "input_window_length": int(windowing["input_window_length"]),
+        "output_window_length": int(windowing.get("output_window_length", 1)),
+        "input_stride": train_stride,
+        "eval_stride": int(windowing.get("eval_stride", train_stride)),
+        "batch_size": int(batch_size),
+        "epochs_configured": int(epochs),
+        "early_stop_patience": int(training.get("early_stop_patience", 0)),
+        "early_stop_min_epochs": int(training.get("early_stop_min_epochs", 0)),
+    }
+
+
 def checkpoint_size_mb(path: Path | None) -> float | None:
     if path is None or not path.exists():
         return None
@@ -155,9 +186,34 @@ def print_run_cost_summary(run_dir: Path, *, title: str = "Run summary") -> None
     if best_score is not None and monitor:
         lines.append(_row(width, f"Best {monitor}", f"{float(best_score):.4f}"))
 
+    window = summary.get("input_window_length")
+    stride = summary.get("input_stride")
+    if window is not None and stride is not None:
+        output_window = summary.get("output_window_length")
+        window_text = f"{window} in"
+        if output_window is not None:
+            window_text += f" -> {output_window} out"
+        window_text += f"  |  stride {stride}"
+        eval_stride = summary.get("eval_stride")
+        if eval_stride is not None and int(eval_stride) != int(stride):
+            window_text += f" (eval {eval_stride})"
+        lines.append(_row(width, "Window", window_text))
+
     batch_size = summary.get("batch_size")
+    epochs_configured = summary.get("epochs_configured")
     if batch_size is not None:
-        lines.append(_row(width, "Batch size", str(batch_size)))
+        batch_text = str(batch_size)
+        if epochs_configured is not None:
+            batch_text += f"  |  {epochs_configured} epochs configured"
+        lines.append(_row(width, "Batch", batch_text))
+
+    patience = summary.get("early_stop_patience")
+    if patience is not None:
+        early_text = "off" if int(patience) <= 0 else f"patience {patience}"
+        min_epochs = summary.get("early_stop_min_epochs")
+        if min_epochs is not None and int(min_epochs) > 0:
+            early_text += f", not before epoch {min_epochs}"
+        lines.append(_row(width, "Early stop", early_text))
 
     device = summary.get("device")
     gpu_name = summary.get("gpu_name")
@@ -427,6 +483,13 @@ def enrich_compare_table(table: pd.DataFrame, runs_dir: Path, experiment_id: str
         base = group.copy()
         base["parameters_m"] = summary.get("parameters_total_millions")
         base["trainable_parameters_m"] = summary.get("parameters_trainable_millions")
+        base["input_window_length"] = summary.get("input_window_length")
+        base["input_stride"] = summary.get("input_stride")
+        base["batch_size"] = summary.get("batch_size")
+        base["epochs_configured"] = summary.get("epochs_configured")
+        base["early_stop_patience"] = summary.get("early_stop_patience")
+        base["early_stop_min_epochs"] = summary.get("early_stop_min_epochs")
+        base["epochs_completed"] = summary.get("epochs_completed")
         base["training_time"] = summary.get("total_formatted")
         base["training_seconds"] = summary.get("total_seconds")
         base["checkpoint_mb"] = summary.get("checkpoint_size_mb")
@@ -508,7 +571,8 @@ def compare_experiment(runs_dir: Path, experiment_id: str, config_dir: Path | No
         show_cols = [
             c for c in [
                 "model", "test_scenario", "mae", "sae", "f1", "micro_f1", "parameters_m",
-                "training_time", "checkpoint_mb", "best_epoch", "best_score",
+                "input_window_length", "input_stride", "batch_size", "epochs_configured",
+                "epochs_completed", "training_time", "checkpoint_mb", "best_epoch", "best_score",
             ] if c in overall.columns
         ]
         print("\nModel comparison (overall test metrics + cost):", flush=True)
