@@ -34,8 +34,10 @@ windowing:
   input_window_length: 864
   output_window_length: 64
   output_alignment: center
-  # Train indices step by 1. Evaluation steps by outputLength (utils.testSampler).
-  input_stride: 1
+  # Paper Section II writes the window start as t = s*k and never sets s to 1.
+  # Section IV-C supervises T-2w = 64 samples, so s = 64 tiles those outputs.
+  # The released code instead uses every time index (s = 1).
+  input_stride: 64
   eval_stride: 64
   eval_reconstruction: flat
   training_targets: output_window
