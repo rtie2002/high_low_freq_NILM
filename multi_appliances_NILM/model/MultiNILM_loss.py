@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -34,6 +35,9 @@ class MultiNILMLossOutput:
     loss_state_smooth: torch.Tensor | None = None  # Σ_i SMOOTH_i, unweighted; None when off
     loss_background: torch.Tensor | None = None
     loss_reconstruction: torch.Tensor | None = None
+    loss_hard_negative: torch.Tensor | None = None
+    loss_hard_negative_per_appliance: torch.Tensor | None = None
+    hard_negative_effective_weight: torch.Tensor | None = None
 
 
 class MultiNILMLoss(nn.Module):
@@ -61,6 +65,12 @@ class MultiNILMLoss(nn.Module):
         background_huber_beta: float = 0.1,
         aggregate_mean: float = 0.0,
         aggregate_scale: float = 1.0,
+        hard_negative_weight: float = 0.0,
+        hard_negative_fraction: float = 0.05,
+        hard_negative_appliance_indices: list[int] | None = None,
+        hard_negative_warmup_epochs: int = 0,
+        hard_negative_ramp_epochs: int = 0,
+        hard_negative_exclusion_samples: int = 0,
     ) -> None:
         super().__init__()
         self.lambda_state = float(lambda_state)
@@ -77,12 +87,29 @@ class MultiNILMLoss(nn.Module):
         self.background_weight = float(background_weight)
         self.reconstruction_weight = float(reconstruction_weight)
         self.background_huber_beta = float(background_huber_beta)
+        self.hard_negative_weight = float(hard_negative_weight)
+        self.hard_negative_fraction = float(hard_negative_fraction)
+        self.hard_negative_appliance_indices = tuple(
+            int(i) for i in (hard_negative_appliance_indices or [])
+        )
+        self.hard_negative_warmup_epochs = int(hard_negative_warmup_epochs)
+        self.hard_negative_ramp_epochs = int(hard_negative_ramp_epochs)
+        self.hard_negative_exclusion_samples = int(hard_negative_exclusion_samples)
+        self.current_epoch = 1
         if self.background_weight < 0.0 or self.reconstruction_weight < 0.0:
             raise ValueError("background and reconstruction weights must be non-negative")
         if self.background_huber_beta <= 0.0:
             raise ValueError("background_huber_beta must be positive")
         if float(aggregate_scale) <= 0.0:
             raise ValueError("aggregate_scale must be positive")
+        if self.hard_negative_weight < 0.0:
+            raise ValueError("hard_negative_weight must be non-negative")
+        if not 0.0 < self.hard_negative_fraction <= 1.0:
+            raise ValueError("hard_negative_fraction must be in (0, 1]")
+        if self.hard_negative_warmup_epochs < 0 or self.hard_negative_ramp_epochs < 0:
+            raise ValueError("hard-negative warmup/ramp epochs must be non-negative")
+        if self.hard_negative_exclusion_samples < 0:
+            raise ValueError("hard_negative_exclusion_samples must be non-negative")
         # MAE logging scale (watts / std); not used in the training objective.
         self.register_buffer("power_scale", torch.as_tensor(power_scale, dtype=torch.float32))
         target_mean_tensor = (
@@ -98,6 +125,66 @@ class MultiNILMLoss(nn.Module):
             self.register_buffer("pos_weight", torch.as_tensor(pos_weight, dtype=torch.float32))
         else:
             self.pos_weight = None
+
+    def set_epoch(self, epoch: int) -> None:
+        """Set the 1-based training epoch used by the hard-negative schedule."""
+        self.current_epoch = max(1, int(epoch))
+
+    def _hard_negative_effective_weight(self) -> float:
+        """Warm up the base model, then linearly introduce hard negatives."""
+        if self.hard_negative_weight <= 0.0:
+            return 0.0
+        epochs_after_warmup = self.current_epoch - self.hard_negative_warmup_epochs
+        if epochs_after_warmup <= 0:
+            return 0.0
+        if self.hard_negative_ramp_epochs <= 0:
+            return self.hard_negative_weight
+        progress = min(1.0, epochs_after_warmup / self.hard_negative_ramp_epochs)
+        return self.hard_negative_weight * progress
+
+    def _hard_negative_loss(
+        self,
+        state_logits: torch.Tensor,
+        state_true: torch.Tensor,
+    ) -> torch.Tensor:
+        """Top-k negative BCE per selected appliance, returned as an A-vector.
+
+        Only true-OFF positions are eligible. A small temporal guard around true
+        ON labels protects transition samples from label/measurement alignment
+        error. For a negative label BCEWithLogits(s, 0) = softplus(s), so
+        selecting the largest logits is exactly selecting the hardest negatives.
+        """
+        num_appliances = state_logits.shape[-1]
+        losses = state_logits.new_zeros(num_appliances)
+        if self.hard_negative_weight <= 0.0 or not self.hard_negative_appliance_indices:
+            return losses
+
+        true_on = state_true >= 0.5
+        if self.hard_negative_exclusion_samples > 0:
+            # max_pool1d grows each ON region on both sides by `margin` samples.
+            margin = self.hard_negative_exclusion_samples
+            protected = F.max_pool1d(
+                true_on.float().permute(0, 2, 1),
+                kernel_size=2 * margin + 1,
+                stride=1,
+                padding=margin,
+            ).permute(0, 2, 1) > 0.0
+        else:
+            protected = true_on
+
+        eligible_off = ~protected
+        for app_i in self.hard_negative_appliance_indices:
+            if app_i < 0 or app_i >= num_appliances:
+                raise ValueError(
+                    f"hard-negative appliance index {app_i} is outside A={num_appliances}"
+                )
+            negative_logits = state_logits[..., app_i][eligible_off[..., app_i]]
+            if negative_logits.numel() == 0:
+                continue
+            k = max(1, math.ceil(self.hard_negative_fraction * negative_logits.numel()))
+            hardest_logits = torch.topk(negative_logits, k=k, sorted=False).values
+            losses[app_i] = F.softplus(hardest_logits).mean()
+        return losses
 
     def _per_appliance_power_loss(
         self,
@@ -327,6 +414,23 @@ class MultiNILMLoss(nn.Module):
         loss_state_term = self._balanced_state_term(loss_power, loss_state)
         loss = loss_power + loss_state_term
 
+        # Keep this outside task_balance so adding hard-negative mining does not
+        # silently rescale the existing BCE/FP gradients. Average only across
+        # the selected appliances so the configured weight has a stable meaning.
+        hard_negative_enabled = (
+            self.hard_negative_weight > 0.0
+            and bool(self.hard_negative_appliance_indices)
+        )
+        loss_hard_negative = None
+        loss_hard_negative_per_app = None
+        hard_negative_effective_weight = None
+        if hard_negative_enabled:
+            loss_hard_negative_per_app = self._hard_negative_loss(state_logits, state_true)
+            hard_negative_effective_weight = self._hard_negative_effective_weight()
+            selected = list(self.hard_negative_appliance_indices)
+            loss_hard_negative = loss_hard_negative_per_app[selected].mean()
+            loss = loss + hard_negative_effective_weight * loss_hard_negative
+
         loss_background = None
         loss_reconstruction = None
         auxiliary_enabled = self.background_weight > 0.0 or self.reconstruction_weight > 0.0
@@ -372,5 +476,18 @@ class MultiNILMLoss(nn.Module):
             ),
             loss_reconstruction=(
                 None if loss_reconstruction is None else loss_reconstruction.detach()
+            ),
+            loss_hard_negative=(
+                None if loss_hard_negative is None else loss_hard_negative.detach()
+            ),
+            loss_hard_negative_per_appliance=(
+                None
+                if loss_hard_negative_per_app is None
+                else loss_hard_negative_per_app.detach()
+            ),
+            hard_negative_effective_weight=(
+                None
+                if hard_negative_effective_weight is None
+                else state_logits.new_tensor(hard_negative_effective_weight).detach()
             ),
         )

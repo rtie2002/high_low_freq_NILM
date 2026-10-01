@@ -178,3 +178,112 @@ reconstruction.
 
 - Conv-NILM-Net: https://arxiv.org/abs/2208.02173
 - RAPC-Net: https://www.mdpi.com/2076-3417/16/17/8866
+
+---
+
+## Result: background head rejected
+
+The completed run showed that this auxiliary side task did not solve the target
+problem. Its prediction was never consumed by the five appliance heads, so it
+could only regularise the shared encoder indirectly.
+
+At epoch 150, the weighted auxiliary contribution was only
+
+\[
+0.10(0.237)+0.05(0.216)=0.0345,
+\]
+
+compared with validation `L_NILM = 109.657` (about 0.03%). Increasing that
+weight is not a clean remedy: it would allocate more shared capacity to an
+output that is still unused during appliance inference.
+
+| Metric | Relation baseline | Dual expert | Background head |
+|---|---:|---:|---:|
+| Validation microwave AP | 0.436 | **0.467** | 0.420 |
+| REFIT microwave AP | 0.488 | **0.591** | 0.494 |
+| UK-DALE microwave AP | 0.792 | **0.805** | 0.763 |
+| REFIT fridge AP | **0.745** | 0.726 | 0.714 |
+| Validation fridge FPR at residual >=800 W | 0.691 | **0.667** | 0.716 |
+| REFIT fridge FPR at residual >=800 W | 0.688 | **0.488** | 0.587 |
+
+The active configuration therefore disables the background head and restores
+the exact relation dual-expert architecture. The old result directory remains
+unchanged as a negative ablation record.
+
+## Next controlled experiment: hard-negative mining
+
+Experiment ID:
+
+```yaml
+background_swap_8w_relation_dual_expert_hard_negative
+```
+
+### Why this targets the observed failure
+
+The ordinary false-positive term averages over every true-OFF sample. Easy OFF
+samples dominate that average, while the small subset of unknown loads that
+look like a fridge or microwave receive little influence. The new term selects
+the highest-scoring true-OFF samples separately for fridge and microwave.
+
+For selected appliance `i`, let `H_i` be the top 5% eligible OFF logits. A
+two-sample (16 s) guard is removed on each side of true ON regions to avoid
+training aggressively on timestamp and threshold alignment errors:
+
+\[
+H_i=\operatorname{TopK}_{5\%}
+\{s_{i,t}:z_{i,t}=0,\ t\notin\text{ON guard}\},
+\]
+
+\[
+L_{\mathrm{HN}}=\frac{1}{2}
+\sum_{i\in\{\mathrm{fridge},\mathrm{microwave}\}}
+\frac{1}{|H_i|}\sum_{s\in H_i}\operatorname{softplus}(s).
+\]
+
+It is deliberately outside the existing dynamic state balancing:
+
+\[
+L_{\mathrm{total}}=L_{\mathrm{existing}}
++\lambda_{\mathrm{HN}}(e)L_{\mathrm{HN}}.
+\]
+
+This prevents the new term from silently reducing the effective BCE and FP
+weights. The schedule is zero for epochs 1--20, ramps linearly during epochs
+21--30, and then stays at `lambda_HN = 0.05`.
+
+### Architecture and loss boundary
+
+```mermaid
+flowchart TD
+    X[Aggregate] --> FE[Fractional frontend]
+    X --> LE[Local expert]
+    FE --> GE[Global multiscale encoder + TCN]
+    GE --> GATE[Per-appliance local/global gates]
+    LE --> GATE
+    GATE --> REL[Relation attention across five appliances]
+    REL --> OUT[Five power and state outputs]
+    OUT --> BASE[Existing power + balanced state loss]
+    OUT --> HN[Top 5% true-OFF logits<br/>fridge and microwave only]
+    BASE --> TOTAL[Total loss]
+    HN --> TOTAL
+```
+
+No new input feature, appliance output, threshold rule, data split, or test
+post-processing is introduced. Therefore any change can be attributed to the
+hard-negative training signal.
+
+### Required success criteria
+
+The experiment is accepted only if all of the following hold against the same
+dual-expert reference:
+
+1. fridge and microwave validation AP do not materially decrease;
+2. high-residual-background FPR decreases on validation and both test houses;
+3. recall decreases by no more than 2--3 percentage points;
+4. the other three appliances do not show a systematic AP drop;
+5. long false-ON segments visibly decrease in target-focused waveforms.
+
+`loss_detail.csv` now records the raw train/validation hard-negative loss, its
+effective scheduled weight, and per-appliance hard-negative losses. Lower FPR
+alone is insufficient: a model that simply predicts OFF more often fails the
+AP/recall criteria.

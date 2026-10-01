@@ -1,6 +1,6 @@
-# Controlled architecture ablation: keep the relational five-appliance baseline
-# and explicitly model the unobserved household/background load.
-experiment_id: background_swap_8w_relation_background_head
+# Controlled loss ablation: restore the best relation dual-expert model and
+# train its fridge/microwave decision boundaries on the hardest true-OFF points.
+experiment_id: background_swap_8w_relation_dual_expert_hard_negative
 model_name: multinilm_fractional
 
 data:
@@ -88,11 +88,21 @@ architecture:
   gate_mode: soft
   gate_threshold: 0.5
 
-  # Auxiliary nuisance/source-separation output. It predicts
-  # aggregate - sum(five target appliances), but is not reported as appliance 6
-  # and does not participate in cross-appliance relation attention.
+  # The background-head ablation did not improve target predictions because its
+  # output was a side task, not evidence consumed by the appliance heads.
   background_head:
+    enabled: false
+
+  # Restore the exact local/global expert used by the strongest microwave run.
+  # This is held fixed here; hard-negative mining is the only new intervention.
+  dual_expert:
     enabled: true
+    local_channels: 32
+    local_kernel_size: 5
+    local_dilations: [1, 2, 4]
+    local_norm_type: group
+    gate_hidden_channels: 32
+    gate_initial_local_weight: 0.1
 
   cross_appliance:
     # The no-relation ablation reduced microwave AP/F1 and increased high-
@@ -109,7 +119,7 @@ architecture:
 # prediction is y_hat = p * R + (1 - p) * y_off (y_off = 0 W after z-scoring),
 # so every power term below also trains p.
 #
-#   L_total = L_NILM + 0.10 * L_background + 0.05 * L_reconstruction
+#   L_total = L_NILM + lambda_HN(epoch) * L_HN
 #   L_NILM  = L_power + state_term
 #
 #   L_power = sum_i [ MSE_i                                   all samples
@@ -179,14 +189,25 @@ loss:
   power_energy_relative_weight: 0.25
   energy_floor_watts: 10
 
-  # b = max(0, aggregate - sum_i true_appliance_i). The background head and
-  # aggregate are compared in aggregate-normalized units using SmoothL1.
-  # Reconstruction is aggregate ~= predicted_background + sum_i predicted_i.
-  # These fixed auxiliary weights are outside dynamic power/state balancing.
-  background_weight: 0.10
-  reconstruction_weight: 0.05
-  # SmoothL1 transition in normalized aggregate units (~91 W here).
+  # Failed background-head ablation is explicitly off.
+  background_weight: 0.0
+  reconstruction_weight: 0.0
   background_huber_beta: 0.10
+
+  # The ordinary FP term averages over every true-OFF point, so millions of easy
+  # negatives can hide the few unknown loads that imitate a fridge/microwave.
+  # For each selected appliance, rank eligible true-OFF logits and penalise only
+  # the highest 5%. This term is added OUTSIDE task_balance, preserving the
+  # baseline BCE/FP scaling. At 8 s/sample, exclusion_samples=2 protects 16 s on
+  # each side of a true ON region from timestamp/threshold alignment noise.
+  hard_negative:
+    enabled: true
+    appliances: [fridge, microwave]
+    fraction: 0.05
+    weight: 0.05
+    warmup_epochs: 20
+    ramp_epochs: 10
+    exclusion_samples: 2
 
 training:
   batch_size: 64

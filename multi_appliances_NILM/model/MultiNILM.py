@@ -930,6 +930,24 @@ class MultiNILMAdapter(BaseNILMAdapter):
     def build_loss(self):
         from model.MultiNILM_loss import MultiNILMLoss
         cfg = self.model_cfg.get("loss", {})
+        hard_negative_cfg = (
+            cfg.get("hard_negative", {})
+            if isinstance(cfg.get("hard_negative"), dict)
+            else {}
+        )
+        appliance_names = list(self.cfg["appliances"])
+        hard_negative_names = list(hard_negative_cfg.get("appliances", []))
+        unknown_hard_negative_names = sorted(
+            set(hard_negative_names) - set(appliance_names)
+        )
+        if unknown_hard_negative_names:
+            raise ValueError(
+                "Unknown hard-negative appliances: "
+                + ", ".join(unknown_hard_negative_names)
+            )
+        hard_negative_indices = [
+            appliance_names.index(name) for name in hard_negative_names
+        ]
         loader = self._data_loader()
         aggregate_mean = loader.norm.input_mean
         aggregate_scale = loader.norm.input_std
@@ -957,6 +975,18 @@ class MultiNILMAdapter(BaseNILMAdapter):
             background_huber_beta=float(cfg.get("background_huber_beta", 0.1)),
             aggregate_mean=float(aggregate_mean),
             aggregate_scale=float(aggregate_scale),
+            hard_negative_weight=(
+                float(hard_negative_cfg.get("weight", 0.0))
+                if bool(hard_negative_cfg.get("enabled", False))
+                else 0.0
+            ),
+            hard_negative_fraction=float(hard_negative_cfg.get("fraction", 0.05)),
+            hard_negative_appliance_indices=hard_negative_indices,
+            hard_negative_warmup_epochs=int(hard_negative_cfg.get("warmup_epochs", 0)),
+            hard_negative_ramp_epochs=int(hard_negative_cfg.get("ramp_epochs", 0)),
+            hard_negative_exclusion_samples=int(
+                hard_negative_cfg.get("exclusion_samples", 0)
+            ),
         )
 
     def step(self, model, loss_fn, batch, target_batch=None):
@@ -1008,6 +1038,15 @@ class MultiNILMAdapter(BaseNILMAdapter):
             logs["loss_background"] = float(out.loss_background)
         if getattr(out, "loss_reconstruction", None) is not None:
             logs["loss_reconstruction"] = float(out.loss_reconstruction)
+        if getattr(out, "loss_hard_negative", None) is not None:
+            logs["loss_hard_negative"] = float(out.loss_hard_negative)
+            logs["hard_negative_effective_weight"] = float(
+                out.hard_negative_effective_weight
+            )
+            for app_i, app in enumerate(self.cfg["appliances"]):
+                hard_loss_i = float(out.loss_hard_negative_per_appliance[app_i])
+                if hard_loss_i > 0.0:
+                    logs[f"loss_hard_negative_{app}"] = hard_loss_i
         expert_gates = getattr(model, "last_expert_gates", None)
         if expert_gates is not None:
             # Stored gate shape is (B, A, 2, T); logs use local-expert weight.
