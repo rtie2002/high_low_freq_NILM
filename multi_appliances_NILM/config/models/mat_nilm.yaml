@@ -78,6 +78,20 @@ training:
   early_stop_patience: 30
   scheduler: none
 
+  # Same waveform cadence as the other models: save every 50 epochs.
+  plots:
+    plot_mode: interval
+    plot_interval: 50
+    plot_on_periods: 5
+    plot_max_batches: 16
+    waveform_figsize: 5.5
+    waveform_dpi: 300
+    waveform_dynamic_figsize: true
+    on_period_margin_min: 40
+    on_period_margin_frac: 0.08
+    waveform_context_scale: 10
+    comparison_dpi: 600
+
   # README reproduction command is `python main.py --dataAug`.
   # argparse defaults: dishwasher 0.3, fridge 0.6, microwave 0.3, wash 0.3.
   # The public repository does not ship REDD_pool.pkl, poolx.pkl, or

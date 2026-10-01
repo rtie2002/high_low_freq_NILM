@@ -121,6 +121,25 @@ Proposed & MAE (W) &  &  &  &  &  &  \\
 \end{tabular}
 \end{table*}
 
+Table~\ref{tab:cost} reports the computational cost of the same models. The parameter count is the number of trainable weights, in millions. The window is the number of aggregate-power samples in one input, and the stride is the number of samples between successive inputs. The time is the wall-clock time, in seconds, required to disaggregate one common test recording on one GPU. Each model uses its own window and stride, so this time already includes the number of passes needed to cover that recording.
+
+\begin{table}[!t]
+\caption{Computational cost. Time is the wall-clock time to disaggregate the same test recording on one GPU, using each model's own window and stride.}
+\label{tab:cost}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Model} & \textbf{Params (M)} & \textbf{Window} & \textbf{Stride} & \textbf{Time (s)} \\
+\midrule
+UNet-NILM~\cite{faustine2020unet} &  & 100 & 1 &  \\
+MAT-Conv~\cite{xiong2024matnilm} &  & 864 & 64 &  \\
+Proposed &  &  &  &  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \section{Conclusion}
 
 \bibliographystyle{IEEEtran}
