@@ -297,18 +297,18 @@ x_{\mathrm{local}}
 
 ### 5.3 Long-Context Expert
 
-Long-context expert 可以复用当前 TCN 思路，但应作为“上下文专家”，而不是唯一的信息路径：
+The long-context expert can reuse the current TCN design, but it should act as a context expert rather than the only information path:
 
 \[
 h_C=E_C(\phi(x)).
 \]
 
-它负责：
+It is responsible for:
 
-- fridge 的周期上下文；
-- dishwasher/washing machine 的长过程；
-- 判断一个短脉冲是否处在复杂 background 中；
-- 提供整体 aggregate context。
+- the periodic context of the fridge;
+- the long operating cycles of the dishwasher and washing machine;
+- deciding whether a short pulse occurs in a complex background;
+- providing the overall aggregate context.
 
 第一版不建议增加深度。可以先复用当前 shared TCN，确保新实验只测试 dual routing，而不是同时测试更大的模型。
 

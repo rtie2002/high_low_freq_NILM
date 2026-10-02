@@ -936,7 +936,9 @@ def _run_epoch(
     the part that decides whether that batch updates model weights.
     """
     # These are the values averaged and returned at the end of the epoch.
-    log_keys = log_keys or ["loss", "loss_state", "loss_power", "mae"]
+    # Do not invent "mae". A missing MAE used to be filled with 0, so
+    # checkpoint_monitor: val_mae kept epoch 1 forever.
+    log_keys = log_keys or ["loss", "loss_state", "loss_power"]
     totals = {k: 0.0 for k in log_keys}
     n_batches = 0
 
@@ -1078,7 +1080,12 @@ def _run_epoch(
                 state_prob,
             )
             logs["val_ap"] = float(np.mean(ap_per_appliance))
-        logs.update(_epoch_power_mae_logs(adapter, aux_batches))
+        power_mae = _epoch_power_mae_logs(adapter, aux_batches)
+        logs.update(power_mae)
+        if "mae" not in logs:
+            # Whole-validation watt error. Adapters that already log batch MAE
+            # keep that value; MAT-Conv does not log one.
+            logs["mae"] = power_mae["mae_watts_epoch"]
         if monitor_key := str(adapter.model_cfg.get("training", {}).get("checkpoint_monitor", "")).lower():
             train_cfg = adapter.model_cfg.get("training", {})
             if monitor_key in {"val_mae_minus_f1", "mae_minus_f1"}:

@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="820" viewBox="0 0 1500 820">
+  <defs>
+    <style>
+      .title { font: 700 34px 'Segoe UI', Arial, sans-serif; fill: #172033; }
+      .head { font: 700 23px 'Segoe UI', Arial, sans-serif; fill: #172033; }
+      .body { font: 18px 'Segoe UI', Arial, sans-serif; fill: #263247; }
+      .small { font: 16px 'Segoe UI', Arial, sans-serif; fill: #42516a; }
+      .eq { font: 600 21px Consolas, monospace; fill: #172033; }
+      .arrow { stroke: #41546f; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,8 L10,4 z" fill="#41546f"/>
+    </marker>
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#60708a" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+
+  <rect width="1500" height="820" fill="#f7f9fc"/>
+  <text x="750" y="54" text-anchor="middle" class="title">Background Swap：理论、数据流与失败位置</text>
+
+  <rect x="45" y="105" width="385" height="245" rx="18" fill="#fff4df" stroke="#e4a63a" stroke-width="3" filter="url(#shadow)"/>
+  <text x="238" y="143" text-anchor="middle" class="head">Anchor window A</text>
+  <text x="70" y="187" class="body">保留目标电器与标签</text>
+  <text x="70" y="229" class="eq">x_A = Σ y_A,i + b_A</text>
+  <text x="70" y="273" class="body">保留：</text>
+  <text x="135" y="273" class="eq">y_A,i , z_A,i</text>
+  <text x="70" y="315" class="small">原背景 b_A 被丢弃</text>
+
+  <rect x="45" y="430" width="385" height="245" rx="18" fill="#eaf3ff" stroke="#4789d5" stroke-width="3" filter="url(#shadow)"/>
+  <text x="238" y="468" text-anchor="middle" class="head">Donor window B</text>
+  <text x="70" y="512" class="body">估计新的 residual background</text>
+  <text x="70" y="554" class="eq">b_B = clip(x_B − Σ y_B,i, 0)</text>
+  <text x="70" y="598" class="body">只保留：</text>
+  <text x="165" y="598" class="eq">b_B</text>
+  <text x="70" y="640" class="small">B 的五个目标电器及标签被丢弃</text>
+
+  <path d="M430 228 C525 228, 535 310, 610 337" class="arrow"/>
+  <path d="M430 553 C525 553, 535 445, 610 407" class="arrow"/>
+
+  <rect x="610" y="235" width="400" height="300" rx="20" fill="#eaf8ef" stroke="#38a169" stroke-width="4" filter="url(#shadow)"/>
+  <text x="810" y="278" text-anchor="middle" class="head">Synthetic training window</text>
+  <text x="810" y="337" text-anchor="middle" class="eq">x' = Σ y_A,i + b_B</text>
+  <text x="810" y="391" text-anchor="middle" class="eq">targets = y_A,i</text>
+  <text x="810" y="435" text-anchor="middle" class="eq">states = z_A,i</text>
+  <line x1="660" y1="466" x2="960" y2="466" stroke="#83b99a" stroke-width="2"/>
+  <text x="810" y="500" text-anchor="middle" class="small">训练窗口有 50% 概率被替换</text>
+
+  <path d="M1010 382 L1085 382" class="arrow"/>
+
+  <rect x="1085" y="105" width="370" height="245" rx="18" fill="#edf8f2" stroke="#45a56f" stroke-width="3" filter="url(#shadow)"/>
+  <text x="1270" y="143" text-anchor="middle" class="head">理论目标</text>
+  <text x="1110" y="188" class="body">• 打破 target 与背景的偶然相关</text>
+  <text x="1110" y="228" class="body">• 强迫模型学习 appliance signature</text>
+  <text x="1110" y="268" class="body">• 提高跨房屋背景不变性</text>
+  <text x="1110" y="308" class="body">• 减少高背景 false positives</text>
+
+  <rect x="1085" y="430" width="370" height="300" rx="18" fill="#fff0f0" stroke="#d84b4b" stroke-width="3" filter="url(#shadow)"/>
+  <text x="1270" y="468" text-anchor="middle" class="head">实际失败位置</text>
+  <text x="1110" y="513" class="body">• residual 并非纯净背景</text>
+  <text x="1110" y="553" class="body">• 含未知负载和 target-like pulse</text>
+  <text x="1110" y="593" class="body">• 任意组合可能不符合真实条件分布</text>
+  <text x="1110" y="633" class="body">• 只改变背景，不增加目标形态多样性</text>
+  <text x="1110" y="673" class="body">• 50% 合成比例可能过强</text>
+  <text x="1270" y="710" text-anchor="middle" class="small">结果：局部指标改善，但跨房屋不稳定</text>
+
+  <text x="750" y="785" text-anchor="middle" class="small">实现是正常的；失败的是“背景替换足以解决 domain shift”这一假设。</text>
+</svg>

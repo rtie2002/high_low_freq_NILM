@@ -74,7 +74,9 @@ training:
   prefetch_factor: 2
   persistent_workers: false
   use_amp: false
+  # Epoch validation MAE in watts. The adapter does not log a batch MAE.
   checkpoint_monitor: val_mae
+  checkpoint_mae_space: watts
   early_stop_patience: 30
   scheduler: none
 

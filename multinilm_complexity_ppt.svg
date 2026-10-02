@@ -1,0 +1,177 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <defs>
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#152238" flood-opacity="0.15"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#5a6980"/>
+    </marker>
+    <style>
+      .title{font:700 42px 'Segoe UI',Arial,sans-serif;fill:#152238}
+      .subtitle{font:400 21px 'Segoe UI',Arial,sans-serif;fill:#526174}
+      .stage{font:700 24px 'Segoe UI',Arial,sans-serif;fill:#ffffff}
+      .count{font:700 17px 'Segoe UI',Arial,sans-serif;fill:#ffffff}
+      .section{font:700 20px 'Segoe UI',Arial,sans-serif;fill:#17243a}
+      .body{font:400 17px 'Segoe UI',Arial,sans-serif;fill:#25334a}
+      .small{font:400 15px 'Segoe UI',Arial,sans-serif;fill:#5c697c}
+      .strong{font:700 17px 'Segoe UI',Arial,sans-serif;fill:#17243a}
+      .eq{font:600 16px Consolas,monospace;fill:#7a4714}
+      .bottomTitle{font:700 24px 'Segoe UI',Arial,sans-serif;fill:#ffffff}
+      .bottomBody{font:500 17px 'Segoe UI',Arial,sans-serif;fill:#ffffff}
+      .flow{stroke:#5a6980;stroke-width:4;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+
+  <rect width="1920" height="1080" fill="#f5f7fb"/>
+  <rect x="0" y="0" width="1920" height="12" fill="#213a5a"/>
+  <text x="80" y="68" class="title">Why MultiNILM Became Too Complicated</text>
+  <text x="80" y="105" class="subtitle">Five interacting layers make improvements difficult to attribute and reproduce</text>
+
+  <!-- Stage arrows -->
+  <path d="M380 500 L410 500" class="flow"/>
+  <path d="M755 500 L785 500" class="flow"/>
+  <path d="M1130 500 L1160 500" class="flow"/>
+  <path d="M1505 500 L1535 500" class="flow"/>
+
+  <!-- Column 1 -->
+  <g filter="url(#shadow)">
+    <rect x="45" y="145" width="335" height="700" rx="18" fill="#ffffff"/>
+    <rect x="45" y="145" width="335" height="74" rx="18" fill="#256ca8"/>
+    <rect x="45" y="198" width="335" height="21" fill="#256ca8"/>
+  </g>
+  <text x="70" y="181" class="stage">1. Data &amp; Input Features</text>
+  <text x="70" y="207" class="count">13 channels + augmentation</text>
+  <text x="70" y="258" class="section">Window preparation</text>
+  <text x="70" y="292" class="body">• 8-second sampling</text>
+  <text x="70" y="322" class="body">• 1,024-point windows</text>
+  <text x="70" y="352" class="body">• Stride 512 / 50% overlap</text>
+  <text x="70" y="382" class="body">• Per-signal z-score normalization</text>
+  <line x1="70" y1="412" x2="355" y2="412" stroke="#d9e1ec"/>
+  <text x="70" y="450" class="section">Handcrafted channels</text>
+  <text x="70" y="484" class="body">• Raw aggregate ×1</text>
+  <text x="70" y="514" class="body">• Delta + absolute delta ×2</text>
+  <text x="70" y="544" class="body">• Rolling means ×3</text>
+  <text x="70" y="574" class="body">• Rolling standard deviations ×3</text>
+  <text x="70" y="604" class="body">• Fractional derivatives ×4</text>
+  <line x1="70" y1="635" x2="355" y2="635" stroke="#d9e1ec"/>
+  <text x="70" y="673" class="section">Training augmentation</text>
+  <text x="70" y="707" class="body">• 50% real windows</text>
+  <text x="70" y="737" class="body">• 50% full random mix</text>
+  <text x="70" y="767" class="body">• Or background swap</text>
+  <rect x="70" y="791" width="285" height="34" rx="8" fill="#e8f2fb"/>
+  <text x="212" y="814" text-anchor="middle" class="small">Several features describe the same edges</text>
+
+  <!-- Column 2 -->
+  <g filter="url(#shadow)">
+    <rect x="420" y="145" width="335" height="700" rx="18" fill="#ffffff"/>
+    <rect x="420" y="145" width="335" height="74" rx="18" fill="#6950a1"/>
+    <rect x="420" y="198" width="335" height="21" fill="#6950a1"/>
+  </g>
+  <text x="445" y="181" class="stage">2. Model Architecture</text>
+  <text x="445" y="207" class="count">Shared encoder + 5 task branches</text>
+  <text x="445" y="258" class="body">① Multiscale CNN stem</text>
+  <text x="470" y="284" class="small">Kernels 3, 5 and 9</text>
+  <text x="445" y="324" class="body">② IBN convolution stages</text>
+  <text x="470" y="350" class="small">32 → 64 → 128 channels</text>
+  <text x="445" y="390" class="body">③ Five dilated TCN blocks</text>
+  <text x="470" y="416" class="small">Dilations 1, 2, 4, 8 and 16</text>
+  <text x="445" y="456" class="body">④ Five appliance branches</text>
+  <text x="470" y="482" class="small">Two local residual blocks each</text>
+  <text x="445" y="522" class="body">⑤ Task attention</text>
+  <text x="445" y="562" class="body">⑥ Relation attention</text>
+  <text x="445" y="602" class="body">⑦ Five power + five state heads</text>
+  <text x="445" y="642" class="body">⑧ Soft state-power gate</text>
+  <line x1="445" y1="674" x2="730" y2="674" stroke="#d9e1ec"/>
+  <text x="445" y="710" class="section">Failed experimental additions</text>
+  <text x="445" y="742" class="body">• Dual expert</text>
+  <text x="445" y="772" class="body">• Background head</text>
+  <text x="445" y="802" class="body">• Hard-negative branch</text>
+
+  <!-- Column 3 -->
+  <g filter="url(#shadow)">
+    <rect x="795" y="145" width="335" height="700" rx="18" fill="#ffffff"/>
+    <rect x="795" y="145" width="335" height="74" rx="18" fill="#b66a21"/>
+    <rect x="795" y="198" width="335" height="21" fill="#b66a21"/>
+  </g>
+  <text x="820" y="181" class="stage">3. Loss Function</text>
+  <text x="820" y="207" class="count">7 active terms + dynamic balance</text>
+  <text x="820" y="258" class="section">Power objective</text>
+  <text x="820" y="292" class="body">• Base power MSE</text>
+  <text x="820" y="322" class="body">• ON-only MSE</text>
+  <text x="820" y="352" class="body">• OFF-only MSE</text>
+  <text x="820" y="382" class="body">• Delta MSE</text>
+  <text x="820" y="412" class="body">• Relative energy loss</text>
+  <line x1="820" y1="440" x2="1105" y2="440" stroke="#d9e1ec"/>
+  <text x="820" y="478" class="section">State objective</text>
+  <text x="820" y="512" class="body">• Pos-weighted BCE</text>
+  <text x="820" y="542" class="body">• False-positive penalty</text>
+  <line x1="820" y1="570" x2="1105" y2="570" stroke="#d9e1ec"/>
+  <text x="820" y="608" class="section">Dynamic task balance</text>
+  <text x="820" y="640" class="eq">state term = 0.8 × L_power</text>
+  <text x="820" y="670" class="eq">logged L_NILM = 1.8 × L_power</text>
+  <rect x="820" y="710" width="285" height="96" rx="10" fill="#fff1df"/>
+  <text x="962" y="741" text-anchor="middle" class="strong">Main problem</text>
+  <text x="962" y="770" text-anchor="middle" class="small">The effective state weight changes</text>
+  <text x="962" y="794" text-anchor="middle" class="small">between batches and epochs</text>
+
+  <!-- Column 4 -->
+  <g filter="url(#shadow)">
+    <rect x="1170" y="145" width="335" height="700" rx="18" fill="#ffffff"/>
+    <rect x="1170" y="145" width="335" height="74" rx="18" fill="#37845a"/>
+    <rect x="1170" y="198" width="335" height="21" fill="#37845a"/>
+  </g>
+  <text x="1195" y="181" class="stage">4. Training Strategy</text>
+  <text x="1195" y="207" class="count">Optimisation + model selection</text>
+  <text x="1195" y="258" class="section">Optimisation</text>
+  <text x="1195" y="292" class="body">• Adam optimizer</text>
+  <text x="1195" y="322" class="body">• Learning rate 1×10⁻⁴</text>
+  <text x="1195" y="352" class="body">• Weight decay 1×10⁻⁴</text>
+  <text x="1195" y="382" class="body">• Dropout 0.25</text>
+  <text x="1195" y="412" class="body">• Gradient clipping 1.0</text>
+  <line x1="1195" y1="440" x2="1480" y2="440" stroke="#d9e1ec"/>
+  <text x="1195" y="478" class="section">Scheduling and selection</text>
+  <text x="1195" y="512" class="body">• ReduceLROnPlateau</text>
+  <text x="1195" y="542" class="body">• Composite checkpoint score</text>
+  <text x="1220" y="568" class="small">MAE + (1 − AP)</text>
+  <text x="1195" y="608" class="body">• Minimum 100 epochs</text>
+  <text x="1195" y="638" class="body">• Early-stop patience 55</text>
+  <rect x="1195" y="684" width="285" height="122" rx="10" fill="#e8f7ee"/>
+  <text x="1338" y="716" text-anchor="middle" class="strong">Selection ambiguity</text>
+  <text x="1338" y="746" text-anchor="middle" class="small">The “best” checkpoint may not have</text>
+  <text x="1338" y="771" text-anchor="middle" class="small">the best fridge FPR or microwave AP</text>
+
+  <!-- Column 5 -->
+  <g filter="url(#shadow)">
+    <rect x="1545" y="145" width="330" height="700" rx="18" fill="#ffffff"/>
+    <rect x="1545" y="145" width="330" height="74" rx="18" fill="#a94747"/>
+    <rect x="1545" y="198" width="330" height="21" fill="#a94747"/>
+  </g>
+  <text x="1570" y="181" class="stage">5. Evaluation Pipeline</text>
+  <text x="1570" y="207" class="count">7 output transformations</text>
+  <text x="1570" y="258" class="body">① Overlap-window averaging</text>
+  <text x="1570" y="302" class="body">② Per-appliance calibration</text>
+  <text x="1595" y="328" class="small">Threshold selected on validation F1</text>
+  <text x="1570" y="368" class="body">③ Minimum-ON filtering</text>
+  <text x="1570" y="408" class="body">④ Merge short OFF gaps</text>
+  <text x="1570" y="448" class="body">⑤ Second hard power gate</text>
+  <text x="1570" y="488" class="body">⑥ Below 5 W → zero</text>
+  <text x="1570" y="528" class="body">⑦ Non-negative / max clipping</text>
+  <line x1="1570" y1="560" x2="1850" y2="560" stroke="#d9e1ec"/>
+  <text x="1570" y="598" class="section">Double gating</text>
+  <text x="1570" y="632" class="body">• Soft gate inside the model</text>
+  <text x="1570" y="662" class="body">• Hard gate after calibration</text>
+  <rect x="1570" y="710" width="280" height="96" rx="10" fill="#fdeaea"/>
+  <text x="1710" y="741" text-anchor="middle" class="strong">Interpretation risk</text>
+  <text x="1710" y="770" text-anchor="middle" class="small">Final metrics may improve even when</text>
+  <text x="1710" y="794" text-anchor="middle" class="small">the raw waveform remains poor</text>
+
+  <!-- Bottom conclusion -->
+  <rect x="45" y="890" width="1830" height="140" rx="18" fill="#223a59"/>
+  <text x="80" y="932" class="bottomTitle">Why the system is difficult to understand</text>
+  <circle cx="92" cy="974" r="5" fill="#75b8f2"/><text x="110" y="980" class="bottomBody">Overlapping mechanisms</text>
+  <circle cx="440" cy="974" r="5" fill="#b99be8"/><text x="458" y="980" class="bottomBody">Changing loss scales</text>
+  <circle cx="765" cy="974" r="5" fill="#f0aa61"/><text x="783" y="980" class="bottomBody">Mixed experiment variables</text>
+  <circle cx="1155" cy="974" r="5" fill="#76c798"/><text x="1173" y="980" class="bottomBody">Training-set shortcuts</text>
+  <circle cx="1510" cy="974" r="5" fill="#ef8d8d"/><text x="1528" y="980" class="bottomBody">Postprocessed metrics</text>
+  <text x="960" y="1015" text-anchor="middle" class="bottomBody">Next: remove one component at a time and retain only repeatable validation gains.</text>
+</svg>

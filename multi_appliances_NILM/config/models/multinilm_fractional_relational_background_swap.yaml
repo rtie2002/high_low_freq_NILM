@@ -1,6 +1,6 @@
 # Controlled loss ablation: restore the best relation dual-expert model and
 # train its fridge/microwave decision boundaries on the hardest true-OFF points.
-experiment_id: background_swap_8w_relation_dual_expert_hard_negative
+experiment_id: comparison_8w_multinilm_dual_expert
 model_name: multinilm_fractional
 
 data:
