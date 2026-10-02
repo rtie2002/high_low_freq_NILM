@@ -1,6 +1,6 @@
 # Relation dual-expert model. Hard-negative mining was removed after the
 # completed run: weight 0.05 added about 0.05 to a loss of tens to hundreds.
-experiment_id: signed_delta
+experiment_id: k_0
 model_name: multinilm_fractional
 
 data:
@@ -41,7 +41,7 @@ windowing:
   training_targets: auto
 
 fractional:
-  k: 4
+  k: 0
   include_raw: true
   include_delta: true
   include_abs_delta: true
