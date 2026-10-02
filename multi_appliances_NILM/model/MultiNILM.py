@@ -833,9 +833,12 @@ def build_multinilm_fractional(architecture, *, num_appliances, output_length, a
     block = architecture.get("fractional") if isinstance(architecture.get("fractional"), dict) else {}
     if block.get("alphas") is None:
         k = int(block.get("k", 8))
-        if k < 1:
-            raise ValueError(f"k must be >= 1, got {k}")
-        alphas = [1.0] if k == 1 else [round((i + 1) / k, 6) for i in range(k)]
+        if k < 0:
+            raise ValueError(f"k must be >= 0, got {k}")
+        # k is the number of Grünwald–Letnikov channels. k=0 leaves them out.
+        alphas = [] if k == 0 else (
+            [1.0] if k == 1 else [round((i + 1) / k, 6) for i in range(k)]
+        )
     else:
         alphas = [float(a) for a in block["alphas"]]
     memory = block.get("memory", None)

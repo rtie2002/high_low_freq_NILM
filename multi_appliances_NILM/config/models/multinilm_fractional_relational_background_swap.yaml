@@ -41,6 +41,7 @@ windowing:
   training_targets: auto
 
 fractional:
+  # k is only the GL fractional-channel count. 0 disables those channels.
   k: 0
   include_raw: true
   include_delta: true
