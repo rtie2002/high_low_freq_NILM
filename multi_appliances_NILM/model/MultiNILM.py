@@ -91,13 +91,14 @@ class FractionalFrontEnd(nn.Module):
     """One mains channel -> several derived channels, same T.
 
     Concat order:
-      raw, |delta|, rolling mean, rolling std, GL fractional channels.
-    The order-1 GL channel is the one-step difference, so a separate signed
-    delta channel is not added.
+      raw, signed delta, |delta|, rolling mean, rolling std, GL fractional channels.
+    Signed delta is the one-step rise or drop. The order-1 GL channel is close
+    to it, but the first sample of each window differs, and keeping the signed
+    channel changed the trained result.
     """
 
     def __init__(self, alphas=None, *, include_raw=True, memory=None, h=1.0, max_memory=256,
-                 channel_normalize="mean_std", channel_norm_eps=1e-5,
+                 channel_normalize="mean_std", channel_norm_eps=1e-5, include_delta=False,
                  include_abs_delta=False, rolling_windows=None, include_rolling_mean=False,
                  include_rolling_std=False):
         super().__init__()
@@ -115,13 +116,14 @@ class FractionalFrontEnd(nn.Module):
         if self.channel_normalize not in {"mean_std", "none"}:
             raise ValueError(f"channel_normalize must be mean_std|none, got {self.channel_normalize!r}")
         self.channel_norm_eps = float(channel_norm_eps)
+        self.include_delta = bool(include_delta)
         self.include_abs_delta = bool(include_abs_delta)
         self.rolling_windows = [int(w) for w in (rolling_windows or [])]
         if any(w < 1 for w in self.rolling_windows):
             raise ValueError(f"rolling_windows must be positive, got {self.rolling_windows}")
         self.include_rolling_mean = bool(include_rolling_mean)
         self.include_rolling_std = bool(include_rolling_std)
-        extra = int(self.include_abs_delta)
+        extra = int(self.include_delta) + int(self.include_abs_delta)
         if self.include_rolling_mean:
             extra += len(self.rolling_windows)
         if self.include_rolling_std:
@@ -160,9 +162,12 @@ class FractionalFrontEnd(nn.Module):
         if self.include_raw:
             parts.append(x)
 
-        if self.include_abs_delta:
+        if self.include_delta or self.include_abs_delta:
             delta = torch.cat([torch.zeros_like(x[..., :1]), x[..., 1:] - x[..., :-1]], dim=-1)
-            parts.append(delta.abs())
+            if self.include_delta:
+                parts.append(delta)
+            if self.include_abs_delta:
+                parts.append(delta.abs())
 
         for window in self.rolling_windows:
             if window <= 1:
@@ -840,6 +845,7 @@ def build_multinilm_fractional(architecture, *, num_appliances, output_length, a
         memory=None if memory is None else int(memory),
         h=float(block.get("h", 1.0)),
         channel_normalize=str(block.get("channel_normalize", "mean_std")),
+        include_delta=bool(block.get("include_delta", False)),
         include_abs_delta=bool(block.get("include_abs_delta", False)),
         rolling_windows=[int(w) for w in (block.get("rolling_windows") or [])],
         include_rolling_mean=bool(block.get("include_rolling_mean", False)),

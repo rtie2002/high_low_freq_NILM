@@ -75,6 +75,7 @@ class MultiNILMDualExpertTests(unittest.TestCase):
             "fractional": {
                 "k": 2,
                 "include_raw": True,
+                "include_delta": True,
                 "include_abs_delta": True,
                 "memory": 4,
                 "channel_normalize": "none",

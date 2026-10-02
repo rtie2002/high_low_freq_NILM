@@ -44,6 +44,7 @@ windowing:
 fractional:
   k: 4
   include_raw: true
+  include_delta: true
   include_abs_delta: true
   include_rolling_mean: true
   include_rolling_std: true
