@@ -177,11 +177,7 @@ class LiveTrainingMonitor:
             "train_loss_domain": train_logs.get("loss_domain", float("nan")),
         }
         for key, value in train_logs.items():
-            is_loss_detail = (
-                key.startswith("loss_")
-                or key == "hard_negative_effective_weight"
-            )
-            if is_loss_detail and key not in (
+            if key.startswith("loss_") and key not in (
                 "loss_state",
                 "loss_power",
                 "loss_state_term",
@@ -189,11 +185,7 @@ class LiveTrainingMonitor:
             ):
                 loss_row[f"train_{key}"] = value
         for key, value in val_logs.items():
-            is_loss_detail = (
-                key.startswith("loss_")
-                or key == "hard_negative_effective_weight"
-            )
-            if is_loss_detail and key not in (
+            if key.startswith("loss_") and key not in (
                 "loss_state",
                 "loss_power",
                 "loss_state_term",

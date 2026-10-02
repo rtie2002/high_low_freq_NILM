@@ -411,12 +411,6 @@ def _format_epoch_summary(
         nilm_arrow = f"{l_nilm:.4f}   = power + state_term"
         dom_arrow = ""
 
-    hn_raw = float(train_logs.get("loss_hard_negative", 0.0))
-    hn_weight = float(train_logs.get("hard_negative_effective_weight", 0.0))
-    hn_term = hn_weight * hn_raw
-    if "loss_hard_negative" in train_logs:
-        total_formula += " + lambda_HN*L_HN"
-
     val_logs = val_logs or {}
     val_power, val_state_raw, val_state_term, val_nilm = _parts(val_logs)
     if val_nilm != val_nilm:
@@ -437,11 +431,6 @@ def _format_epoch_summary(
     if "loss_state" in train_logs:
         lines.append(
             f"  state       raw={l_state_raw:.4f}   -> {l_state_term:.4f}   (BCE, balanced)"
-        )
-    if "loss_hard_negative" in train_logs:
-        lines.append(
-            f"  hard neg.   raw={hn_raw:.4f}   -> {hn_term:.4f}   "
-            f"(lambda_HN={hn_weight:.4f}, outside balance)"
         )
 
     if da_active and "loss_domain" in train_logs:
@@ -1514,11 +1503,6 @@ def train_model(
         for epoch in range(epochs):
             epoch_no = epoch + 1
             epoch_tag = f"Epoch {epoch_no}/{epochs}"
-
-            # Optional loss schedules (for example a hard-negative warm-up).
-            # The hook is intentionally generic and is a no-op for other losses.
-            if hasattr(loss_fn, "set_epoch"):
-                loss_fn.set_epoch(epoch_no)
 
             if hasattr(loss_fn, "lambda_domain"):
                 if da_freeze:

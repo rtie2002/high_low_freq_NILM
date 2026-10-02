@@ -59,7 +59,6 @@ windowing:
 fractional:
   k: 4                         # number of alpha channels
   include_raw: true             # always keep raw → input_channels = k + 1
-  include_delta: false          # alpha=1.0 already approximates first difference
   include_abs_delta: true       # event strength regardless of rise/drop direction
   include_rolling_mean: true    # local aggregate baseline
   include_rolling_std: true     # local fluctuation / stability

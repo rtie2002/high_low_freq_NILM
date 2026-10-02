@@ -90,12 +90,14 @@ def state_gate(state_prob, *, mode="soft", threshold=0.5, training=False):
 class FractionalFrontEnd(nn.Module):
     """One mains channel -> several derived channels, same T.
 
-    Relational yaml concat order:
-      raw, delta, |delta|, rolling mean[8,23,45], rolling std[8,23,45], GL x k
+    Concat order:
+      raw, |delta|, rolling mean, rolling std, GL fractional channels.
+    The order-1 GL channel is the one-step difference, so a separate signed
+    delta channel is not added.
     """
 
     def __init__(self, alphas=None, *, include_raw=True, memory=None, h=1.0, max_memory=256,
-                 channel_normalize="mean_std", channel_norm_eps=1e-5, include_delta=False,
+                 channel_normalize="mean_std", channel_norm_eps=1e-5,
                  include_abs_delta=False, rolling_windows=None, include_rolling_mean=False,
                  include_rolling_std=False):
         super().__init__()
@@ -113,14 +115,13 @@ class FractionalFrontEnd(nn.Module):
         if self.channel_normalize not in {"mean_std", "none"}:
             raise ValueError(f"channel_normalize must be mean_std|none, got {self.channel_normalize!r}")
         self.channel_norm_eps = float(channel_norm_eps)
-        self.include_delta = bool(include_delta)
         self.include_abs_delta = bool(include_abs_delta)
         self.rolling_windows = [int(w) for w in (rolling_windows or [])]
         if any(w < 1 for w in self.rolling_windows):
             raise ValueError(f"rolling_windows must be positive, got {self.rolling_windows}")
         self.include_rolling_mean = bool(include_rolling_mean)
         self.include_rolling_std = bool(include_rolling_std)
-        extra = int(self.include_delta) + int(self.include_abs_delta)
+        extra = int(self.include_abs_delta)
         if self.include_rolling_mean:
             extra += len(self.rolling_windows)
         if self.include_rolling_std:
@@ -159,12 +160,9 @@ class FractionalFrontEnd(nn.Module):
         if self.include_raw:
             parts.append(x)
 
-        if self.include_delta or self.include_abs_delta:
+        if self.include_abs_delta:
             delta = torch.cat([torch.zeros_like(x[..., :1]), x[..., 1:] - x[..., :-1]], dim=-1)
-            if self.include_delta:
-                parts.append(delta)
-            if self.include_abs_delta:
-                parts.append(delta.abs())
+            parts.append(delta.abs())
 
         for window in self.rolling_windows:
             if window <= 1:
@@ -842,7 +840,6 @@ def build_multinilm_fractional(architecture, *, num_appliances, output_length, a
         memory=None if memory is None else int(memory),
         h=float(block.get("h", 1.0)),
         channel_normalize=str(block.get("channel_normalize", "mean_std")),
-        include_delta=bool(block.get("include_delta", False)),
         include_abs_delta=bool(block.get("include_abs_delta", False)),
         rolling_windows=[int(w) for w in (block.get("rolling_windows") or [])],
         include_rolling_mean=bool(block.get("include_rolling_mean", False)),
@@ -930,24 +927,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
     def build_loss(self):
         from model.MultiNILM_loss import MultiNILMLoss
         cfg = self.model_cfg.get("loss", {})
-        hard_negative_cfg = (
-            cfg.get("hard_negative", {})
-            if isinstance(cfg.get("hard_negative"), dict)
-            else {}
-        )
-        appliance_names = list(self.cfg["appliances"])
-        hard_negative_names = list(hard_negative_cfg.get("appliances", []))
-        unknown_hard_negative_names = sorted(
-            set(hard_negative_names) - set(appliance_names)
-        )
-        if unknown_hard_negative_names:
-            raise ValueError(
-                "Unknown hard-negative appliances: "
-                + ", ".join(unknown_hard_negative_names)
-            )
-        hard_negative_indices = [
-            appliance_names.index(name) for name in hard_negative_names
-        ]
         loader = self._data_loader()
         aggregate_mean = loader.norm.input_mean
         aggregate_scale = loader.norm.input_std
@@ -975,18 +954,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
             background_huber_beta=float(cfg.get("background_huber_beta", 0.1)),
             aggregate_mean=float(aggregate_mean),
             aggregate_scale=float(aggregate_scale),
-            hard_negative_weight=(
-                float(hard_negative_cfg.get("weight", 0.0))
-                if bool(hard_negative_cfg.get("enabled", False))
-                else 0.0
-            ),
-            hard_negative_fraction=float(hard_negative_cfg.get("fraction", 0.05)),
-            hard_negative_appliance_indices=hard_negative_indices,
-            hard_negative_warmup_epochs=int(hard_negative_cfg.get("warmup_epochs", 0)),
-            hard_negative_ramp_epochs=int(hard_negative_cfg.get("ramp_epochs", 0)),
-            hard_negative_exclusion_samples=int(
-                hard_negative_cfg.get("exclusion_samples", 0)
-            ),
         )
 
     def step(self, model, loss_fn, batch, target_batch=None):
@@ -1038,15 +1005,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
             logs["loss_background"] = float(out.loss_background)
         if getattr(out, "loss_reconstruction", None) is not None:
             logs["loss_reconstruction"] = float(out.loss_reconstruction)
-        if getattr(out, "loss_hard_negative", None) is not None:
-            logs["loss_hard_negative"] = float(out.loss_hard_negative)
-            logs["hard_negative_effective_weight"] = float(
-                out.hard_negative_effective_weight
-            )
-            for app_i, app in enumerate(self.cfg["appliances"]):
-                hard_loss_i = float(out.loss_hard_negative_per_appliance[app_i])
-                if hard_loss_i > 0.0:
-                    logs[f"loss_hard_negative_{app}"] = hard_loss_i
         expert_gates = getattr(model, "last_expert_gates", None)
         if expert_gates is not None:
             # Stored gate shape is (B, A, 2, T); logs use local-expert weight.

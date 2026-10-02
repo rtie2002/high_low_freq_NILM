@@ -1,5 +1,5 @@
-# Controlled loss ablation: restore the best relation dual-expert model and
-# train its fridge/microwave decision boundaries on the hardest true-OFF points.
+# Relation dual-expert model. Hard-negative mining was removed after the
+# completed run: weight 0.05 added about 0.05 to a loss of tens to hundreds.
 experiment_id: comparison_8w_multinilm_dual_expert
 model_name: multinilm_fractional
 
@@ -43,7 +43,6 @@ windowing:
 fractional:
   k: 4
   include_raw: true
-  include_delta: true
   include_abs_delta: true
   include_rolling_mean: true
   include_rolling_std: true
@@ -193,21 +192,6 @@ loss:
   background_weight: 0.0
   reconstruction_weight: 0.0
   background_huber_beta: 0.10
-
-  # The ordinary FP term averages over every true-OFF point, so millions of easy
-  # negatives can hide the few unknown loads that imitate a fridge/microwave.
-  # For each selected appliance, rank eligible true-OFF logits and penalise only
-  # the highest 5%. This term is added OUTSIDE task_balance, preserving the
-  # baseline BCE/FP scaling. At 8 s/sample, exclusion_samples=2 protects 16 s on
-  # each side of a true ON region from timestamp/threshold alignment noise.
-  hard_negative:
-    enabled: true
-    appliances: [fridge, microwave]
-    fraction: 0.05
-    weight: 0.05
-    warmup_epochs: 20
-    ramp_epochs: 10
-    exclusion_samples: 2
 
 training:
   batch_size: 64
