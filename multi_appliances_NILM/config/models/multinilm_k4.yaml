@@ -1,5 +1,5 @@
-# Relation dual-expert model with the alpha=1 GL feature routed to each tower.
-experiment_id: k4_alpha1_no_task_attention
+# Relation dual-expert baseline plus one local-contrast input channel.
+experiment_id: k4_alpha1_local_contrast
 model_name: multinilm_fractional
 
 data:
@@ -44,6 +44,14 @@ fractional:
   k: 4
   include_raw: true
   include_abs_delta: true
+  # Causal background-normalised residual for detecting weak events under
+  # different aggregate levels. At 8 s/sample, span 45 covers 6 minutes.
+  include_local_contrast: true
+  local_contrast_span: 45
+  local_contrast_alpha: 1.0
+  # Input is z-scored mains; 0.05 is about 45 W with the current train std.
+  local_contrast_eps: 0.05
+  local_contrast_clip: 5.0
   include_rolling_mean: true
   include_rolling_std: true
   rolling_windows: [8, 23, 45]
@@ -51,9 +59,8 @@ fractional:
   channel_normalize: none
 
 architecture:
-  # Held at the checkpoint_ap baseline so the only change versus that run is the
-  # training volume (mixed 3-week -> 8-week blocks, 1862 -> 4107 train windows).
-  # Do not fold a width ablation into this run.
+  # Keep the established width fixed. Relative to the relation dual-expert
+  # baseline, the only model change is the local-contrast input channel.
   channel_schedule: [32, 64, 128]
   hidden_channels: 128
 
@@ -85,9 +92,9 @@ architecture:
   head_kernel_size: 3
   head_use_residual: true
   task_attention:
-    # Ablation: the expert gate and relation attention already provide routing;
-    # test whether this extra per-appliance channel gate is necessary.
-    enabled: false
+    # Restore the retained baseline; do not combine its ablation with the new
+    # local-contrast feature experiment.
+    enabled: true
     reduction: 4
 
   gate_mode: soft

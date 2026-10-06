@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import torch
 
 from model.MultiNILM import (
+    FractionalFrontEnd,
     MultiNILM,
     MultiNILMAdapter,
     build_multinilm_fractional,
@@ -14,6 +15,40 @@ from model.MultiNILM import (
 
 
 class MultiNILMDualExpertTests(unittest.TestCase):
+    def test_local_contrast_is_causal_bounded_and_adds_one_channel(self) -> None:
+        frontend = FractionalFrontEnd(
+            alphas=[1.0],
+            include_raw=True,
+            include_local_contrast=True,
+            local_contrast_span=5,
+            local_contrast_alpha=1.0,
+            local_contrast_eps=0.05,
+            local_contrast_clip=2.0,
+            memory=4,
+            channel_normalize="none",
+        )
+        x = torch.zeros(1, 1, 16)
+        x[..., 8:] = 1.0
+        changed_future = x.clone()
+        changed_future[..., 12:] = 10.0
+
+        features = frontend(x)
+        changed_features = frontend(changed_future)
+
+        # raw + local contrast + GL(alpha=1)
+        self.assertEqual(frontend.out_channels, 3)
+        self.assertEqual(tuple(features.shape), (1, 3, 16))
+        contrast = features[:, 1:2]
+        self.assertTrue(torch.isfinite(contrast).all())
+        self.assertLessEqual(float(contrast.abs().max()), 2.0)
+        self.assertGreater(float(contrast[..., 8]), 0.0)
+        torch.testing.assert_close(features[..., :12], changed_features[..., :12])
+
+        constant = frontend(torch.ones(1, 1, 16))
+        torch.testing.assert_close(
+            constant[:, 1], torch.zeros_like(constant[:, 1]), atol=1e-6, rtol=0.0
+        )
+
     def test_dual_expert_shapes_gate_initialization_and_relation(self) -> None:
         model = MultiNILM(
             input_channels=4,

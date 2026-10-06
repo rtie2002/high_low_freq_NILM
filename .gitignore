@@ -124,3 +124,4 @@ matuda_test_*.ps1
 /comparison_8w_multinilm_dual_expert
 /k4_alpha1_tower
 /k4_alpha1_no_multiscale_stem
+/k4_alpha1_no_task_attention
