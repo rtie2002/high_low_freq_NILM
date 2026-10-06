@@ -1,5 +1,5 @@
 # Relation dual-expert model with the alpha=1 GL feature routed to each tower.
-experiment_id: k4_alpha1_no_multiscale_stem
+experiment_id: k4_alpha1_no_task_attention
 model_name: multinilm_fractional
 
 data:
@@ -57,9 +57,9 @@ architecture:
   channel_schedule: [32, 64, 128]
   hidden_channels: 128
 
-  # Ablation: replace the parallel 3/5/9 stem with one staged convolution path.
-  # All input features and all later architecture/loss settings stay unchanged.
-  use_multiscale_stem: false
+  # Retained: removing the parallel stem reduced validation AP and increased
+  # microwave false-event count/false-positive energy.
+  use_multiscale_stem: true
   detail_kernels: [3, 5, 9]
   detail_branch_channels: 16
   stem_kernel_size: 7
@@ -85,7 +85,9 @@ architecture:
   head_kernel_size: 3
   head_use_residual: true
   task_attention:
-    enabled: true
+    # Ablation: the expert gate and relation attention already provide routing;
+    # test whether this extra per-appliance channel gate is necessary.
+    enabled: false
     reduction: 4
 
   gate_mode: soft
