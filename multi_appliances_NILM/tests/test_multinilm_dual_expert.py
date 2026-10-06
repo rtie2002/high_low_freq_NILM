@@ -23,16 +23,19 @@ class MultiNILMDualExpertTests(unittest.TestCase):
             channel_schedule=[8, 16],
             num_blocks=2,
             kernel_size=5,
-            dropout=0.0,
+            temporal_dropout=0.25,
+            head_dropout=0.10,
             dual_expert_enabled=True,
             dual_expert_local_channels=8,
             dual_expert_local_kernel_size=5,
             dual_expert_local_dilations=[1, 2, 4],
+            dual_expert_dropout=0.10,
             dual_expert_gate_hidden_channels=8,
             dual_expert_gate_initial_local_weight=0.1,
             cross_appliance_enabled=True,
             cross_appliance_mode="relation_attention",
             cross_appliance_attention_channels=8,
+            cross_appliance_dropout=0.0,
         )
         encoded = torch.randn(2, 4, 64)
         raw = torch.randn(2, 1, 64)
@@ -42,6 +45,10 @@ class MultiNILMDualExpertTests(unittest.TestCase):
 
         self.assertEqual(tuple(power.shape), (2, 64, 3))
         self.assertEqual(tuple(logits.shape), (2, 64, 3))
+        self.assertEqual(model.temporal_encoder[0].dropout.p, 0.25)
+        self.assertEqual(model.local_expert.temporal_blocks[0].dropout.p, 0.10)
+        self.assertEqual(model.appliance_heads[0].dropout.p, 0.10)
+        self.assertEqual(model.cross_appliance_distill.dropout.p, 0.0)
         self.assertEqual(tuple(model.last_expert_gates.shape), (2, 3, 2, 64))
         torch.testing.assert_close(
             model.last_expert_gates.sum(dim=2),
@@ -72,7 +79,8 @@ class MultiNILMDualExpertTests(unittest.TestCase):
             "channel_schedule": [8, 16],
             "num_blocks": 2,
             "kernel_size": 5,
-            "dropout": 0.0,
+            "temporal_dropout": 0.0,
+            "head_dropout": 0.0,
             "fractional": {
                 "k": 2,
                 "include_raw": True,
@@ -86,6 +94,7 @@ class MultiNILMDualExpertTests(unittest.TestCase):
                 "local_kernel_size": 5,
                 "local_dilations": [1, 2, 4],
                 "local_norm_type": "group",
+                "dropout": 0.0,
                 "gate_hidden_channels": 8,
                 "gate_initial_local_weight": 0.1,
             },
@@ -94,6 +103,7 @@ class MultiNILMDualExpertTests(unittest.TestCase):
                 "mode": "relation_attention",
                 "attention_channels": 8,
                 "residual_scale": 0.25,
+                "dropout": 0.0,
             },
         }
         model = build_multinilm_fractional(
@@ -133,7 +143,8 @@ class MultiNILMDualExpertTests(unittest.TestCase):
             hidden_channels=8,
             num_blocks=1,
             kernel_size=3,
-            dropout=0.0,
+            temporal_dropout=0.0,
+            head_dropout=0.0,
         )
         power, logits = model(torch.randn(2, 24))
 
@@ -150,11 +161,13 @@ class MultiNILMDualExpertTests(unittest.TestCase):
                 "hidden_channels": 8,
                 "num_blocks": 1,
                 "kernel_size": 3,
-                "dropout": 0.0,
+                "temporal_dropout": 0.0,
+                "head_dropout": 0.0,
                 "fractional": {"k": 1, "include_raw": True, "memory": 4},
                 "dual_expert": {
                     "enabled": True,
                     "local_channels": 4,
+                    "dropout": 0.0,
                     "gate_hidden_channels": 4,
                 },
             },

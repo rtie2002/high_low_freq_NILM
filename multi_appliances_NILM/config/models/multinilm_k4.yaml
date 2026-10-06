@@ -73,8 +73,10 @@ architecture:
   num_blocks: 5
   kernel_size: 9
   max_dilation: 16
-  # Restore the stronger baseline after dropout=0.35 hurt zero-shot detection.
-  dropout: 0.25
+  # Keep the original 0.25 dropout at every location. The values are separate
+  # only so future ablations can change one component at a time.
+  temporal_dropout: 0.25
+  head_dropout: 0.25
 
   # Two local blocks preserve the multi-stage washing-machine waveform better.
   head_local_layers: 2
@@ -94,6 +96,7 @@ architecture:
     local_kernel_size: 5
     local_dilations: [1, 2, 4]
     local_norm_type: group
+    dropout: 0.25
     gate_hidden_channels: 32
     gate_initial_local_weight: 0.1
 
@@ -104,6 +107,7 @@ architecture:
     mode: relation_attention
     attention_channels: 16
     residual_scale: 0.25
+    dropout: 0.25
 
 # ---------------------------------------------------------------------------
 # Training loss (model/MultiNILM_loss.py). Tensors are (B, T, A) = batch, time,

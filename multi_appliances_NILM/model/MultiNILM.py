@@ -520,18 +520,21 @@ class MultiNILM(nn.Module):
         self,
         input_channels=1, num_appliances=5, output_length=64, hidden_channels=64,
         channel_schedule=None, stem_kernel_size=7, stage_kernel_size=5, num_blocks=5,
-        kernel_size=5, dropout=0.1, max_dilation=128, gate_mode="soft_train_hard_eval",
+        kernel_size=5, temporal_dropout=0.1, head_dropout=0.1,
+        max_dilation=128, gate_mode="soft_train_hard_eval",
         gate_threshold=0.5, appliance_off_norm=None,
         head_local_layers=2, head_kernel_size=3, head_use_residual=True,
         use_multiscale_stem=False, detail_kernels=None, detail_branch_channels=12,
         stem_norm_type="batch", temporal_norm_type="batch", head_norm_type="batch",
         task_attention_enabled=False, task_attention_reduction=4,
         cross_appliance_enabled=False, cross_appliance_mode="bottleneck",
-        cross_appliance_residual_scale=0.5, cross_appliance_mid_channels=None,
+        cross_appliance_residual_scale=0.5, cross_appliance_dropout=0.0,
+        cross_appliance_mid_channels=None,
         cross_appliance_attention_channels=16,
         dual_expert_enabled=False, dual_expert_local_channels=32,
         dual_expert_local_kernel_size=5, dual_expert_local_dilations=None,
-        dual_expert_local_norm_type="group", dual_expert_gate_hidden_channels=32,
+        dual_expert_local_norm_type="group", dual_expert_dropout=0.1,
+        dual_expert_gate_hidden_channels=32,
         dual_expert_gate_initial_local_weight=0.1,
     ):
         super().__init__()
@@ -580,7 +583,10 @@ class MultiNILM(nn.Module):
 
         cycle = max(1, int(max_dilation)).bit_length()
         self.temporal_encoder = nn.Sequential(*[
-            ResidualTemporalBlock(self.hidden_channels, kernel_size, 2 ** (i % cycle), dropout, temporal_norm_type)
+            ResidualTemporalBlock(
+                self.hidden_channels, kernel_size, 2 ** (i % cycle),
+                float(temporal_dropout), temporal_norm_type,
+            )
             for i in range(num_blocks)
         ])
         self.local_expert = None
@@ -591,7 +597,7 @@ class MultiNILM(nn.Module):
                 self.hidden_channels,
                 kernel_size=int(dual_expert_local_kernel_size),
                 dilations=dual_expert_local_dilations or [1, 2, 4],
-                dropout=float(dropout),
+                dropout=float(dual_expert_dropout),
                 norm_type=str(dual_expert_local_norm_type),
             )
             self.expert_gates = nn.ModuleList([
@@ -604,7 +610,8 @@ class MultiNILM(nn.Module):
             ])
         self.appliance_heads = nn.ModuleList([
             ApplianceHead(
-                self.hidden_channels, dropout, gate_mode=self.gate_mode, gate_threshold=self.gate_threshold,
+                self.hidden_channels, float(head_dropout),
+                gate_mode=self.gate_mode, gate_threshold=self.gate_threshold,
                 off_norm=off_norms[i], head_local_layers=int(head_local_layers),
                 head_kernel_size=int(head_kernel_size), head_use_residual=bool(head_use_residual),
                 norm_type=head_norm_type, use_task_attention=bool(task_attention_enabled),
@@ -616,7 +623,8 @@ class MultiNILM(nn.Module):
         if cross_appliance_enabled:
             mode = str(cross_appliance_mode or "bottleneck").lower()
             kw = dict(num_appliances=self.num_appliances, channels=self.hidden_channels,
-                      residual_scale=float(cross_appliance_residual_scale), dropout=float(dropout))
+                      residual_scale=float(cross_appliance_residual_scale),
+                      dropout=float(cross_appliance_dropout))
             if mode in {"relation_attention", "attention", "relational"}:
                 self.cross_appliance_distill = CrossApplianceRelationAttention(
                     attention_channels=int(cross_appliance_attention_channels), **kw
@@ -746,7 +754,8 @@ class MultiNILMConfig:
     stage_kernel_size: int = 5
     num_blocks: int = 5
     kernel_size: int = 5
-    dropout: float = 0.1
+    temporal_dropout: float = 0.1
+    head_dropout: float = 0.1
     max_dilation: int = 128
     gate_mode: str = "soft_train_hard_eval"
     gate_threshold: float = 0.5
@@ -764,6 +773,7 @@ class MultiNILMConfig:
     cross_appliance_enabled: bool = False
     cross_appliance_mode: str = "bottleneck"
     cross_appliance_residual_scale: float = 0.5
+    cross_appliance_dropout: float = 0.0
     cross_appliance_mid_channels: int | None = None
     cross_appliance_attention_channels: int = 16
     dual_expert_enabled: bool = False
@@ -771,12 +781,14 @@ class MultiNILMConfig:
     dual_expert_local_kernel_size: int = 5
     dual_expert_local_dilations: list[int] = field(default_factory=lambda: [1, 2, 4])
     dual_expert_local_norm_type: str = "group"
+    dual_expert_dropout: float = 0.1
     dual_expert_gate_hidden_channels: int = 32
     dual_expert_gate_initial_local_weight: float = 0.1
 
 
 def multinilm_config(architecture):
     a = architecture
+    legacy_dropout = float(a.get("dropout", 0.1))
     task = a.get("task_attention") if isinstance(a.get("task_attention"), dict) else {}
     cross = a.get("cross_appliance") if isinstance(a.get("cross_appliance"), dict) else {}
     dual = a.get("dual_expert") if isinstance(a.get("dual_expert"), dict) else {}
@@ -791,7 +803,8 @@ def multinilm_config(architecture):
         stage_kernel_size=int(a.get("stage_kernel_size", 5)),
         num_blocks=int(a.get("num_blocks", 5)),
         kernel_size=int(a.get("kernel_size", 5)),
-        dropout=float(a.get("dropout", 0.1)),
+        temporal_dropout=float(a.get("temporal_dropout", legacy_dropout)),
+        head_dropout=float(a.get("head_dropout", legacy_dropout)),
         max_dilation=int(a.get("max_dilation", 128)),
         gate_mode=str(a.get("gate_mode", "soft_train_hard_eval")),
         gate_threshold=float(a.get("gate_threshold", 0.5)),
@@ -809,6 +822,7 @@ def multinilm_config(architecture):
         cross_appliance_enabled=bool(cross.get("enabled", False)),
         cross_appliance_mode=str(cross.get("mode", "bottleneck")),
         cross_appliance_residual_scale=float(cross.get("residual_scale", 0.5)),
+        cross_appliance_dropout=float(cross.get("dropout", legacy_dropout)),
         cross_appliance_mid_channels=None if mid is None else int(mid),
         cross_appliance_attention_channels=int(cross.get("attention_channels", 16)),
         dual_expert_enabled=bool(dual.get("enabled", False)),
@@ -816,6 +830,7 @@ def multinilm_config(architecture):
         dual_expert_local_kernel_size=int(dual.get("local_kernel_size", 5)),
         dual_expert_local_dilations=[int(d) for d in dual.get("local_dilations", [1, 2, 4])],
         dual_expert_local_norm_type=str(dual.get("local_norm_type", "group")),
+        dual_expert_dropout=float(dual.get("dropout", legacy_dropout)),
         dual_expert_gate_hidden_channels=int(dual.get("gate_hidden_channels", 32)),
         dual_expert_gate_initial_local_weight=float(dual.get("gate_initial_local_weight", 0.1)),
     )
