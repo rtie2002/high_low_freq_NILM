@@ -1,7 +1,5 @@
-# Multi-appliance relational NILM experiment.
-# Keeps the precision_guard baseline reproducible while testing:
-#   task attention + cross-appliance relation attention + physical losses.
-experiment_id: k
+# Relation dual-expert model with the alpha=1 GL feature routed to each tower.
+experiment_id: k4_alpha1_tower
 model_name: multinilm_fractional
 
 data:
@@ -42,9 +40,9 @@ windowing:
   training_targets: auto
 
 fractional:
-  k: 0
+  # Four GL channels (alpha 0.25, 0.5, 0.75, 1.0). Alpha=1 replaces signed delta.
+  k: 4
   include_raw: true
-  include_delta: true
   include_abs_delta: true
   include_rolling_mean: true
   include_rolling_std: true
@@ -72,7 +70,7 @@ architecture:
   head_norm_type: batch
 
   # Receptive-field ablation: k=9 with dilations 1,2,4,8,16 gives a 249-sample TCN RF.
-  num_blocks: 5 
+  num_blocks: 5
   kernel_size: 9
   max_dilation: 16
   # Restore the stronger baseline after dropout=0.35 hurt zero-shot detection.
@@ -89,7 +87,19 @@ architecture:
   gate_mode: soft
   gate_threshold: 0.5
 
+  # Local expert receives raw aggregate, alpha=1 GL and |alpha=1 GL|.
+  dual_expert:
+    enabled: true
+    local_channels: 32
+    local_kernel_size: 5
+    local_dilations: [1, 2, 4]
+    local_norm_type: group
+    gate_hidden_channels: 32
+    gate_initial_local_weight: 0.1
+
   cross_appliance:
+    # The no-relation ablation reduced microwave AP/F1 and increased high-
+    # background false positives, so keep relational feature exchange enabled.
     enabled: true
     mode: relation_attention
     attention_channels: 16
@@ -102,7 +112,8 @@ architecture:
 # prediction is y_hat = p * R + (1 - p) * y_off (y_off = 0 W after z-scoring),
 # so every power term below also trains p.
 #
-#   L_NILM  = L_power + state_term                  <- scalar used for backward()
+#   L_total = L_NILM + lambda_HN(epoch) * L_HN
+#   L_NILM  = L_power + state_term
 #
 #   L_power = sum_i [ MSE_i                                   all samples
 #                   + power_on_weight    * ON_MSE_i           true-ON samples only
@@ -112,7 +123,6 @@ architecture:
 #
 #   L_state = sum_i [ BCE_i                                   ON samples x pos_weight_i
 #                   + state_fp_weight     * FP_i ]            p^2 on true-OFF samples
-#   SMOOTH is implemented but state_smooth_weight is 0, so it is not in L_state.
 #
 #   state_term = lambda_state * L_state * stopgrad(L_power / L_state)
 #
@@ -143,18 +153,6 @@ loss:
   # of BCE. Removing it (0.0) reduced test performance.
   state_fp_weight: 1.0
 
-  # SMOOTH_i = MS-TCN truncated MSE (Abu Farha & Gall, CVPR 2019) on the ON and
-  # OFF log-probabilities of appliance i:
-  #   SMOOTH_i = mean_{b,t,c} min(|log p_c[t] - log p_c[t-1]|, tau)^2,  c in {ON, OFF}
-  # The t-1 term is detached, as in the official code. It penalises flicker of p
-  # between neighbouring samples, so a short ON blip needs strong evidence. Past
-  # tau the penalty is constant (no gradient), so decisive ON/OFF edges are kept.
-  # It needs no labels. Weight 0.15 made test performance fall back, so it is
-  # off. 0.0 removes the term and restores the random-mix objective exactly.
-  # tau is unused while the weight is 0.
-  state_smooth_weight: 0.0
-  state_smooth_tau: 4.0
-
   # ON_MSE_i / OFF_MSE_i are means over true-ON / true-OFF samples only. Added on
   # top of the all-sample MSE so the few ON samples are not drowned out.
   power_on_weight: 1.0
@@ -180,13 +178,13 @@ training:
   train_shuffle: true
   gradient_clip: 1.0
 
-  # Each training window is replaced with probability prob by a random mix:
-  # every appliance trace (with its ON labels) and the background residual
-  # (mains - sum of appliances) come from independent training windows.
+  # Each selected real window keeps all five appliance powers and ON labels;
+  # only the residual background (mains - sum of appliances) is replaced by
+  # the residual from another legal training window.
   # Validation and test windows are never mixed.
   random_mix:
     enabled: true
-    mode: full
+    mode: background_swap
     prob: 0.5
 
   use_amp: false

@@ -91,14 +91,15 @@ class FractionalFrontEnd(nn.Module):
     """One mains channel -> several derived channels, same T.
 
     Concat order:
-      raw, signed delta, |delta|, rolling mean, rolling std, GL fractional channels.
-    Signed delta is the one-step rise or drop. The order-1 GL channel is close
-    to it, but the first sample of each window differs, and keeping the signed
-    channel changed the trained result.
+      raw, |delta|, rolling mean, rolling std, GL fractional channels.
+
+    The explicit signed-delta channel is intentionally absent: the alpha=1 GL
+    channel already represents the first-order change and is also routed to the
+    local appliance expert.
     """
 
     def __init__(self, alphas=None, *, include_raw=True, memory=None, h=1.0, max_memory=256,
-                 channel_normalize="mean_std", channel_norm_eps=1e-5, include_delta=False,
+                 channel_normalize="mean_std", channel_norm_eps=1e-5,
                  include_abs_delta=False, rolling_windows=None, include_rolling_mean=False,
                  include_rolling_std=False):
         super().__init__()
@@ -116,19 +117,26 @@ class FractionalFrontEnd(nn.Module):
         if self.channel_normalize not in {"mean_std", "none"}:
             raise ValueError(f"channel_normalize must be mean_std|none, got {self.channel_normalize!r}")
         self.channel_norm_eps = float(channel_norm_eps)
-        self.include_delta = bool(include_delta)
         self.include_abs_delta = bool(include_abs_delta)
         self.rolling_windows = [int(w) for w in (rolling_windows or [])]
         if any(w < 1 for w in self.rolling_windows):
             raise ValueError(f"rolling_windows must be positive, got {self.rolling_windows}")
         self.include_rolling_mean = bool(include_rolling_mean)
         self.include_rolling_std = bool(include_rolling_std)
-        extra = int(self.include_delta) + int(self.include_abs_delta)
+        extra = int(self.include_abs_delta)
         if self.include_rolling_mean:
             extra += len(self.rolling_windows)
         if self.include_rolling_std:
             extra += len(self.rolling_windows)
         self.out_channels = (1 if self.include_raw else 0) + len(self.alphas) + extra
+        prefix_channels = self.out_channels - len(self.alphas)
+        alpha_one_offset = next(
+            (i for i, alpha in enumerate(self.alphas) if abs(alpha - 1.0) < 1e-8),
+            None,
+        )
+        self.alpha_one_index = (
+            None if alpha_one_offset is None else prefix_channels + alpha_one_offset
+        )
 
         if not self.alphas:
             self.gl_conv = None
@@ -151,7 +159,7 @@ class FractionalFrontEnd(nn.Module):
         self.gl_conv.weight.requires_grad_(False)
         self.register_buffer("gl_weight", self.gl_conv.weight, persistent=False)
 
-    def forward(self, x):
+    def forward(self, x, *, return_alpha_one=False):
         # x: (B, 1, T) -> (B, C_in, T)
         if x.dim() != 3:
             raise ValueError(f"FractionalFrontEnd expected (B,C,T), got {tuple(x.shape)}")
@@ -162,12 +170,9 @@ class FractionalFrontEnd(nn.Module):
         if self.include_raw:
             parts.append(x)
 
-        if self.include_delta or self.include_abs_delta:
+        if self.include_abs_delta:
             delta = torch.cat([torch.zeros_like(x[..., :1]), x[..., 1:] - x[..., :-1]], dim=-1)
-            if self.include_delta:
-                parts.append(delta)
-            if self.include_abs_delta:
-                parts.append(delta.abs())
+            parts.append(delta.abs())
 
         for window in self.rolling_windows:
             if window <= 1:
@@ -182,15 +187,24 @@ class FractionalFrontEnd(nn.Module):
             if self.include_rolling_std:
                 parts.append(std)
 
+        alpha_one = None
         if self.alphas:
             pad = int(self.gl_conv.weight.shape[-1]) - 1
-            parts.append(self.gl_conv(F.pad(x, (pad, 0)).expand(-1, len(self.alphas), -1)))
+            fractional = self.gl_conv(F.pad(x, (pad, 0)).expand(-1, len(self.alphas), -1))
+            parts.append(fractional)
+            if self.alpha_one_index is not None:
+                alpha_offset = self.alpha_one_index - (self.out_channels - len(self.alphas))
+                alpha_one = fractional[:, alpha_offset:alpha_offset + 1]
 
         out = torch.cat(parts, dim=1)
         if self.channel_normalize == "mean_std":
             mu = out.mean(dim=-1, keepdim=True)
             sigma = out.std(dim=-1, keepdim=True).clamp_min(self.channel_norm_eps)
             out = (out - mu) / sigma
+        if return_alpha_one:
+            if alpha_one is None:
+                raise ValueError("dual expert requires an alpha=1 GL channel")
+            return out, alpha_one
         return out
 
 
@@ -212,7 +226,7 @@ class ResidualTemporalBlock(nn.Module):
 
 
 class LocalTransientExpert(nn.Module):
-    """Short-range expert over raw aggregate, signed delta and absolute delta.
+    """Short-range expert over raw aggregate and the alpha=1 GL channel.
 
     The configured 5-tap input convolution followed by residual dilations
     1, 2 and 4 has a 33-sample receptive field (about 4.4 minutes at 8 s).
@@ -261,16 +275,10 @@ class LocalTransientExpert(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-    def forward(self, raw_aggregate):
-        # raw_aggregate is already normalized by the dataset loader: (B, 1, T).
-        delta = torch.cat(
-            [
-                torch.zeros_like(raw_aggregate[..., :1]),
-                raw_aggregate[..., 1:] - raw_aggregate[..., :-1],
-            ],
-            dim=-1,
-        )
-        local_input = torch.cat([raw_aggregate, delta, delta.abs()], dim=1)
+    def forward(self, raw_aggregate, alpha_one):
+        # Both inputs have shape (B, 1, T). Reuse the fixed alpha=1 GL feature
+        # instead of creating a duplicate signed-delta channel in this branch.
+        local_input = torch.cat([raw_aggregate, alpha_one, alpha_one.abs()], dim=1)
         h = self.input_projection(local_input)
         return self.output_projection(self.temporal_blocks(h))
 
@@ -525,7 +533,6 @@ class MultiNILM(nn.Module):
         dual_expert_local_kernel_size=5, dual_expert_local_dilations=None,
         dual_expert_local_norm_type="group", dual_expert_gate_hidden_channels=32,
         dual_expert_gate_initial_local_weight=0.1,
-        background_head_enabled=False,
     ):
         super().__init__()
         self.input_channels = int(input_channels)
@@ -535,9 +542,7 @@ class MultiNILM(nn.Module):
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
         self.dual_expert_enabled = bool(dual_expert_enabled)
-        self.background_head_enabled = bool(background_head_enabled)
         self.last_expert_gates = None
-        self.last_background_pred = None
         off_norms = list(appliance_off_norm or [0.0] * self.num_appliances)
         if len(off_norms) != self.num_appliances:
             raise ValueError(f"appliance_off_norm length {len(off_norms)} != {self.num_appliances}")
@@ -597,13 +602,6 @@ class MultiNILM(nn.Module):
                 )
                 for _ in range(self.num_appliances)
             ])
-        # Predict the residual household load in aggregate-normalized units.
-        # It is a nuisance/source-separation head, not a sixth reported appliance,
-        # and therefore stays outside cross-appliance relation attention.
-        self.background_head = (
-            nn.Conv1d(self.hidden_channels, 1, 1)
-            if self.background_head_enabled else None
-        )
         self.appliance_heads = nn.ModuleList([
             ApplianceHead(
                 self.hidden_channels, dropout, gate_mode=self.gate_mode, gate_threshold=self.gate_threshold,
@@ -628,7 +626,7 @@ class MultiNILM(nn.Module):
             else:
                 raise ValueError(f"cross_appliance.mode must be bottleneck|relation_attention, got {cross_appliance_mode!r}")
 
-    def forward(self, x, raw_input=None):
+    def forward(self, x, raw_input=None, alpha_one=None):
         # x: (B, T) or (B, C, T) or (B, T, C)
         if x.dim() == 2:
             x = x.unsqueeze(1)
@@ -641,11 +639,6 @@ class MultiNILM(nn.Module):
             h = block(h)                                       # (B, C, T)
 
         context_features = _match_time_length(h, self.output_length)  # (B, C, T_out)
-        self.last_background_pred = None
-        if self.background_head is not None:
-            self.last_background_pred = self.background_head(
-                context_features
-            ).permute(0, 2, 1)                              # (B, T_out, 1)
         routed_features = [context_features] * self.num_appliances
         self.last_expert_gates = None
         if self.dual_expert_enabled:
@@ -663,8 +656,18 @@ class MultiNILM(nn.Module):
                 raise ValueError(
                     f"dual_expert raw_input must have shape (B,1,T), got {tuple(raw_input.shape)}"
                 )
+            if alpha_one is None:
+                raise ValueError("dual_expert requires the alpha=1 GL channel")
+            if alpha_one.dim() == 2:
+                alpha_one = alpha_one.unsqueeze(1)
+            elif alpha_one.dim() == 3 and alpha_one.shape[-1] == 1:
+                alpha_one = alpha_one.permute(0, 2, 1)
+            if alpha_one.dim() != 3 or alpha_one.shape[1] != 1:
+                raise ValueError(
+                    f"dual_expert alpha_one must have shape (B,1,T), got {tuple(alpha_one.shape)}"
+                )
             local_features = _match_time_length(
-                self.local_expert(raw_input.float()),
+                self.local_expert(raw_input.float(), alpha_one.float()),
                 self.output_length,
             )
             routed_features, gate_weights = [], []
@@ -704,6 +707,8 @@ class MultiNILMFractional(nn.Module):
             )
         self.frontend = frontend
         self.backbone = backbone
+        if self.backbone.dual_expert_enabled and self.frontend.alpha_one_index is None:
+            raise ValueError("dual expert requires fractional alphas to include 1.0")
         self.input_channels = 1
         self.feature_channels = int(frontend.out_channels)
         self.num_appliances = backbone.num_appliances
@@ -715,17 +720,16 @@ class MultiNILMFractional(nn.Module):
         elif x.dim() == 3 and x.shape[-1] == 1:
             x = x.permute(0, 2, 1)                             # (B, T, 1) -> (B, 1, T)
         raw_input = x.float()                                 # (B, 1, T)
-        features = self.frontend(raw_input)                    # (B, C_in, T)
-        return self.backbone(features, raw_input=raw_input)
+        if self.backbone.dual_expert_enabled:
+            features, alpha_one = self.frontend(raw_input, return_alpha_one=True)
+        else:
+            features = self.frontend(raw_input)
+            alpha_one = None
+        return self.backbone(features, raw_input=raw_input, alpha_one=alpha_one)
 
     @property
     def last_expert_gates(self):
         return self.backbone.last_expert_gates
-
-    @property
-    def last_background_pred(self):
-        return self.backbone.last_background_pred
-
 
 # ===========================================================================
 # YAML / training. Skip this while reading the network.
@@ -769,7 +773,6 @@ class MultiNILMConfig:
     dual_expert_local_norm_type: str = "group"
     dual_expert_gate_hidden_channels: int = 32
     dual_expert_gate_initial_local_weight: float = 0.1
-    background_head_enabled: bool = False
 
 
 def multinilm_config(architecture):
@@ -777,7 +780,6 @@ def multinilm_config(architecture):
     task = a.get("task_attention") if isinstance(a.get("task_attention"), dict) else {}
     cross = a.get("cross_appliance") if isinstance(a.get("cross_appliance"), dict) else {}
     dual = a.get("dual_expert") if isinstance(a.get("dual_expert"), dict) else {}
-    background = a.get("background_head") if isinstance(a.get("background_head"), dict) else {}
     mid = cross.get("mid_channels", None)
     return MultiNILMConfig(
         input_channels=int(a.get("input_channels", a.get("input_size", 1))),
@@ -816,7 +818,6 @@ def multinilm_config(architecture):
         dual_expert_local_norm_type=str(dual.get("local_norm_type", "group")),
         dual_expert_gate_hidden_channels=int(dual.get("gate_hidden_channels", 32)),
         dual_expert_gate_initial_local_weight=float(dual.get("gate_initial_local_weight", 0.1)),
-        background_head_enabled=bool(background.get("enabled", False)),
     )
 
 
@@ -833,12 +834,9 @@ def build_multinilm_fractional(architecture, *, num_appliances, output_length, a
     block = architecture.get("fractional") if isinstance(architecture.get("fractional"), dict) else {}
     if block.get("alphas") is None:
         k = int(block.get("k", 8))
-        if k < 0:
-            raise ValueError(f"k must be >= 0, got {k}")
-        # k is the number of Grünwald–Letnikov channels. k=0 leaves them out.
-        alphas = [] if k == 0 else (
-            [1.0] if k == 1 else [round((i + 1) / k, 6) for i in range(k)]
-        )
+        if k < 1:
+            raise ValueError(f"k must be >= 1 so the fractional frontend includes alpha=1, got {k}")
+        alphas = [1.0] if k == 1 else [round((i + 1) / k, 6) for i in range(k)]
     else:
         alphas = [float(a) for a in block["alphas"]]
     memory = block.get("memory", None)
@@ -848,7 +846,6 @@ def build_multinilm_fractional(architecture, *, num_appliances, output_length, a
         memory=None if memory is None else int(memory),
         h=float(block.get("h", 1.0)),
         channel_normalize=str(block.get("channel_normalize", "mean_std")),
-        include_delta=bool(block.get("include_delta", False)),
         include_abs_delta=bool(block.get("include_abs_delta", False)),
         rolling_windows=[int(w) for w in (block.get("rolling_windows") or [])],
         include_rolling_mean=bool(block.get("include_rolling_mean", False)),
@@ -893,34 +890,6 @@ def _pred_on_from_config(adapter, power_norm, state_prob):
     raise ValueError("evaluation.pred_on_source must be state_head, power_threshold, or combined")
 
 
-def _aggregate_target_window(x, target_length, windowing):
-    """Align normalized aggregate input to the supervised output timeline."""
-    if x.dim() == 2:
-        aggregate = x
-    elif x.dim() == 3 and x.shape[-1] == 1:
-        aggregate = x[..., 0]
-    elif x.dim() == 3 and x.shape[1] == 1:
-        aggregate = x[:, 0, :]
-    else:
-        raise ValueError(f"Expected aggregate input with one channel, got {tuple(x.shape)}")
-
-    target_length = int(target_length)
-    if aggregate.shape[1] < target_length:
-        raise ValueError(
-            f"Aggregate timeline {aggregate.shape[1]} is shorter than target {target_length}"
-        )
-    if aggregate.shape[1] != target_length:
-        alignment = str(windowing.get("output_alignment", "end")).lower()
-        if alignment == "end":
-            aggregate = aggregate[:, -target_length:]
-        elif alignment == "center":
-            start = (aggregate.shape[1] - target_length) // 2
-            aggregate = aggregate[:, start:start + target_length]
-        else:
-            raise ValueError(f"Unsupported output_alignment: {alignment}")
-    return aggregate.unsqueeze(-1)
-
-
 class MultiNILMAdapter(BaseNILMAdapter):
     name = "multinilm"
 
@@ -937,12 +906,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
         from model.MultiNILM_loss import MultiNILMLoss
         cfg = self.model_cfg.get("loss", {})
         loader = self._data_loader()
-        aggregate_mean = loader.norm.input_mean
-        aggregate_scale = loader.norm.input_std
-        if aggregate_mean is None:
-            aggregate_mean = 0.0
-        if aggregate_scale is None:
-            aggregate_scale = loader.norm.legacy_scale
         return MultiNILMLoss(
             lambda_state=float(cfg.get("lambda_state", 0.1)),
             task_balance=str(cfg.get("task_balance", "none")),
@@ -954,15 +917,8 @@ class MultiNILMAdapter(BaseNILMAdapter):
             power_delta_weight=float(cfg.get("power_delta_weight", 0.0)),
             power_delta_on_only=bool(cfg.get("power_delta_on_only", True)),
             state_fp_weight=float(cfg.get("state_fp_weight", 0.0)),
-            state_smooth_weight=float(cfg.get("state_smooth_weight", 0.0)),
-            state_smooth_tau=float(cfg.get("state_smooth_tau", 4.0)),
             power_energy_relative_weight=float(cfg.get("power_energy_relative_weight", 0.0)),
             energy_floor_watts=float(cfg.get("energy_floor_watts", 10.0)),
-            background_weight=float(cfg.get("background_weight", 0.0)),
-            reconstruction_weight=float(cfg.get("reconstruction_weight", 0.0)),
-            background_huber_beta=float(cfg.get("background_huber_beta", 0.1)),
-            aggregate_mean=float(aggregate_mean),
-            aggregate_scale=float(aggregate_scale),
         )
 
     def step(self, model, loss_fn, batch, target_batch=None):
@@ -970,23 +926,7 @@ class MultiNILMAdapter(BaseNILMAdapter):
         x, y, z = batch
         z = z.float()
         power_pred, state_logits = model(x)
-        background_pred = getattr(model, "last_background_pred", None)
-        aggregate_true = (
-            None if background_pred is None
-            else _aggregate_target_window(
-                x,
-                power_pred.shape[1],
-                self.model_cfg["windowing"],
-            )
-        )
-        out = loss_fn(
-            power_pred,
-            state_logits,
-            y,
-            z,
-            background_pred=background_pred,
-            aggregate_true=aggregate_true,
-        )
+        out = loss_fn(power_pred, state_logits, y, z)
         state_prob = torch.sigmoid(state_logits)
         pred_state = torch.from_numpy(
             _pred_on_from_config(self, _to_numpy(power_pred), _to_numpy(state_prob))
@@ -1008,12 +948,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
             "mae": float(out.mae.detach()),
             **app_logs,
         }
-        if out.loss_state_smooth is not None:
-            logs["loss_state_smooth"] = float(out.loss_state_smooth)
-        if getattr(out, "loss_background", None) is not None:
-            logs["loss_background"] = float(out.loss_background)
-        if getattr(out, "loss_reconstruction", None) is not None:
-            logs["loss_reconstruction"] = float(out.loss_reconstruction)
         expert_gates = getattr(model, "last_expert_gates", None)
         if expert_gates is not None:
             # Stored gate shape is (B, A, 2, T); logs use local-expert weight.

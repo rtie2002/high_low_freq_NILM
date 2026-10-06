@@ -44,7 +44,7 @@ y_{swap}=y_a,\qquad z_{swap}=z_a
 
 ## 当前配置
 
-新实验使用 `config/models/multinilm_fractional_relational_background_swap.yaml`；原来的 `multinilm_fractional_relational.yaml` 保留 `mode: full`，用于复现旧基线。
+新实验使用 `config/models/multinilm_k4.yaml`；原来的 `multinilm_fractional_relational.yaml` 保留 `mode: full`，用于复现旧基线。
 
 ```yaml
 training:

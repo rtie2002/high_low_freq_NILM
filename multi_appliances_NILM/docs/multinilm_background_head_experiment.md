@@ -162,7 +162,7 @@ Run from the `multi_appliances_NILM` directory:
   --mode train_evaluate `
   --model multinilm_fractional `
   --experiment config/experiment_mixed_ukdale_refit_8w.yaml `
-  --model-config config/models/multinilm_fractional_relational_background_swap.yaml
+  --model-config config/models/multinilm_k4.yaml
 ```
 
 ## Research basis

@@ -36,8 +36,9 @@ class MultiNILMDualExpertTests(unittest.TestCase):
         )
         encoded = torch.randn(2, 4, 64)
         raw = torch.randn(2, 1, 64)
+        alpha_one = torch.randn(2, 1, 64)
 
-        power, logits = model(encoded, raw_input=raw)
+        power, logits = model(encoded, raw_input=raw, alpha_one=alpha_one)
 
         self.assertEqual(tuple(power.shape), (2, 64, 3))
         self.assertEqual(tuple(logits.shape), (2, 64, 3))
@@ -65,7 +66,7 @@ class MultiNILMDualExpertTests(unittest.TestCase):
         )
         self.assertIsNotNone(model.cross_appliance_distill.query.weight.grad)
 
-    def test_fractional_wrapper_passes_raw_signal_to_local_expert(self) -> None:
+    def test_fractional_wrapper_routes_alpha_one_to_local_expert(self) -> None:
         architecture = {
             "hidden_channels": 16,
             "channel_schedule": [8, 16],
@@ -75,7 +76,6 @@ class MultiNILMDualExpertTests(unittest.TestCase):
             "fractional": {
                 "k": 2,
                 "include_raw": True,
-                "include_delta": True,
                 "include_abs_delta": True,
                 "memory": 4,
                 "channel_normalize": "none",
@@ -103,11 +103,24 @@ class MultiNILMDualExpertTests(unittest.TestCase):
             appliance_off_norm=[0.0, 0.0],
         )
 
-        power, logits = model(torch.randn(2, 32))
+        aggregate = torch.randn(2, 32)
+        captured = {}
+
+        def capture_local_inputs(_module, inputs):
+            captured["raw"], captured["alpha_one"] = inputs
+
+        handle = model.backbone.local_expert.register_forward_pre_hook(capture_local_inputs)
+        power, logits = model(aggregate)
+        handle.remove()
 
         self.assertEqual(tuple(power.shape), (2, 32, 2))
         self.assertEqual(tuple(logits.shape), (2, 32, 2))
         self.assertEqual(tuple(model.last_expert_gates.shape), (2, 2, 2, 32))
+        expected_alpha_one = torch.cat(
+            [aggregate[:, :1], aggregate[:, 1:] - aggregate[:, :-1]], dim=1
+        ).unsqueeze(1)
+        torch.testing.assert_close(captured["raw"], aggregate.unsqueeze(1))
+        torch.testing.assert_close(captured["alpha_one"], expected_alpha_one, atol=1e-6, rtol=1e-6)
 
     def test_old_configuration_keeps_single_context_path(self) -> None:
         cfg = multinilm_config({"hidden_channels": 8})
@@ -132,17 +145,22 @@ class MultiNILMDualExpertTests(unittest.TestCase):
         adapter = object.__new__(MultiNILMAdapter)
         adapter.cfg = {"appliances": ["first", "second"]}
         adapter.model_cfg = {"evaluation": {"pred_on_source": "state_head"}}
-        model = MultiNILM(
-            input_channels=1,
+        model = build_multinilm_fractional(
+            {
+                "hidden_channels": 8,
+                "num_blocks": 1,
+                "kernel_size": 3,
+                "dropout": 0.0,
+                "fractional": {"k": 1, "include_raw": True, "memory": 4},
+                "dual_expert": {
+                    "enabled": True,
+                    "local_channels": 4,
+                    "gate_hidden_channels": 4,
+                },
+            },
             num_appliances=2,
             output_length=24,
-            hidden_channels=8,
-            num_blocks=1,
-            kernel_size=3,
-            dropout=0.0,
-            dual_expert_enabled=True,
-            dual_expert_local_channels=4,
-            dual_expert_gate_hidden_channels=4,
+            appliance_off_norm=[0.0, 0.0],
         )
 
         def fake_loss(power, logits, true_power, true_state, **kwargs):
@@ -157,7 +175,6 @@ class MultiNILMDualExpertTests(unittest.TestCase):
                 mae=(power - true_power).abs().mean(),
                 loss_power_per_appliance=per_app,
                 loss_state_per_appliance=logits.square().mean(dim=(0, 1)),
-                loss_state_smooth=None,
             )
 
         x = torch.randn(2, 24)

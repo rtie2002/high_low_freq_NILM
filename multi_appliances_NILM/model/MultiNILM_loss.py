@@ -1,7 +1,7 @@
 """MultiNILM loss. Shapes: power/state (B, T, A).
 
     L_NILM  = L_power + state_term
-    L_state = Σ_i (BCE_i + w_fp FP_i + w_smooth SMOOTH_i)
+    L_state = Σ_i (BCE_i + w_fp FP_i)
     none : state_term = λ L_state
     equal: state_term = λ L_state (L_power/L_state).detach()   # λ=1 → equal scale
 """
@@ -31,9 +31,6 @@ class MultiNILMLossOutput:
     mae: torch.Tensor                  # logging only (often denorm scale)
     loss_power_per_appliance: torch.Tensor
     loss_state_per_appliance: torch.Tensor
-    loss_state_smooth: torch.Tensor | None = None  # Σ_i SMOOTH_i, unweighted; None when off
-    loss_background: torch.Tensor | None = None
-    loss_reconstruction: torch.Tensor | None = None
 
 
 class MultiNILMLoss(nn.Module):
@@ -51,16 +48,9 @@ class MultiNILMLoss(nn.Module):
         power_delta_weight: float = 0.0,
         power_delta_on_only: bool = True,
         state_fp_weight: float = 0.0,
-        state_smooth_weight: float = 0.0,
-        state_smooth_tau: float = 4.0,
         power_energy_relative_weight: float = 0.0,
         energy_floor_watts: float = 10.0,
         target_mean: torch.Tensor | list[float] | None = None,
-        background_weight: float = 0.0,
-        reconstruction_weight: float = 0.0,
-        background_huber_beta: float = 0.1,
-        aggregate_mean: float = 0.0,
-        aggregate_scale: float = 1.0,
     ) -> None:
         super().__init__()
         self.lambda_state = float(lambda_state)
@@ -70,19 +60,8 @@ class MultiNILMLoss(nn.Module):
         self.power_delta_weight = float(power_delta_weight)
         self.power_delta_on_only = bool(power_delta_on_only)
         self.state_fp_weight = float(state_fp_weight)
-        self.state_smooth_weight = float(state_smooth_weight)
-        self.state_smooth_tau = float(state_smooth_tau)
         self.power_energy_relative_weight = float(power_energy_relative_weight)
         self.energy_floor_watts = float(energy_floor_watts)
-        self.background_weight = float(background_weight)
-        self.reconstruction_weight = float(reconstruction_weight)
-        self.background_huber_beta = float(background_huber_beta)
-        if self.background_weight < 0.0 or self.reconstruction_weight < 0.0:
-            raise ValueError("background and reconstruction weights must be non-negative")
-        if self.background_huber_beta <= 0.0:
-            raise ValueError("background_huber_beta must be positive")
-        if float(aggregate_scale) <= 0.0:
-            raise ValueError("aggregate_scale must be positive")
         # MAE logging scale (watts / std); not used in the training objective.
         self.register_buffer("power_scale", torch.as_tensor(power_scale, dtype=torch.float32))
         target_mean_tensor = (
@@ -91,8 +70,6 @@ class MultiNILMLoss(nn.Module):
             else torch.zeros_like(self.power_scale)
         )
         self.register_buffer("target_mean", target_mean_tensor)
-        self.register_buffer("aggregate_mean", torch.tensor(float(aggregate_mean), dtype=torch.float32))
-        self.register_buffer("aggregate_scale", torch.tensor(float(aggregate_scale), dtype=torch.float32))
         # BCE ON-class weight: pos_weight_i = (1−p_i)/p_i from train ON rate.
         if pos_weight is not None:
             self.register_buffer("pos_weight", torch.as_tensor(pos_weight, dtype=torch.float32))
@@ -162,21 +139,6 @@ class MultiNILMLoss(nn.Module):
             losses.append(loss_i)
         return torch.stack(losses)
 
-    def _state_smoothing_loss(self, state_logits: torch.Tensor) -> torch.Tensor:
-        """MS-TCN truncated MSE on adjacent log-probabilities → vector length A.
-
-        Abu Farha & Gall, CVPR 2019. Each appliance is a two-class (ON, OFF)
-        problem, so log p = (log σ(s), log σ(−s)):
-
-            SMOOTH_i = mean_{b,t,c} min(|log p_c[t] − log p_c[t−1]|, τ)²
-
-        As in the official code, the t−1 term is detached. Beyond τ the term is
-        constant with zero gradient, so decisive ON/OFF edges are not smoothed.
-        """
-        log_p = torch.stack((F.logsigmoid(state_logits), F.logsigmoid(-state_logits)), dim=-1)
-        delta2 = (log_p[:, 1:] - log_p[:, :-1].detach()) ** 2   # (B, T-1, A, 2)
-        return delta2.clamp(max=self.state_smooth_tau ** 2).mean(dim=(0, 1, 3))
-
     def _to_watts(self, power: torch.Tensor) -> torch.Tensor:
         scale = self.power_scale.to(device=power.device, dtype=power.dtype)
         mean = self.target_mean.to(device=power.device, dtype=power.dtype)
@@ -196,59 +158,6 @@ class MultiNILMLoss(nn.Module):
         return (
             torch.abs(pred_energy - true_energy) / (true_energy + floor)
         ).mean(dim=0)
-
-    def _background_losses(
-        self,
-        power_pred: torch.Tensor,
-        power_true: torch.Tensor,
-        background_pred: torch.Tensor,
-        aggregate_true: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Supervise unmodelled load and enforce aggregate reconstruction.
-
-        Background and aggregate tensors use aggregate z-score units. Appliance
-        tensors use separate per-appliance z-scores, so the physical sum is
-        formed in watts and then converted back to aggregate-normalized units.
-        """
-        if aggregate_true.dim() == 2:
-            aggregate_true = aggregate_true.unsqueeze(-1)
-        if background_pred.shape != aggregate_true.shape:
-            raise ValueError(
-                "background prediction and aggregate target must have the same "
-                f"shape, got {tuple(background_pred.shape)} and {tuple(aggregate_true.shape)}"
-            )
-
-        aggregate_true = aggregate_true.float()
-        background_pred = background_pred.float()
-        agg_mean = self.aggregate_mean.to(aggregate_true)
-        agg_scale = self.aggregate_scale.to(aggregate_true)
-        aggregate_watts = aggregate_true * agg_scale + agg_mean
-        true_appliance_watts = self._to_watts(power_true)
-        background_true_watts = (
-            aggregate_watts - true_appliance_watts.sum(dim=-1, keepdim=True)
-        ).clamp_min(0.0)
-        background_true = (background_true_watts - agg_mean) / agg_scale
-
-        loss_background = F.smooth_l1_loss(
-            background_pred,
-            background_true,
-            beta=self.background_huber_beta,
-        )
-
-        predicted_background_watts = (
-            background_pred * agg_scale + agg_mean
-        ).clamp_min(0.0)
-        predicted_total_watts = (
-            self._to_watts(power_pred).sum(dim=-1, keepdim=True)
-            + predicted_background_watts
-        )
-        predicted_total = (predicted_total_watts - agg_mean) / agg_scale
-        loss_reconstruction = F.smooth_l1_loss(
-            predicted_total,
-            aggregate_true,
-            beta=self.background_huber_beta,
-        )
-        return loss_background, loss_reconstruction
 
     def _balanced_state_term(
         self,
@@ -289,16 +198,13 @@ class MultiNILMLoss(nn.Module):
         state_logits: torch.Tensor,
         power_true: torch.Tensor,
         state_true: torch.Tensor,
-        *,
-        background_pred: torch.Tensor | None = None,
-        aggregate_true: torch.Tensor | None = None,
     ) -> MultiNILMLossOutput:
         """One supervised batch.
 
         Math
         ----
         L_power = Σ_i MSE_i
-        L_state = Σ_i (BCE_i + w_fp FP_i + w_smooth SMOOTH_i)
+        L_state = Σ_i (BCE_i + w_fp FP_i)
         L       = L_power + state_term          # see _balanced_state_term
         """
         power_pred = power_pred.float()
@@ -318,34 +224,10 @@ class MultiNILMLoss(nn.Module):
         )
 
         loss_state_per_app = self._per_appliance_state_loss(state_logits, state_true)
-        loss_state_smooth_per_app = None
-        if self.state_smooth_weight > 0.0 and state_logits.dim() == 3 and state_logits.shape[1] > 1:
-            loss_state_smooth_per_app = self._state_smoothing_loss(state_logits)
-            loss_state_per_app = loss_state_per_app + self.state_smooth_weight * loss_state_smooth_per_app
         loss_power = loss_power_per_app.sum()
         loss_state = loss_state_per_app.sum()
         loss_state_term = self._balanced_state_term(loss_power, loss_state)
         loss = loss_power + loss_state_term
-
-        loss_background = None
-        loss_reconstruction = None
-        auxiliary_enabled = self.background_weight > 0.0 or self.reconstruction_weight > 0.0
-        if auxiliary_enabled:
-            if background_pred is None or aggregate_true is None:
-                raise ValueError(
-                    "background/reconstruction loss requires background_pred and aggregate_true"
-                )
-            loss_background, loss_reconstruction = self._background_losses(
-                power_pred,
-                power_true,
-                background_pred,
-                aggregate_true,
-            )
-            loss = (
-                loss
-                + self.background_weight * loss_background
-                + self.reconstruction_weight * loss_reconstruction
-            )
 
         # --- MAE for logs only (not in L) ---
         scale = self.power_scale.to(device=power_pred.device, dtype=power_pred.dtype)
@@ -363,14 +245,4 @@ class MultiNILMLoss(nn.Module):
             mae=mae,
             loss_power_per_appliance=loss_power_per_app.detach(),
             loss_state_per_appliance=loss_state_per_app.detach(),
-            loss_state_smooth=(
-                None if loss_state_smooth_per_app is None
-                else loss_state_smooth_per_app.sum().detach()
-            ),
-            loss_background=(
-                None if loss_background is None else loss_background.detach()
-            ),
-            loss_reconstruction=(
-                None if loss_reconstruction is None else loss_reconstruction.detach()
-            ),
         )
