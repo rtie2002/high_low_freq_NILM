@@ -1,5 +1,5 @@
 # Relation dual-expert model with the alpha=1 GL feature routed to each tower.
-experiment_id: k4_alpha1_tower
+experiment_id: k4_alpha1_no_multiscale_stem
 model_name: multinilm_fractional
 
 data:
@@ -57,7 +57,9 @@ architecture:
   channel_schedule: [32, 64, 128]
   hidden_channels: 128
 
-  use_multiscale_stem: true
+  # Ablation: replace the parallel 3/5/9 stem with one staged convolution path.
+  # All input features and all later architecture/loss settings stay unchanged.
+  use_multiscale_stem: false
   detail_kernels: [3, 5, 9]
   detail_branch_channels: 16
   stem_kernel_size: 7
