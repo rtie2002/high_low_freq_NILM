@@ -191,6 +191,17 @@ class LiveTrainingMonitor:
                 "loss_state_term",
             ):
                 loss_row[f"val_{key}"] = value
+        diagnostic_prefixes = (
+            "source_mask_",
+            "state_off_energy_ratio_",
+            "state_off_power_watts_",
+        )
+        for key, value in train_logs.items():
+            if key.startswith(diagnostic_prefixes) or key == "unknown_power_watts":
+                loss_row[f"train_{key}"] = value
+        for key, value in val_logs.items():
+            if key.startswith(diagnostic_prefixes) or key == "unknown_power_watts":
+                loss_row[f"val_{key}"] = value
         self._write_csv_row(history_row, self.history_path, "_history_file", "_history_writer")
         self._write_csv_row(loss_row, self.loss_detail_path, "_loss_file", "_loss_writer")
 

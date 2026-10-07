@@ -862,3 +862,613 @@ State and boundary supervision
 7. Ishikawa, Y., Kasai, S., Aoki, Y., and Kataoka, H. *Alleviating Over-Segmentation Errors by Detecting Action Boundaries*. WACV, 2021. [Paper](https://openaccess.thecvf.com/content/WACV2021/html/Ishikawa_Alleviating_Over-Segmentation_Errors_by_Detecting_Action_Boundaries_WACV_2021_paper.html) | [Code](https://github.com/yiskw713/asrf)
 8. Chen, Z., Badrinarayanan, V., Lee, C.-Y., and Rabinovich, A. *GradNorm: Gradient Normalization for Adaptive Loss Balancing in Deep Multitask Networks*. ICML, 2018. [Paper](https://proceedings.mlr.press/v80/chen18a.html)
 9. Yu, T., Kumar, S., Gupta, A., Levine, S., Hausman, K., and Finn, C. *Gradient Surgery for Multi-Task Learning*. NeurIPS, 2020. [Paper](https://papers.neurips.cc/paper_files/paper/2020/file/3fe78a8acf5fda99de95303940a2420c-Paper.pdf)
+
+---
+
+## 22. Implementation round: mixture-consistent output
+
+### 22.1 本轮目标
+
+本轮不再增加第三个复杂 architecture，而是只解决当前输出定义的根本问题：
+
+\[
+\hat y_i(t)=p_i(t)r_i(t).
+\]
+
+在旧模型中，state probability \(p_i\) 和 raw power \(r_i\) 可以互相补偿。例如：
+
+\[
+0.1\times1000\text{ W}=0.5\times200\text{ W}=100\text{ W}.
+\]
+
+Loss 只看到乘积，不保证两个分支各自合理。因此 raw power 可以非常大，再被低 state probability 隐藏；hard gate 会截断真实 ON waveform，而 soft/ramp gate 又会暴露隐藏的大脉冲。
+
+本轮采用控制实验原则：
+
+- 保留现有 encoder、multiscale stem、TCN、dual expert、task attention 和 relation attention；
+- 保留现有 training loss；
+- 只替换最终 power parameterization；
+- state prediction 继续训练和报告，但不再修改 power；
+- 已失败的 local contrast 不进入本轮训练。
+
+这样本轮结果可以回答一个明确问题：
+
+> 将五个独立 gated regressors 改为六源联合功率分配，是否能减少不符合物理规律的 waveform、microwave 大脉冲和高背景 fridge false power？
+
+### 22.2 本轮原计划与完成情况
+
+| 工作 | 状态 | 实际完成内容 |
+|---|---|---|
+| 审查 normalization 路径 | 已完成 | 模型在 watt space 分配总表功率，再转换回现有 appliance-wise z-score 输出 |
+| 审查 evaluation gate | 已完成 | state calibration 只用于状态指标，不再 gate power |
+| 增加 unknown source | 已完成 | 五个 appliance logits 加一个 unknown-background logit |
+| 加入 mixture consistency | 已完成 | 六个 masks 经 source-wise softmax 后共同分配 aggregate watts |
+| 保持旧 encoder 与 loss | 已完成 | 本轮不同时测试 loss simplification 或删除 attention/expert |
+| 移除 local contrast | 已完成 | 恢复 pre-local-contrast 的 12-channel k4 frontend |
+| 增加 collapse diagnostics | 已完成 | 记录五个 appliance masks、unknown mask 和 unknown watts |
+| 增加自动测试 | 已完成 | 添加 shape、mask sum、功率守恒、state/power 解耦和 gradient 测试 |
+| 静态验证 | 已完成 | Python compilation、YAML parsing 和 config assertions 通过 |
+| PyTorch 动态测试 | 待训练机执行 | 当前 C 盘 conda environments 没有安装 PyTorch |
+| 完整训练 | 尚未执行 | 必须在训练机从头训练，旧 checkpoint 不兼容 |
+
+### 22.3 Architecture before
+
+```mermaid
+flowchart LR
+    X[Aggregate] --> FE[Fractional frontend]
+    FE --> ENC[Multiscale stem + TCN]
+    X --> LE[Local transient expert]
+    ENC --> ROUTE[Per-appliance expert gates]
+    LE --> ROUTE
+    ROUTE --> ATT[Task + relation attention]
+    ATT --> P[Five independent raw powers r_i]
+    ATT --> S[Five state probabilities p_i]
+    P --> G[Element-wise gate p_i times r_i]
+    S --> G
+    G --> Y[Five appliance powers]
+    S --> EG[Calibration and hard/soft/ramp evaluation gate]
+    Y --> EG
+```
+
+旧设计存在两个问题：
+
+1. 五个 appliance heads 可以独立生成互相重复或超过 aggregate 的功率；
+2. training gate 与 evaluation gate 使 waveform quality 依赖 state threshold，而不是依赖 power head 本身正确。
+
+### 22.4 Architecture implemented in this round
+
+```mermaid
+flowchart LR
+    X[Normalized aggregate] --> FE[12-channel k4 frontend]
+    FE --> ENC[Existing multiscale stem + TCN]
+    X --> LE[Existing local transient expert]
+    ENC --> ROUTE[Existing per-appliance expert gates]
+    LE --> ROUTE
+    ROUTE --> ATT[Existing task + relation attention]
+    ATT --> A[Five appliance allocation logits]
+    ENC --> U[One unknown-background logit]
+    A --> SM[Softmax across six sources]
+    U --> SM
+    X --> W[Recover aggregate watts]
+    SM --> ALLOC[Mask times aggregate watts]
+    W --> ALLOC
+    ALLOC --> Y[Five reported appliance powers]
+    ALLOC --> B[Unknown background power]
+    ATT --> S[Five independent state logits]
+```
+
+本轮没有新建另一套 backbone。五个现有 `power_head` 的语义由“normalized power”改为“allocation logit”；只增加一个简单的 `1 x 1 Conv1d` unknown head。
+
+实现文件：
+
+- [`model/MultiNILM.py`](../model/MultiNILM.py)
+- [`config/models/multinilm_k4.yaml`](../config/models/multinilm_k4.yaml)
+- [`tests/test_multinilm_dual_expert.py`](../tests/test_multinilm_dual_expert.py)
+
+### 22.5 六源分配公式
+
+对五个目标 appliances 和一个 unknown source，模型输出：
+
+\[
+a_s(t),\qquad s\in\{1,\ldots,6\}.
+\]
+
+Source masks 为：
+
+\[
+m_s(t)=\frac{\exp(a_s(t))}{\sum_{j=1}^{6}\exp(a_j(t))}.
+\]
+
+输入首先从 normalized space 恢复到 watts：
+
+\[
+x_{W}(t)=\max\left(x_{norm}(t)\sigma_x+\mu_x,0\right).
+\]
+
+每个 source 获得：
+
+\[
+\hat y_s^{W}(t)=m_s(t)x_W(t).
+\]
+
+因此在每个 time step：
+
+\[
+\sum_{s=1}^{6}\hat y_s^{W}(t)=x_W(t),
+\]
+
+并且：
+
+\[
+\hat y_s^{W}(t)\ge 0.
+\]
+
+训练 pipeline 仍使用 appliance-wise normalized targets，因此前五个输出会转换回：
+
+\[
+\hat y_{i,norm}(t)=
+\frac{\hat y_i^W(t)-\mu_i}{\sigma_i}.
+\]
+
+第六个 unknown source 不作为论文中的目标 appliance 报告，只用于吸收未建模 household loads。
+
+### 22.6 为什么 source softmax 不违反 multi-label 定义
+
+State output 仍是五个独立 sigmoid：
+
+\[
+q_i(t)=\sigma(s_i(t)).
+\]
+
+因为多个 appliances 可以同时 ON，所以 state labels 不能使用 class softmax。
+
+Source softmax 的含义不同。它分配的是同一个 time step 的 aggregate power fraction，而不是选择唯一的 appliance class。多个 appliance masks 可以同时大于零，因此多个 appliances 仍可同时获得功率。
+
+State head 只通过 BCE 和 shared features 辅助 representation learning：
+
+\[
+\hat y_i(t)\ne q_i(t)r_i(t).
+\]
+
+### 22.7 Normalization implementation
+
+模型构建时从现有 `NILMDataLoader.norm` 读取：
+
+- aggregate mean 和 standard deviation；
+- 五个 appliance means 和 standard deviations；
+- legacy scale fallback。
+
+这些统计量作为 non-trainable buffers 放入模型。代码没有把当前数据集的数值写死，因此其他正确配置 normalization 的 datasets 仍可使用同一结构。
+
+### 22.8 Source-prior initialization
+
+如果六个 logits 随机初始化为接近相同，训练开始时每个 appliance 会获得约六分之一的 aggregate。这对稀有 appliances 不合理，也会产生很大的初始 OFF error。
+
+本轮只使用 train-set mean powers 初始化各 source-head bias：
+
+\[
+\pi_i=\frac{\mu_i}{\mu_x},
+\qquad
+\pi_{unknown}=\frac{\mu_x-\sum_i\mu_i}{\mu_x}.
+\]
+
+初始 bias 为：
+
+\[
+b_s=\log \pi_s.
+\]
+
+这只是合理的初始 allocation prior；所有 convolution weights 和 biases 仍然可以正常训练。
+
+### 22.9 本轮明确保持不变的部分
+
+为了避免再次产生无法解释的多变量实验，以下内容本轮没有修改：
+
+- multiscale stem；
+- IBN / BatchNorm choices；
+- dilated TCN；
+- dual expert；
+- task attention；
+- relation attention；
+- head local decoder；
+- dynamic task balance；
+- ON-MSE / OFF-MSE；
+- power delta loss；
+- relative-energy loss；
+- BCE `pos_weight`；
+- FP state penalty；
+- background swap；
+- optimizer、scheduler、window length 和 stride；
+- dataset split 和 state labels。
+
+这些保留不表示它们最终都有用，只表示本轮不同时改变它们。
+
+### 22.10 本轮关闭的部分
+
+以下行为已经关闭：
+
+- `include_local_contrast: false`；
+- model 内部 state-to-power gate；
+- evaluation `gate_power_by_state`；
+- calibrated hard/ramp power gate；
+- evaluation 5 W minimum-power postprocessing。
+
+State calibration 和 temporal state postprocessing 仍保留，但只影响 precision、recall、F1 和 event state，不再改变 power waveform。
+
+### 22.11 当前 experiment configuration
+
+```yaml
+experiment_id: k4_alpha1_mixture_consistent_output
+
+evaluation:
+  gate_power_by_state: false
+  power_postprocess: false
+  state_calibration:
+    enabled: true
+    apply_to_power: false
+    power_gate:
+      mode: none
+
+fractional:
+  k: 4
+  include_local_contrast: false
+
+architecture:
+  gate_mode: none
+  mixture_consistent_output:
+    enabled: true
+```
+
+### 22.12 新增训练诊断
+
+`loss_detail.csv` 会增加：
+
+```text
+source_mask_kettle
+source_mask_fridge
+source_mask_dishwasher
+source_mask_washingmachine
+source_mask_microwave
+source_mask_unknown
+unknown_power_watts
+```
+
+这些列用于检测 unknown-source collapse。
+
+危险信号包括：
+
+- `source_mask_unknown` 很快接近 1；
+- target appliance masks 长期接近 0；
+- training power loss 无法下降；
+- ON-MAE 显著恶化，但 aggregate consistency 看起来很好。
+
+Mixture consistency 可以保证物理守恒，但不能单独保证 source identity 正确，所以这些 diagnostics 必须与 per-appliance waveform 一起检查。
+
+### 22.13 新增自动测试
+
+新增测试覆盖：
+
+1. 输出 shape 为 `(B, T, A)`；
+2. 六个 source masks 在 source dimension 上总和为 1；
+3. 五个 known powers 加 unknown power 等于 aggregate watts；
+4. 当 state logits 被强制设为极低时，power 仍不会被 state gate 截断；
+5. unknown head 可以接收来自 power loss 的 gradient；
+6. 旧 configuration 默认不启用 mixture-consistent output；
+7. 新 YAML configuration 能正确启用该模式。
+
+本轮已通过：
+
+- `py_compile`；
+- YAML parsing；
+- mixture-consistent configuration assertions；
+- `git diff --check`。
+
+本轮未在当前 C 盘环境执行 PyTorch unit test，因为可用 conda environments 均未安装 `torch`。这不代表动态测试通过，必须在训练机执行下一节命令。
+
+### 22.14 训练机测试与训练命令
+
+先运行定向测试：
+
+```powershell
+cd "D:\Raymond\high_low_freq_NILM\multi_appliances_NILM"
+
+python -m unittest tests.test_multinilm_dual_expert
+```
+
+只有测试通过后，才从头训练：
+
+```powershell
+python main.py `
+  --mode train_evaluate `
+  --model multinilm_fractional `
+  --experiment config/experiment_mixed_ukdale_refit_8w.yaml `
+  --model-config config/models/multinilm_k4.yaml
+```
+
+预期结果目录：
+
+```text
+runs/k4_alpha1_mixture_consistent_output/multinilm_fractional
+```
+
+旧 checkpoint 不能用于这个实验，因为原来的 `power_head` 输出 normalized power，现在输出 allocation logit。
+
+### 22.15 本轮 success criteria
+
+不能只用 overall MAE 判断。至少同时检查：
+
+1. source masks 是否保持有限且 unknown 没有 collapse；
+2. 五个 appliance predictions 的和是否不超过 aggregate；
+3. microwave 是否减少孤立的大功率 false spikes；
+4. fridge 在高 residual-background 区间的 FPR 和 OFF-MAE 是否下降；
+5. true-OFF power leakage 是否下降；
+6. microwave 和 fridge ON-MAE 是否没有明显恶化；
+7. validation appliance-macro AP / MAE 是否不低于 retained reference；
+8. REFIT 20 和 UK-DALE 2 的 waveform 是否同时改善，而不是只改善一个 house；
+9. 至少两个 seeds 给出相同方向。
+
+### 22.16 结果出来后的决策规则
+
+#### 情况 A：波形明显合理，metrics 不下降
+
+说明 independent gated output 是主要问题。下一轮才测试简单 head：
+
+```text
+Existing frontend
+    -> multiscale stem
+    -> TCN
+    -> one 6-channel source head
+    -> one 5-channel state head
+```
+
+逐步删除：
+
+1. dual expert；
+2. task attention；
+3. relation attention；
+4. rolling statistics 和 separate absolute delta。
+
+每次只删除一个机制。
+
+#### 情况 B：unknown collapse
+
+不要马上增加 attention。首先检查：
+
+- target normalization 是否正确；
+- source-prior biases 是否按 train stats 初始化；
+- ON events 是否在 training windows 中足够出现；
+- 当前 loss 是否过度奖励把困难目标交给 unknown。
+
+之后才测试 active-aware Huber，而不是恢复全部复杂 losses。
+
+#### 情况 C：物理波形改善，但 ON-MAE 下降
+
+说明 mixture constraint 有效，但稀有 ON samples 的训练信号不足。下一轮只修改 power loss：
+
+\[
+L_{power}
+=
+\frac{1}{5}\sum_i
+\mathbb{E}_t
+\left[
+(1+\beta z_i(t))
+\operatorname{Huber}
+\left(
+\frac{\hat y_i(t)-y_i(t)}{\sigma_i}
+\right)
+\right].
+\]
+
+先测试 \(\beta=1\)，而不是恢复当前对 microwave 产生巨大隐式权重的 separately averaged ON-MSE。
+
+#### 情况 D：仍然记忆 background
+
+只有在 source allocation 正常后，才加入 paired background consistency：
+
+\[
+L_{inv}
+=
+\frac{1}{5}\sum_i
+\operatorname{Huber}
+\left(
+\frac{\hat y_i(x_{real})-\hat y_i(x_{swap})}{\sigma_i}
+\right).
+\]
+
+必须比较：
+
+1. real only；
+2. real + swapped、无 consistency；
+3. real + swapped + consistency。
+
+这样才能区分额外 synthetic samples 与 invariance constraint 的贡献。
+
+### 22.17 本轮没有宣称已经解决的问题
+
+本轮完成的是一个可检验的 architecture correction，不是最终性能结论。尚未证明：
+
+- microwave identification 已解决；
+- fridge high-background failure 已解决；
+- validation loss 会持续下降；
+- relation attention 或 dual expert 有必要；
+- 当前复杂 loss 有必要；
+- background swap 有稳定收益。
+
+只有完整训练、两个 seeds、per-appliance metrics 和 event-focused waveform 都出来后，才能接受或拒绝这一 architecture。
+
+## 23. State-conditioned conservative mixture（当前实现）
+
+### 23.1 为什么不能直接接受上一轮结果
+
+上一轮 `k4_alpha1_mixture_consistent_output` 证明了两个不同结论：
+
+1. mixture allocation 明显改善 true-ON power regression；
+2. 完全解耦的 state/power 输出产生了不可接受的 true-OFF power leakage。
+
+相对 `k4_alpha1_tower`，上一轮的 overall 变化如下：
+
+| Split | ON-MAE | OFF-MAE | MAE | AP |
+|---|---:|---:|---:|---:|
+| Validation | 315.0 → 248.0 W | 7.9 → 17.5 W | 15.0 → 23.7 W | 0.790 → 0.790 |
+| REFIT 20 | 306.7 → 258.8 W | 8.5 → 14.4 W | 11.0 → 16.3 W | 0.723 → 0.667 |
+| UK-DALE 2 | 280.9 → 188.1 W | 4.0 → 6.1 W | 7.7 → 9.3 W | 0.915 → 0.933 |
+
+最严重的矛盾不是普通小误差，而是 state 判为 OFF 时仍然输出很大的功率：
+
+| Split | Appliance | 最大 OFF-state power | OFF-state predicted-energy share |
+|---|---|---:|---:|
+| Validation | fridge | 1029 W | 16.1% |
+| Validation | microwave | 2248 W | 71.9% |
+| REFIT 20 | fridge | 837 W | 10.5% |
+| REFIT 20 | microwave | 2163 W | 64.0% |
+| UK-DALE 2 | microwave | 1669 W | 44.3% |
+
+因此上一轮不能作为最终模型。它是一个有用的 ablation：conservation 有助于 ON power，但 conservation 本身不能识别 source identity。
+
+### 23.2 上一轮公式及其缺陷
+
+上一轮使用：
+
+\[
+(m_1,\ldots,m_5,m_u)=\operatorname{softmax}(a_1,\ldots,a_5,a_u),
+\]
+
+\[
+\hat y_i=xm_i,
+\qquad
+p_i=\sigma(s_i).
+\]
+
+`power` 和 `state` 在输出层完全独立，所以：
+
+\[
+p_i < \text{state threshold}
+\quad\not\Rightarrow\quad
+\hat y_i \approx 0.
+\]
+
+此外，aggregate 很大时，小的 mask identity error 会被 aggregate 直接放大。例如 `m_i=0.2`、`x=3000 W` 已经会产生 `600 W` 的错误 appliance power。
+
+### 23.3 当前公式
+
+当前实验保留同一个六路 base allocation，但加入 state feasibility：
+
+\[
+p_i=\sigma(s_i),
+\]
+
+\[
+\tilde m_i=m_i p_i,
+\]
+
+\[
+\tilde m_u=m_u+\sum_i m_i(1-p_i).
+\]
+
+最终功率为：
+
+\[
+\hat y_i=x\tilde m_i,
+\qquad
+\hat y_u=x\tilde m_u.
+\]
+
+因此：
+
+\[
+\sum_i\tilde m_i+\tilde m_u=1,
+\]
+
+\[
+\sum_i\hat y_i+\hat y_u=x.
+\]
+
+与普通 state gate 不同，被 gate 拒绝的功率不会消失，而是返回 unknown/background source。Power loss 也会通过 `p_i` 向 state head 传播梯度，让 classification 与 regression 学习同一个 appliance-presence 决策。
+
+### 23.4 最终 evaluation waveform
+
+Training forward 使用连续概率 `p_i`，保持可微。Validation calibration 完成后，最终保存的 metrics 和 waveform 使用 calibrated hard state gate：
+
+```yaml
+evaluation:
+  gate_power_by_state: true
+  state_calibration:
+    apply_to_power: true
+    power_gate:
+      mode: hard
+```
+
+因此最终报告中，state 判定为 OFF 的位置不会再保留千瓦级 appliance power。被清除的已知电器功率在物理解释上属于 unknown residual；当前 prediction bundle 只保存五个已知 appliances，不另外输出 unknown waveform。
+
+### 23.5 本轮唯一 architecture 变化
+
+```yaml
+experiment_id: k4_alpha1_state_conditioned_mixture
+
+architecture:
+  mixture_consistent_output:
+    enabled: true
+    state_conditioned: true
+```
+
+以下内容全部保持不变：
+
+- k=4 fractional frontend；
+- multiscale stem；
+- IBN / BatchNorm；
+- dilated TCN；
+- dual expert；
+- task attention；
+- relation attention；
+- 所有 power/state loss weights；
+- dynamic task balance；
+- background swap；
+- optimizer、scheduler、window、stride、dataset splits。
+
+本轮没有加入 paired background consistency，也没有删除任何 attention。这样新结果只能归因于 state-conditioned allocation 与最终一致性 gate。
+
+### 23.6 新增诊断
+
+`loss_detail.csv` 现在会真正保存：
+
+```text
+train/val_source_mask_<appliance>
+train/val_source_mask_unknown
+train/val_unknown_power_watts
+train/val_state_off_energy_ratio_<appliance>
+train/val_state_off_power_watts_<appliance>
+```
+
+其中 `state_off_*` 在训练期间使用未校准的 `p_i < 0.5`，用于观察 soft state/power coupling；最终 test CSV 和 waveform 仍使用 validation-calibrated threshold。
+
+### 23.7 训练与判断规则
+
+这一结构不增加 trainable parameters，但必须从头训练。旧 checkpoint 的 tensor shape 虽然兼容，其 state head 从未接受 power loss 的耦合梯度，不能用于正式比较。
+
+```powershell
+cd "D:\Raymond\high_low_freq_NILM\multi_appliances_NILM"
+
+python main.py `
+  --mode train_evaluate `
+  --model multinilm_fractional `
+  --experiment config/experiment_mixed_ukdale_refit_8w.yaml `
+  --model-config config/models/multinilm_k4.yaml
+```
+
+预期目录：
+
+```text
+runs/k4_alpha1_state_conditioned_mixture/multinilm_fractional
+```
+
+首先只跑一个 seed。接受条件必须同时包括：
+
+1. 最终 prediction 中 state-OFF power 为 0；
+2. raw soft-output 的 microwave `state_off_energy_ratio` 明显低于上一轮；
+3. REFIT microwave AP 至少恢复到 `k4_alpha1_tower` 附近（约 0.45）；
+4. validation 和 REFIT overall MAE 不再明显高于 tower；
+5. fridge 在高背景区间的 FPR 有明确下降；
+6. ON-MAE 的改善在 calibrated hard gate 后仍然存在；
+7. REFIT 和 UK-DALE 不再出现一边改善、另一边明显恶化。
+
+如果这些条件仍未满足，就停止继续修改 mixture head，恢复 `k4_alpha1_tower` 输出，再单独测试 paired background consistency。不要在失败的 mixture output 上继续叠加 expert、adapter 或新 feature。

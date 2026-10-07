@@ -10,6 +10,7 @@ A=5 reported appliances plus one unobserved-background allocation.
     -> 5 heads           5 x (B, 128, T)
     -> relation mix      5 x (B, 128, T)
     -> 6-way allocation  (B, 6, T)  # 5 appliances + unknown
+    -> state feasibility (B, 5, T)  # rejected power returns to unknown
     -> power, state      (B, T, 5)
 
 Stop at "YAML / training" unless you are changing configs.
@@ -579,6 +580,7 @@ class MultiNILM(nn.Module):
         dual_expert_gate_hidden_channels=32,
         dual_expert_gate_initial_local_weight=0.1,
         mixture_consistent_output=False,
+        mixture_state_conditioned=False,
         aggregate_mean=0.0, aggregate_scale=1.0,
         appliance_mean=None, appliance_scale=None,
     ):
@@ -591,9 +593,15 @@ class MultiNILM(nn.Module):
         self.gate_threshold = float(gate_threshold)
         self.dual_expert_enabled = bool(dual_expert_enabled)
         self.mixture_consistent_output = bool(mixture_consistent_output)
+        self.mixture_state_conditioned = bool(mixture_state_conditioned)
+        if self.mixture_state_conditioned and not self.mixture_consistent_output:
+            raise ValueError(
+                "mixture_state_conditioned requires mixture_consistent_output"
+            )
         self.last_expert_gates = None
         self.last_source_masks = None
         self.last_unknown_power_watts = None
+        self.last_appliance_power_watts = None
         off_norms = list(appliance_off_norm or [0.0] * self.num_appliances)
         if len(off_norms) != self.num_appliances:
             raise ValueError(f"appliance_off_norm length {len(off_norms)} != {self.num_appliances}")
@@ -816,6 +824,27 @@ class MultiNILM(nn.Module):
             source_logits = torch.cat([*allocation_logits, unknown_logit], dim=1)
             source_masks = torch.softmax(source_logits, dim=1)  # (B, A+1, T_out)
 
+            if self.mixture_state_conditioned:
+                # The allocation mask answers "which source resembles this
+                # signal?" and the state probability answers "is that source
+                # present?".  A rejected appliance share is not discarded: it
+                # is reassigned to the unknown source, so the masks still sum
+                # to one at every time step.
+                #
+                #   effective_i       = mask_i * sigmoid(state_logit_i)
+                #   effective_unknown = mask_unknown
+                #                     + sum_i mask_i * (1 - state_prob_i)
+                state_prob = torch.sigmoid(torch.cat(state_logits, dim=1))
+                appliance_masks = source_masks[:, :self.num_appliances]
+                effective_appliance_masks = appliance_masks * state_prob
+                effective_unknown_mask = (
+                    source_masks[:, -1:]
+                    + (appliance_masks * (1.0 - state_prob)).sum(dim=1, keepdim=True)
+                )
+                source_masks = torch.cat(
+                    [effective_appliance_masks, effective_unknown_mask], dim=1
+                )
+
             aggregate_norm = _match_time_length(raw_input.float(), self.output_length)
             aggregate_watts = (
                 aggregate_norm * self.aggregate_scale + self.aggregate_mean
@@ -834,10 +863,12 @@ class MultiNILM(nn.Module):
             # Diagnostics only; detached tensors never change optimization.
             self.last_source_masks = source_masks.detach()
             self.last_unknown_power_watts = source_power_watts[:, -1:].detach()
+            self.last_appliance_power_watts = appliance_power_watts.detach()
             return power, logits
 
         self.last_source_masks = None
         self.last_unknown_power_watts = None
+        self.last_appliance_power_watts = None
         powers, states = [], []
         for head, f in zip(self.appliance_heads, feats):
             p, s = head.decode_from_features(f)                # (B, 1, T_out)
@@ -892,6 +923,10 @@ class MultiNILMFractional(nn.Module):
     def last_unknown_power_watts(self):
         return self.backbone.last_unknown_power_watts
 
+    @property
+    def last_appliance_power_watts(self):
+        return self.backbone.last_appliance_power_watts
+
 # ===========================================================================
 # YAML / training. Skip this while reading the network.
 # ===========================================================================
@@ -938,6 +973,7 @@ class MultiNILMConfig:
     dual_expert_gate_hidden_channels: int = 32
     dual_expert_gate_initial_local_weight: float = 0.1
     mixture_consistent_output: bool = False
+    mixture_state_conditioned: bool = False
 
 
 def multinilm_config(architecture):
@@ -995,6 +1031,7 @@ def multinilm_config(architecture):
         mixture_consistent_output=bool(
             mixture.get("enabled", a.get("mixture_consistent_output", False))
         ),
+        mixture_state_conditioned=bool(mixture.get("state_conditioned", False)),
     )
 
 
@@ -1184,14 +1221,32 @@ class MultiNILMAdapter(BaseNILMAdapter):
                     logs[f"gate_local_off_{app}"] = float(weights[~on_mask].mean())
         source_masks = getattr(model, "last_source_masks", None)
         if source_masks is not None:
-            # Mean allocation shares reveal whether a difficult appliance has
-            # collapsed into the unknown source. They are diagnostics only.
+            # These are effective masks after optional state conditioning.
+            # They reveal both unknown-source collapse and power leakage into
+            # an appliance whose state probability is below 0.5.
             for app_i, app in enumerate(self.cfg["appliances"]):
                 logs[f"source_mask_{app}"] = float(source_masks[:, app_i, :].mean())
             logs["source_mask_unknown"] = float(source_masks[:, -1, :].mean())
             unknown_watts = getattr(model, "last_unknown_power_watts", None)
             if unknown_watts is not None:
                 logs["unknown_power_watts"] = float(unknown_watts.mean())
+            appliance_watts = getattr(model, "last_appliance_power_watts", None)
+            if appliance_watts is not None:
+                probability = state_prob.permute(0, 2, 1)
+                for app_i, app in enumerate(self.cfg["appliances"]):
+                    watts = appliance_watts[:, app_i, :]
+                    predicted_off = probability[:, app_i, :] < 0.5
+                    off_energy = watts[predicted_off].sum()
+                    total_energy = watts.sum().clamp_min(1e-8)
+                    logs[f"state_off_energy_ratio_{app}"] = float(
+                        off_energy / total_energy
+                    )
+                    if bool(predicted_off.any()):
+                        logs[f"state_off_power_watts_{app}"] = float(
+                            watts[predicted_off].mean()
+                        )
+                    else:
+                        logs[f"state_off_power_watts_{app}"] = float("nan")
         return StepOutput(
             loss=out.loss,
             logs=logs,

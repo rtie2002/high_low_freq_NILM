@@ -1,7 +1,7 @@
-# Controlled architecture experiment: keep the retained k4 encoder, experts,
-# attention and loss, but replace gated independent power regression with one
-# mixture-consistent allocation over five appliances plus unknown background.
-experiment_id: k4_alpha1_mixture_consistent_output
+# Controlled follow-up: keep the retained k4 encoder, experts, attention and
+# loss, but make mixture allocation conditional on each appliance state. Power
+# rejected by a state gate returns to the unknown source instead of vanishing.
+experiment_id: k4_alpha1_state_conditioned_mixture
 model_name: multinilm_fractional
 
 data:
@@ -9,16 +9,18 @@ data:
 
 evaluation:
   pred_on_source: state_head
-  # State predictions are evaluated, but never multiply or threshold power.
-  gate_power_by_state: false
+  # Final saved waveforms use the calibrated event state, so a reported OFF
+  # sample cannot retain large appliance power. Rejected power is interpreted
+  # as part of the unreported unknown/background source.
+  gate_power_by_state: true
   power_postprocess: false
   state_calibration:
     enabled: true
     split: validation
     threshold_grid: [0.05, 0.98, 0.01]
-    apply_to_power: false
+    apply_to_power: true
     power_gate:
-      mode: none
+      mode: hard
     postprocess:
       enabled: true
       # Use physical seconds so validation calibration keeps the same temporal
@@ -103,10 +105,12 @@ architecture:
   gate_threshold: 0.5
 
   # Five appliance allocation logits and one unknown-background logit compete
-  # for the same aggregate-watt budget at every time step. State logits remain
-  # auxiliary outputs and do not gate appliance power.
+  # for the same aggregate-watt budget. Each appliance mask is then multiplied
+  # by its state probability; rejected shares are reassigned to unknown, so the
+  # six effective masks still sum to one at every time step.
   mixture_consistent_output:
     enabled: true
+    state_conditioned: true
 
   # Local expert receives raw aggregate, alpha=1 GL and |alpha=1 GL|.
   dual_expert:
@@ -129,12 +133,17 @@ architecture:
     dropout: 0.25
 
 # ---------------------------------------------------------------------------
-# Training loss is intentionally unchanged in this first controlled experiment.
+# Training loss is intentionally unchanged in this controlled follow-up.
 # Only the power output parameterization changes. At each time step the model
-# produces six masks m_s = softmax(a_s), then y_hat_s = m_s * aggregate_watts.
-# The five reported appliance powers therefore share one physical budget; the
-# sixth source absorbs unmodelled background. State logits are trained by BCE
-# but are not multiplied into appliance power.
+# produces base masks m_s = softmax(a_s) and probabilities p_i = sigmoid(s_i).
+# Effective appliance masks are m_i*p_i. Every rejected share m_i*(1-p_i) is
+# added to the unknown mask, then all sources multiply the aggregate watts:
+#
+#   y_hat_i       = aggregate * m_i * p_i
+#   y_hat_unknown = aggregate * [m_unknown + sum_i m_i * (1-p_i)]
+#
+# The six effective sources therefore remain exactly mixture-consistent while
+# the power loss can also teach the state head which appliance is feasible.
 #
 #   L_NILM = L_power + state_term
 #
