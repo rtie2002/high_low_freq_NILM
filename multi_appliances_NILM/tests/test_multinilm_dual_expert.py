@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import torch
 
 from model.MultiNILM import (
+    FractionalFrontEnd,
     MultiNILM,
     MultiNILMAdapter,
     build_multinilm_fractional,
@@ -14,6 +15,27 @@ from model.MultiNILM import (
 
 
 class MultiNILMDualExpertTests(unittest.TestCase):
+    def test_local_contrast_checkpoint_frontend_has_thirteen_channels(self) -> None:
+        frontend = FractionalFrontEnd(
+            alphas=[0.25, 0.5, 0.75, 1.0],
+            include_raw=True,
+            include_abs_delta=True,
+            include_local_contrast=True,
+            local_contrast_span=45,
+            include_rolling_mean=True,
+            include_rolling_std=True,
+            rolling_windows=[8, 23, 45],
+            memory=24,
+            channel_normalize="none",
+        )
+        self.assertEqual(frontend.out_channels, 13)
+
+        x = torch.zeros(1, 1, 64)
+        x[..., 32:] = 1.0
+        features = frontend(x)
+        self.assertEqual(tuple(features.shape), (1, 13, 64))
+        self.assertTrue(torch.isfinite(features).all())
+
     def test_dual_expert_shapes_gate_initialization_and_relation(self) -> None:
         model = MultiNILM(
             input_channels=4,

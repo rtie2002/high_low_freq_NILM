@@ -1,5 +1,6 @@
-# Relation dual-expert baseline with SGN soft power gating only.
-experiment_id: k4_alpha1_soft_power
+# Existing 13-channel local-contrast checkpoint, evaluated without a second
+# binary power gate. This is an evaluation ablation, not a new training run.
+experiment_id: k4_alpha1_local_contrast_soft_power
 model_name: multinilm_fractional
 
 data:
@@ -47,6 +48,13 @@ fractional:
   k: 4
   include_raw: true
   include_abs_delta: true
+  # Retained only so the existing 13-channel checkpoint loads exactly. The
+  # experiment tests hard-vs-soft output gating, not local contrast again.
+  include_local_contrast: true
+  local_contrast_span: 45
+  local_contrast_alpha: 1.0
+  local_contrast_eps: 0.05
+  local_contrast_clip: 5.0
   include_rolling_mean: true
   include_rolling_std: true
   rolling_windows: [8, 23, 45]
@@ -54,8 +62,7 @@ fractional:
   channel_normalize: none
 
 architecture:
-  # Restore the established 12-channel relation dual-expert baseline. The
-  # failed local-contrast feature has been removed rather than hidden downstream.
+  # The saved local-contrast checkpoint expects 13 input channels.
   channel_schedule: [32, 64, 128]
   hidden_channels: 128
 

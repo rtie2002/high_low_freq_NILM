@@ -2,7 +2,7 @@
 
 ## 结论
 
-`k4_alpha1_local_contrast` **不作为保留模型**。它提高了部分 AP/F1，但没有可靠改善功率波形，REFIT fridge 的能量过估计反而更明显。代码已恢复为原来的 12 通道 `k4_alpha1_tower` 前端。
+`k4_alpha1_local_contrast` **暂不作为保留模型**。它提高了部分 AP/F1，但没有可靠改善功率波形，REFIT fridge 的能量过估计反而更明显。由于目前只有它的 13 通道 checkpoint，代码暂时保留 local-contrast 兼容路径，只用于零重训的 soft-vs-hard power evaluation。
 
 本轮发现的更直接问题不是“模型还不够复杂”，而是功率在推理时被门控了两次：
 
@@ -136,14 +136,14 @@ local contrast 改善了一些分类概率，所以部分比例下降；但它�
 只修改现有文件，没有再建立新 config：
 
 1. `model/MultiNILM.py`
-   - 删除 local-contrast 计算、参数和额外输入通道；
-   - shared frontend 恢复为 12 通道；
+   - 保留可选的 local-contrast 计算，使现有 13 通道 checkpoint 能严格加载；
+   - 这只是 checkpoint 兼容路径，不代表 local contrast 已被接受为最终贡献；
    - dual expert、task attention、relation attention、multiscale stem、IBN 和 TCN 保持不变。
 
 2. `config/models/multinilm_k4.yaml`
-   - `experiment_id: k4_alpha1_soft_power`；
+   - `experiment_id: k4_alpha1_local_contrast_soft_power`；
    - `evaluation.state_calibration.apply_to_power: false`；
-   - 删除全部 local-contrast 字段；
+   - 保持原训练使用的 local-contrast 参数，使输入仍为 13 通道；
    - 训练 loss、background swap、window、optimizer 和 checkpoint 规则保持不变。
 
 3. `tests/test_background_swap_and_metrics.py`
@@ -155,9 +155,9 @@ local contrast 改善了一些分类概率，所以部分比例下降；但它�
 
 ---
 
-## 5. 为什么先用旧 checkpoint evaluate，而不是立即重训
+## 5. 为什么先用现有 local-contrast checkpoint evaluate
 
-恢复后的结构与 `k4_alpha1_tower` 一样，都是 12 个前端通道。因此可以用同一个旧 checkpoint，仅改变 evaluation gate，形成干净的因果实验：
+当前可用 checkpoint 来自 `k4_alpha1_local_contrast`，第一层权重有 13 个输入通道。为了形成干净的因果实验，evaluation 必须保持完全相同的 13 通道结构，只改变最终 power 是否再次乘 binary state：
 
 ```text
 相同权重 + 相同数据 + 相同 state threshold
@@ -176,11 +176,11 @@ python main.py `
   --model multinilm_fractional `
   --experiment config/experiment_mixed_ukdale_refit_8w.yaml `
   --model-config config/models/multinilm_k4.yaml `
-  --checkpoint "..\k4_alpha1_tower\multinilm_fractional\best.pt" `
-  --run-dir "..\k4_alpha1_soft_power\multinilm_fractional"
+  --checkpoint "runs\k4_alpha1_local_contrast\multinilm_fractional\best.pt" `
+  --run-dir "runs\k4_alpha1_local_contrast_soft_power\multinilm_fractional"
 ```
 
-先不要运行 `train_evaluate`。这个 evaluate 通常远快于重新训练，而且直接回答 double gate 是否造成波形断层。
+先不要运行 `train_evaluate`。这个 evaluate 通常远快于重新训练，而且直接回答 double gate 是否造成波形断层。完成诊断后，如果决定最终删除 local contrast，才需要训练新的 12 通道模型，因为 13 通道 checkpoint 不能直接加载到 12 通道 stem。
 
 ---
 
