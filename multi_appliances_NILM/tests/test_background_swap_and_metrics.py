@@ -83,12 +83,12 @@ class BackgroundSwapTests(unittest.TestCase):
 class DiagnosticMetricTests(unittest.TestCase):
     def test_state_calibration_can_update_detection_without_erasing_power(self) -> None:
         bundle = _bundle(
-            np.asarray([[100.0], [100.0]], dtype=np.float64),
-            np.asarray([[80.0], [70.0]], dtype=np.float64),
-            np.asarray([[1], [1]], dtype=np.int32),
-            np.asarray([[1], [1]], dtype=np.int32),
+            np.asarray([[100.0], [100.0], [100.0]], dtype=np.float64),
+            np.asarray([[80.0], [70.0], [60.0]], dtype=np.float64),
+            np.asarray([[1], [1], [1]], dtype=np.int32),
+            np.asarray([[1], [1], [1]], dtype=np.int32),
         )
-        bundle.y_pred_state_prob = np.asarray([[0.9], [0.4]], dtype=np.float64)
+        bundle.y_pred_state_prob = np.asarray([[0.9], [0.4], [0.2]], dtype=np.float64)
         calibration = {
             "appliances": ["app_0"],
             "thresholds": {"app_0": 0.5},
@@ -104,10 +104,17 @@ class DiagnosticMetricTests(unittest.TestCase):
         hard_power = apply_state_calibration(
             bundle, calibration, apply_to_power=True
         )
+        ramp_power = apply_state_calibration(
+            bundle,
+            calibration,
+            power_gate_mode="ramp",
+            ramp_width=0.2,
+        )
 
-        np.testing.assert_array_equal(soft_power.y_pred_on[:, 0], [1, 0])
-        np.testing.assert_allclose(soft_power.y_pred_watts[:, 0], [80.0, 70.0])
-        np.testing.assert_allclose(hard_power.y_pred_watts[:, 0], [80.0, 0.0])
+        np.testing.assert_array_equal(soft_power.y_pred_on[:, 0], [1, 0, 0])
+        np.testing.assert_allclose(soft_power.y_pred_watts[:, 0], [80.0, 70.0, 60.0])
+        np.testing.assert_allclose(hard_power.y_pred_watts[:, 0], [80.0, 0.0, 0.0])
+        np.testing.assert_allclose(ramp_power.y_pred_watts[:, 0], [80.0, 35.0, 0.0])
 
     def test_sample_fpr_fnr_energy_and_false_events(self) -> None:
         y_true_on = np.asarray([[0], [0], [1], [1], [0], [0]], dtype=np.int32)

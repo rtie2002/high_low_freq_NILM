@@ -141,14 +141,15 @@ local contrast 改善了一些分类概率，所以部分比例下降；但它�
    - dual expert、task attention、relation attention、multiscale stem、IBN 和 TCN 保持不变。
 
 2. `config/models/multinilm_k4.yaml`
-   - `experiment_id: k4_alpha1_local_contrast_soft_power`；
-   - `evaluation.state_calibration.apply_to_power: false`；
+   - `experiment_id: k4_alpha1_local_contrast_ramp_gate`；
+   - `evaluation.state_calibration.power_gate.mode: ramp`；
+   - `ramp_width: 0.20`，只在校准阈值下方 0.20 的概率区间渐变；
    - 保持原训练使用的 local-contrast 参数，使输入仍为 13 通道；
    - 训练 loss、background swap、window、optimizer 和 checkpoint 规则保持不变。
 
 3. `tests/test_background_swap_and_metrics.py`
-   - 新增测试：`apply_to_power: false` 仍更新 binary state，但必须原样保留 power prediction；
-   - 对照 `apply_to_power: true` 会把判 OFF 的第二个样本从 70 W 清零。
+   - 同时验证 `none`、`hard` 和 `ramp` 三种功率门控；
+   - 示例中 70 W 的不确定样本分别保留为 70 W、0 W 和 35 W。
 
 4. `tests/test_multinilm_dual_expert.py`
    - 删除已经废弃的 local-contrast 测试。
@@ -223,3 +224,50 @@ python main.py `
 - [Differentiable mixture consistency, 2018](https://arxiv.org/abs/1811.08521)：若未来处理多个电器输出的物理一致性，应优先考虑可微的 mixture-consistency constraint，而不是离散 hard clipping。
 
 当前结论不是“已经彻底解决 NILM”。本轮修复的是一个可证明、可复现实验的 pipeline 错误；下一步结果将决定是否有必要进入真正的 architecture/gradient 修改。
+
+---
+
+## 9. Hard/soft 实验结果与 calibrated ramp gate
+
+同一 checkpoint 的成对比较证明：取消 hard gate 后，真实事件内部的 waveform NRMSE、correlation 和 energy error 普遍改善，但全时间轴 MAE 变差 15%–37%。原因是 soft power 修复了真实事件中的断层，也把 OFF 区间的残余功率全部保留下来。因此最终不采用全局 `hard` 或全局 `none`，而测试一个中间门控。
+
+令校准阈值为 \(\theta_i\)，ramp 宽度为 \(w=0.20\)，下限为：
+
+\[
+\ell_i=\max(0,\theta_i-w).
+\]
+
+在相同 temporal cleanup 下得到正式 ON mask \(z_i\) 和 lower-threshold support mask \(z_i^{low}\)。功率门控为：
+
+\[
+g_{i,t}=
+\begin{cases}
+1, & z_{i,t}=1,\\
+z^{low}_{i,t}\,\operatorname{clip}
+\left(\dfrac{p_{i,t}-\ell_i}{\theta_i-\ell_i},0,1\right),
+& z_{i,t}=0\text{ and }p_{i,t}<\theta_i,\\
+0, & \text{otherwise}.
+\end{cases}
+\]
+
+最终输出：
+
+\[
+\hat y^{ramp}_{i,t}=g_{i,t}\hat y^{soft}_{i,t}.
+\]
+
+这样 calibrated ON 区间保持完整，明显 OFF 区间仍然为 0；只有阈值附近、并且通过 lower-threshold temporal support 的点被部分保留。它不会改变 state AP/F1，也不需要重新训练。
+
+运行命令：
+
+```powershell
+python main.py `
+  --mode evaluate `
+  --model multinilm_fractional `
+  --experiment config/experiment_mixed_ukdale_refit_8w.yaml `
+  --model-config config/models/multinilm_k4.yaml `
+  --checkpoint "runs\k4_alpha1_local_contrast\multinilm_fractional\best.pt" `
+  --run-dir "runs\k4_alpha1_local_contrast_ramp_gate\multinilm_fractional"
+```
+
+这是 evaluation ablation，不要使用 `train_evaluate`。判断时同时比较全局 MAE/OFF-MAE，以及 event NRMSE、correlation 和 energy error；只改善其中一侧不算成功。

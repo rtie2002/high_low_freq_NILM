@@ -296,6 +296,8 @@ def apply_state_calibration(
     calibration: dict[str, Any],
     *,
     apply_to_power: bool = True,
+    power_gate_mode: str | None = None,
+    ramp_width: float = 0.20,
 ) -> PredictionBundle:
     if bundle.y_pred_state_prob is None:
         return bundle
@@ -323,8 +325,47 @@ def apply_state_calibration(
         segment_ids=bundle.segment_ids,
     )
     y_pred_watts = np.asarray(bundle.y_pred_watts, dtype=np.float64)
-    if apply_to_power:
+    gate_mode = (
+        str(power_gate_mode).lower()
+        if power_gate_mode is not None
+        else ("hard" if apply_to_power else "none")
+    )
+    if gate_mode == "hard":
         y_pred_watts = y_pred_watts * y_pred_on.astype(np.float64)
+    elif gate_mode in {"ramp", "calibrated_ramp"}:
+        width = float(ramp_width)
+        if not 0.0 < width <= 1.0:
+            raise ValueError("state_calibration.power_gate.ramp_width must be in (0, 1]")
+
+        probability = np.asarray(bundle.y_pred_state_prob, dtype=np.float64)
+        upper = np.asarray(thresholds, dtype=np.float64)[None, :]
+        lower = np.maximum(upper - width, 0.0)
+        denominator = np.maximum(upper - lower, 1e-12)
+        ramp = np.clip((probability - lower) / denominator, 0.0, 1.0)
+
+        # Apply the same temporal rules at the relaxed lower threshold. This
+        # prevents isolated low-confidence spikes from leaking power. The
+        # calibrated ON mask remains fully open; only near-threshold OFF points
+        # receive a partial gate, avoiding an abrupt 1 -> 0 waveform cut.
+        relaxed_on = apply_state_postprocess_arrays(
+            probability,
+            thresholds=lower.reshape(-1).tolist(),
+            min_on_samples=min_on,
+            merge_gap_samples=merge_gap,
+            segment_ids=bundle.segment_ids,
+        ).astype(np.float64)
+        uncertain_off = (probability < upper).astype(np.float64)
+        power_gate = np.where(
+            y_pred_on.astype(bool),
+            1.0,
+            relaxed_on * ramp * uncertain_off,
+        )
+        y_pred_watts = y_pred_watts * power_gate
+    elif gate_mode not in {"none", "off", "disabled"}:
+        raise ValueError(
+            "state_calibration.power_gate.mode must be hard|ramp|none, "
+            f"got {power_gate_mode!r}"
+        )
 
     return replace(bundle, y_pred_on=y_pred_on, y_pred_watts=y_pred_watts)
 
@@ -353,6 +394,13 @@ def maybe_calibrate_and_apply(
 
     cfg = model_cfg.get("evaluation", {}).get("state_calibration", {})
     apply_to_power = bool(cfg.get("apply_to_power", True))
+    power_gate_cfg = cfg.get("power_gate", {}) or {}
+    if isinstance(power_gate_cfg, str):
+        power_gate_mode = power_gate_cfg
+        ramp_width = 0.20
+    else:
+        power_gate_mode = power_gate_cfg.get("mode")
+        ramp_width = float(power_gate_cfg.get("ramp_width", 0.20))
     split_key = str(split).lower()
     cal_split = calibration_split(model_cfg)
     path = calibration_path(run_dir)
@@ -372,4 +420,10 @@ def maybe_calibrate_and_apply(
         if apply_to_power:
             return _apply_existing_state_gate(bundle), None
         return bundle, None
-    return apply_state_calibration(bundle, calibration, apply_to_power=apply_to_power), calibration
+    return apply_state_calibration(
+        bundle,
+        calibration,
+        apply_to_power=apply_to_power,
+        power_gate_mode=power_gate_mode,
+        ramp_width=ramp_width,
+    ), calibration

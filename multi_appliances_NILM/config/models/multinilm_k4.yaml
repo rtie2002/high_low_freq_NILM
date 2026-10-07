@@ -1,6 +1,6 @@
-# Existing 13-channel local-contrast checkpoint, evaluated without a second
-# binary power gate. This is an evaluation ablation, not a new training run.
-experiment_id: k4_alpha1_local_contrast_soft_power
+# Existing 13-channel local-contrast checkpoint with a calibrated ramp gate.
+# This is an evaluation-only ablation; no model weights are retrained.
+experiment_id: k4_alpha1_local_contrast_ramp_gate
 model_name: multinilm_fractional
 
 data:
@@ -12,10 +12,12 @@ evaluation:
     enabled: true
     split: validation
     threshold_grid: [0.05, 0.98, 0.01]
-    # The model output is already softly gated by sigmoid(state_logit). Keep
-    # calibrated binary states for detection metrics/plots, but do not multiply
-    # them into power a second time: that hard veto erased real ON waveforms.
-    apply_to_power: false
+    # Binary states remain unchanged for AP/F1. For power, keep the calibrated
+    # ON region fully open, suppress confident OFF regions, and taper only the
+    # probability band immediately below each appliance threshold.
+    power_gate:
+      mode: ramp
+      ramp_width: 0.20
     postprocess:
       enabled: true
       # Use physical seconds so validation calibration keeps the same temporal
