@@ -357,6 +357,58 @@ class MultiNILMDualExpertTests(unittest.TestCase):
             self.assertIn(f"gate_local_on_{appliance}", output.logs)
             self.assertIn(f"gate_local_off_{appliance}", output.logs)
 
+    def test_adapter_adds_paired_background_consistency(self) -> None:
+        adapter = object.__new__(MultiNILMAdapter)
+        adapter.cfg = {"appliances": ["first", "second"]}
+        adapter.model_cfg = {
+            "evaluation": {"pred_on_source": "state_head"},
+            "training": {
+                "background_consistency": {"enabled": True, "weight": 0.1}
+            },
+        }
+        model = MultiNILM(
+            input_channels=1,
+            num_appliances=2,
+            output_length=24,
+            hidden_channels=8,
+            num_blocks=1,
+            kernel_size=3,
+            temporal_dropout=0.0,
+            head_dropout=0.0,
+            gate_mode="soft",
+        )
+
+        def fake_loss(power, logits, true_power, true_state, **kwargs):
+            power_loss = power.square().mean()
+            state_loss = logits.square().mean()
+            loss = power_loss + state_loss
+            return SimpleNamespace(
+                loss=loss,
+                loss_power=power_loss,
+                loss_state=state_loss,
+                loss_state_term=state_loss,
+                loss_energy_relative=loss * 0.0,
+                mae=(power - true_power).abs().mean(),
+                loss_power_per_appliance=power.square().mean(dim=(0, 1)),
+                loss_state_per_appliance=logits.square().mean(dim=(0, 1)),
+            )
+
+        x_real = torch.randn(2, 24)
+        x_swapped = x_real + torch.linspace(0.0, 1.0, 24)
+        y = torch.zeros(2, 24, 2)
+        z = torch.zeros(2, 24, 2)
+        output = adapter.step(model, fake_loss, ((x_real, x_swapped), y, z))
+
+        self.assertIn("loss_supervised", output.logs)
+        self.assertIn("loss_background_consistency", output.logs)
+        self.assertIn("loss_background_consistency_state", output.logs)
+        self.assertIn("loss_background_consistency_power", output.logs)
+        self.assertGreaterEqual(output.logs["loss_background_consistency"], 0.0)
+
+        output.loss.backward()
+        self.assertIsNotNone(model.appliance_heads[0].state_head.weight.grad)
+        self.assertIsNotNone(model.appliance_heads[0].power_head.weight.grad)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -84,6 +84,12 @@ def get_random_mix_mode(model_cfg: dict[str, Any]) -> RandomMixMode:
     return mode  # type: ignore[return-value]
 
 
+def get_background_consistency_enabled(model_cfg: dict[str, Any]) -> bool:
+    """Whether train windows return a real/background-swapped view pair."""
+    cfg = model_cfg.get("training", {}).get("background_consistency") or {}
+    return bool(cfg.get("enabled", False))
+
+
 def get_power_scale(model_cfg: dict[str, Any]) -> float:
     """Legacy divide-by-scale fallback when experiment has no normalization block."""
     return float(model_cfg.get("data", {}).get("power_scale", 1.0))
@@ -241,6 +247,7 @@ class WindowDataset(Dataset):
         tensor_dtype: np.dtype = np.float32,
         random_mix_prob: float = 0.0,
         random_mix_mode: RandomMixMode = "full",
+        paired_background: bool = False,
     ):
         norm = normalization or NormalizationStats()
         self.norm = norm
@@ -260,11 +267,16 @@ class WindowDataset(Dataset):
 
         self.random_mix_prob = float(random_mix_prob)
         self.random_mix_mode = str(random_mix_mode)
+        self.paired_background = bool(paired_background)
+        if self.paired_background and self.random_mix_prob > 0.0:
+            raise ValueError(
+                "paired background consistency and random_mix cannot be enabled together"
+            )
         if self.random_mix_mode not in {"full", "background_swap"}:
             raise ValueError(
                 "random_mix_mode must be one of: full, background_swap"
             )
-        if self.random_mix_prob > 0.0:
+        if self.random_mix_prob > 0.0 or self.paired_background:
             # Mixes are summed in watts. Clip the background at 0: mains can dip
             # below the submeter sum when the channels are slightly misaligned.
             self.targets_watts = self.targets
@@ -319,17 +331,20 @@ class WindowDataset(Dataset):
         return len(self.indices)
 
     def __getitem__(self, index: int):
-        if self.random_mix_prob > 0.0 and float(torch.rand(())) < self.random_mix_prob:
+        if self.paired_background:
+            # Counterfactual pair: identical appliance targets/states under two
+            # residual backgrounds.  The first view stays fully real so the
+            # consistency term has a stable reference distribution.
+            x, y, z = self._real_window(index)
+            x_swapped, _, _ = self._background_swap_window(index)
+            x = (x, x_swapped)
+        elif self.random_mix_prob > 0.0 and float(torch.rand(())) < self.random_mix_prob:
             if self.random_mix_mode == "background_swap":
                 x, y, z = self._background_swap_window(index)
             else:
                 x, y, z = self._random_mix_window()
         else:
-            start = int(self.indices[index])
-            end = start + self.seq_len
-            x = self.inputs_t[start:end].unsqueeze(-1)
-            y = self.targets_t[start:end]
-            z = self.states_t[start:end]
+            x, y, z = self._real_window(index)
 
         if self.target_mode == "full_input":
             return x, y, z
@@ -341,6 +356,19 @@ class WindowDataset(Dataset):
             y = y.squeeze(0)
             z = z.squeeze(0)
         return x, y, z
+
+    def _real_window(
+        self,
+        index: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return the recorded aggregate and its aligned appliance labels."""
+        start = int(self.indices[index])
+        end = start + self.seq_len
+        return (
+            self.inputs_t[start:end].unsqueeze(-1),
+            self.targets_t[start:end],
+            self.states_t[start:end],
+        )
 
     def _random_mix_window(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sum appliance traces and a background residual from independent windows.
@@ -509,6 +537,7 @@ class NILMDataLoader:
         self.tensor_dtype, _ = resolve_tensor_dtype(model_cfg)
         self.random_mix_prob = get_random_mix_prob(model_cfg)
         self.random_mix_mode = get_random_mix_mode(model_cfg)
+        self.paired_background = get_background_consistency_enabled(model_cfg)
         self._splits: dict[SplitName, SplitArrays] = {}
 
     def _resolve_csv_path(self, split: SplitName) -> Path:
@@ -556,6 +585,7 @@ class NILMDataLoader:
             tensor_dtype=self.tensor_dtype,
             random_mix_prob=self.random_mix_prob if split == "train" else 0.0,
             random_mix_mode=self.random_mix_mode,
+            paired_background=self.paired_background if split == "train" else False,
         )
         if len(dataset) == 0:
             _, segment_lengths = np.unique(data.segment_ids, return_counts=True)

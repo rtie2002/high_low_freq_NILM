@@ -1178,29 +1178,102 @@ class MultiNILMAdapter(BaseNILMAdapter):
 
     def step(self, model, loss_fn, batch, target_batch=None):
         import torch
+        import torch.nn.functional as F
+
         x, y, z = batch
         z = z.float()
-        power_pred, state_logits = model(x)
+
+        paired_background = isinstance(x, (tuple, list))
+        if paired_background:
+            if len(x) != 2:
+                raise ValueError(
+                    "background consistency expects exactly two input views: "
+                    "(real aggregate, background-swapped aggregate)"
+                )
+            x_real, x_swapped = x
+        else:
+            x_real, x_swapped = x, None
+
+        power_pred, state_logits = model(x_real)
         out = loss_fn(power_pred, state_logits, y, z)
         state_prob = torch.sigmoid(state_logits)
+
+        loss = out.loss
+        loss_power = out.loss_power
+        loss_state = out.loss_state
+        loss_state_term = out.loss_state_term
+        loss_energy_relative = out.loss_energy_relative
+        mae = out.mae
+        loss_power_per_appliance = out.loss_power_per_appliance
+        loss_state_per_appliance = out.loss_state_per_appliance
+        consistency_logs = {}
+
+        if x_swapped is not None:
+            swapped_power, swapped_logits = model(x_swapped)
+            swapped_out = loss_fn(swapped_power, swapped_logits, y, z)
+
+            # Both views carry the same appliance targets.  Supervise both, then
+            # explicitly require predictions to be invariant to residual
+            # background.  Probabilities are compared instead of logits so the
+            # state term has a bounded, interpretable scale.
+            loss_consistency_state = F.mse_loss(
+                torch.sigmoid(swapped_logits), state_prob
+            )
+            loss_consistency_power = F.smooth_l1_loss(swapped_power, power_pred)
+            loss_consistency = loss_consistency_state + loss_consistency_power
+            consistency_cfg = (
+                self.model_cfg.get("training", {}).get("background_consistency") or {}
+            )
+            consistency_weight = float(consistency_cfg.get("weight", 0.1))
+            if consistency_weight < 0.0:
+                raise ValueError("training.background_consistency.weight must be >= 0")
+
+            loss = 0.5 * (out.loss + swapped_out.loss) + consistency_weight * loss_consistency
+            loss_power = 0.5 * (out.loss_power + swapped_out.loss_power)
+            loss_state = 0.5 * (out.loss_state + swapped_out.loss_state)
+            loss_state_term = 0.5 * (out.loss_state_term + swapped_out.loss_state_term)
+            loss_energy_relative = 0.5 * (
+                out.loss_energy_relative + swapped_out.loss_energy_relative
+            )
+            mae = 0.5 * (out.mae + swapped_out.mae)
+            loss_power_per_appliance = 0.5 * (
+                out.loss_power_per_appliance + swapped_out.loss_power_per_appliance
+            )
+            loss_state_per_appliance = 0.5 * (
+                out.loss_state_per_appliance + swapped_out.loss_state_per_appliance
+            )
+            consistency_logs = {
+                "loss_supervised": float(
+                    (0.5 * (out.loss + swapped_out.loss)).detach()
+                ),
+                "loss_background_consistency": float(loss_consistency.detach()),
+                "loss_background_consistency_state": float(
+                    loss_consistency_state.detach()
+                ),
+                "loss_background_consistency_power": float(
+                    loss_consistency_power.detach()
+                ),
+            }
+
         pred_state = torch.from_numpy(
             _pred_on_from_config(self, _to_numpy(power_pred), _to_numpy(state_prob))
         ).long()
         app_logs = {
-            f"loss_power_{app}": float(out.loss_power_per_appliance[i].detach())
+            f"loss_power_{app}": float(loss_power_per_appliance[i].detach())
             for i, app in enumerate(self.cfg["appliances"])
         }
         app_logs.update({
-            f"loss_state_{app}": float(out.loss_state_per_appliance[i].detach())
+            f"loss_state_{app}": float(loss_state_per_appliance[i].detach())
             for i, app in enumerate(self.cfg["appliances"])
         })
         logs = {
-            "loss": float(out.loss.detach()),
-            "loss_power": float(out.loss_power.detach()),
-            "loss_state": float(out.loss_state.detach()),
-            "loss_state_term": float(out.loss_state_term.detach()),
-            "loss_energy_relative": float(out.loss_energy_relative.detach()),
-            "mae": float(out.mae.detach()),
+            "loss": float(loss.detach()),
+            "loss_power": float(loss_power.detach()),
+            "loss_state": float(loss_state.detach()),
+            "loss_state_term": float(loss_state_term.detach()),
+            "loss_energy_relative": float(loss_energy_relative.detach()),
+            "mae": float(mae.detach()),
+            **consistency_logs,
             **app_logs,
         }
         expert_gates = getattr(model, "last_expert_gates", None)
@@ -1248,7 +1321,7 @@ class MultiNILMAdapter(BaseNILMAdapter):
                     else:
                         logs[f"state_off_power_watts_{app}"] = float("nan")
         return StepOutput(
-            loss=out.loss,
+            loss=loss,
             logs=logs,
             aux={
                 "pred_state": pred_state.detach().cpu(),

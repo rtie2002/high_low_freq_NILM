@@ -6,7 +6,11 @@ import numpy as np
 import torch
 
 from data.common import PredictionBundle
-from data.dataloader import WindowDataset, get_random_mix_mode
+from data.dataloader import (
+    WindowDataset,
+    get_background_consistency_enabled,
+    get_random_mix_mode,
+)
 from evaluation.metrics import background_fpr_table, evaluate_bundle
 from evaluation.state_postprocess import apply_state_calibration
 
@@ -43,6 +47,7 @@ def _bundle(
 class BackgroundSwapTests(unittest.TestCase):
     def test_default_mode_preserves_original_full_mix(self) -> None:
         self.assertEqual(get_random_mix_mode({"training": {}}), "full")
+        self.assertFalse(get_background_consistency_enabled({"training": {}}))
 
     def test_background_swap_keeps_anchor_targets_and_states(self) -> None:
         targets = np.asarray(
@@ -78,6 +83,41 @@ class BackgroundSwapTests(unittest.TestCase):
             mixed_input.squeeze(-1).numpy(),
             targets[:4].sum(axis=1) + 200,
         )
+
+    def test_paired_background_keeps_real_view_and_exact_labels(self) -> None:
+        targets = np.asarray(
+            [
+                [1, 10], [2, 20], [3, 30], [4, 40],
+                [5, 50], [6, 60], [7, 70], [8, 80],
+            ],
+            dtype=np.float32,
+        )
+        states = (targets > 15).astype(np.int64)
+        background = np.asarray([100] * 4 + [200] * 4, dtype=np.float32)
+        inputs = targets.sum(axis=1) + background
+        dataset = WindowDataset(
+            inputs,
+            targets,
+            states,
+            {
+                "input_window_length": 4,
+                "output_window_length": 4,
+                "output_alignment": "end",
+            },
+            stride=4,
+            target_mode="full_input",
+            paired_background=True,
+        )
+
+        (real_input, swapped_input), paired_targets, paired_states = dataset[0]
+
+        np.testing.assert_allclose(real_input.squeeze(-1).numpy(), inputs[:4])
+        np.testing.assert_allclose(
+            swapped_input.squeeze(-1).numpy(),
+            targets[:4].sum(axis=1) + 200,
+        )
+        np.testing.assert_allclose(paired_targets.numpy(), targets[:4])
+        np.testing.assert_array_equal(paired_states.numpy(), states[:4])
 
 
 class DiagnosticMetricTests(unittest.TestCase):

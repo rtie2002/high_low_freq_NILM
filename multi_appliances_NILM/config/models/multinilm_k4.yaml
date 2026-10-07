@@ -1,7 +1,7 @@
-# Controlled follow-up: keep the retained k4 encoder, experts, attention and
-# loss, but make mixture allocation conditional on each appliance state. Power
-# rejected by a state gate returns to the unknown source instead of vanishing.
-experiment_id: k4_alpha1_state_conditioned_mixture
+# Controlled follow-up: restore the retained k4 tower output and train it on
+# paired aggregates that contain identical appliance targets under two residual
+# backgrounds.  This tests background invariance without adding another head.
+experiment_id: k4_alpha1_paired_background_consistency
 model_name: multinilm_fractional
 
 data:
@@ -10,8 +10,7 @@ data:
 evaluation:
   pred_on_source: state_head
   # Final saved waveforms use the calibrated event state, so a reported OFF
-  # sample cannot retain large appliance power. Rejected power is interpreted
-  # as part of the unreported unknown/background source.
+  # sample cannot retain large appliance power.
   gate_power_by_state: true
   power_postprocess: false
   state_calibration:
@@ -100,17 +99,9 @@ architecture:
     enabled: true
     reduction: 4
 
-  # Ignored by mixture_consistent_output; retained for legacy checkpoints only.
-  gate_mode: none
+  # Retained tower output: each appliance has an independent power/state head.
+  gate_mode: soft
   gate_threshold: 0.5
-
-  # Five appliance allocation logits and one unknown-background logit compete
-  # for the same aggregate-watt budget. Each appliance mask is then multiplied
-  # by its state probability; rejected shares are reassigned to unknown, so the
-  # six effective masks still sum to one at every time step.
-  mixture_consistent_output:
-    enabled: true
-    state_conditioned: true
 
   # Local expert receives raw aggregate, alpha=1 GL and |alpha=1 GL|.
   dual_expert:
@@ -133,19 +124,17 @@ architecture:
     dropout: 0.25
 
 # ---------------------------------------------------------------------------
-# Training loss is intentionally unchanged in this controlled follow-up.
-# Only the power output parameterization changes. At each time step the model
-# produces base masks m_s = softmax(a_s) and probabilities p_i = sigmoid(s_i).
-# Effective appliance masks are m_i*p_i. Every rejected share m_i*(1-p_i) is
-# added to the unknown mask, then all sources multiply the aggregate watts:
+# The retained supervised loss is unchanged.  The only new term compares two
+# views with the same appliance targets and different residual backgrounds:
 #
-#   y_hat_i       = aggregate * m_i * p_i
-#   y_hat_unknown = aggregate * [m_unknown + sum_i m_i * (1-p_i)]
+#   x_real = sum_i y_i + b_real
+#   x_swap = sum_i y_i + b_swap
 #
-# The six effective sources therefore remain exactly mixture-consistent while
-# the power loss can also teach the state head which appliance is feasible.
+#   L = 0.5 * [L_sup(x_real) + L_sup(x_swap)]
+#       + lambda_inv * [MSE(p_real, p_swap)
+#                     + SmoothL1(yhat_real, yhat_swap)]
 #
-#   L_NILM = L_power + state_term
+#   L_sup = L_power + state_term
 #
 #   L_power = sum_i [ MSE_i                                   all samples
 #                   + power_on_weight    * ON_MSE_i           true-ON samples only
@@ -158,9 +147,9 @@ architecture:
 #
 #   state_term = lambda_state * L_state * stopgrad(L_power / L_state)
 #
-# The stop-grad ratio fixes the value of state_term at lambda_state * L_power,
-# so the logged L_NILM is always (1 + lambda_state) * L_power = 1.8 * L_power
-# and only shows power error. L_state still sends gradients to the state head.
+# Inside each supervised view, the stop-grad ratio fixes state_term at
+# lambda_state * L_power. The total training loss additionally includes the
+# background-consistency term above. L_state still sends gradients normally.
 # To follow ON/OFF learning, read val_loss_state and val_loss_state_<app> in
 # loss_detail.csv, and val_ap in history.csv.
 #
@@ -202,7 +191,9 @@ loss:
   energy_floor_watts: 10
 
 training:
-  batch_size: 64
+  # Two forward views are retained for every anchor; halve the anchor batch so
+  # GPU activation memory remains close to the previous batch_size=64 run.
+  batch_size: 32
   epochs: 150
   learning_rate: 0.0001
   weight_decay: 0.0001
@@ -210,14 +201,19 @@ training:
   train_shuffle: true
   gradient_clip: 1.0
 
-  # Each selected real window keeps all five appliance powers and ON labels;
-  # only the residual background (mains - sum of appliances) is replaced by
-  # the residual from another legal training window.
-  # Validation and test windows are never mixed.
+  # Replaced by the paired method below. Keeping both augmentation mechanisms
+  # active would hide which one caused a performance change.
   random_mix:
-    enabled: true
+    enabled: false
     mode: background_swap
     prob: 0.5
+
+  # For every real training window, create one counterfactual view using the
+  # same five appliance traces/states and an independently sampled residual.
+  # Validation and test always remain recorded, unmodified aggregates.
+  background_consistency:
+    enabled: true
+    weight: 0.1
 
   use_amp: false
   amp_dtype: bf16

@@ -235,6 +235,14 @@ def _print_training_data_summary(
         else "off"
     )
     _summary_line("Random mix", mix_text)
+    consistency_cfg = train_cfg.get("background_consistency") or {}
+    consistency_text = (
+        f"paired real/swap, weight={float(consistency_cfg.get('weight', 0.1)):g} "
+        "(train only)"
+        if getattr(data_loader, "paired_background", False)
+        else "off"
+    )
+    _summary_line("Background consistency", consistency_text)
     _summary_line("Tensor dtype", str(train_cfg.get("tensor_dtype", "float32")))
 
     ckpt = train_cfg.get("checkpoint_monitor")

@@ -1472,3 +1472,135 @@ runs/k4_alpha1_state_conditioned_mixture/multinilm_fractional
 7. REFIT 和 UK-DALE 不再出现一边改善、另一边明显恶化。
 
 如果这些条件仍未满足，就停止继续修改 mixture head，恢复 `k4_alpha1_tower` 输出，再单独测试 paired background consistency。不要在失败的 mixture output 上继续叠加 expert、adapter 或新 feature。
+
+---
+
+## 24. State-conditioned mixture 结果与下一轮修改
+
+### 24.1 为什么停止 mixture output
+
+`k4_alpha1_state_conditioned_mixture` 没有通过上面的停止条件。与
+`k4_alpha1_tower` 相比，REFIT overall AP 从约 0.723 降至 0.658，F1 从
+约 0.705 降至 0.663。Microwave recall 提高到 0.850、ON-MAE 降至约
+392 W，但 precision 降至 0.308，并产生 512 个 false events。
+
+这表示该结构主要通过增加 ON 预测换取较低 ON-MAE，并没有提高 source
+identity。当前实验因此作为失败消融保留，不再继续调整 mixture head。
+
+### 24.2 Architecture 恢复
+
+修改前：
+
+```text
+Shared/relational features
+        ↓
+5 appliance allocation logits + 1 unknown logit
+        ↓ softmax
+allocation masks × state probabilities × aggregate power
+```
+
+修改后：
+
+```text
+Paired aggregates with identical appliance targets
+        ↓
+Retained k4 multiscale + dual-expert shared encoder
+        ↓
+Relation attention
+        ↓
+5 independent appliance power/state heads
+        ↓
+Validation-calibrated state gate
+```
+
+恢复的关键配置是：
+
+```yaml
+experiment_id: k4_alpha1_paired_background_consistency
+
+architecture:
+  gate_mode: soft
+  # mixture_consistent_output is absent/disabled
+```
+
+这会同时移除本轮 forward 中的 six-way softmax allocation、unknown-source
+head 和 state-conditioned allocation。模型的 k=4 frontend、multiscale stem、
+dual expert、task attention 与 relation attention 均保持不变。
+
+### 24.3 Paired background consistency
+
+对每个真实训练窗口构造：
+
+\[
+x_{real}=\sum_i y_i+b_{real},
+\qquad
+x_{swap}=\sum_i y_i+b_{swap}.
+\]
+
+两个输入具有完全相同的五个 appliance power 和 ON/OFF labels，只有 residual
+background 不同。训练目标为：
+
+\[
+L=\frac{L_{sup}(x_{real})+L_{sup}(x_{swap})}{2}
++0.1\left[
+\operatorname{MSE}(p_{real},p_{swap})
++\operatorname{SmoothL1}(\hat y_{real},\hat y_{swap})
+\right].
+\]
+
+普通 background swap 只是让模型看到一个随机背景；这个新实验明确要求模型在
+背景改变后保持相同 state probability 和 appliance power prediction。Validation
+和 test 不进行任何混合。
+
+配置为：
+
+```yaml
+training:
+  batch_size: 32
+  random_mix:
+    enabled: false
+  background_consistency:
+    enabled: true
+    weight: 0.1
+```
+
+batch size 从 64 降至 32，是因为每个 anchor 需要保留两个 forward graph；不是
+为了改变优化策略。Supervised loss、optimizer、scheduler、epoch、window 和
+evaluation 全部保持不变。
+
+### 24.4 新增训练记录
+
+`loss_detail.csv` / history 会额外记录：
+
+```text
+train_loss_supervised
+train_loss_background_consistency
+train_loss_background_consistency_state
+train_loss_background_consistency_power
+```
+
+如果 consistency loss 很快接近零，但 validation AP、高背景 FPR 和 false-event
+count 没有改善，则主要问题更可能是跨房屋 appliance signature shift，而不只是
+residual background。此时应停止 background architecture 实验，转向增加 appliance
+实例多样性或只微调 appliance-specific heads。
+
+### 24.5 训练命令
+
+```powershell
+cd "D:\Raymond\high_low_freq_NILM\multi_appliances_NILM"
+
+python main.py `
+  --mode train_evaluate `
+  --model multinilm_fractional `
+  --experiment config/experiment_mixed_ukdale_refit_8w.yaml `
+  --model-config config/models/multinilm_k4.yaml
+```
+
+预期目录：
+
+```text
+runs/k4_alpha1_paired_background_consistency/multinilm_fractional
+```
+
+第一轮仍然只跑一个 seed。是否继续的首要依据是 validation AP，其次才是 REFIT
+microwave precision/false events、fridge high-background FPR、overall MAE 和波形。
