@@ -91,8 +91,7 @@ class FractionalFrontEnd(nn.Module):
     """One mains channel -> several derived channels, same T.
 
     Concat order:
-      raw, |delta|, local contrast, rolling mean, rolling std,
-      GL fractional channels.
+      raw, |delta|, rolling mean, rolling std, GL fractional channels.
 
     The explicit signed-delta channel is intentionally absent: the alpha=1 GL
     channel already represents the first-order change and is also routed to the
@@ -102,9 +101,7 @@ class FractionalFrontEnd(nn.Module):
     def __init__(self, alphas=None, *, include_raw=True, memory=None, h=1.0, max_memory=256,
                  channel_normalize="mean_std", channel_norm_eps=1e-5,
                  include_abs_delta=False, rolling_windows=None, include_rolling_mean=False,
-                 include_rolling_std=False, include_local_contrast=False,
-                 local_contrast_span=45, local_contrast_alpha=1.0,
-                 local_contrast_eps=0.05, local_contrast_clip=5.0):
+                 include_rolling_std=False):
         super().__init__()
         if alphas is None:
             alphas = [round((i + 1) / 8, 6) for i in range(8)]
@@ -121,41 +118,12 @@ class FractionalFrontEnd(nn.Module):
             raise ValueError(f"channel_normalize must be mean_std|none, got {self.channel_normalize!r}")
         self.channel_norm_eps = float(channel_norm_eps)
         self.include_abs_delta = bool(include_abs_delta)
-        self.include_local_contrast = bool(include_local_contrast)
-        self.local_contrast_span = int(local_contrast_span)
-        self.local_contrast_alpha = float(local_contrast_alpha)
-        self.local_contrast_eps = float(local_contrast_eps)
-        self.local_contrast_clip = float(local_contrast_clip)
-        if self.include_local_contrast:
-            if self.local_contrast_span < 2:
-                raise ValueError("local_contrast_span must be >= 2")
-            if self.local_contrast_alpha <= 0:
-                raise ValueError("local_contrast_alpha must be > 0")
-            if self.local_contrast_eps <= 0:
-                raise ValueError("local_contrast_eps must be > 0")
-            if self.local_contrast_clip <= 0:
-                raise ValueError("local_contrast_clip must be > 0")
-
-            # Finite causal EMA kernel. The newest sample receives the largest
-            # weight; normalisation keeps a constant input exactly constant.
-            smoothing = 2.0 / (self.local_contrast_span + 1.0)
-            lags = torch.arange(
-                self.local_contrast_span - 1, -1, -1, dtype=torch.float32
-            )
-            ema_weight = smoothing * (1.0 - smoothing) ** lags
-            ema_weight = ema_weight / ema_weight.sum()
-            ema_weight = ema_weight.view(1, 1, -1)
-        else:
-            ema_weight = torch.zeros(0, dtype=torch.float32)
-        # Derived entirely from the config, so it need not alter checkpoint keys.
-        self.register_buffer("local_contrast_ema_weight", ema_weight, persistent=False)
-
         self.rolling_windows = [int(w) for w in (rolling_windows or [])]
         if any(w < 1 for w in self.rolling_windows):
             raise ValueError(f"rolling_windows must be positive, got {self.rolling_windows}")
         self.include_rolling_mean = bool(include_rolling_mean)
         self.include_rolling_std = bool(include_rolling_std)
-        extra = int(self.include_abs_delta) + int(self.include_local_contrast)
+        extra = int(self.include_abs_delta)
         if self.include_rolling_mean:
             extra += len(self.rolling_windows)
         if self.include_rolling_std:
@@ -205,19 +173,6 @@ class FractionalFrontEnd(nn.Module):
         if self.include_abs_delta:
             delta = torch.cat([torch.zeros_like(x[..., :1]), x[..., 1:] - x[..., :-1]], dim=-1)
             parts.append(delta.abs())
-
-        if self.include_local_contrast:
-            weight = self.local_contrast_ema_weight.to(dtype=x.dtype)
-            pad = self.local_contrast_span - 1
-            local_mean = F.conv1d(F.pad(x, (pad, 0), mode="replicate"), weight)
-            residual = x - local_mean
-            local_scale = F.conv1d(
-                F.pad(residual.abs(), (pad, 0), mode="replicate"), weight
-            )
-            contrast = residual / (
-                local_scale + self.local_contrast_eps
-            ).pow(self.local_contrast_alpha)
-            parts.append(contrast.clamp(-self.local_contrast_clip, self.local_contrast_clip))
 
         for window in self.rolling_windows:
             if window <= 1:
@@ -907,11 +862,6 @@ def build_multinilm_fractional(architecture, *, num_appliances, output_length, a
         h=float(block.get("h", 1.0)),
         channel_normalize=str(block.get("channel_normalize", "mean_std")),
         include_abs_delta=bool(block.get("include_abs_delta", False)),
-        include_local_contrast=bool(block.get("include_local_contrast", False)),
-        local_contrast_span=int(block.get("local_contrast_span", 45)),
-        local_contrast_alpha=float(block.get("local_contrast_alpha", 1.0)),
-        local_contrast_eps=float(block.get("local_contrast_eps", 0.05)),
-        local_contrast_clip=float(block.get("local_contrast_clip", 5.0)),
         rolling_windows=[int(w) for w in (block.get("rolling_windows") or [])],
         include_rolling_mean=bool(block.get("include_rolling_mean", False)),
         include_rolling_std=bool(block.get("include_rolling_std", False)),

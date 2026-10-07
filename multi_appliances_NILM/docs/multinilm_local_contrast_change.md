@@ -1,189 +1,225 @@
-# MultiNILM local-contrast 输入实验
+# MultiNILM：local-contrast 复盘与 soft-power 修复
 
-## 1. 这次改了什么
+## 结论
 
-这次没有增加新的 attention、expert、loss 或数据增强。修改集中在输入端：
+`k4_alpha1_local_contrast` **不作为保留模型**。它提高了部分 AP/F1，但没有可靠改善功率波形，REFIT fridge 的能量过估计反而更明显。代码已恢复为原来的 12 通道 `k4_alpha1_tower` 前端。
 
-1. 在 `FractionalFrontEnd` 新增一个可关闭的 **local-contrast 通道**；
-2. 在现有 `config/models/multinilm_k4.yaml` 中启用它；
-3. 把上一轮消融关闭的 task attention 恢复为 `enabled: true`；
-4. 将实验名改为 `k4_alpha1_local_contrast`；
-5. 增加数值范围、因果性、常量输入和通道数测试。
+本轮发现的更直接问题不是“模型还不够复杂”，而是功率在推理时被门控了两次：
 
-没有修改：
+1. 模型内部已经用状态概率对回归功率做 SGN soft gate；
+2. evaluation 又用校准后的 0/1 状态把功率乘一次。
 
-- relation attention；
-- dual expert 及其 local expert 输入；
-- multiscale stem、IBN 和 TCN；
-- power/state loss 及动态 task balance；
-- background swap；
-- threshold calibration 与 temporal post-processing。
+第二次 hard gate 是一个不可逆的二元否决器。只要状态概率短暂低于阈值，回归分支即使预测了合理功率，最终保存的功率也会直接变成 0 W。这正好对应图中的断层、漏掉 ON 段和不连续波形。
 
-因此，正确的比较对象应是 **启用 task attention 的 relation dual-expert 基线**。不要把本次结果只与 `k4_alpha1_no_task_attention` 比较，因为那样会同时包含“恢复 task attention”的差异。
+---
 
-## 2. 为什么做这个实验
+## 1. local contrast 为什么没有解决问题
 
-目前 fridge 和 microwave 的失败与 aggregate 背景有关：同样的目标电器变化，在较大的背景负载或背景波动中只占很小比例。原始 aggregate 保留绝对功率，但模型必须自己学会同时处理：
-
-- 背景基线从低功率变成高功率；
-- 不同房屋具有不同的背景波动幅度；
-- fridge 的约 100 W 变化可能叠加在数百或数千瓦 aggregate 上；
-- microwave 的短事件可能与未知电器的尖峰混淆。
-
-local contrast 不尝试直接预测电器，而是额外告诉模型：**当前变化相对于最近背景波动有多明显**。原始 aggregate 仍保留，所以模型不会失去绝对功率信息。
-
-## 3. 计算公式
-
-令标准化后的 aggregate 为 \(x_t\)。首先用长度为 \(S\) 的因果指数权重计算局部背景：
-
-\[
-m_t=\sum_{j=0}^{S-1}w_jx_{t-j},
-\qquad
-\sum_jw_j=1,
-\]
-
-其中越新的样本权重越大。然后计算局部残差和局部变化尺度：
-
-\[
-u_t=x_t-m_t,
-\]
-
-\[
-s_t=\sum_{j=0}^{S-1}w_j|u_{t-j}|.
-\]
-
-最终 local contrast 为：
+local contrast 试图计算当前 aggregate 相对近期背景的异常程度：
 
 \[
 c_t=\operatorname{clip}\left(
-\frac{u_t}{(s_t+\epsilon)^\alpha},-C,C
+\frac{x_t-\operatorname{EMA}(x)_t}
+{\operatorname{EMA}(|x-\operatorname{EMA}(x)|)_t+\epsilon},-C,C
 \right).
 \]
 
-当前参数为：
+它能突出边缘，因此可能改善 ON/OFF 排序和 AP；但它不能回答“这个边缘属于哪一个电器”或“ON 后的完整功率形状是多少”。在高背景或多电器同时运行时，未知负载的边缘同样会被增强。归一化还会放大局部低幅噪声，再通过 shared encoder 同时影响五个电器任务。
 
-| 参数 | 数值 | 含义 |
-|---|---:|---|
-| \(S\) | 45 samples | 8 s 采样下覆盖最近 360 s |
-| \(\alpha\) | 1.0 | 用局部尺度直接归一化 |
-| \(\epsilon\) | 0.05 | 防止安静背景中的微小噪声被无限放大 |
-| \(C\) | 5.0 | 限制极端尖峰的幅值 |
+结果表现为：分类可能更敏感，但回归仍会平滑、错配或漏掉内部阶段。washing machine 和 dishwasher 本身包含多个功率阶段，一个 binary ON 标签也不能表达其阶段和瞬态幅值。
 
-模型输入是 z-score aggregate。由于 \(\alpha=1\)，平移量在 \(x_t-m_t\) 中被抵消，功率尺度也会在分子和分母中抵消。训练 aggregate 标准差为 906.14 W，因此 `epsilon: 0.05` 等价于约 45.3 W 的物理噪声底：
+### 保存结果的事实
+
+| Test | Appliance | Tower AP/F1 | Local contrast AP/F1 | Local contrast energy ratio |
+|---|---|---:|---:|---:|
+| UK-DALE 2 | fridge | 0.970 / 0.902 | 0.975 / 0.917 | 0.931 |
+| UK-DALE 2 | microwave | 0.746 / 0.677 | 0.797 / 0.747 | 1.011 |
+| REFIT 20 | fridge | 0.731 / 0.721 | 0.737 / 0.717 | **1.391** |
+| REFIT 20 | microwave | 0.454 / 0.509 | 0.542 / 0.572 | **1.317** |
+
+所以 `validation_test_comparison.png` 看起来更好，并不等于波形恢复正确。AP/F1 只评价状态排序/二分类，不评价功率形状、内部阶段、瞬态峰值和能量守恒。
+
+图中还要区分颜色：蓝线是 ground truth，红线是 prediction。washing machine 的一些很高、很窄的蓝色尖峰是真实瞬态；模型的问题是红线没有恢复这些阶段，或者在状态被判 OFF 时整段被清零。
+
+---
+
+## 2. 真正找到的 pipeline 问题：double gating
+
+### 修改前
+
+模型的 power head 输出原始回归值 \(r_{i,t}\)，state head 输出 logit \(s_{i,t}\)：
 
 \[
-0.05\times906.14\approx45.3\text{ W}.
+p_{i,t}=\sigma(s_{i,t}).
 \]
 
-## 4. 前后结构
+模型内部已经产生 soft-gated power：
 
-### 修改前：共享路径 12 个输入通道
+\[
+\hat y^{soft}_{i,t}
+=p_{i,t}r_{i,t}+(1-p_{i,t})y^{off}_i.
+\]
 
-```mermaid
-flowchart LR
-    X[Normalized aggregate] --> RAW[Raw: 1]
-    X --> AD[Absolute delta: 1]
-    X --> RM[Rolling means: 3]
-    X --> RS[Rolling stds: 3]
-    X --> GL[GL alpha 0.25, 0.5, 0.75, 1.0: 4]
-    RAW --> CAT[Concatenate: 12 channels]
-    AD --> CAT
-    RM --> CAT
-    RS --> CAT
-    GL --> CAT
-    CAT --> SHARED[Multiscale stem + shared TCN]
-    X --> LOCAL[Local expert]
-    GL --> LOCAL
-    SHARED --> FUSE[Dual-expert fusion]
-    LOCAL --> FUSE
-    FUSE --> HEADS[Task attention + 5 appliance heads]
-    HEADS --> REL[Relation attention]
-    REL --> OUT[Power + state]
-```
+但 evaluation 又进行阈值校准和 temporal post-processing：
 
-### 修改后：共享路径增加 1 个 local-contrast 通道
+\[
+z^{cal}_{i,t}=\operatorname{PostProcess}
+\left(\mathbb{1}[p_{i,t}\geq\theta_i]\right),
+\]
+
+然后再次执行：
+
+\[
+\boxed{\hat y^{old}_{i,t}=z^{cal}_{i,t}\hat y^{soft}_{i,t}}.
+\]
+
+当 \(z^{cal}=0\) 时，无论回归值是否正确，最终功率都被强制变成 0。
 
 ```mermaid
 flowchart LR
-    X[Normalized aggregate] --> RAW[Raw: 1]
-    X --> AD[Absolute delta: 1]
-    X --> LC[Local contrast: 1]
-    X --> RM[Rolling means: 3]
-    X --> RS[Rolling stds: 3]
-    X --> GL[GL alpha 0.25, 0.5, 0.75, 1.0: 4]
-    RAW --> CAT[Concatenate: 13 channels]
-    AD --> CAT
-    LC --> CAT
-    RM --> CAT
-    RS --> CAT
-    GL --> CAT
-    CAT --> SHARED[Multiscale stem + shared TCN]
-    X --> LOCAL[Local expert: unchanged]
-    GL --> LOCAL
-    SHARED --> FUSE[Dual-expert fusion: unchanged]
-    LOCAL --> FUSE
-    FUSE --> HEADS[Task attention + 5 appliance heads]
-    HEADS --> REL[Relation attention]
-    REL --> OUT[Power + state]
+    X[Aggregate + derived features] --> E[Shared encoder + dual expert]
+    E --> R[Power head: r]
+    E --> S[State head: p]
+    R --> SG[SGN soft gate]
+    S --> SG
+    SG --> YS[Soft power]
+    S --> C[Threshold calibration + temporal cleanup]
+    C --> Z[Binary state 0/1]
+    YS --> HG[Second hard multiplication]
+    Z --> HG
+    HG --> OLD[Saved power: ON segments can be erased]
 ```
 
-local contrast 只进入 shared encoder。local expert 仍使用：
+### 修改后
+
+分类仍然帮助回归，但只通过训练时的 shared features、BCE 和模型内部的 differentiable soft gate；校准后的 binary state 只用于 detection metrics 和图中的 ON/OFF shading：
+
+\[
+\boxed{\hat y^{new}_{i,t}=\hat y^{soft}_{i,t}},
+\qquad
+\hat z_{i,t}=z^{cal}_{i,t}.
+\]
+
+```mermaid
+flowchart LR
+    X[Aggregate + derived features] --> E[Shared encoder + dual expert]
+    E --> R[Power head: r]
+    E --> S[State head: p]
+    R --> SG[SGN soft gate]
+    S --> SG
+    SG --> P[Saved power prediction]
+    S --> C[Threshold calibration + temporal cleanup]
+    C --> Z[Saved binary state for AP/F1/plots]
+```
+
+这不是取消 state-to-regression interaction。soft gate 仍然存在，而且可微；只是删除 evaluation 中第二次、不可微的 hard veto。
+
+---
+
+## 3. hard gate 实际删除了多少真实 ON 样本
+
+下面从现有 `predictions.npz` 重新计算：在 CSV 标记为真实 ON 的样本中，最终保存功率恰好为 0 W 的比例。
+
+| Run / test | fridge | dishwasher | washing machine | microwave |
+|---|---:|---:|---:|---:|
+| Tower / UK-DALE 2 | 7.53% | 4.25% | 14.21% | **36.92%** |
+| Tower / REFIT 20 | 18.62% | 12.84% | 18.55% | **45.23%** |
+| Local contrast / UK-DALE 2 | 5.63% | 3.43% | 12.65% | **21.40%** |
+| Local contrast / REFIT 20 | **19.35%** | 14.84% | **23.37%** | **34.48%** |
+
+local contrast 改善了一些分类概率，所以部分比例下降；但它没有消除 hard gate 的结构性风险。在 REFIT 中，fridge、washing machine 和 microwave 仍有大量真实 ON 点被最终处理清零。
+
+---
+
+## 4. 已做的代码与配置修改
+
+只修改现有文件，没有再建立新 config：
+
+1. `model/MultiNILM.py`
+   - 删除 local-contrast 计算、参数和额外输入通道；
+   - shared frontend 恢复为 12 通道；
+   - dual expert、task attention、relation attention、multiscale stem、IBN 和 TCN 保持不变。
+
+2. `config/models/multinilm_k4.yaml`
+   - `experiment_id: k4_alpha1_soft_power`；
+   - `evaluation.state_calibration.apply_to_power: false`；
+   - 删除全部 local-contrast 字段；
+   - 训练 loss、background swap、window、optimizer 和 checkpoint 规则保持不变。
+
+3. `tests/test_background_swap_and_metrics.py`
+   - 新增测试：`apply_to_power: false` 仍更新 binary state，但必须原样保留 power prediction；
+   - 对照 `apply_to_power: true` 会把判 OFF 的第二个样本从 70 W 清零。
+
+4. `tests/test_multinilm_dual_expert.py`
+   - 删除已经废弃的 local-contrast 测试。
+
+---
+
+## 5. 为什么先用旧 checkpoint evaluate，而不是立即重训
+
+恢复后的结构与 `k4_alpha1_tower` 一样，都是 12 个前端通道。因此可以用同一个旧 checkpoint，仅改变 evaluation gate，形成干净的因果实验：
 
 ```text
-raw aggregate + GL(alpha=1) + |GL(alpha=1)|
+相同权重 + 相同数据 + 相同 state threshold
+唯一差异：最终 power 是否再乘 binary state
 ```
 
-这样可以测试新增共享观测是否有用，而不同时改变 dual-expert 的设计。
+如果现在直接重新训练，权重随机性会与 gate 改动混在一起，无法判断波形改善来自哪里。
 
-local-contrast 滤波器本身是固定计算，没有可学习参数。由于 multiscale stem
-需要接收第 13 个输入通道，它的三个卷积分支共增加 272 个连接权重；相对于
-整个模型，这一变化很小。
-
-## 5. 代码和配置位置
-
-- 实现：`model/MultiNILM.py` 中的 `FractionalFrontEnd`；
-- 配置：`config/models/multinilm_k4.yaml`；
-- 测试：`tests/test_multinilm_dual_expert.py`。
-
-配置文件没有另建副本。local contrast 默认关闭，因此未启用该字段的旧配置保持原有行为。
-
-注意：启用后 shared stem 的输入由 12 通道变成 13 通道，旧 checkpoint 的第一层形状不匹配。本实验必须从头训练，不能把旧权重当作严格续训。
-
-## 6. 训练命令
-
-在您的 `(nilm)` 环境和项目目录中运行：
+在训练机器上先运行：
 
 ```powershell
 cd "D:\Raymond\high_low_freq_NILM\multi_appliances_NILM"
 
 python main.py `
-  --mode train_evaluate `
+  --mode evaluate `
   --model multinilm_fractional `
   --experiment config/experiment_mixed_ukdale_refit_8w.yaml `
-  --model-config config/models/multinilm_k4.yaml
+  --model-config config/models/multinilm_k4.yaml `
+  --checkpoint "..\k4_alpha1_tower\multinilm_fractional\best.pt" `
+  --run-dir "..\k4_alpha1_soft_power\multinilm_fractional"
 ```
 
-运行新增测试：
+先不要运行 `train_evaluate`。这个 evaluate 通常远快于重新训练，而且直接回答 double gate 是否造成波形断层。
 
-```powershell
-python -m unittest tests.test_multinilm_dual_expert
-```
+---
 
-## 7. 怎样判断它是否真的有效
+## 6. 如何判断这一步成功
 
-不要只看总 validation loss，也不要只看 ON-MAE。至少比较相同 seed 下的：
+预计 AP、F1 和 binary state shading 基本不变，因为状态概率、threshold 和 temporal cleanup 都没变。真正要比较的是：
 
-1. fridge 和 microwave 的 AP、event F1、ON-MAE；
-2. false events/hour 和 OFF false-positive energy；
-3. 按局部背景或 \(\Delta\mathrm{SNR}\) 分组后的指标；
-4. 高背景、强波动片段中的真实/预测 waveform；
-5. kettle、dishwasher、washing machine 是否明显退化。
+1. fridge/microwave 的真实 ON 区间是否不再突然变成 0 W；
+2. ON-MAE、energy ratio 和事件内部 waveform 是否改善；
+3. OFF-MAE、false-positive energy 是否明显上升；
+4. washing machine/dishwasher 的内部阶段是否保留得更连续；
+5. UK-DALE 2 和 REFIT 20 是否方向一致。
 
-成功条件不是 train loss 继续下降，而是：
+判断规则：
 
-- validation/test 的 fridge 与 microwave 在低 \(\Delta\mathrm{SNR}\) 组稳定改善；
-- false positives 没有明显上升；
--其他电器没有明显退化；
--至少两个 seed 给出一致方向。
+- 如果 ON 波形明显恢复，而 OFF false energy 只小幅增加：保留 soft-power 输出；
+- 如果 ON 波形恢复但 fridge 的 OFF false energy 大幅增加：下一步只在 validation 上比较每个 appliance 的 `soft` 与 `hard` 输出策略，不设计新 backbone；
+- 如果去掉第二次 hard gate 后波形仍然错误：问题才主要位于表示学习/多任务梯度，而不是 post-processing。
 
-如果 local contrast 只让训练 loss 更低，却不能改善以上指标，应删除该通道，而不是继续增加其复杂度。若低 \(\Delta\mathrm{SNR}\) 下仍失败，下一步才考虑 shared residual refinement；不要同时加入新的 loss 或 attention。
+---
+
+## 7. 后续深度学习实验的正确顺序
+
+不要立即增加第三个 expert 或新 attention。建议按证据推进：
+
+1. **先完成 soft-vs-hard evaluation ablation**：零训练成本，隔离当前最明确的 pipeline 问题。
+2. **记录 shared encoder 的 per-task gradient cosine**：判断 fridge state、microwave power 等任务是否真的梯度冲突。
+3. 只有确认持续负 cosine 后，才比较 PCGrad 或固定的 per-appliance loss normalization；loss 数值大小本身不等于梯度支配。
+4. 对 washing machine/dishwasher，如果主要问题是 ON 内部多阶段，应该研究 multi-state/phase target，而不是继续依赖一个 binary label 去决定完整幅值。
+5. 任何新方法都必须同时报告 AP/F1、ON/OFF MAE、energy ratio、false-positive energy、真实 ON 中的近零预测率和事件波形。
+
+---
+
+## 8. 与论文的关系
+
+- [SGN, AAAI 2019](https://ojs.aaai.org/index.php/AAAI/article/download/3908/3786)：使用分类概率对回归输出做 soft gate；论文也指出，当分类输出饱和到 0 时，回归分支会失去梯度。我们的旧 pipeline 在 soft gate 后又添加 hard veto，使这个风险更严重。
+- [PCGrad, NeurIPS 2020](https://proceedings.neurips.cc/paper_files/paper/2020/hash/3fe78a8acf5fda99de95303940a2420c-Abstract.html)：只有在测得任务梯度冲突后，才适合考虑 gradient surgery。
+- [GradNorm, ICML 2018](https://proceedings.mlr.press/v80/chen18a.html)：多任务平衡应关注训练速度与梯度，而不只是 loss 数值比例。
+- [Cross-stitch Networks, CVPR 2016](https://openaccess.thecvf.com/content_cvpr_2016/html/Misra_Cross-Stitch_Networks_for_CVPR_2016_paper.html)：共享与 task-specific 表示需要被显式控制；这支持“先测梯度/共享冲突，再改共享结构”。
+- [Differentiable mixture consistency, 2018](https://arxiv.org/abs/1811.08521)：若未来处理多个电器输出的物理一致性，应优先考虑可微的 mixture-consistency constraint，而不是离散 hard clipping。
+
+当前结论不是“已经彻底解决 NILM”。本轮修复的是一个可证明、可复现实验的 pipeline 错误；下一步结果将决定是否有必要进入真正的 architecture/gradient 修改。

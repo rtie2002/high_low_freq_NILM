@@ -8,6 +8,7 @@ import torch
 from data.common import PredictionBundle
 from data.dataloader import WindowDataset, get_random_mix_mode
 from evaluation.metrics import background_fpr_table, evaluate_bundle
+from evaluation.state_postprocess import apply_state_calibration
 
 
 def _bundle(
@@ -80,6 +81,34 @@ class BackgroundSwapTests(unittest.TestCase):
 
 
 class DiagnosticMetricTests(unittest.TestCase):
+    def test_state_calibration_can_update_detection_without_erasing_power(self) -> None:
+        bundle = _bundle(
+            np.asarray([[100.0], [100.0]], dtype=np.float64),
+            np.asarray([[80.0], [70.0]], dtype=np.float64),
+            np.asarray([[1], [1]], dtype=np.int32),
+            np.asarray([[1], [1]], dtype=np.int32),
+        )
+        bundle.y_pred_state_prob = np.asarray([[0.9], [0.4]], dtype=np.float64)
+        calibration = {
+            "appliances": ["app_0"],
+            "thresholds": {"app_0": 0.5},
+            "postprocess": {
+                "min_on_samples": {"app_0": 1},
+                "merge_gap_samples": {"app_0": 0},
+            },
+        }
+
+        soft_power = apply_state_calibration(
+            bundle, calibration, apply_to_power=False
+        )
+        hard_power = apply_state_calibration(
+            bundle, calibration, apply_to_power=True
+        )
+
+        np.testing.assert_array_equal(soft_power.y_pred_on[:, 0], [1, 0])
+        np.testing.assert_allclose(soft_power.y_pred_watts[:, 0], [80.0, 70.0])
+        np.testing.assert_allclose(hard_power.y_pred_watts[:, 0], [80.0, 0.0])
+
     def test_sample_fpr_fnr_energy_and_false_events(self) -> None:
         y_true_on = np.asarray([[0], [0], [1], [1], [0], [0]], dtype=np.int32)
         y_pred_on = np.asarray([[0], [1], [1], [0], [1], [0]], dtype=np.int32)

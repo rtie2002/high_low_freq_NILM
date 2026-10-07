@@ -1,5 +1,5 @@
-# Relation dual-expert baseline plus one local-contrast input channel.
-experiment_id: k4_alpha1_local_contrast
+# Relation dual-expert baseline with SGN soft power gating only.
+experiment_id: k4_alpha1_soft_power
 model_name: multinilm_fractional
 
 data:
@@ -11,7 +11,10 @@ evaluation:
     enabled: true
     split: validation
     threshold_grid: [0.05, 0.98, 0.01]
-    apply_to_power: true
+    # The model output is already softly gated by sigmoid(state_logit). Keep
+    # calibrated binary states for detection metrics/plots, but do not multiply
+    # them into power a second time: that hard veto erased real ON waveforms.
+    apply_to_power: false
     postprocess:
       enabled: true
       # Use physical seconds so validation calibration keeps the same temporal
@@ -44,14 +47,6 @@ fractional:
   k: 4
   include_raw: true
   include_abs_delta: true
-  # Causal background-normalised residual for detecting weak events under
-  # different aggregate levels. At 8 s/sample, span 45 covers 6 minutes.
-  include_local_contrast: true
-  local_contrast_span: 45
-  local_contrast_alpha: 1.0
-  # Input is z-scored mains; 0.05 is about 45 W with the current train std.
-  local_contrast_eps: 0.05
-  local_contrast_clip: 5.0
   include_rolling_mean: true
   include_rolling_std: true
   rolling_windows: [8, 23, 45]
@@ -59,8 +54,8 @@ fractional:
   channel_normalize: none
 
 architecture:
-  # Keep the established width fixed. Relative to the relation dual-expert
-  # baseline, the only model change is the local-contrast input channel.
+  # Restore the established 12-channel relation dual-expert baseline. The
+  # failed local-contrast feature has been removed rather than hidden downstream.
   channel_schedule: [32, 64, 128]
   hidden_channels: 128
 

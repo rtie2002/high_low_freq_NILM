@@ -125,3 +125,4 @@ matuda_test_*.ps1
 /k4_alpha1_tower
 /k4_alpha1_no_multiscale_stem
 /k4_alpha1_no_task_attention
+/k4_alpha1_local_contrast
