@@ -1,6 +1,7 @@
-# Existing 13-channel local-contrast checkpoint with a calibrated ramp gate.
-# This is an evaluation-only ablation; no model weights are retrained.
-experiment_id: k4_alpha1_local_contrast_ramp_gate
+# Controlled architecture experiment: keep the retained k4 encoder, experts,
+# attention and loss, but replace gated independent power regression with one
+# mixture-consistent allocation over five appliances plus unknown background.
+experiment_id: k4_alpha1_mixture_consistent_output
 model_name: multinilm_fractional
 
 data:
@@ -8,16 +9,16 @@ data:
 
 evaluation:
   pred_on_source: state_head
+  # State predictions are evaluated, but never multiply or threshold power.
+  gate_power_by_state: false
+  power_postprocess: false
   state_calibration:
     enabled: true
     split: validation
     threshold_grid: [0.05, 0.98, 0.01]
-    # Binary states remain unchanged for AP/F1. For power, keep the calibrated
-    # ON region fully open, suppress confident OFF regions, and taper only the
-    # probability band immediately below each appliance threshold.
+    apply_to_power: false
     power_gate:
-      mode: ramp
-      ramp_width: 0.20
+      mode: none
     postprocess:
       enabled: true
       # Use physical seconds so validation calibration keeps the same temporal
@@ -50,13 +51,9 @@ fractional:
   k: 4
   include_raw: true
   include_abs_delta: true
-  # Retained only so the existing 13-channel checkpoint loads exactly. The
-  # experiment tests hard-vs-soft output gating, not local contrast again.
-  include_local_contrast: true
-  local_contrast_span: 45
-  local_contrast_alpha: 1.0
-  local_contrast_eps: 0.05
-  local_contrast_clip: 5.0
+  # Return to the retained pre-local-contrast k4 encoder. The local-contrast
+  # run produced implausible waveforms and is not part of this experiment.
+  include_local_contrast: false
   include_rolling_mean: true
   include_rolling_std: true
   rolling_windows: [8, 23, 45]
@@ -64,7 +61,7 @@ fractional:
   channel_normalize: none
 
 architecture:
-  # The saved local-contrast checkpoint expects 13 input channels.
+  # 12 channels: raw, |GL alpha=1|, six rolling statistics and four GL channels.
   channel_schedule: [32, 64, 128]
   hidden_channels: 128
 
@@ -101,8 +98,15 @@ architecture:
     enabled: true
     reduction: 4
 
-  gate_mode: soft
+  # Ignored by mixture_consistent_output; retained for legacy checkpoints only.
+  gate_mode: none
   gate_threshold: 0.5
+
+  # Five appliance allocation logits and one unknown-background logit compete
+  # for the same aggregate-watt budget at every time step. State logits remain
+  # auxiliary outputs and do not gate appliance power.
+  mixture_consistent_output:
+    enabled: true
 
   # Local expert receives raw aggregate, alpha=1 GL and |alpha=1 GL|.
   dual_expert:
@@ -125,14 +129,14 @@ architecture:
     dropout: 0.25
 
 # ---------------------------------------------------------------------------
-# Training loss (model/MultiNILM_loss.py). Tensors are (B, T, A) = batch, time,
-# appliance. For appliance i at time t the model outputs a raw power R, a state
-# logit s, and p = sigmoid(s) = ON probability. With gate_mode: soft the power
-# prediction is y_hat = p * R + (1 - p) * y_off (y_off = 0 W after z-scoring),
-# so every power term below also trains p.
+# Training loss is intentionally unchanged in this first controlled experiment.
+# Only the power output parameterization changes. At each time step the model
+# produces six masks m_s = softmax(a_s), then y_hat_s = m_s * aggregate_watts.
+# The five reported appliance powers therefore share one physical budget; the
+# sixth source absorbs unmodelled background. State logits are trained by BCE
+# but are not multiplied into appliance power.
 #
-#   L_total = L_NILM + lambda_HN(epoch) * L_HN
-#   L_NILM  = L_power + state_term
+#   L_NILM = L_power + state_term
 #
 #   L_power = sum_i [ MSE_i                                   all samples
 #                   + power_on_weight    * ON_MSE_i           true-ON samples only

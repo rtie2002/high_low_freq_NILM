@@ -174,6 +174,69 @@ class MultiNILMDualExpertTests(unittest.TestCase):
         self.assertEqual(tuple(logits.shape), (2, 24, 2))
         self.assertIsNone(model.last_expert_gates)
 
+    def test_mixture_output_conserves_mains_without_state_gating(self) -> None:
+        model = MultiNILM(
+            input_channels=1,
+            num_appliances=2,
+            output_length=24,
+            hidden_channels=8,
+            num_blocks=1,
+            kernel_size=3,
+            temporal_dropout=0.0,
+            head_dropout=0.0,
+            gate_mode="hard",
+            mixture_consistent_output=True,
+            aggregate_mean=100.0,
+            aggregate_scale=20.0,
+            appliance_mean=[10.0, 5.0],
+            appliance_scale=[2.0, 4.0],
+        )
+        # A very negative state logit would close the legacy hard gate. The new
+        # physical allocation must remain independent of state probabilities.
+        for head in model.appliance_heads:
+            torch.nn.init.zeros_(head.state_head.weight)
+            torch.nn.init.constant_(head.state_head.bias, -100.0)
+
+        aggregate_norm = torch.linspace(-1.0, 1.0, 24).repeat(2, 1)
+        power_norm, state_logits = model(aggregate_norm)
+
+        self.assertEqual(tuple(power_norm.shape), (2, 24, 2))
+        self.assertEqual(tuple(state_logits.shape), (2, 24, 2))
+        self.assertTrue(bool((state_logits < -90.0).all()))
+        self.assertEqual(tuple(model.last_source_masks.shape), (2, 3, 24))
+        torch.testing.assert_close(
+            model.last_source_masks.sum(dim=1),
+            torch.ones(2, 24),
+            atol=1e-6,
+            rtol=1e-6,
+        )
+
+        means = torch.tensor([10.0, 5.0]).reshape(1, 1, 2)
+        scales = torch.tensor([2.0, 4.0]).reshape(1, 1, 2)
+        known_watts = power_norm * scales + means
+        unknown_watts = model.last_unknown_power_watts.permute(0, 2, 1)
+        aggregate_watts = (aggregate_norm * 20.0 + 100.0).unsqueeze(-1)
+        torch.testing.assert_close(
+            known_watts.sum(dim=2, keepdim=True) + unknown_watts,
+            aggregate_watts,
+            atol=1e-5,
+            rtol=1e-5,
+        )
+        self.assertGreater(float(known_watts.sum()), 0.0)
+
+        power_norm.square().mean().backward()
+        self.assertIsNotNone(model.unknown_source_head.weight.grad)
+        self.assertGreater(float(model.unknown_source_head.weight.grad.abs().sum()), 0.0)
+
+    def test_mixture_output_config_is_opt_in(self) -> None:
+        legacy = multinilm_config({"hidden_channels": 8})
+        mixture = multinilm_config({
+            "hidden_channels": 8,
+            "mixture_consistent_output": {"enabled": True},
+        })
+        self.assertFalse(legacy.mixture_consistent_output)
+        self.assertTrue(mixture.mixture_consistent_output)
+
     def test_adapter_logs_local_gate_for_on_and_off_samples(self) -> None:
         adapter = object.__new__(MultiNILMAdapter)
         adapter.cfg = {"appliances": ["first", "second"]}

@@ -1,15 +1,15 @@
 """Beginner path: read MultiNILMFractional.forward, then MultiNILM.forward.
 
 Every Conv1d tensor is (B, C, T) = batch, channels, time.
-Relational multi-appliance example: B=64, C_in=13, C=128, T=1024,
-A=5 reported appliances plus one optional unobserved-background output.
+Relational multi-appliance example: B=64, C_in=12, C=128, T=1024,
+A=5 reported appliances plus one unobserved-background allocation.
 
   mains (B, T)
-    -> FrontEnd          (B, 13, T)
+    -> FrontEnd          (B, C_in, T)
     -> stem + TCN        (B, 128, T)
-       -> background     (B, T, 1)    training nuisance output
     -> 5 heads           5 x (B, 128, T)
     -> relation mix      5 x (B, 128, T)
+    -> 6-way allocation  (B, 6, T)  # 5 appliances + unknown
     -> power, state      (B, T, 5)
 
 Stop at "YAML / training" unless you are changing configs.
@@ -578,6 +578,9 @@ class MultiNILM(nn.Module):
         dual_expert_local_norm_type="group", dual_expert_dropout=0.1,
         dual_expert_gate_hidden_channels=32,
         dual_expert_gate_initial_local_weight=0.1,
+        mixture_consistent_output=False,
+        aggregate_mean=0.0, aggregate_scale=1.0,
+        appliance_mean=None, appliance_scale=None,
     ):
         super().__init__()
         self.input_channels = int(input_channels)
@@ -587,7 +590,10 @@ class MultiNILM(nn.Module):
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
         self.dual_expert_enabled = bool(dual_expert_enabled)
+        self.mixture_consistent_output = bool(mixture_consistent_output)
         self.last_expert_gates = None
+        self.last_source_masks = None
+        self.last_unknown_power_watts = None
         off_norms = list(appliance_off_norm or [0.0] * self.num_appliances)
         if len(off_norms) != self.num_appliances:
             raise ValueError(f"appliance_off_norm length {len(off_norms)} != {self.num_appliances}")
@@ -661,6 +667,53 @@ class MultiNILM(nn.Module):
             )
             for i in range(self.num_appliances)
         ])
+        self.unknown_source_head = None
+        if self.mixture_consistent_output:
+            means = list(appliance_mean or [0.0] * self.num_appliances)
+            scales = list(appliance_scale or [1.0] * self.num_appliances)
+            if len(means) != self.num_appliances or len(scales) != self.num_appliances:
+                raise ValueError(
+                    "mixture-consistent output requires one mean and scale per appliance"
+                )
+            if float(aggregate_scale) <= 0 or any(float(value) <= 0 for value in scales):
+                raise ValueError("normalization scales must be positive")
+
+            # Appliance heads produce five allocation logits. This sixth logit
+            # lets unmodelled household loads consume the remaining mains power.
+            self.unknown_source_head = nn.Conv1d(self.hidden_channels, 1, 1)
+            self.register_buffer(
+                "aggregate_mean",
+                torch.tensor(float(aggregate_mean), dtype=torch.float32),
+            )
+            self.register_buffer(
+                "aggregate_scale",
+                torch.tensor(float(aggregate_scale), dtype=torch.float32),
+            )
+            self.register_buffer(
+                "appliance_mean",
+                torch.tensor(means, dtype=torch.float32).reshape(1, self.num_appliances, 1),
+            )
+            self.register_buffer(
+                "appliance_scale",
+                torch.tensor(scales, dtype=torch.float32).reshape(1, self.num_appliances, 1),
+            )
+
+            # Equal six-way masks would initially assign about one sixth of a
+            # noisy aggregate to every appliance. Initialise only the logits'
+            # biases from train-set mean power, leaving all weights learnable.
+            known_means = [max(float(value), 0.0) for value in means]
+            residual_mean = float(aggregate_mean) - sum(known_means)
+            if float(aggregate_mean) > 0 and residual_mean > 0:
+                shares = torch.tensor(
+                    [*known_means, residual_mean], dtype=torch.float32
+                ).clamp_min(1e-6)
+            else:
+                shares = torch.ones(self.num_appliances + 1, dtype=torch.float32)
+            prior_logits = torch.log(shares / shares.sum())
+            with torch.no_grad():
+                for app_i, head in enumerate(self.appliance_heads):
+                    head.power_head.bias.fill_(prior_logits[app_i])
+                self.unknown_source_head.bias.fill_(prior_logits[-1])
         self.cross_appliance_distill = None
         if cross_appliance_enabled:
             mode = str(cross_appliance_mode or "bottleneck").lower()
@@ -735,6 +788,56 @@ class MultiNILM(nn.Module):
         if self.cross_appliance_distill is not None:
             feats = self.cross_appliance_distill(feats)
 
+        if self.mixture_consistent_output:
+            if raw_input is None:
+                if x.shape[1] != 1:
+                    raise ValueError(
+                        "mixture-consistent output requires the normalized raw mains input"
+                    )
+                raw_input = x
+            elif raw_input.dim() == 2:
+                raw_input = raw_input.unsqueeze(1)
+            elif raw_input.dim() == 3 and raw_input.shape[-1] == 1:
+                raw_input = raw_input.permute(0, 2, 1)
+            if raw_input.dim() != 3 or raw_input.shape[1] != 1:
+                raise ValueError(
+                    f"raw mains must have shape (B,1,T), got {tuple(raw_input.shape)}"
+                )
+
+            allocation_logits = [
+                head.power_head(features)
+                for head, features in zip(self.appliance_heads, feats)
+            ]
+            state_logits = [
+                head.state_head(features)
+                for head, features in zip(self.appliance_heads, feats)
+            ]
+            unknown_logit = self.unknown_source_head(context_features)
+            source_logits = torch.cat([*allocation_logits, unknown_logit], dim=1)
+            source_masks = torch.softmax(source_logits, dim=1)  # (B, A+1, T_out)
+
+            aggregate_norm = _match_time_length(raw_input.float(), self.output_length)
+            aggregate_watts = (
+                aggregate_norm * self.aggregate_scale + self.aggregate_mean
+            ).clamp_min(0.0)
+            source_power_watts = source_masks * aggregate_watts
+            appliance_power_watts = source_power_watts[:, :self.num_appliances]
+
+            # The shared loader/loss/evaluation pipeline expects appliance-wise
+            # z-scored values, so convert the physical allocation back once.
+            power_norm = (
+                appliance_power_watts - self.appliance_mean
+            ) / self.appliance_scale
+            power = power_norm.permute(0, 2, 1)               # (B, T_out, A)
+            logits = torch.cat(state_logits, dim=1).permute(0, 2, 1)
+
+            # Diagnostics only; detached tensors never change optimization.
+            self.last_source_masks = source_masks.detach()
+            self.last_unknown_power_watts = source_power_watts[:, -1:].detach()
+            return power, logits
+
+        self.last_source_masks = None
+        self.last_unknown_power_watts = None
         powers, states = [], []
         for head, f in zip(self.appliance_heads, feats):
             p, s = head.decode_from_features(f)                # (B, 1, T_out)
@@ -781,6 +884,14 @@ class MultiNILMFractional(nn.Module):
     def last_expert_gates(self):
         return self.backbone.last_expert_gates
 
+    @property
+    def last_source_masks(self):
+        return self.backbone.last_source_masks
+
+    @property
+    def last_unknown_power_watts(self):
+        return self.backbone.last_unknown_power_watts
+
 # ===========================================================================
 # YAML / training. Skip this while reading the network.
 # ===========================================================================
@@ -826,6 +937,7 @@ class MultiNILMConfig:
     dual_expert_dropout: float = 0.1
     dual_expert_gate_hidden_channels: int = 32
     dual_expert_gate_initial_local_weight: float = 0.1
+    mixture_consistent_output: bool = False
 
 
 def multinilm_config(architecture):
@@ -834,6 +946,11 @@ def multinilm_config(architecture):
     task = a.get("task_attention") if isinstance(a.get("task_attention"), dict) else {}
     cross = a.get("cross_appliance") if isinstance(a.get("cross_appliance"), dict) else {}
     dual = a.get("dual_expert") if isinstance(a.get("dual_expert"), dict) else {}
+    mixture = (
+        a.get("mixture_consistent_output")
+        if isinstance(a.get("mixture_consistent_output"), dict)
+        else {}
+    )
     mid = cross.get("mid_channels", None)
     return MultiNILMConfig(
         input_channels=int(a.get("input_channels", a.get("input_size", 1))),
@@ -875,19 +992,55 @@ def multinilm_config(architecture):
         dual_expert_dropout=float(dual.get("dropout", legacy_dropout)),
         dual_expert_gate_hidden_channels=int(dual.get("gate_hidden_channels", 32)),
         dual_expert_gate_initial_local_weight=float(dual.get("gate_initial_local_weight", 0.1)),
+        mixture_consistent_output=bool(
+            mixture.get("enabled", a.get("mixture_consistent_output", False))
+        ),
     )
 
 
-def build_multinilm(cfg, *, num_appliances, output_length, appliance_off_norm=None, input_channels=None):
+def _normalization_kwargs(normalization, num_appliances):
+    """Translate loader normalization into physical-output model buffers."""
+    if normalization is None:
+        return {}
+
+    if normalization.input_mean is not None and normalization.input_std is not None:
+        aggregate_mean = float(normalization.input_mean)
+        aggregate_scale = float(normalization.input_std)
+    else:
+        aggregate_mean = 0.0
+        aggregate_scale = float(normalization.legacy_scale)
+
+    if normalization.target_mean is not None and normalization.target_std is not None:
+        appliance_mean = np.asarray(normalization.target_mean, dtype=np.float32).tolist()
+        appliance_scale = np.asarray(normalization.target_std, dtype=np.float32).tolist()
+    else:
+        appliance_mean = [0.0] * int(num_appliances)
+        appliance_scale = [float(normalization.legacy_scale)] * int(num_appliances)
+    return {
+        "aggregate_mean": aggregate_mean,
+        "aggregate_scale": aggregate_scale,
+        "appliance_mean": appliance_mean,
+        "appliance_scale": appliance_scale,
+    }
+
+
+def build_multinilm(
+    cfg, *, num_appliances, output_length, appliance_off_norm=None,
+    input_channels=None, normalization=None,
+):
     kwargs = asdict(cfg)
     kwargs.update(num_appliances=int(num_appliances), output_length=int(output_length),
                   appliance_off_norm=appliance_off_norm)
+    kwargs.update(_normalization_kwargs(normalization, num_appliances))
     if input_channels is not None:
         kwargs["input_channels"] = int(input_channels)
     return MultiNILM(**kwargs)
 
 
-def build_multinilm_fractional(architecture, *, num_appliances, output_length, appliance_off_norm=None):
+def build_multinilm_fractional(
+    architecture, *, num_appliances, output_length, appliance_off_norm=None,
+    normalization=None,
+):
     block = architecture.get("fractional") if isinstance(architecture.get("fractional"), dict) else {}
     if block.get("alphas") is None:
         k = int(block.get("k", 8))
@@ -918,6 +1071,7 @@ def build_multinilm_fractional(architecture, *, num_appliances, output_length, a
     backbone = build_multinilm(
         multinilm_config(arch), num_appliances=num_appliances, output_length=output_length,
         appliance_off_norm=appliance_off_norm, input_channels=int(frontend.out_channels),
+        normalization=normalization,
     )
     return MultiNILMFractional(backbone=backbone, frontend=frontend)
 
@@ -957,11 +1111,13 @@ class MultiNILMAdapter(BaseNILMAdapter):
 
     def build_model(self, device):
         apps = self.cfg["appliances"]
+        normalization = self._data_loader().norm
         return build_multinilm(
             multinilm_config(self.model_cfg["architecture"]),
             num_appliances=len(apps),
             output_length=int(self.model_cfg["windowing"].get("output_window_length", 1)),
             appliance_off_norm=appliance_off_norm_normalized(self.experiment, apps),
+            normalization=normalization,
         ).to(device)
 
     def build_loss(self):
@@ -1026,6 +1182,16 @@ class MultiNILMAdapter(BaseNILMAdapter):
                     logs[f"gate_local_on_{app}"] = float(weights[on_mask].mean())
                 if bool((~on_mask).any()):
                     logs[f"gate_local_off_{app}"] = float(weights[~on_mask].mean())
+        source_masks = getattr(model, "last_source_masks", None)
+        if source_masks is not None:
+            # Mean allocation shares reveal whether a difficult appliance has
+            # collapsed into the unknown source. They are diagnostics only.
+            for app_i, app in enumerate(self.cfg["appliances"]):
+                logs[f"source_mask_{app}"] = float(source_masks[:, app_i, :].mean())
+            logs["source_mask_unknown"] = float(source_masks[:, -1, :].mean())
+            unknown_watts = getattr(model, "last_unknown_power_watts", None)
+            if unknown_watts is not None:
+                logs["unknown_power_watts"] = float(unknown_watts.mean())
         return StepOutput(
             loss=out.loss,
             logs=logs,
@@ -1070,9 +1236,11 @@ class MultiNILMFractionalAdapter(MultiNILMAdapter):
         if isinstance(frac, dict):
             arch["fractional"] = frac
         apps = self.cfg["appliances"]
+        normalization = self._data_loader().norm
         return build_multinilm_fractional(
             arch,
             num_appliances=len(apps),
             output_length=int(self.model_cfg["windowing"].get("output_window_length", 1)),
             appliance_off_norm=appliance_off_norm_normalized(self.experiment, apps),
+            normalization=normalization,
         ).to(device)
