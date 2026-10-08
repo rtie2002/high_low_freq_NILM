@@ -25,13 +25,13 @@ evaluation:
         fridge: 120
         dishwasher: 960
         washingmachine: 960
-        microwave: 8
+        microwave: 32
       merge_gap_seconds:
         kettle: 0
         fridge: 240
         dishwasher: 1800
         washingmachine: 960
-        microwave: 16
+        microwave: 24
 
 windowing:
   # At 8 s/sample, each 1024-sample window spans about 136.5 min.

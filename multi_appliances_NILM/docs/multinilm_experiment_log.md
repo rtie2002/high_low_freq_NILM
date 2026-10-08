@@ -128,3 +128,18 @@ Result using the same selected checkpoint:
 Conclusion: reject the change and restore `apply_to_power: true`. The hard mask
 is not the cause of the state-classification failure; it is currently needed to
 suppress substantial OFF-state leakage from the softly gated regression output.
+
+## Validation-selected microwave duration decoding — 2026-10-09
+
+The selected model produces too many short microwave fragments. On validation,
+the true microwave event has a median duration of 80 s, whereas predicted events
+have a median duration of 40 s. A validation-only grid search selected a 32 s
+minimum ON duration and a 24 s maximum gap to merge. No model was retrained.
+
+- Validation microwave F1: 0.427 to 0.439.
+- REFIT house 20 microwave F1: 0.420 to 0.447.
+- REFIT microwave precision: 0.351 to 0.396.
+
+The same search did not find a fridge hysteresis/duration rule that transferred
+reliably. Therefore only the microwave duration settings are retained. This is a
+small sequence-cleanup improvement, not a solution to weak state ranking.
