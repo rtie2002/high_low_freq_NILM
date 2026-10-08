@@ -1,11 +1,10 @@
 # Recovery baseline: restore the early relational model that was used before
 # the dual-expert, local-contrast and mixture-output experiments. The new
 # cross-house dataset split is intentionally retained.
-experiment_id: multinilm_single_fridge_diagnostic_house_split
+experiment_id: multinilm_periodic_context_meter_lag_house_split
 model_name: multinilm_fractional
 
 data:
-  appliances: [fridge]
   state_label_source: csv
 
 evaluation:
@@ -45,7 +44,7 @@ windowing:
   training_targets: auto
 
 fractional:
-  # Exact early feature bank: 13 channels in total.
+  # Early 13-channel bank plus 10 fixed long-context channels.
   k: 4
   include_raw: true
   include_delta: true
@@ -54,11 +53,14 @@ fractional:
   include_rolling_mean: true
   include_rolling_std: true
   rolling_windows: [8, 23, 45]
+  # Fixed 4--48 minute comparisons at 8 s/sample. These expose long-period
+  # compressor context without adding a second encoder or trainable branch.
+  context_lags: [30, 60, 120, 240, 360]
   memory: 24
   channel_normalize: none
 
 architecture:
-  # 13 channels: raw, signed delta, |delta|, six rolling statistics and 4 GL.
+  # 23 channels: the early 13 plus contrast/slope at five long lags.
   channel_schedule: [32, 64, 128]
   hidden_channels: 128
 
@@ -177,9 +179,7 @@ training:
     # This tests event/background coverage without changing the architecture,
     # loss, real-data half, validation split, or evaluation pipeline.
     focal_event_sampling:
-      # Disabled only for the single-fridge ceiling diagnostic. With one
-      # output, forcing an event would make every synthetic sample fridge-ON.
-      enabled: false
+      enabled: true
       # Apply this to every synthetic window. The controlled p=0.25 ablation
       # reduced the validation AP and lost part of the fridge-FPR improvement.
       prob: 1.0
