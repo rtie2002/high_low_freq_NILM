@@ -719,7 +719,9 @@ class NILMDataLoader:
             ),
             random_mix_focal_event_prob=self.random_mix_focal_event_prob,
             random_mix_background_bins_watts=self.random_mix_background_bins_watts,
-            random_mix_meter_lag_prob=self.random_mix_meter_lag_prob,
+            random_mix_meter_lag_prob=(
+                self.random_mix_meter_lag_prob if split == "train" else 0.0
+            ),
             random_mix_meter_lag_max_samples=self.random_mix_meter_lag_max_samples,
             paired_background=self.paired_background if split == "train" else False,
         )
