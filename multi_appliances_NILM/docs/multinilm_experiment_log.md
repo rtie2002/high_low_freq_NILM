@@ -64,7 +64,7 @@ of the existing positive BCE weight. Early checkpoints produced many microwave
 false positives, and the final model still missed the representative 200–800 W
 background microwave events after calibrated hard gating.
 
-## Partial focal-event mix (probability 0.25) — planned
+## Partial focal-event mix (probability 0.25) — completed 2026-10-08
 
 Experiment: `multinilm_focal_event_p025_stratified_mix_house_split`
 
@@ -75,3 +75,28 @@ training, only 12.5% of all training windows receive forced focal sampling.
 
 This retains explicit event/background coverage while reducing the double
 positive-prior shift caused by focal oversampling plus BCE `pos_weight`.
+
+Result at the selected checkpoint (epoch 141):
+
+- Validation: MAE 14.716 W, macro-F1 0.758, AP 0.784.
+- REFIT house 20: MAE 10.596 W, macro-F1 0.732, AP 0.725.
+- UK-DALE house 2: MAE 7.297 W, macro-F1 0.858, AP 0.925.
+- Validation fridge FPR was 0.205, compared with 0.171 for `p=1.0` and
+  0.209 for the recovery baseline.
+- REFIT microwave F1 improved to 0.502 and AP to 0.428, but validation
+  microwave AP decreased to 0.340.
+
+Conclusion: reject `p=0.25` as the main configuration. It improves the
+thresholded REFIT microwave result, but this advantage is not supported by the
+held-out validation house. It also gives back the validation AP and fridge-FPR
+gains obtained with `p=1.0`, and reduces UK-DALE macro-F1. The main
+configuration therefore returns to `p=1.0`, selected using validation data.
+
+## Current decision
+
+Keep the focal-event stratified full mix with `prob: 1.0`. This is a useful
+data-sampling improvement rather than a complete solution: it adds no model
+parameters, improves validation AP from 0.787 to 0.795, lowers validation
+fridge FPR from 0.209 to 0.171, and improves REFIT AP from 0.708 to 0.735.
+The remaining microwave hard-gating failures must be treated separately; the
+test-house F1 gain from `p=0.25` is insufficient evidence for selecting it.

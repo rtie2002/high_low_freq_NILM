@@ -1,7 +1,7 @@
 # Recovery baseline: restore the early relational model that was used before
 # the dual-expert, local-contrast and mixture-output experiments. The new
 # cross-house dataset split is intentionally retained.
-experiment_id: multinilm_focal_event_p025_stratified_mix_house_split
+experiment_id: multinilm_focal_event_stratified_mix_house_split
 model_name: multinilm_fractional
 
 data:
@@ -174,10 +174,9 @@ training:
     # loss, real-data half, validation split, or evaluation pipeline.
     focal_event_sampling:
       enabled: true
-      # The first run used 1.0 and improved AP/background robustness, but it
-      # also oversampled ON states on top of BCE pos_weight. A 0.25 trigger
-      # keeps the coverage benefit without strongly shifting the class prior.
-      prob: 0.25
+      # Apply this to every synthetic window. The controlled p=0.25 ablation
+      # reduced the validation AP and lost part of the fridge-FPR improvement.
+      prob: 1.0
       background_bins_watts: [0, 100, 200, 400, 800]
 
   use_amp: false
