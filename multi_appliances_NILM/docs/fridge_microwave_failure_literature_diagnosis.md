@@ -189,3 +189,35 @@ Meter-lag augmentation 达到预先定义的保留条件：
 - 波形具备物理连续性，而不是大量短脉冲或无依据平台；
 - 每个保留组件都有单独消融，且相对 UNet-NILM/MATNilm 等 baseline 使用同一
   真实 aggregate、同一 split 和同一 metric pipeline。
+
+## 9. Long-context 结果与监督一致性修复
+
+67 min context 对背景拒绝有作用，但未单独解决 fridge：
+
+| REFIT house 20 | Meter-lag | + Long context |
+|---|---:|---:|
+| Fridge FPR | 0.468 | 0.411 |
+| Fridge F1 | 0.723 | 0.706 |
+| 200--400 W residual FPR | 0.795 | 0.716 |
+| 400--800 W residual FPR | 0.872 | 0.798 |
+
+它降低了误报，但也降低 recall，因此只证明周期上下文方向合理。
+
+随后发现训练监督存在更根本的不一致。统一任务定义使用 fridge ON threshold
+50 W，但训练集 REFIT house 11 有 98,601 个 `fridge_on=1` 样本低于 50 W，
+其中位 power 只有 35 W；该异常占该房屋全部训练时间点的 26.16%。Validation
+与 test houses 几乎没有这种偏差。模型因而被训练成将非常弱的背景平台解释为
+fridge。
+
+新数据版本只修正 training REFIT house 11：
+
+1. 按统一的 50 W threshold、12 s maximum OFF gap、60 s minimum ON duration
+   重新生成 fridge state；
+2. 将新 state 为 OFF 的 supervised fridge target 置零，使 state gate 与 power
+   target 不再互相矛盾；
+3. aggregate 完全不变，被移除的低功率通道自然成为 unknown residual；
+4. validation/test 数据与标签完全不变；
+5. normalization 只在修正后的 training split 上重新拟合。
+
+该修改不是用 test 调参，而是执行实验开始时已经声明的统一 label definition。
+下一实验保留已经有效的 microwave meter-lag 和 long context，只改变这项训练监督。
