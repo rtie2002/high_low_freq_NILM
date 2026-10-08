@@ -152,6 +152,23 @@ loss、sampling 和 head 均保持不变。该实验只在以下条件下保留�
 3. representative noisy-background waveform 形成完整、连续的 fridge cycle；
 4. microwave、kettle 等短事件不被过度平滑。
 
+## 6.1 Meter-lag 实验结果
+
+Meter-lag augmentation 达到预先定义的保留条件：
+
+| Split | 指标 | Duration-only baseline | Meter-lag |
+|---|---|---:|---:|
+| Validation | microwave F1 | 0.439 | 0.449 |
+| REFIT house 20 | microwave F1 | 0.447 | 0.521 |
+| REFIT house 20 | overall macro-F1 | 0.719 | 0.746 |
+| UK-DALE house 2 | overall macro-F1 | 0.869 | 0.872 |
+| UK-DALE house 2 | microwave F1 | 0.734 | 0.714 |
+
+结论：异步采样是 REFIT microwave 失败的重要组成部分，因此保留 augmentation。
+它不是 fridge 方案：validation fridge F1 从 0.832 降至 0.808，REFIT 的
+200--400 W 与 400--800 W residual 区间 fridge FPR 仍分别高达 0.795 和
+0.872。下一实验只扩展 TCN context，其他设置不变。
+
 ## 7. 暂时不做的事情
 
 - 不加入 DWT/FFT：8 s active power 的 microwave/fridge 问题首先是时序监督和

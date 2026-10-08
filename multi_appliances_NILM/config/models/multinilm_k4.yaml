@@ -1,7 +1,7 @@
 # Recovery baseline: restore the early relational model that was used before
 # the dual-expert, local-contrast and mixture-output experiments. The new
 # cross-house dataset split is intentionally retained.
-experiment_id: multinilm_microwave_meter_lag_house_split_v2
+experiment_id: multinilm_meter_lag_long_context_house_split
 model_name: multinilm_fractional
 
 data:
@@ -75,10 +75,12 @@ architecture:
   temporal_norm_type: batch
   head_norm_type: batch
 
-  # Receptive-field ablation: k=9 with dilations 1,2,4,8,16 gives a 249-sample TCN RF.
-  num_blocks: 5
+  # One extra dilation-32 block expands the TCN receptive field from 249
+  # samples (33.2 min) to 505 samples (67.3 min). This lets the fridge head see
+  # the neighbouring real compressor cycles around fridge-like residual loads.
+  num_blocks: 6
   kernel_size: 9
-  max_dilation: 16
+  max_dilation: 32
   dropout: 0.25
 
   # Two local blocks preserve the multi-stage washing-machine waveform better.
@@ -216,7 +218,7 @@ training:
     # Intermediate waveform rendering is CPU-heavy and blocks the GPU. Keep a
     # single end-of-training snapshot; the selected best checkpoint is always
     # evaluated again after training.
-    plot_interval: 150
+    plot_interval: 999
     plot_on_periods: 5
     plot_max_batches: 16
     waveform_figsize: 5.5
