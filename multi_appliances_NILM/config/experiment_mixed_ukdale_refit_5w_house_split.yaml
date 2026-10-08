@@ -8,9 +8,9 @@
 # Test: same houses and 8-week calendar bounds as the established protocol,
 # re-extracted from the current corrected original CSVs
 #   UK-DALE 2; REFIT 20
-dataset_id: mixed_ukdale_refit_5w_house_split_no_refit11
+dataset_id: mixed_ukdale_refit_5w_house_split
 seed: 2026
-data_root: datasets/mixed_ukdale_refit_5w_house_split_no_refit11
+data_root: datasets/mixed_ukdale_refit_5w_house_split
 
 csv:
   sample_seconds: 8
@@ -30,7 +30,7 @@ csv:
 
 # Fitted only on the five training houses. Validation/test houses never
 # contribute to normalization statistics.
-normalization_file: ../datasets/mixed_ukdale_refit_5w_house_split_no_refit11/normalization_stats.json
+normalization_file: ../datasets/mixed_ukdale_refit_5w_house_split/normalization_stats.json
 
 evaluation:
   on_thresholds_watts:

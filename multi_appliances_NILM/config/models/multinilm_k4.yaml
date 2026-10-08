@@ -1,7 +1,7 @@
 # Recovery baseline: restore the early relational model that was used before
 # the dual-expert, local-contrast and mixture-output experiments. The new
 # cross-house dataset split is intentionally retained.
-experiment_id: multinilm_no_refit11_meter_lag_house_split
+experiment_id: multinilm_fridge_transition_meter_lag_house_split
 model_name: multinilm_fractional
 
 data:
@@ -138,6 +138,13 @@ loss:
   # FP_i = mean of p^2 over true-OFF samples: extra push against false ON on top
   # of BCE. Removing it (0.0) reduced test performance.
   state_fp_weight: 1.0
+
+  # Boundary-aware state supervision. Order follows the five appliance heads:
+  # kettle, fridge, dishwasher, washing machine, microwave. Only fridge is
+  # changed in this ablation; the microwave timing issue is handled by the
+  # measured 1--2 sample lag augmentation below.
+  state_transition_weight: [0.0, 0.5, 0.0, 0.0, 0.0]
+  state_steady_weight: 0.1
 
   # ON_MSE_i / OFF_MSE_i are means over true-ON / true-OFF samples only. Added on
   # top of the all-sample MSE so the few ON samples are not drowned out.

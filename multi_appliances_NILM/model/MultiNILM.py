@@ -1013,6 +1013,8 @@ class MultiNILMAdapter(BaseNILMAdapter):
             power_delta_weight=float(cfg.get("power_delta_weight", 0.0)),
             power_delta_on_only=bool(cfg.get("power_delta_on_only", True)),
             state_fp_weight=float(cfg.get("state_fp_weight", 0.0)),
+            state_transition_weight=cfg.get("state_transition_weight", 0.0),
+            state_steady_weight=float(cfg.get("state_steady_weight", 0.1)),
             power_energy_relative_weight=float(cfg.get("power_energy_relative_weight", 0.0)),
             energy_floor_watts=float(cfg.get("energy_floor_watts", 10.0)),
         )
