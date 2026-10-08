@@ -1,7 +1,7 @@
-# Controlled follow-up: restore the retained k4 tower output and train it on
-# paired aggregates that contain identical appliance targets under two residual
-# backgrounds.  This tests background invariance without adding another head.
-experiment_id: k4_alpha1_paired_background_consistency
+# Controlled shared-private experiment. The long-context encoder remains shared,
+# but each appliance now owns its small raw/k=1 local expert. Everything else is
+# identical to the paired-background reference run.
+experiment_id: k4_alpha1_private_local_experts
 model_name: multinilm_fractional
 
 data:
@@ -103,9 +103,12 @@ architecture:
   gate_mode: soft
   gate_threshold: 0.5
 
-  # Local expert receives raw aggregate, alpha=1 GL and |alpha=1 GL|.
+  # Every local expert receives raw aggregate, alpha=1 GL and |alpha=1 GL|.
+  # The previous run shared one local expert across all appliances. That left
+  # fridge and microwave local evidence under the same competing gradients.
   dual_expert:
     enabled: true
+    share_local_expert: false
     local_channels: 32
     local_kernel_size: 5
     local_dilations: [1, 2, 4]

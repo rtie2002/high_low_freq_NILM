@@ -73,11 +73,202 @@ UNet-NILM estimates the on-off state and the power of several appliances with on
 \subsection{Loss Function}
 \label{sec:loss}
 
+We optimize power estimation and state detection jointly. To reduce sensitivity
+to unobserved household loads, the objective also requires consistent
+predictions when the appliance signals are placed on a different background.
+
+\paragraph{Notation.}
+A mini-batch contains $B$ windows, each with $N$ time samples and $M=5$
+appliances. Indices $b$, $t$, and $i$ refer to the window, time, and appliance,
+respectively. Let $P_{b,t,i}$ be the measured appliance power in watts and
+$z_{b,t,i}\in\{0,1\}$ its on--off state. Power is standardized using the mean
+$\mu_i$ and standard deviation $\sigma_i$ estimated from the training set:
+\begin{equation}
+y_{b,t,i}=\frac{P_{b,t,i}-\mu_i}{\sigma_i}.
+\label{eq:power-normalization}
+\end{equation}
+The model outputs standardized power $\hat{y}_{b,t,i}$ and on-state probability
+$\hat{p}_{b,t,i}$. Define the on, off, and active-transition index sets as
+\begin{equation}
+\begin{aligned}
+\Omega_i^{\mathrm{on}} & =\{(b,t):z_{b,t,i}=1\},\\
+\Omega_i^{\mathrm{off}}& =\{(b,t):z_{b,t,i}=0\},\\
+\Omega_i^{\Delta} & =\{(b,t):t\geq2,\,
+\max(z_{b,t,i},z_{b,t-1,i})=1\}.
+\end{aligned}
+\label{eq:index-sets}
+\end{equation}
+For any set $\Omega$, write $|\Omega|_{+}=\max(|\Omega|,1)$. This convention
+keeps a masked average defined when a mini-batch contains no selected sample.
+
+\paragraph{Power estimation.}
+The basic regression term is the mean squared error over all windows and time
+samples. Two masked terms retain the contribution of the on and off states:
+\begin{equation}
+\begin{aligned}
+\mathrm{MSE}_{i}={}&\frac{1}{BN}\sum_{b=1}^{B}\sum_{t=1}^{N}
+(\hat{y}_{b,t,i}-y_{b,t,i})^2,\\
+\mathrm{MSE}_{i}^{\mathrm{on}}={}&
+\frac{1}{|\Omega_i^{\mathrm{on}}|_{+}}
+\sum_{(b,t)\in\Omega_i^{\mathrm{on}}}
+(\hat{y}_{b,t,i}-y_{b,t,i})^2,\\
+\mathrm{MSE}_{i}^{\mathrm{off}}={}&
+\frac{1}{|\Omega_i^{\mathrm{off}}|_{+}}
+\sum_{(b,t)\in\Omega_i^{\mathrm{off}}}
+(\hat{y}_{b,t,i}-y_{b,t,i})^2.
+\end{aligned}
+\label{eq:mse}
+\end{equation}
+Temporal changes are compared only when either member of an adjacent pair is
+on. With
+\begin{equation}
+d_{b,t,i}=(\hat{y}_{b,t,i}-\hat{y}_{b,t-1,i})
+-(y_{b,t,i}-y_{b,t-1,i}),
+\label{eq:power-change-error}
+\end{equation}
+the change loss is
+\begin{equation}
+\mathrm{MSE}_{i}^{\Delta}=
+\frac{1}{|\Omega_i^{\Delta}|_{+}}
+\sum_{(b,t)\in\Omega_i^{\Delta}}d_{b,t,i}^{2}.
+\label{eq:mse-delta}
+\end{equation}
+
+A window-level term accounts for total energy. The standardized values are
+first returned to the watt domain and clipped at zero:
+\begin{equation}
+P^{+}_{b,t,i}=\max(\sigma_i y_{b,t,i}+\mu_i,0),\qquad
+\hat{P}^{+}_{b,t,i}=\max(\sigma_i\hat{y}_{b,t,i}+\mu_i,0).
+\label{eq:power-watts}
+\end{equation}
+The relative energy error is then
+\begin{equation}
+E_i=\frac{1}{B}\sum_{b=1}^{B}
+\frac{\left|\sum_{t=1}^{N}
+(\hat{P}^{+}_{b,t,i}-P^{+}_{b,t,i})\right|}
+{\sum_{t=1}^{N}P^{+}_{b,t,i}+10N}.
+\label{eq:energy}
+\end{equation}
+The common sampling interval cancels in this ratio. The denominator includes a
+10~W floor per sample, so that an all-off window remains well defined; $E_i$ is
+dimensionless. The full power loss is
+\begin{equation}
+\begin{aligned}
+\mathcal{L}_{\mathrm{power}}=\sum_{i=1}^{M}\big(&
+\mathrm{MSE}_{i}+\mathrm{MSE}_{i}^{\mathrm{on}}
++0.5\,\mathrm{MSE}_{i}^{\mathrm{off}}\\
+&+0.15\,\mathrm{MSE}_{i}^{\Delta}+0.25\,E_i\big).
+\end{aligned}
+\label{eq:power-loss}
+\end{equation}
+
+\paragraph{State estimation.}
+Let $p_i$ be the fraction of training samples for which appliance $i$ is on,
+clipped to the interval $[10^{-4},1-10^{-4}]$ for numerical stability.
+The positive-class weight
+\begin{equation}
+w_i=\min\!\left(\frac{1-p_i}{p_i},12\right)
+\label{eq:positive-weight}
+\end{equation}
+assigns a larger cost to errors on rare on-state samples. The weighted binary
+cross-entropy is
+\begin{equation}
+\begin{aligned}
+\mathrm{BCE}_{i}=-\frac{1}{BN}\sum_{b=1}^{B}\sum_{t=1}^{N}
+\big[&w_i z_{b,t,i}\log\hat{p}_{b,t,i}\\
+&+(1-z_{b,t,i})\log(1-\hat{p}_{b,t,i})\big].
+\end{aligned}
+\label{eq:bce}
+\end{equation}
+False activation is further discouraged by the mean squared on probability
+during off periods:
+\begin{equation}
+\mathrm{FP}_{i}=
+\frac{1}{|\Omega_i^{\mathrm{off}}|_{+}}
+\sum_{(b,t)\in\Omega_i^{\mathrm{off}}}\hat{p}_{b,t,i}^{2}.
+\label{eq:fp}
+\end{equation}
+The state loss is the sum over appliances,
+\begin{equation}
+\mathcal{L}_{\mathrm{state}}
+=\sum_{i=1}^{M}(\mathrm{BCE}_{i}+\mathrm{FP}_{i}).
+\label{eq:state-loss}
+\end{equation}
+
+\paragraph{Combination of the two tasks.}
+The power and state losses have different numerical scales. For each input
+view $v$, where $v\in\{\mathrm{real},\mathrm{swap}\}$, define
+\begin{equation}
+a^{v}=\operatorname{sg}\!\left(
+\frac{\mathcal{L}_{\mathrm{power}}^{v}}
+{\max(\mathcal{L}_{\mathrm{state}}^{v},10^{-8})}
+\right).
+\label{eq:task-scale}
+\end{equation}
+Here, $\operatorname{sg}(\cdot)$ leaves its value unchanged but treats it as a
+constant during back-propagation. The supervised loss for view $v$ is
+\begin{equation}
+\mathcal{L}_{\mathrm{sup}}^{v}
+=\mathcal{L}_{\mathrm{power}}^{v}
++0.8\,a^{v}\mathcal{L}_{\mathrm{state}}^{v}.
+\label{eq:sup}
+\end{equation}
+Thus, when $\mathcal{L}_{\mathrm{state}}^{v}>10^{-8}$, the state term has
+forward value $0.8\mathcal{L}_{\mathrm{power}}^{v}$, while its gradient is
+still obtained from $\mathcal{L}_{\mathrm{state}}^{v}$.
+
+\paragraph{Background consistency.}
+Let $X_{b,t}^{\mathrm{real}}$ be the recorded aggregate power in watts. Its
+residual background is defined as
+\begin{equation}
+R_{b,t}=\max\!\left(
+X_{b,t}^{\mathrm{real}}-\sum_{i=1}^{M}P_{b,t,i},0
+\right).
+\label{eq:residual-background}
+\end{equation}
+For the paired view, a residual sequence $R'_{b,t}$ is sampled from another
+training window, while the appliance signals and labels are retained:
+\begin{equation}
+X_{b,t}^{\mathrm{swap}}=\sum_{i=1}^{M}P_{b,t,i}+R'_{b,t}.
+\label{eq:background-swap}
+\end{equation}
+The two inputs therefore have identical appliance targets but different
+background demand. Their state and power predictions are compared using
+\begin{equation}
+\begin{aligned}
+\mathcal{L}_{\mathrm{con}}={}&\frac{1}{BMN}
+\sum_{b=1}^{B}\sum_{t=1}^{N}\sum_{i=1}^{M}
+(\hat{p}_{b,t,i}^{\mathrm{real}}-\hat{p}_{b,t,i}^{\mathrm{swap}})^2\\
+&+\frac{1}{BMN}
+\sum_{b=1}^{B}\sum_{t=1}^{N}\sum_{i=1}^{M}
+\rho(\hat{y}_{b,t,i}^{\mathrm{real}}-\hat{y}_{b,t,i}^{\mathrm{swap}}),
+\end{aligned}
+\label{eq:con}
+\end{equation}
+where the smooth $L_1$ function is
+\begin{equation}
+\rho(u)=
+\begin{cases}
+u^2/2, & |u|<1,\\
+|u|-1/2, & |u|\geq1.
+\end{cases}
+\label{eq:smooth-l1}
+\end{equation}
+
+The complete training objective is
+\begin{equation}
+\mathcal{L}=\frac{1}{2}\left(
+\mathcal{L}_{\mathrm{sup}}^{\mathrm{real}}
++\mathcal{L}_{\mathrm{sup}}^{\mathrm{swap}}
+\right)+0.1\,\mathcal{L}_{\mathrm{con}}.
+\label{eq:loss}
+\end{equation}
+
 \section{Experimental Setup}
 \label{sec:setup}
 
 \subsection{Dataset}
-Two public datasets are used: UK-DALE~\cite{kelly2015ukdale} and REFIT~\cite{murray2017refit}. UK-DALE records appliance and whole-house demand from five homes in the United Kingdom. REFIT records electrical load from a two-year study of United Kingdom households. The selected appliances are the kettle, fridge, dishwasher, washing machine, and microwave. Each record is an 8-week block resampled at 8~s. Training uses UK-DALE houses 1 and 5 and REFIT houses 2, 3, 5, 9, and 11. Testing uses UK-DALE house 2 and REFIT house 20.
+Two public datasets are used: UK-DALE~\cite{kelly2015ukdale} and REFIT~\cite{murray2017refit}. UK-DALE records appliance and whole-house demand from five homes in the United Kingdom, while REFIT contains long-term measurements from UK households. The target appliances are the kettle, fridge, dishwasher, washing machine, and microwave, and all signals are resampled at 8~s. Training uses continuous 5-week blocks from UK-DALE house~1 and REFIT houses~3, 5, 9, and 11. Entire 8-week blocks from UK-DALE house~5 and REFIT house~2 are held out for validation. UK-DALE house~2 and REFIT house~20 form the final 8-week test set. Houses are disjoint across the three splits, and all normalization statistics are estimated from the training houses only.
 
 Table~\ref{tab:label} lists the on-off labeling parameters. UK-DALE and REFIT use the same on threshold $\tau$. $G$ and $M$ are durations in seconds. Before they are used, $G$ and $M$ are rounded to the nearest multiple of 8~s, and a positive duration uses at least one sample. In UK-DALE house~5 the fridge uses $G=30$~s.
 \begin{table}[!t]

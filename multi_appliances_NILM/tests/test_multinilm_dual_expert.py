@@ -154,6 +154,58 @@ class MultiNILMDualExpertTests(unittest.TestCase):
         torch.testing.assert_close(captured["raw"], aggregate.unsqueeze(1))
         torch.testing.assert_close(captured["alpha_one"], expected_alpha_one, atol=1e-6, rtol=1e-6)
 
+    def test_private_local_experts_are_distinct_and_all_receive_gradients(self) -> None:
+        model = MultiNILM(
+            input_channels=4,
+            num_appliances=3,
+            output_length=32,
+            hidden_channels=16,
+            channel_schedule=[8, 16],
+            num_blocks=1,
+            kernel_size=3,
+            temporal_dropout=0.0,
+            head_dropout=0.0,
+            dual_expert_enabled=True,
+            dual_expert_share_local=False,
+            dual_expert_local_channels=8,
+            dual_expert_local_dilations=[1, 2],
+            dual_expert_dropout=0.0,
+            dual_expert_gate_hidden_channels=8,
+        )
+
+        self.assertIsNone(model.local_expert)
+        self.assertEqual(len(model.local_experts), 3)
+        weights = [expert.input_projection[0].weight for expert in model.local_experts]
+        self.assertEqual(len({weight.data_ptr() for weight in weights}), 3)
+
+        encoded = torch.randn(2, 4, 32)
+        raw = torch.randn(2, 1, 32)
+        alpha_one = torch.randn(2, 1, 32)
+        power, logits = model(encoded, raw_input=raw, alpha_one=alpha_one)
+
+        self.assertEqual(tuple(power.shape), (2, 32, 3))
+        self.assertEqual(tuple(logits.shape), (2, 32, 3))
+        self.assertEqual(tuple(model.last_expert_gates.shape), (2, 3, 2, 32))
+        (power.square().mean() + logits.square().mean()).backward()
+        for weight in weights:
+            self.assertIsNotNone(weight.grad)
+            self.assertGreater(float(weight.grad.abs().sum()), 0.0)
+
+    def test_private_local_expert_config_is_opt_in(self) -> None:
+        shared = multinilm_config({
+            "hidden_channels": 8,
+            "dual_expert": {"enabled": True},
+        })
+        private = multinilm_config({
+            "hidden_channels": 8,
+            "dual_expert": {
+                "enabled": True,
+                "share_local_expert": False,
+            },
+        })
+        self.assertTrue(shared.dual_expert_share_local)
+        self.assertFalse(private.dual_expert_share_local)
+
     def test_old_configuration_keeps_single_context_path(self) -> None:
         cfg = multinilm_config({"hidden_channels": 8})
         self.assertFalse(cfg.dual_expert_enabled)

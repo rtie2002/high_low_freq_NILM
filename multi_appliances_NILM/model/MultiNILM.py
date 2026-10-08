@@ -579,6 +579,7 @@ class MultiNILM(nn.Module):
         dual_expert_local_norm_type="group", dual_expert_dropout=0.1,
         dual_expert_gate_hidden_channels=32,
         dual_expert_gate_initial_local_weight=0.1,
+        dual_expert_share_local=True,
         mixture_consistent_output=False,
         mixture_state_conditioned=False,
         aggregate_mean=0.0, aggregate_scale=1.0,
@@ -592,6 +593,7 @@ class MultiNILM(nn.Module):
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
         self.dual_expert_enabled = bool(dual_expert_enabled)
+        self.dual_expert_share_local = bool(dual_expert_share_local)
         self.mixture_consistent_output = bool(mixture_consistent_output)
         self.mixture_state_conditioned = bool(mixture_state_conditioned)
         if self.mixture_state_conditioned and not self.mixture_consistent_output:
@@ -646,16 +648,27 @@ class MultiNILM(nn.Module):
             for i in range(num_blocks)
         ])
         self.local_expert = None
+        self.local_experts = None
         self.expert_gates = None
         if self.dual_expert_enabled:
-            self.local_expert = LocalTransientExpert(
-                int(dual_expert_local_channels),
-                self.hidden_channels,
+            local_expert_kwargs = dict(
+                local_channels=int(dual_expert_local_channels),
+                output_channels=self.hidden_channels,
                 kernel_size=int(dual_expert_local_kernel_size),
                 dilations=dual_expert_local_dilations or [1, 2, 4],
                 dropout=float(dual_expert_dropout),
                 norm_type=str(dual_expert_local_norm_type),
             )
+            if self.dual_expert_share_local:
+                self.local_expert = LocalTransientExpert(**local_expert_kwargs)
+            else:
+                # The context encoder remains shared. Only this small raw/k=1
+                # path is private, so weak appliance evidence is not forced
+                # through one representation optimized by all five losses.
+                self.local_experts = nn.ModuleList([
+                    LocalTransientExpert(**local_expert_kwargs)
+                    for _ in range(self.num_appliances)
+                ])
             self.expert_gates = nn.ModuleList([
                 ApplianceExpertGate(
                     self.hidden_channels,
@@ -777,13 +790,23 @@ class MultiNILM(nn.Module):
                 raise ValueError(
                     f"dual_expert alpha_one must have shape (B,1,T), got {tuple(alpha_one.shape)}"
                 )
-            local_features = _match_time_length(
-                self.local_expert(raw_input.float(), alpha_one.float()),
-                self.output_length,
-            )
+            if self.dual_expert_share_local:
+                shared_local = _match_time_length(
+                    self.local_expert(raw_input.float(), alpha_one.float()),
+                    self.output_length,
+                )
+                local_features = [shared_local] * self.num_appliances
+            else:
+                local_features = [
+                    _match_time_length(
+                        expert(raw_input.float(), alpha_one.float()),
+                        self.output_length,
+                    )
+                    for expert in self.local_experts
+                ]
             routed_features, gate_weights = [], []
-            for gate in self.expert_gates:
-                fused, weights = gate(local_features, context_features)
+            for gate, appliance_local in zip(self.expert_gates, local_features):
+                fused, weights = gate(appliance_local, context_features)
                 routed_features.append(fused)
                 gate_weights.append(weights)
             # (B, A, 2, T_out), stored detached for training diagnostics only.
@@ -972,6 +995,7 @@ class MultiNILMConfig:
     dual_expert_dropout: float = 0.1
     dual_expert_gate_hidden_channels: int = 32
     dual_expert_gate_initial_local_weight: float = 0.1
+    dual_expert_share_local: bool = True
     mixture_consistent_output: bool = False
     mixture_state_conditioned: bool = False
 
@@ -1028,6 +1052,7 @@ def multinilm_config(architecture):
         dual_expert_dropout=float(dual.get("dropout", legacy_dropout)),
         dual_expert_gate_hidden_channels=int(dual.get("gate_hidden_channels", 32)),
         dual_expert_gate_initial_local_weight=float(dual.get("gate_initial_local_weight", 0.1)),
+        dual_expert_share_local=bool(dual.get("share_local_expert", True)),
         mixture_consistent_output=bool(
             mixture.get("enabled", a.get("mixture_consistent_output", False))
         ),
