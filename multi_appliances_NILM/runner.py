@@ -27,7 +27,6 @@ Model-specific math stays outside this file in `model/*.py` (`build_model` / `st
 from __future__ import annotations
 
 import itertools
-import json
 import shutil
 import time
 from pathlib import Path
@@ -59,6 +58,7 @@ from evaluation.metrics import (
     per_appliance_average_precision,
 )
 from evaluation.metrics import apply_power_postprocess_pair, resolve_power_postprocess
+from evaluation.output_format import save_result_json, save_result_table
 from evaluation.state_postprocess import maybe_calibrate_and_apply
 from evaluation.plots import (
     bundle_aggregate_watts,
@@ -1816,10 +1816,8 @@ def train_model(
             "checkpoint_file": best_path.name,
             "checkpoint_size_mb": checkpoint_size_mb(best_path),
         }
-        with open(run_dir / "history.json", "w", encoding="utf-8") as f:
-            json.dump(history, f, indent=2)
-        with open(run_dir / "training_time.json", "w", encoding="utf-8") as f:
-            json.dump(timing_summary, f, indent=2)
+        save_result_json(run_dir / "history.json", history)
+        save_result_json(run_dir / "training_time.json", timing_summary)
         save_run_manifest(run_dir / "run_manifest.json", timing_summary)
         ckpt_mb = timing_summary["checkpoint_size_mb"]
         ckpt_note = f"checkpoint {ckpt_mb:.2f} MB" if ckpt_mb is not None else "checkpoint n/a"
@@ -1936,7 +1934,7 @@ def evaluate_model(
         if split in {"validation", "test"}
         else result_dir / "metrics.csv"
     )
-    metrics.to_csv(metrics_path, index=False)
+    save_result_table(metrics, metrics_path)
     background_metrics = None
     background_metrics_path = metrics_path.with_name(
         metrics_path.name.replace("metrics.csv", "background_fpr.csv")
@@ -1955,7 +1953,7 @@ def evaluate_model(
             state_label_source=get_state_label_source(adapter.model_cfg),
             power_postprocess=power_postprocess,
         )
-        background_metrics.to_csv(background_metrics_path, index=False)
+        save_result_table(background_metrics, background_metrics_path)
     else:
         print(
             f"Background FPR skipped ({split}): prediction rows could not be aligned "
@@ -1972,12 +1970,12 @@ def evaluate_model(
             else archive_dir / "test" / split / "metrics.csv"
         )
         archive_path.parent.mkdir(parents=True, exist_ok=True)
-        metrics.to_csv(archive_path, index=False)
+        save_result_table(metrics, archive_path)
         if background_metrics is not None:
             archive_background_path = archive_path.with_name(
                 archive_path.name.replace("metrics.csv", "background_fpr.csv")
             )
-            background_metrics.to_csv(archive_background_path, index=False)
+            save_result_table(background_metrics, archive_background_path)
 
     # Step 7:
     # Waveform plots always use dataset CSV *_on labels for true ON periods.

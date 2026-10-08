@@ -128,3 +128,4 @@ matuda_test_*.ps1
 /k4_alpha1_local_contrast
 /k4_alpha1_mixture_consistent_output
 /k4_alpha1_state_conditioned_mixture
+/k4_alpha1_paired_background_consistency

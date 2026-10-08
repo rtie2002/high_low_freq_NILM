@@ -26,12 +26,12 @@ normalization:
     microwave:      {mean: 500, std: 800}
 
 evaluation:
-  # Baseline per-appliance ON thresholds (Arguments.py → refit_params_appliance)
+  # Same ON thresholds as UK-DALE labeling (config/preprocess/ukdale.yaml).
   on_thresholds_watts:
-    kettle: 20
-    fridge: 19
-    dishwasher: 20
+    kettle: 200
+    fridge: 50
+    dishwasher: 50
     washingmachine: 20
-    microwave: 500
+    microwave: 200
   sae_period: 1200
   power_unit: watts

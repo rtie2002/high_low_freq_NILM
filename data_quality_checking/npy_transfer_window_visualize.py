@@ -84,10 +84,10 @@ PARAMS: dict[str, dict[str, ChannelParam]] = {
     },
     "refit": {
         "aggregate": ChannelParam(mean=500.0, std=800.0),
-        "kettle": ChannelParam(mean=50.0, std=80.0, threshold=20.0),
-        "microwave": ChannelParam(mean=500.0, std=800.0, threshold=500.0),
-        "fridge": ChannelParam(mean=350.0, std=700.0, threshold=19.0),
-        "dishwasher": ChannelParam(mean=100.0, std=400.0, threshold=20.0),
+        "kettle": ChannelParam(mean=50.0, std=80.0, threshold=200.0),
+        "microwave": ChannelParam(mean=500.0, std=800.0, threshold=200.0),
+        "fridge": ChannelParam(mean=350.0, std=700.0, threshold=50.0),
+        "dishwasher": ChannelParam(mean=100.0, std=400.0, threshold=50.0),
         "washingmachine": ChannelParam(mean=100.0, std=500.0, threshold=20.0),
     },
 }

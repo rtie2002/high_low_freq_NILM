@@ -111,10 +111,7 @@ appliances:
     mean: 400
     std: 700
     max_power: 3999          # User defined
-    on_power_threshold: 20    # Kelly Table 4 / NeuralNILM default (20 W)
-    # Per-house ON threshold overrides (idle standby power varies by installation).
-    # House 5 channel often reads ~15-16 W when OFF; 15 W global threshold labels it ~always ON.
-    on_power_threshold_by_house: {5: 25}
+    on_power_threshold: 20    # Kelly Table 4 / NeuralNILM default (20 W). Shared with REFIT.
     # Same physical timing rule as REFIT; no dataset/house-specific duration.
     min_off_seconds: 960
     min_on_seconds: 960

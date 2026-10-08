@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from data.common import PredictionBundle
+from evaluation.output_format import save_result_json
 
 
 CALIBRATION_FILENAME = "state_calibration.json"
@@ -255,8 +256,7 @@ def calibrate_state_postprocess(
 
 
 def save_calibration(path: Path, calibration: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(calibration, indent=2), encoding="utf-8")
+    save_result_json(path, calibration)
 
 
 def load_calibration(path: Path) -> dict[str, Any] | None:

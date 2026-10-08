@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 
 from data.dataloader import get_state_label_source, resolve_state_thresholds_watts
 from evaluation.metrics import background_fpr_table, evaluate_bundle
+from evaluation.output_format import round_result_row, save_result_table
 from evaluation.plots import (
     FULL_CYCLE_APPLIANCES,
     bundle_aggregate_watts,
@@ -220,7 +221,7 @@ class LiveTrainingMonitor:
             writer = csv.DictWriter(handle, fieldnames=list(row))
             writer.writeheader()
             setattr(self, writer_attr, writer)
-        writer.writerow(row)
+        writer.writerow(round_result_row(row))
         getattr(self, file_attr).flush()
 
     def save_loss_plots(self, *, epoch: int, best_epoch: int | None = None) -> None:
@@ -362,7 +363,7 @@ class LiveTrainingMonitor:
         front = [c for c in ("epoch", "split", "appliance") if c in cols]
         rest = [c for c in cols if c not in front]
         out = out[front + rest]
-        out.to_csv(history_path, index=False)
+        save_result_table(out, history_path)
 
     def _save_split_metrics_table(
         self,
@@ -427,22 +428,22 @@ class LiveTrainingMonitor:
         epoch_dir = self._metrics_epoch_dir(epoch)
         path = self._metrics_path(epoch_dir, split)
         path.parent.mkdir(parents=True, exist_ok=True)
-        metrics.to_csv(path, index=False)
+        save_result_table(metrics, path)
         if background_metrics is not None:
             background_path = path.with_name(
                 path.name.replace("metrics.csv", "background_fpr.csv")
             )
-            background_metrics.to_csv(background_path, index=False)
+            save_result_table(background_metrics, background_path)
         # Also keep a rolling "latest" copy of the table for this split.
         latest_dir = self.run_dir / "metrics_by_epoch" / "latest"
         latest_path = self._metrics_path(latest_dir, split)
         latest_path.parent.mkdir(parents=True, exist_ok=True)
-        metrics.to_csv(latest_path, index=False)
+        save_result_table(metrics, latest_path)
         if background_metrics is not None:
             latest_background_path = latest_path.with_name(
                 latest_path.name.replace("metrics.csv", "background_fpr.csv")
             )
-            background_metrics.to_csv(latest_background_path, index=False)
+            save_result_table(background_metrics, latest_background_path)
         self._append_metrics_history(epoch=epoch, split=split, metrics=metrics)
         return path
 

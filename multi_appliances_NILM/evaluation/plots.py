@@ -16,6 +16,8 @@ import numpy as np
 import pandas as pd
 from matplotlib.patches import Patch, Rectangle
 
+from evaluation.output_format import save_result_table
+
 WAVEFORM_DPI = 300
 
 
@@ -1360,7 +1362,7 @@ def save_val_test_comparison_figure(
     fig.savefig(output_path, dpi=dpi, facecolor="white", bbox_inches="tight", pad_inches=0.08)
     plt.close(fig)
 
-    compare.to_csv(Path(output_path).with_suffix(".csv"), index=False)
+    save_result_table(compare, Path(output_path).with_suffix(".csv"))
     return Path(output_path)
 
 

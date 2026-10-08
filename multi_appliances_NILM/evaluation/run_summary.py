@@ -10,6 +10,8 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
+from evaluation.output_format import save_result_json, save_result_table
+
 
 def count_model_parameters(model: nn.Module) -> dict[str, int]:
     """Count total and trainable parameters for fair model comparison."""
@@ -95,8 +97,7 @@ def save_run_manifest(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = _load_json(path) or {}
     existing.update(payload)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(existing, f, indent=2)
+    save_result_json(path, existing)
 
 
 def load_run_summary(run_dir: Path) -> dict[str, Any]:
@@ -322,7 +323,7 @@ def print_val_test_comparison(
             comparison_dir.mkdir(parents=True, exist_ok=True)
             compare_df = build_val_test_comparison_frame(val_df, test_df)
             compare_path = comparison_dir / "validation_test_comparison.csv"
-            compare_df.to_csv(compare_path, index=False)
+            save_result_table(compare_df, compare_path)
             fig_path = comparison_dir / "validation_test_comparison.png"
             save_val_test_comparison_figure(
                 val_df,
@@ -358,7 +359,7 @@ def print_val_test_comparison(
             scenario_summary = pd.concat(combined, ignore_index=True)
             summary_path = run_dir / "comparisons" / "test_scenarios_metrics.csv"
             summary_path.parent.mkdir(parents=True, exist_ok=True)
-            scenario_summary.to_csv(summary_path, index=False)
+            save_result_table(scenario_summary, summary_path)
 
         if len(scenario_frames) == 2:
             (left_name, left), (right_name, right) = scenario_frames
@@ -383,7 +384,7 @@ def print_val_test_comparison(
     compare_df = build_val_test_comparison_frame(val_df, test_df)
     # Appliance rows only in the CSV summary of gaps (overall included).
     compare_path = run_dir / "validation_test_comparison.csv"
-    compare_df.to_csv(compare_path, index=False)
+    save_result_table(compare_df, compare_path)
 
     # Same table as a PNG (final best-checkpoint evaluate).
     fig_path = run_dir / "validation_test_comparison.png"
@@ -565,7 +566,7 @@ def compare_experiment(runs_dir: Path, experiment_id: str, config_dir: Path | No
     table = pd.concat(frames, ignore_index=True)
     table = enrich_compare_table(table, runs_dir, experiment_id)
     out_path = exp_dir / "compare_results.csv"
-    table.to_csv(out_path, index=False)
+    save_result_table(table, out_path)
     overall = table[table["appliance"] == "overall"].copy()
     if not overall.empty:
         show_cols = [

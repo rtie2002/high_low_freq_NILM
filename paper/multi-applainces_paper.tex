@@ -2,11 +2,13 @@
 
 \usepackage{cite}
 \usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
 \usepackage{algorithmic}
 \usepackage{graphicx}
 \usepackage{textcomp}
 \usepackage{xcolor}
-\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{tabularx}
 
 \begin{document}
 
@@ -54,91 +56,195 @@ non-intrusive load monitoring, energy disaggregation, household appliances
 
 \section{Introduction}
 
+Non-intrusive load monitoring estimates appliance demand from one aggregate meter, without a sensor on each appliance. A recent systematic review groups more than thirty years of work into deterministic low-frequency methods, probabilistic and optimization models, and deep networks, and finds that reported accuracy depends as much on the sensing setup and the evaluation protocol as on the model~\cite{dasilva2026nilm}. In homes, deep learning is now the usual approach, while data requirements, real-time use, and interpretability remain open~\cite{rafiq2024nilm}.
+
+The aggregate is the sum of several appliances, and those appliances can run at the same time. A single-appliance estimate therefore leaves the overlap unresolved. Hybrid, sequence, and Transformer models have been used to infer several appliances together~\cite{dasilva2026nilm}. This paper follows that setting: from the same aggregate record, it predicts the power and the on-off state of several household appliances.
+
 \section{Related Work}
 
 UNet-NILM estimates the on-off state and the power of several appliances with one network~\cite{faustine2020unet}.
 
-\section{Method}
+\section{Methodology}
+\label{sec:method}
+
+\subsection{Model Architecture}
+\label{sec:architecture}
+
+\subsection{Loss Function}
+\label{sec:loss}
+
+\section{Experimental Setup}
+\label{sec:setup}
+
+\subsection{Dataset}
+Two public datasets are used: UK-DALE~\cite{kelly2015ukdale} and REFIT~\cite{murray2017refit}. UK-DALE records appliance and whole-house demand from five homes in the United Kingdom. REFIT records electrical load from a two-year study of United Kingdom households. The selected appliances are the kettle, fridge, dishwasher, washing machine, and microwave. Each record is an 8-week block resampled at 8~s. Training uses UK-DALE houses 1 and 5 and REFIT houses 2, 3, 5, 9, and 11. Testing uses UK-DALE house 2 and REFIT house 20.
+
+Table~\ref{tab:label} lists the on-off labeling parameters. UK-DALE and REFIT use the same on threshold $\tau$. $G$ and $M$ are durations in seconds. Before they are used, $G$ and $M$ are rounded to the nearest multiple of 8~s, and a positive duration uses at least one sample. In UK-DALE house~5 the fridge uses $G=30$~s.
+\begin{table}[!t]
+\caption{On-off labeling parameters.}
+\label{tab:label}
+\centering
+\renewcommand{\arraystretch}{1.15}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}l*{5}{>{\centering\arraybackslash}X}@{}}
+\hline
+Appliance & $\tau$ (W) & $G$ (s) & \multicolumn{2}{c}{$M$ (s)} & Spike \\
+\cline{4-5}
+ & & & UK-DALE & REFIT & \\
+\hline
+Kettle & 200 & 0 & 12 & 12 & No \\
+Fridge & 50 & 12 & 60 & 60 & Yes \\
+Dishwasher & 50 & 1800 & 960 & 960 & Yes \\
+Washing machine & 20 & 960 & 960 & 960 & Yes \\
+Microwave & 200 & 30 & 12 & 6 & No \\
+\hline
+\end{tabularx}
+\end{table}
+
+Table~\ref{tab:cost} lists the training settings. The parameter count is the number of trainable weights. The window is the number of aggregate-power samples in one input, and the stride is the number of samples between successive inputs. Epochs is the configured maximum. UNet-NILM trains for 50 epochs with early stopping disabled. MAT-Conv trains for at most 200 epochs and stops after 30 epochs without improvement. The proposed model trains for at most 150 epochs, does not stop before epoch 100, and then stops after 55 epochs without improvement. Time is the training time on one GPU. Waveform and loss plots are excluded.
 
 \subsection{Evaluation Metrics}
 \label{sec:metrics}
 
-Each appliance is evaluated on both power and on-off state. $a$ is the appliance and $t$ is the sample. $y_{a,t}$ is the recorded power in watts, and $\hat{y}_{a,t}$ is the predicted power. $T$ is the number of samples. $z_{a,t}=1$ when the appliance is recorded on, and $z_{a,t}=0$ when it is off. $\hat{z}_{a,t}$ is the predicted on-off label. The Average column in Table~\ref{tab:results} is the mean of the five appliance scores.
+Each appliance is evaluated separately on both power and on-off state. $t$ is the sample. $y_{t}$ is the recorded power in watts, and $\hat{y}_{t}$ is the predicted power. $T$ is the number of samples. $z_{t}=1$ when the appliance is recorded on, and $z_{t}=0$ when it is off. $\hat{z}_{t}$ is the predicted on-off label. The Average column in Table~\ref{tab:results} is the mean of the five appliance scores.
 
 \subsubsection{Power}
-The same absolute error is reported in three cases. MAE uses every sample. ON MAE uses only samples with $z_{a,t}=1$. OFF MAE uses only samples with $z_{a,t}=0$.
+The same absolute error is reported in three cases. MAE uses every sample. ON MAE uses only samples with $z_{t}=1$. OFF MAE uses only samples with $z_{t}=0$.
 \begin{equation}
-\mathrm{MAE}_{a}=\frac{1}{T}\sum_{t=1}^{T}\left|y_{a,t}-\hat{y}_{a,t}\right|.
+\mathrm{MAE}=\frac{1}{T}\sum_{t=1}^{T}\left|y_{t}-\hat{y}_{t}\right|.
 \label{eq:mae}
 \end{equation}
 SAE splits the record into consecutive windows of $P=1200$ samples, which is 160~minutes at 8~s. $k$ is the window index, and $K=\lfloor T/P\rfloor$ is the number of complete windows. A leftover shorter than $P$ is ignored. SAE is the mean absolute error of the average power in each window,
 \begin{equation}
-\mathrm{SAE}_{a}=\frac{1}{K}\sum_{k=1}^{K}\left|\frac{1}{P}\sum_{t=(k-1)P+1}^{kP}\left(y_{a,t}-\hat{y}_{a,t}\right)\right|.
+\mathrm{SAE}=\frac{1}{K}\sum_{k=1}^{K}\left|\frac{1}{P}\sum_{t=(k-1)P+1}^{kP}\left(y_{t}-\hat{y}_{t}\right)\right|.
 \label{eq:sae}
 \end{equation}
 
 \subsubsection{On-Off State}
-$\mathrm{TP}_{a}$ counts samples with $z_{a,t}=1$ and $\hat{z}_{a,t}=1$. $\mathrm{FP}_{a}$ counts samples with $z_{a,t}=0$ and $\hat{z}_{a,t}=1$. $\mathrm{FN}_{a}$ counts samples with $z_{a,t}=1$ and $\hat{z}_{a,t}=0$.
-\begin{align}
-\mathrm{Precision}_{a}&=\frac{\mathrm{TP}_{a}}{\mathrm{TP}_{a}+\mathrm{FP}_{a}}, \label{eq:precision}\\
-\mathrm{Recall}_{a}&=\frac{\mathrm{TP}_{a}}{\mathrm{TP}_{a}+\mathrm{FN}_{a}}, \label{eq:recall}\\
-\mathrm{F1}_{a}&=\frac{2\cdot\mathrm{Precision}_{a}\cdot\mathrm{Recall}_{a}}{\mathrm{Precision}_{a}+\mathrm{Recall}_{a}}. \label{eq:f1}
-\end{align}
+The recorded label $z_t$ is obtained from the appliance power by Algorithm~\ref{alg:onoff}. $\hat{z}_t$ is the on-off label predicted by the model. $u_t$ is a working copy of $y_t$ and is used only to decide $z_t$. $\tau$ is the on-power threshold in watts. $G$ is the longest below-threshold gap, in seconds, that still belongs to the same on period. $M$ is the shortest on period that is kept, in seconds. The record is sampled every 8~s, so both durations are rounded to that grid before use. The spike window is 40~s, $\beta=50$~W is the background level, and $\alpha=3$ is the spike factor. The noise floor is 0~W, so that step leaves $u_t$ unchanged. Table~\ref{tab:label} gives $\tau$, $G$, $M$, and whether spike removal is used.
+\begin{algorithm}[!t]
+\caption{On-off labeling of one appliance power record.}
+\label{alg:onoff}
+\begin{algorithmic}[1]
+\REQUIRE $y_t$ is the appliance power in watts at sample $t$, and $T$ is the number of samples
+\REQUIRE $\tau$ is the on threshold in watts. $G$ is the longest below-threshold gap in seconds. $M$ is the shortest on period kept, in seconds. The spike flag is in Table~\ref{tab:label}
+\REQUIRE $\beta=50$~W is the background level, and $\alpha=3$ is the spike factor. $z_t$ is the on-off label
+\STATE $u_t$ is a working copy of $y_t$. Set $u_t \leftarrow y_t$ for every $t$.
+\IF{spike removal is on}
+\STATE In the 40~s window centered at $t$, let the other samples be the neighbors. If at least 60\% of them are below $\beta$, and $u_t>2\beta$, and $u_t$ is greater than $\alpha$ times their median, set $u_t \leftarrow 0$.
+\ENDIF
+\FOR{$t = 1$ \TO $T$}
+\IF{$u_t \ge \tau$}
+\STATE $z_t \leftarrow 1$
+\ELSE
+\STATE $z_t \leftarrow 0$
+\ENDIF
+\ENDFOR
+\STATE Round $G$ and $M$ to the nearest multiple of 8~s. A positive duration uses at least one sample.
+\IF{the rounded $G$ is positive}
+\STATE Each run of $z_t=0$ lying between two on runs, with duration at most the rounded $G$, is one continued on period: set those $z_t \leftarrow 1$.
+\ENDIF
+\IF{the rounded $M$ is longer than 8~s}
+\STATE Each on run shorter than the rounded $M$, including neither end of the record, is removed: set those $z_t \leftarrow 0$.
+\ENDIF
+\RETURN $z_1,\ldots,z_T$
+\end{algorithmic}
+\end{algorithm}
+$\mathrm{TP}$ counts samples with $z_{t}=1$ and $\hat{z}_{t}=1$. $\mathrm{FP}$ counts samples with $z_{t}=0$ and $\hat{z}_{t}=1$. $\mathrm{FN}$ counts samples with $z_{t}=1$ and $\hat{z}_{t}=0$.
+\begin{minipage}[c]{0.48\linewidth}
+\begin{equation}
+\mathrm{Precision}=\frac{\mathrm{TP}}{\mathrm{TP}+\mathrm{FP}},
+\label{eq:precision}
+\end{equation}
+\end{minipage}\hfill
+\begin{minipage}[c]{0.48\linewidth}
+\begin{equation}
+\mathrm{Recall}=\frac{\mathrm{TP}}{\mathrm{TP}+\mathrm{FN}},
+\label{eq:recall}
+\end{equation}
+\end{minipage}
+\begin{equation}
+\mathrm{F1}=\frac{2\cdot\mathrm{Precision}\cdot\mathrm{Recall}}{\mathrm{Precision}+\mathrm{Recall}}.
+\label{eq:f1}
+\end{equation}
 Precision is the fraction of predicted on samples that are truly on. Recall is the fraction of recorded on samples that are detected. F1 is their harmonic mean, so it is high only when both precision and recall are high.
 
 \section{Results}
 
-Table~\ref{tab:results} compares each model on the five appliances. The scores are defined in Section~\ref{sec:metrics}.
+Table~\ref{tab:results} compares each model on UK-DALE and REFIT. DW, WM, and MW are the dishwasher, washing machine, and microwave. The scores are defined in Section~\ref{sec:metrics}. Lower power error is better. Higher precision, recall, and F1 are better.
 
 \begin{table*}[!t]
-\caption{Power error and on-off detection for each appliance. Lower power error is better. Higher precision, recall, and F1 are better.}
+\caption{Power and on-off results on UK-DALE and REFIT.}
 \label{tab:results}
 \centering
+\renewcommand{\arraystretch}{1.15}
 \footnotesize
-\setlength{\tabcolsep}{4.5pt}
-\begin{tabular}{llcccccc}
-\toprule
-\textbf{Model} & \textbf{Metric} & \textbf{Kettle} & \textbf{Fridge} & \textbf{Dishwasher} & \textbf{Washing machine} & \textbf{Microwave} & \textbf{Average} \\
-\midrule
-UNet-NILM~\cite{faustine2020unet} & MAE (W) &  &  &  &  &  &  \\
- & SAE (W) &  &  &  &  &  &  \\
- & ON MAE (W) &  &  &  &  &  &  \\
- & OFF MAE (W) &  &  &  &  &  &  \\
-\cmidrule(lr){2-8}
- & Precision &  &  &  &  &  &  \\
- & Recall &  &  &  &  &  &  \\
- & F1 &  &  &  &  &  &  \\
-\midrule
-Proposed & MAE (W) &  &  &  &  &  &  \\
- & SAE (W) &  &  &  &  &  &  \\
- & ON MAE (W) &  &  &  &  &  &  \\
- & OFF MAE (W) &  &  &  &  &  &  \\
-\cmidrule(lr){2-8}
- & Precision &  &  &  &  &  &  \\
- & Recall &  &  &  &  &  &  \\
- & F1 &  &  &  &  &  &  \\
-\bottomrule
-\end{tabular}
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{@{}ll|*{6}{>{\centering\arraybackslash}X}|*{6}{>{\centering\arraybackslash}X}@{}}
+\hline
+\multirow{2}{*}{Metric} & \multirow{2}{*}{Model}
+ & \multicolumn{6}{c|}{UK-DALE} & \multicolumn{6}{c}{REFIT} \\
+\cline{3-14}
+ & & Kettle & Fridge & DW & WM & MW & Avg.
+ & Kettle & Fridge & DW & WM & MW & Avg. \\
+\hline
+\multirow{3}{*}{MAE (W)}
+ & UNet-NILM~\cite{faustine2020unet} &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & MAT-Conv~\cite{xiong2024matnilm} &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & Proposed &  &  &  &  &  &  &  &  &  &  &  &  \\
+\hline
+\multirow{3}{*}{SAE (W)}
+ & UNet-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & MAT-Conv &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & Proposed &  &  &  &  &  &  &  &  &  &  &  &  \\
+\hline
+\multirow{3}{*}{ON MAE (W)}
+ & UNet-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & MAT-Conv &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & Proposed &  &  &  &  &  &  &  &  &  &  &  &  \\
+\hline
+\multirow{3}{*}{OFF MAE (W)}
+ & UNet-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & MAT-Conv &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & Proposed &  &  &  &  &  &  &  &  &  &  &  &  \\
+\hline
+\multirow{3}{*}{Precision}
+ & UNet-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & MAT-Conv &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & Proposed &  &  &  &  &  &  &  &  &  &  &  &  \\
+\hline
+\multirow{3}{*}{Recall}
+ & UNet-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & MAT-Conv &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & Proposed &  &  &  &  &  &  &  &  &  &  &  &  \\
+\hline
+\multirow{3}{*}{F1}
+ & UNet-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & MAT-Conv &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & Proposed &  &  &  &  &  &  &  &  &  &  &  &  \\
+\hline
+\end{tabularx}
 \end{table*}
 
-Table~\ref{tab:cost} reports the computational cost of the same models. The parameter count is the number of trainable weights, in millions. The window is the number of aggregate-power samples in one input, and the stride is the number of samples between successive inputs. The epoch count is the configured maximum. UNet-NILM trains for 50 epochs with early stopping disabled. MAT-Conv trains for at most 200 epochs and stops after 30 epochs without improvement. The proposed model trains for at most 150 epochs, does not stop before epoch 100, and then stops after 55 epochs without improvement. The time is the wall-clock training time, in seconds, on one GPU, excluding waveform and loss plots.
+Table~\ref{tab:cost} reports the computational cost. The columns are defined in Section~\ref{sec:setup}.
 
 \begin{table}[!t]
-\caption{Computational cost. Epochs is the configured maximum. Time is the training time on one GPU, excluding plots.}
+\caption{Computational cost.}
 \label{tab:cost}
 \centering
-\scriptsize
+\renewcommand{\arraystretch}{1.15}
+\footnotesize
 \setlength{\tabcolsep}{3pt}
-\begin{tabular}{@{}lcccccc@{}}
-\toprule
-\textbf{Model} & \textbf{Params} & \textbf{Window} & \textbf{Stride} & \textbf{Batch} & \textbf{Epochs} & \textbf{Time} \\
- & \textbf{(M)} & & & & & \textbf{(s)} \\
-\midrule
+\begin{tabularx}{\linewidth}{@{}l*{6}{>{\centering\arraybackslash}X}@{}}
+\hline
+Model & Params (M) & Window & Stride & Batch & Epochs & Time (s) \\
+\hline
 UNet-NILM~\cite{faustine2020unet} & 5.832 & 100 & 1 & 256 & 50 &  \\
 MAT-Conv~\cite{xiong2024matnilm} & 3.022 & 864 & 64 & 64 & 200 &  \\
 Proposed & 1.376 & 1024 & 512 & 64 & 150 &  \\
-\bottomrule
-\end{tabular}
+\hline
+\end{tabularx}
 \end{table}
 
 \section{Conclusion}

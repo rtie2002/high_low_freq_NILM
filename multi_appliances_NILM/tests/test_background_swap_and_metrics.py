@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+import tempfile
 import unittest
 
 import numpy as np
+import pandas as pd
 import torch
 
 from data.common import PredictionBundle
@@ -12,6 +16,7 @@ from data.dataloader import (
     get_random_mix_mode,
 )
 from evaluation.metrics import background_fpr_table, evaluate_bundle
+from evaluation.output_format import save_result_json, save_result_table
 from evaluation.state_postprocess import apply_state_calibration
 
 
@@ -208,6 +213,31 @@ class DiagnosticMetricTests(unittest.TestCase):
         self.assertEqual(table["off_samples"].tolist(), [2, 2, 2, 2, 1])
         self.assertEqual(table["false_positive_samples"].tolist(), [2, 2, 2, 2, 1])
         np.testing.assert_allclose(table["false_positive_rate"], 1.0)
+
+
+class ResultFormattingTests(unittest.TestCase):
+    def test_text_results_use_three_decimal_places(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            csv_path = root / "metrics.csv"
+            json_path = root / "metrics.json"
+
+            save_result_table(
+                pd.DataFrame({"metric": [1.23456, 0.00049], "count": [2, 3]}),
+                csv_path,
+            )
+            save_result_json(
+                json_path,
+                {"metric": 1.23456, "nested": [0.00049, 2]},
+            )
+
+            csv_text = csv_path.read_text(encoding="utf-8")
+            self.assertIn("1.235,2", csv_text)
+            self.assertIn("0.000,3", csv_text)
+            self.assertEqual(
+                json.loads(json_path.read_text(encoding="utf-8")),
+                {"metric": 1.235, "nested": [0.0, 2]},
+            )
 
 
 if __name__ == "__main__":
