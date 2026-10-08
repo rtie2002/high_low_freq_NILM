@@ -124,6 +124,43 @@ class BackgroundSwapTests(unittest.TestCase):
         np.testing.assert_allclose(paired_targets.numpy(), targets[:4])
         np.testing.assert_array_equal(paired_states.numpy(), states[:4])
 
+    def test_focal_event_mix_always_contains_on_target_and_samples_background_bins(self) -> None:
+        targets = np.zeros((12, 2), dtype=np.float32)
+        targets[:4, 0] = 100.0
+        targets[4:8, 1] = 200.0
+        states = (targets > 0).astype(np.int64)
+        background = np.repeat([50.0, 250.0, 900.0], 4).astype(np.float32)
+        inputs = targets.sum(axis=1) + background
+        dataset = WindowDataset(
+            inputs,
+            targets,
+            states,
+            {
+                "input_window_length": 4,
+                "output_window_length": 4,
+                "output_alignment": "end",
+            },
+            stride=4,
+            target_mode="full_input",
+            random_mix_prob=1.0,
+            random_mix_mode="full",
+            random_mix_focal_event=True,
+            random_mix_background_bins_watts=[0, 100, 800],
+        )
+
+        self.assertEqual(len(dataset.random_mix_on_starts), 2)
+        self.assertEqual(len(dataset.random_mix_background_starts), 3)
+
+        torch.manual_seed(7)
+        sampled_backgrounds = set()
+        for _ in range(60):
+            mixed_input, mixed_targets, mixed_states = dataset[0]
+            self.assertTrue(bool(mixed_states.any()))
+            residual = mixed_input.squeeze(-1) - mixed_targets.sum(dim=1)
+            sampled_backgrounds.add(float(torch.median(residual)))
+
+        self.assertEqual(sampled_backgrounds, {50.0, 250.0, 900.0})
+
 
 class DiagnosticMetricTests(unittest.TestCase):
     def test_state_calibration_can_update_detection_without_erasing_power(self) -> None:

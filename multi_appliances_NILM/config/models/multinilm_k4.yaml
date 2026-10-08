@@ -1,7 +1,7 @@
 # Recovery baseline: restore the early relational model that was used before
 # the dual-expert, local-contrast and mixture-output experiments. The new
 # cross-house dataset split is intentionally retained.
-experiment_id: multinilm_early_relation_full_mix_house_split
+experiment_id: multinilm_focal_event_stratified_mix_house_split
 model_name: multinilm_fractional
 
 data:
@@ -167,6 +167,14 @@ training:
     enabled: true
     mode: full
     prob: 0.5
+    # Preserve the original additive full mix, but make its sampling useful:
+    # every synthetic window contains one real ON appliance window, while the
+    # residual background is drawn uniformly from the non-empty power ranges.
+    # This tests event/background coverage without changing the architecture,
+    # loss, real-data half, validation split, or evaluation pipeline.
+    focal_event_sampling:
+      enabled: true
+      background_bins_watts: [0, 100, 200, 400, 800]
 
   use_amp: false
   amp_dtype: bf16

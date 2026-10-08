@@ -247,6 +247,8 @@ class WindowDataset(Dataset):
         tensor_dtype: np.dtype = np.float32,
         random_mix_prob: float = 0.0,
         random_mix_mode: RandomMixMode = "full",
+        random_mix_focal_event: bool = False,
+        random_mix_background_bins_watts: list[float] | None = None,
         paired_background: bool = False,
     ):
         norm = normalization or NormalizationStats()
@@ -267,6 +269,7 @@ class WindowDataset(Dataset):
 
         self.random_mix_prob = float(random_mix_prob)
         self.random_mix_mode = str(random_mix_mode)
+        self.random_mix_focal_event = bool(random_mix_focal_event)
         self.paired_background = bool(paired_background)
         if self.paired_background and self.random_mix_prob > 0.0:
             raise ValueError(
@@ -276,6 +279,10 @@ class WindowDataset(Dataset):
             raise ValueError(
                 "random_mix_mode must be one of: full, background_swap"
             )
+        if self.random_mix_focal_event and self.random_mix_mode != "full":
+            raise ValueError("focal-event sampling is only supported for random_mix mode='full'")
+        if self.random_mix_focal_event and self.random_mix_prob <= 0.0:
+            raise ValueError("focal-event sampling requires random_mix to be enabled")
         if self.random_mix_prob > 0.0 or self.paired_background:
             # Mixes are summed in watts. Clip the background at 0: mains can dip
             # below the submeter sum when the channels are slightly misaligned.
@@ -326,6 +333,12 @@ class WindowDataset(Dataset):
                 else np.zeros(0, dtype=np.int64)
             )
         self.n_candidate_windows = len(self.indices) + self.n_rejected_windows
+
+        self.random_mix_on_starts: list[np.ndarray] = []
+        self.random_mix_background_starts: list[np.ndarray] = []
+        if self.random_mix_focal_event:
+            edges = random_mix_background_bins_watts or [0, 100, 200, 400, 800]
+            self._prepare_focal_event_mix_pools(edges)
 
     def __len__(self) -> int:
         return len(self.indices)
@@ -384,6 +397,22 @@ class WindowDataset(Dataset):
         picks = torch.randint(len(self.indices), (n_apps + 1,)).numpy()
         *app_starts, bg = self.indices[picks].tolist()
 
+        if self.random_mix_focal_event:
+            # Every synthetic example contains one explicitly selected real ON
+            # window. This prevents rare appliances (especially microwave) from
+            # disappearing inside mostly all-OFF random mixtures.
+            focal_app = int(torch.randint(n_apps, ()).item())
+            on_pool = self.random_mix_on_starts[focal_app]
+            on_pick = int(torch.randint(len(on_pool), ()).item())
+            app_starts[focal_app] = int(on_pool[on_pick])
+
+            # Draw the nuisance background uniformly across non-empty power
+            # ranges, rather than reproducing the strongly low-background-
+            # dominated training distribution.
+            bin_pick = int(torch.randint(len(self.random_mix_background_starts), ()).item())
+            bg_pool = self.random_mix_background_starts[bin_pick]
+            bg = int(bg_pool[int(torch.randint(len(bg_pool), ()).item())])
+
         power = np.stack(
             [self.targets_watts[s:s + seq_len, a] for a, s in enumerate(app_starts)], axis=1
         )
@@ -395,6 +424,52 @@ class WindowDataset(Dataset):
         x = np.asarray(self.norm.normalize_inputs(mains), dtype=self.inputs.dtype)
         y = np.asarray(self.norm.normalize_targets(power), dtype=self.targets.dtype)
         return torch.from_numpy(x).unsqueeze(-1), torch.from_numpy(y), torch.from_numpy(states)
+
+    def _prepare_focal_event_mix_pools(self, bin_edges_watts: list[float]) -> None:
+        """Index real ON windows and residual-background ranges for full mix.
+
+        ``bin_edges_watts`` contains inclusive lower bounds. For example,
+        ``[0, 100, 200, 400, 800]`` creates five ranges whose final range is
+        ``[800, infinity)``. Empty ranges are skipped, so every draw is valid.
+        """
+        edges = np.asarray(bin_edges_watts, dtype=np.float64)
+        if (
+            edges.ndim != 1
+            or len(edges) == 0
+            or edges[0] != 0
+            or np.any(np.diff(edges) <= 0)
+        ):
+            raise ValueError(
+                "random_mix focal-event background bins must be strictly "
+                "increasing lower bounds beginning at 0 W"
+            )
+
+        starts = np.asarray(self.indices, dtype=np.int64)
+        ends = starts + self.seq_len
+        for app_i in range(self.states.shape[1]):
+            cumulative = np.pad(
+                np.cumsum(self.states[:, app_i], dtype=np.int64), (1, 0)
+            )
+            active = cumulative[ends] - cumulative[starts] > 0
+            pool = starts[active]
+            if len(pool) == 0:
+                raise ValueError(
+                    f"focal-event random mix found no ON window for appliance index {app_i}"
+                )
+            self.random_mix_on_starts.append(pool)
+
+        median_background = np.asarray(
+            [np.median(self.residual_watts[s:s + self.seq_len]) for s in starts],
+            dtype=np.float64,
+        )
+        bin_ids = np.searchsorted(edges[1:], median_background, side="right")
+        self.random_mix_background_starts = [
+            starts[bin_ids == bin_i]
+            for bin_i in range(len(edges))
+            if np.any(bin_ids == bin_i)
+        ]
+        if not self.random_mix_background_starts:
+            raise ValueError("focal-event random mix found no residual-background windows")
 
     def _background_swap_window(
         self,
@@ -537,6 +612,12 @@ class NILMDataLoader:
         self.tensor_dtype, _ = resolve_tensor_dtype(model_cfg)
         self.random_mix_prob = get_random_mix_prob(model_cfg)
         self.random_mix_mode = get_random_mix_mode(model_cfg)
+        mix_cfg = model_cfg.get("training", {}).get("random_mix") or {}
+        focal_cfg = mix_cfg.get("focal_event_sampling") or {}
+        self.random_mix_focal_event = bool(focal_cfg.get("enabled", False))
+        self.random_mix_background_bins_watts = list(
+            focal_cfg.get("background_bins_watts", [0, 100, 200, 400, 800])
+        )
         self.paired_background = get_background_consistency_enabled(model_cfg)
         self._splits: dict[SplitName, SplitArrays] = {}
 
@@ -585,6 +666,10 @@ class NILMDataLoader:
             tensor_dtype=self.tensor_dtype,
             random_mix_prob=self.random_mix_prob if split == "train" else 0.0,
             random_mix_mode=self.random_mix_mode,
+            random_mix_focal_event=(
+                self.random_mix_focal_event if split == "train" else False
+            ),
+            random_mix_background_bins_watts=self.random_mix_background_bins_watts,
             paired_background=self.paired_background if split == "train" else False,
         )
         if len(dataset) == 0:
