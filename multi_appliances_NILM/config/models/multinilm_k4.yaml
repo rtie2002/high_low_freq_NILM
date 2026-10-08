@@ -1,10 +1,11 @@
 # Recovery baseline: restore the early relational model that was used before
 # the dual-expert, local-contrast and mixture-output experiments. The new
 # cross-house dataset split is intentionally retained.
-experiment_id: multinilm_fridge_transition_meter_lag_house_split
+experiment_id: multinilm_single_fridge_diagnostic_house_split
 model_name: multinilm_fractional
 
 data:
+  appliances: [fridge]
   state_label_source: csv
 
 evaluation:
@@ -139,13 +140,6 @@ loss:
   # of BCE. Removing it (0.0) reduced test performance.
   state_fp_weight: 1.0
 
-  # Boundary-aware state supervision. Order follows the five appliance heads:
-  # kettle, fridge, dishwasher, washing machine, microwave. Only fridge is
-  # changed in this ablation; the microwave timing issue is handled by the
-  # measured 1--2 sample lag augmentation below.
-  state_transition_weight: [0.0, 0.5, 0.0, 0.0, 0.0]
-  state_steady_weight: 0.1
-
   # ON_MSE_i / OFF_MSE_i are means over true-ON / true-OFF samples only. Added on
   # top of the all-sample MSE so the few ON samples are not drowned out.
   power_on_weight: 1.0
@@ -183,7 +177,9 @@ training:
     # This tests event/background coverage without changing the architecture,
     # loss, real-data half, validation split, or evaluation pipeline.
     focal_event_sampling:
-      enabled: true
+      # Disabled only for the single-fridge ceiling diagnostic. With one
+      # output, forcing an event would make every synthetic sample fridge-ON.
+      enabled: false
       # Apply this to every synthetic window. The controlled p=0.25 ablation
       # reduced the validation AP and lost part of the fridge-FPR improvement.
       prob: 1.0
