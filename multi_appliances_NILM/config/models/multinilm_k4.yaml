@@ -1,7 +1,7 @@
-# Controlled shared-private experiment. The long-context encoder remains shared,
-# but each appliance now owns its small raw/k=1 local expert. Everything else is
-# identical to the paired-background reference run.
-experiment_id: k4_alpha1_private_local_experts
+# Recovery baseline: restore the early relational model that was used before
+# the dual-expert, local-contrast and mixture-output experiments. The new
+# cross-house dataset split is intentionally retained.
+experiment_id: multinilm_early_relation_full_mix_house_split
 model_name: multinilm_fractional
 
 data:
@@ -9,17 +9,11 @@ data:
 
 evaluation:
   pred_on_source: state_head
-  # Final saved waveforms use the calibrated event state, so a reported OFF
-  # sample cannot retain large appliance power.
-  gate_power_by_state: true
-  power_postprocess: false
   state_calibration:
     enabled: true
     split: validation
     threshold_grid: [0.05, 0.98, 0.01]
     apply_to_power: true
-    power_gate:
-      mode: hard
     postprocess:
       enabled: true
       # Use physical seconds so validation calibration keeps the same temporal
@@ -48,12 +42,11 @@ windowing:
   training_targets: auto
 
 fractional:
-  # Four GL channels (alpha 0.25, 0.5, 0.75, 1.0). Alpha=1 replaces signed delta.
+  # Exact early feature bank: 13 channels in total.
   k: 4
   include_raw: true
+  include_delta: true
   include_abs_delta: true
-  # Return to the retained pre-local-contrast k4 encoder. The local-contrast
-  # run produced implausible waveforms and is not part of this experiment.
   include_local_contrast: false
   include_rolling_mean: true
   include_rolling_std: true
@@ -62,7 +55,7 @@ fractional:
   channel_normalize: none
 
 architecture:
-  # 12 channels: raw, |GL alpha=1|, six rolling statistics and four GL channels.
+  # 13 channels: raw, signed delta, |delta|, six rolling statistics and 4 GL.
   channel_schedule: [32, 64, 128]
   hidden_channels: 128
 
@@ -84,60 +77,27 @@ architecture:
   num_blocks: 5
   kernel_size: 9
   max_dilation: 16
-  # Keep the original 0.25 dropout at every location. The values are separate
-  # only so future ablations can change one component at a time.
-  temporal_dropout: 0.25
-  head_dropout: 0.25
+  dropout: 0.25
 
   # Two local blocks preserve the multi-stage washing-machine waveform better.
   head_local_layers: 2
   head_kernel_size: 3
   head_use_residual: true
   task_attention:
-    # Restore the retained baseline; do not combine its ablation with the new
-    # local-contrast feature experiment.
     enabled: true
     reduction: 4
 
-  # Retained tower output: each appliance has an independent power/state head.
   gate_mode: soft
   gate_threshold: 0.5
 
-  # Every local expert receives raw aggregate, alpha=1 GL and |alpha=1 GL|.
-  # The previous run shared one local expert across all appliances. That left
-  # fridge and microwave local evidence under the same competing gradients.
-  dual_expert:
-    enabled: true
-    share_local_expert: false
-    local_channels: 32
-    local_kernel_size: 5
-    local_dilations: [1, 2, 4]
-    local_norm_type: group
-    dropout: 0.25
-    gate_hidden_channels: 32
-    gate_initial_local_weight: 0.1
-
   cross_appliance:
-    # The no-relation ablation reduced microwave AP/F1 and increased high-
-    # background false positives, so keep relational feature exchange enabled.
     enabled: true
     mode: relation_attention
     attention_channels: 16
     residual_scale: 0.25
-    dropout: 0.25
-
-# ---------------------------------------------------------------------------
-# The retained supervised loss is unchanged.  The only new term compares two
-# views with the same appliance targets and different residual backgrounds:
 #
-#   x_real = sum_i y_i + b_real
-#   x_swap = sum_i y_i + b_swap
-#
-#   L = 0.5 * [L_sup(x_real) + L_sup(x_swap)]
-#       + lambda_inv * [MSE(p_real, p_swap)
-#                     + SmoothL1(yhat_real, yhat_swap)]
-#
-#   L_sup = L_power + state_term
+# Retained early supervised objective:
+#   L = L_power + state_term
 #
 #   L_power = sum_i [ MSE_i                                   all samples
 #                   + power_on_weight    * ON_MSE_i           true-ON samples only
@@ -150,9 +110,8 @@ architecture:
 #
 #   state_term = lambda_state * L_state * stopgrad(L_power / L_state)
 #
-# Inside each supervised view, the stop-grad ratio fixes state_term at
-# lambda_state * L_power. The total training loss additionally includes the
-# background-consistency term above. L_state still sends gradients normally.
+# The stop-grad ratio fixes state_term at lambda_state * L_power in value.
+# L_state still sends gradients normally.
 # To follow ON/OFF learning, read val_loss_state and val_loss_state_<app> in
 # loss_detail.csv, and val_ap in history.csv.
 #
@@ -194,9 +153,7 @@ loss:
   energy_floor_watts: 10
 
 training:
-  # Two forward views are retained for every anchor; halve the anchor batch so
-  # GPU activation memory remains close to the previous batch_size=64 run.
-  batch_size: 32
+  batch_size: 64
   epochs: 150
   learning_rate: 0.0001
   weight_decay: 0.0001
@@ -204,19 +161,12 @@ training:
   train_shuffle: true
   gradient_clip: 1.0
 
-  # Replaced by the paired method below. Keeping both augmentation mechanisms
-  # active would hide which one caused a performance change.
+  # Early 50:50 augmentation: each target appliance and residual background
+  # are drawn independently. Validation and test stay fully recorded/real.
   random_mix:
-    enabled: false
-    mode: background_swap
-    prob: 0.5
-
-  # For every real training window, create one counterfactual view using the
-  # same five appliance traces/states and an independently sampled residual.
-  # Validation and test always remain recorded, unmodified aggregates.
-  background_consistency:
     enabled: true
-    weight: 0.1
+    mode: full
+    prob: 0.5
 
   use_amp: false
   amp_dtype: bf16

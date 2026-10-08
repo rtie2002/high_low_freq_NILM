@@ -15,6 +15,27 @@ from model.MultiNILM import (
 
 
 class MultiNILMDualExpertTests(unittest.TestCase):
+    def test_early_relational_frontend_has_signed_delta_and_thirteen_channels(self) -> None:
+        frontend = FractionalFrontEnd(
+            alphas=[0.25, 0.5, 0.75, 1.0],
+            include_raw=True,
+            include_delta=True,
+            include_abs_delta=True,
+            include_rolling_mean=True,
+            include_rolling_std=True,
+            rolling_windows=[8, 23, 45],
+            memory=24,
+            channel_normalize="none",
+        )
+        self.assertEqual(frontend.out_channels, 13)
+
+        x = torch.tensor([[[1.0, 3.0, 2.0, 5.0]]])
+        features, alpha_one = frontend(x, return_alpha_one=True)
+        expected_delta = torch.tensor([[[0.0, 2.0, -1.0, 3.0]]])
+        expected_alpha_one = torch.tensor([[[1.0, 2.0, -1.0, 3.0]]])
+        torch.testing.assert_close(features[:, 1:2], expected_delta)
+        torch.testing.assert_close(alpha_one, expected_alpha_one, atol=1e-6, rtol=1e-6)
+
     def test_local_contrast_checkpoint_frontend_has_thirteen_channels(self) -> None:
         frontend = FractionalFrontEnd(
             alphas=[0.25, 0.5, 0.75, 1.0],

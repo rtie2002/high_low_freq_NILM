@@ -92,17 +92,14 @@ class FractionalFrontEnd(nn.Module):
     """One mains channel -> several derived channels, same T.
 
     Concat order:
-      raw, |delta|, optional local contrast, rolling mean, rolling std,
-      GL fractional channels.
-
-    The explicit signed-delta channel is intentionally absent: the alpha=1 GL
-    channel already represents the first-order change and is also routed to the
-    local appliance expert.
+      raw, optional signed delta, |delta|, optional local contrast,
+      rolling mean, rolling std, GL fractional channels.
     """
 
     def __init__(self, alphas=None, *, include_raw=True, memory=None, h=1.0, max_memory=256,
                  channel_normalize="mean_std", channel_norm_eps=1e-5,
-                 include_abs_delta=False, rolling_windows=None, include_rolling_mean=False,
+                 include_delta=False, include_abs_delta=False,
+                 rolling_windows=None, include_rolling_mean=False,
                  include_rolling_std=False, include_local_contrast=False,
                  local_contrast_span=45, local_contrast_alpha=1.0,
                  local_contrast_eps=0.05, local_contrast_clip=5.0):
@@ -121,6 +118,7 @@ class FractionalFrontEnd(nn.Module):
         if self.channel_normalize not in {"mean_std", "none"}:
             raise ValueError(f"channel_normalize must be mean_std|none, got {self.channel_normalize!r}")
         self.channel_norm_eps = float(channel_norm_eps)
+        self.include_delta = bool(include_delta)
         self.include_abs_delta = bool(include_abs_delta)
         self.include_local_contrast = bool(include_local_contrast)
         self.local_contrast_span = int(local_contrast_span)
@@ -153,7 +151,11 @@ class FractionalFrontEnd(nn.Module):
             raise ValueError(f"rolling_windows must be positive, got {self.rolling_windows}")
         self.include_rolling_mean = bool(include_rolling_mean)
         self.include_rolling_std = bool(include_rolling_std)
-        extra = int(self.include_abs_delta) + int(self.include_local_contrast)
+        extra = (
+            int(self.include_delta)
+            + int(self.include_abs_delta)
+            + int(self.include_local_contrast)
+        )
         if self.include_rolling_mean:
             extra += len(self.rolling_windows)
         if self.include_rolling_std:
@@ -200,9 +202,12 @@ class FractionalFrontEnd(nn.Module):
         if self.include_raw:
             parts.append(x)
 
-        if self.include_abs_delta:
+        if self.include_delta or self.include_abs_delta:
             delta = torch.cat([torch.zeros_like(x[..., :1]), x[..., 1:] - x[..., :-1]], dim=-1)
-            parts.append(delta.abs())
+            if self.include_delta:
+                parts.append(delta)
+            if self.include_abs_delta:
+                parts.append(delta.abs())
 
         if self.include_local_contrast:
             weight = self.local_contrast_ema_weight.to(dtype=x.dtype)
@@ -1118,6 +1123,7 @@ def build_multinilm_fractional(
         memory=None if memory is None else int(memory),
         h=float(block.get("h", 1.0)),
         channel_normalize=str(block.get("channel_normalize", "mean_std")),
+        include_delta=bool(block.get("include_delta", False)),
         include_abs_delta=bool(block.get("include_abs_delta", False)),
         include_local_contrast=bool(block.get("include_local_contrast", False)),
         local_contrast_span=int(block.get("local_contrast_span", 45)),
