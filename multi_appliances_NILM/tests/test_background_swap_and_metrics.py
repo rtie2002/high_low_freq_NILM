@@ -161,6 +161,35 @@ class BackgroundSwapTests(unittest.TestCase):
 
         self.assertEqual(sampled_backgrounds, {50.0, 250.0, 900.0})
 
+    def test_partial_focal_probability_still_prepares_sampling_pools(self) -> None:
+        targets = np.zeros((8, 2), dtype=np.float32)
+        targets[:4, 0] = 100.0
+        targets[4:, 1] = 200.0
+        states = (targets > 0).astype(np.int64)
+        background = np.repeat([50.0, 900.0], 4).astype(np.float32)
+        dataset = WindowDataset(
+            targets.sum(axis=1) + background,
+            targets,
+            states,
+            {
+                "input_window_length": 4,
+                "output_window_length": 4,
+                "output_alignment": "end",
+            },
+            stride=4,
+            target_mode="full_input",
+            random_mix_prob=1.0,
+            random_mix_mode="full",
+            random_mix_focal_event=True,
+            random_mix_focal_event_prob=0.25,
+            random_mix_background_bins_watts=[0, 800],
+        )
+
+        self.assertEqual([len(pool) for pool in dataset.random_mix_on_starts], [1, 1])
+        self.assertEqual(
+            [len(pool) for pool in dataset.random_mix_background_starts], [1, 1]
+        )
+
 
 class DiagnosticMetricTests(unittest.TestCase):
     def test_state_calibration_can_update_detection_without_erasing_power(self) -> None:

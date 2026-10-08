@@ -340,11 +340,7 @@ class WindowDataset(Dataset):
 
         self.random_mix_on_starts: list[np.ndarray] = []
         self.random_mix_background_starts: list[np.ndarray] = []
-        use_focal_event = (
-            self.random_mix_focal_event
-            and float(torch.rand(())) < self.random_mix_focal_event_prob
-        )
-        if use_focal_event:
+        if self.random_mix_focal_event:
             edges = random_mix_background_bins_watts or [0, 100, 200, 400, 800]
             self._prepare_focal_event_mix_pools(edges)
 
@@ -405,7 +401,11 @@ class WindowDataset(Dataset):
         picks = torch.randint(len(self.indices), (n_apps + 1,)).numpy()
         *app_starts, bg = self.indices[picks].tolist()
 
-        if self.random_mix_focal_event:
+        use_focal_event = (
+            self.random_mix_focal_event
+            and float(torch.rand(())) < self.random_mix_focal_event_prob
+        )
+        if use_focal_event:
             # Every synthetic example contains one explicitly selected real ON
             # window. This prevents rare appliances (especially microwave) from
             # disappearing inside mostly all-OFF random mixtures.
