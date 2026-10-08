@@ -101,7 +101,7 @@ fridge FPR from 0.209 to 0.171, and improves REFIT AP from 0.708 to 0.735.
 The remaining microwave hard-gating failures must be treated separately; the
 test-house F1 gain from `p=0.25` is insufficient evidence for selecting it.
 
-## Remove the second evaluation-time power gate — planned 2026-10-08
+## Remove the second evaluation-time power gate — rejected 2026-10-08
 
 Experiment output: `multinilm_focal_event_no_eval_power_gate`
 
@@ -117,3 +117,14 @@ This diagnostic isolates postprocessing from representation learning. Keep the
 change only if validation power metrics and waveform continuity improve without
 unacceptable OFF-state leakage. State AP, F1, precision, and recall must remain
 identical because their probability and binary-state paths are unchanged.
+
+Result using the same selected checkpoint:
+
+- Validation MAE worsened from 14.424 W to 23.709 W.
+- REFIT house 20 MAE worsened from 10.254 W to 17.195 W.
+- UK-DALE house 2 MAE worsened from 7.535 W to 9.405 W.
+- Classification metrics were effectively unchanged, as expected.
+
+Conclusion: reject the change and restore `apply_to_power: true`. The hard mask
+is not the cause of the state-classification failure; it is currently needed to
+suppress substantial OFF-state leakage from the softly gated regression output.

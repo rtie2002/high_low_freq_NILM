@@ -13,11 +13,9 @@ evaluation:
     enabled: true
     split: validation
     threshold_grid: [0.05, 0.98, 0.01]
-    # Diagnostic ablation: the network output is already soft-gated by the
-    # state head. Do not multiply it by a second calibrated binary mask during
-    # evaluation; that mask can erase real microwave power below the 0.96
-    # validation-selected state threshold.
-    apply_to_power: false
+    # Retain the calibrated hard power mask. A no-mask diagnostic greatly
+    # increased OFF-state leakage and worsened MAE on every evaluation split.
+    apply_to_power: true
     postprocess:
       enabled: true
       # Use physical seconds so validation calibration keeps the same temporal
