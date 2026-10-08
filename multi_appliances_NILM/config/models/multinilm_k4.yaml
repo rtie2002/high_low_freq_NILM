@@ -1,7 +1,7 @@
 # Recovery baseline: restore the early relational model that was used before
 # the dual-expert, local-contrast and mixture-output experiments. The new
 # cross-house dataset split is intentionally retained.
-experiment_id: multinilm_fridge_consistent_long_context_house_split
+experiment_id: multinilm_no_refit11_meter_lag_house_split
 model_name: multinilm_fractional
 
 data:
@@ -75,12 +75,11 @@ architecture:
   temporal_norm_type: batch
   head_norm_type: batch
 
-  # One extra dilation-32 block expands the TCN receptive field from 249
-  # samples (33.2 min) to 505 samples (67.3 min). This lets the fridge head see
-  # the neighbouring real compressor cycles around fridge-like residual loads.
-  num_blocks: 6
+  # Proven early TCN. The dilation-32 extension reduced REFIT fridge F1 and is
+  # removed so this experiment isolates training-label quality.
+  num_blocks: 5
   kernel_size: 9
-  max_dilation: 32
+  max_dilation: 16
   dropout: 0.25
 
   # Two local blocks preserve the multi-stage washing-machine waveform better.
