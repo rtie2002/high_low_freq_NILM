@@ -100,3 +100,20 @@ parameters, improves validation AP from 0.787 to 0.795, lowers validation
 fridge FPR from 0.209 to 0.171, and improves REFIT AP from 0.708 to 0.735.
 The remaining microwave hard-gating failures must be treated separately; the
 test-house F1 gain from `p=0.25` is insufficient evidence for selecting it.
+
+## Remove the second evaluation-time power gate — planned 2026-10-08
+
+Experiment output: `multinilm_focal_event_no_eval_power_gate`
+
+No retraining and no architecture change. Evaluate the selected `p=1.0`
+checkpoint again with `state_calibration.apply_to_power: false`. The network
+power output is already multiplied by the soft state probability during its
+forward pass. The normal evaluation path then multiplies that result by a
+second, calibrated binary state mask. The validation-selected microwave
+threshold is 0.96, so the second multiplication may create missed or truncated
+power events even when the regression output contains useful evidence.
+
+This diagnostic isolates postprocessing from representation learning. Keep the
+change only if validation power metrics and waveform continuity improve without
+unacceptable OFF-state leakage. State AP, F1, precision, and recall must remain
+identical because their probability and binary-state paths are unchanged.
