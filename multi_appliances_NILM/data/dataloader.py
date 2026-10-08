@@ -248,6 +248,7 @@ class WindowDataset(Dataset):
         random_mix_prob: float = 0.0,
         random_mix_mode: RandomMixMode = "full",
         random_mix_focal_event: bool = False,
+        random_mix_focal_event_prob: float = 1.0,
         random_mix_background_bins_watts: list[float] | None = None,
         paired_background: bool = False,
     ):
@@ -270,6 +271,7 @@ class WindowDataset(Dataset):
         self.random_mix_prob = float(random_mix_prob)
         self.random_mix_mode = str(random_mix_mode)
         self.random_mix_focal_event = bool(random_mix_focal_event)
+        self.random_mix_focal_event_prob = float(random_mix_focal_event_prob)
         self.paired_background = bool(paired_background)
         if self.paired_background and self.random_mix_prob > 0.0:
             raise ValueError(
@@ -283,6 +285,8 @@ class WindowDataset(Dataset):
             raise ValueError("focal-event sampling is only supported for random_mix mode='full'")
         if self.random_mix_focal_event and self.random_mix_prob <= 0.0:
             raise ValueError("focal-event sampling requires random_mix to be enabled")
+        if self.random_mix_focal_event and not 0.0 < self.random_mix_focal_event_prob <= 1.0:
+            raise ValueError("focal-event sampling probability must be in (0, 1]")
         if self.random_mix_prob > 0.0 or self.paired_background:
             # Mixes are summed in watts. Clip the background at 0: mains can dip
             # below the submeter sum when the channels are slightly misaligned.
@@ -336,7 +340,11 @@ class WindowDataset(Dataset):
 
         self.random_mix_on_starts: list[np.ndarray] = []
         self.random_mix_background_starts: list[np.ndarray] = []
-        if self.random_mix_focal_event:
+        use_focal_event = (
+            self.random_mix_focal_event
+            and float(torch.rand(())) < self.random_mix_focal_event_prob
+        )
+        if use_focal_event:
             edges = random_mix_background_bins_watts or [0, 100, 200, 400, 800]
             self._prepare_focal_event_mix_pools(edges)
 
@@ -615,6 +623,7 @@ class NILMDataLoader:
         mix_cfg = model_cfg.get("training", {}).get("random_mix") or {}
         focal_cfg = mix_cfg.get("focal_event_sampling") or {}
         self.random_mix_focal_event = bool(focal_cfg.get("enabled", False))
+        self.random_mix_focal_event_prob = float(focal_cfg.get("prob", 1.0))
         self.random_mix_background_bins_watts = list(
             focal_cfg.get("background_bins_watts", [0, 100, 200, 400, 800])
         )
@@ -669,6 +678,7 @@ class NILMDataLoader:
             random_mix_focal_event=(
                 self.random_mix_focal_event if split == "train" else False
             ),
+            random_mix_focal_event_prob=self.random_mix_focal_event_prob,
             random_mix_background_bins_watts=self.random_mix_background_bins_watts,
             paired_background=self.paired_background if split == "train" else False,
         )
