@@ -250,6 +250,8 @@ class WindowDataset(Dataset):
         random_mix_focal_event: bool = False,
         random_mix_focal_event_prob: float = 1.0,
         random_mix_background_bins_watts: list[float] | None = None,
+        random_mix_meter_lag_prob: float = 0.0,
+        random_mix_meter_lag_max_samples: list[int] | None = None,
         paired_background: bool = False,
     ):
         norm = normalization or NormalizationStats()
@@ -272,6 +274,13 @@ class WindowDataset(Dataset):
         self.random_mix_mode = str(random_mix_mode)
         self.random_mix_focal_event = bool(random_mix_focal_event)
         self.random_mix_focal_event_prob = float(random_mix_focal_event_prob)
+        self.random_mix_meter_lag_prob = float(random_mix_meter_lag_prob)
+        self.random_mix_meter_lag_max_samples = np.asarray(
+            random_mix_meter_lag_max_samples
+            if random_mix_meter_lag_max_samples is not None
+            else np.zeros(self.targets.shape[1], dtype=np.int64),
+            dtype=np.int64,
+        )
         self.paired_background = bool(paired_background)
         if self.paired_background and self.random_mix_prob > 0.0:
             raise ValueError(
@@ -287,6 +296,14 @@ class WindowDataset(Dataset):
             raise ValueError("focal-event sampling requires random_mix to be enabled")
         if self.random_mix_focal_event and not 0.0 < self.random_mix_focal_event_prob <= 1.0:
             raise ValueError("focal-event sampling probability must be in (0, 1]")
+        if not 0.0 <= self.random_mix_meter_lag_prob <= 1.0:
+            raise ValueError("random_mix meter-lag probability must be in [0, 1]")
+        if self.random_mix_meter_lag_max_samples.shape != (self.targets.shape[1],):
+            raise ValueError("random_mix meter-lag limits must have one value per appliance")
+        if np.any(self.random_mix_meter_lag_max_samples < 0):
+            raise ValueError("random_mix meter-lag limits cannot be negative")
+        if self.random_mix_meter_lag_prob > 0.0 and self.random_mix_prob <= 0.0:
+            raise ValueError("meter-lag augmentation requires random_mix to be enabled")
         if self.random_mix_prob > 0.0 or self.paired_background:
             # Mixes are summed in watts. Clip the background at 0: mains can dip
             # below the submeter sum when the channels are slightly misaligned.
@@ -427,7 +444,21 @@ class WindowDataset(Dataset):
         states = np.stack(
             [self.states[s:s + seq_len, a] for a, s in enumerate(app_starts)], axis=1
         )
-        mains = power.sum(axis=1) + self.residual_watts[bg:bg + seq_len]
+        # REFIT meters are sampled asynchronously. Around a short transition,
+        # the aggregate can therefore show the appliance edge one or two 8 s
+        # bins after its submeter label. Reproduce that measurement effect only
+        # in the synthetic input: targets remain on the submeter time grid.
+        mains_power = power.copy()
+        if self.random_mix_meter_lag_prob > 0.0:
+            for app_i, max_lag in enumerate(self.random_mix_meter_lag_max_samples):
+                if max_lag <= 0 or float(torch.rand(())) >= self.random_mix_meter_lag_prob:
+                    continue
+                lag = int(torch.randint(1, int(max_lag) + 1, ()).item())
+                trace = mains_power[:, app_i].copy()
+                mains_power[lag:, app_i] = trace[:-lag]
+                mains_power[:lag, app_i] = trace[0]
+
+        mains = mains_power.sum(axis=1) + self.residual_watts[bg:bg + seq_len]
 
         x = np.asarray(self.norm.normalize_inputs(mains), dtype=self.inputs.dtype)
         y = np.asarray(self.norm.normalize_targets(power), dtype=self.targets.dtype)
@@ -627,6 +658,14 @@ class NILMDataLoader:
         self.random_mix_background_bins_watts = list(
             focal_cfg.get("background_bins_watts", [0, 100, 200, 400, 800])
         )
+        lag_cfg = mix_cfg.get("meter_lag_augmentation") or {}
+        self.random_mix_meter_lag_prob = (
+            float(lag_cfg.get("prob", 0.0)) if bool(lag_cfg.get("enabled", False)) else 0.0
+        )
+        lag_by_appliance = lag_cfg.get("max_lag_samples", {}) or {}
+        self.random_mix_meter_lag_max_samples = [
+            int(lag_by_appliance.get(app, 0)) for app in self.appliances
+        ]
         self.paired_background = get_background_consistency_enabled(model_cfg)
         self._splits: dict[SplitName, SplitArrays] = {}
 
@@ -680,6 +719,8 @@ class NILMDataLoader:
             ),
             random_mix_focal_event_prob=self.random_mix_focal_event_prob,
             random_mix_background_bins_watts=self.random_mix_background_bins_watts,
+            random_mix_meter_lag_prob=self.random_mix_meter_lag_prob,
+            random_mix_meter_lag_max_samples=self.random_mix_meter_lag_max_samples,
             paired_background=self.paired_background if split == "train" else False,
         )
         if len(dataset) == 0:

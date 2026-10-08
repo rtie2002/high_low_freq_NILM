@@ -190,6 +190,35 @@ class BackgroundSwapTests(unittest.TestCase):
             [len(pool) for pool in dataset.random_mix_background_starts], [1, 1]
         )
 
+    def test_meter_lag_changes_only_synthetic_input_timing(self) -> None:
+        targets = np.asarray([[0.0], [100.0], [100.0], [0.0]], dtype=np.float32)
+        states = (targets > 0).astype(np.int64)
+        background = np.full(4, 10.0, dtype=np.float32)
+        dataset = WindowDataset(
+            targets[:, 0] + background,
+            targets,
+            states,
+            {
+                "input_window_length": 4,
+                "output_window_length": 4,
+                "output_alignment": "end",
+            },
+            stride=4,
+            target_mode="full_input",
+            random_mix_prob=1.0,
+            random_mix_mode="full",
+            random_mix_meter_lag_prob=1.0,
+            random_mix_meter_lag_max_samples=[2],
+        )
+
+        torch.manual_seed(3)
+        mixed_input, mixed_targets, mixed_states = dataset[0]
+        input_appliance = mixed_input.squeeze(-1).numpy() - background
+
+        np.testing.assert_allclose(mixed_targets.numpy(), targets)
+        np.testing.assert_array_equal(mixed_states.numpy(), states)
+        self.assertGreater(int(np.flatnonzero(input_appliance > 50)[0]), 1)
+
 
 class DiagnosticMetricTests(unittest.TestCase):
     def test_state_calibration_can_update_detection_without_erasing_power(self) -> None:

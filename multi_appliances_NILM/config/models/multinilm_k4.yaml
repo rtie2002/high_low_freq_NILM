@@ -1,7 +1,7 @@
 # Recovery baseline: restore the early relational model that was used before
 # the dual-expert, local-contrast and mixture-output experiments. The new
 # cross-house dataset split is intentionally retained.
-experiment_id: multinilm_focal_event_stratified_mix_house_split
+experiment_id: multinilm_microwave_meter_lag_house_split
 model_name: multinilm_fractional
 
 data:
@@ -180,6 +180,15 @@ training:
       # reduced the validation AP and lost part of the fridge-FPR improvement.
       prob: 1.0
       background_bins_watts: [0, 100, 200, 400, 800]
+    # REFIT's aggregate and appliance meters are not sampled at exactly the
+    # same instant. Half of synthetic microwave traces therefore appear 1--2
+    # bins later in the aggregate input, while their submeter targets keep the
+    # original time grid. Real windows and every other appliance are unchanged.
+    meter_lag_augmentation:
+      enabled: true
+      prob: 0.5
+      max_lag_samples:
+        microwave: 2
 
   use_amp: false
   amp_dtype: bf16
