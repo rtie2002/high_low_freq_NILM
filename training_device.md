@@ -29,19 +29,27 @@ device:
 git push
 ```
 
-## 2. Enter Training Device
+## 2. Connect to the Training Device
 
-Use SSH:
+The two machines communicate through Tailscale. Confirm that Tailscale is
+connected locally before diagnosing SSH failures. Use key-based SSH:
 
 ```powershell
-ssh raymond@100.110.55.5
+$key = "$env:USERPROFILE\.ssh\codex_nilm_ed25519"
+ssh -i $key -o BatchMode=yes PC@100.110.55.5
 ```
 
-Password:
+Connection details:
 
-```text
-Enter the training-device password when prompted.
-```
+- Host: `100.110.55.5`
+- User: `PC`
+- Remote Windows host name: `DESKTOP-5BRNFTF`
+- Authentication: the public key is installed in
+  `C:\ProgramData\ssh\administrators_authorized_keys`
+
+Do not add the private key or a password to this repository. If the expected
+private key is missing, ask the user to restore or authorize a key rather than
+falling back to a stored password.
 
 Go to the training workspace:
 
@@ -52,7 +60,7 @@ Set-Location D:\Raymond\high_low_freq_NILM
 Pull the latest committed code:
 
 ```powershell
-git pull
+git pull --ff-only
 ```
 
 If Git reports `detected dubious ownership`, run this once on the training
@@ -65,7 +73,7 @@ git config --global --add safe.directory D:/Raymond/high_low_freq_NILM
 ## 3. ALWAYS use this conda / Python (RTX 4090)
 
 **Do not** use bare `python` on PATH, and **do not** use `D:\Raymond\miniconda3`
-for training. SSH user is `raymond`, but the working GPU env is under user `PC`:
+for training. The SSH user and working GPU environment are under user `PC`:
 
 ```text
 Env name:   nilm
@@ -89,10 +97,7 @@ python -c "import torch; print(torch.__version__, torch.cuda.is_available(), tor
 & "C:\Users\PC\anaconda3\envs\nilm\python.exe" your_script.py
 ```
 
-For plink / AI automation, **always** use that full python path (never bare `python`).
-
-Copy for MATUDA work: `MATUDA_NILM/training_device.md` and
-`MATUDA_NILM/training_device.secrets.md`.
+For AI automation, **always** use that full Python path (never bare `python`).
 
 ## 4. Run Code On Training Device
 
@@ -115,26 +120,50 @@ D:\Raymond\high_low_freq_NILM
 ```
 
 using the **nilm** python above.
-## Visible Automated Run
 
-To let the AI automate the training-device command while you watch the output,
-run this from the local project:
+## 5. Run a Job That Survives SSH Disconnection
+
+Do not rely on a plain remote `Start-Process` for a long training run. On this
+machine its child process can be terminated when the SSH session closes. Create
+a PowerShell launcher under `runs\_logs`, then register and start a Windows
+Scheduled Task. The launcher should:
+
+- change to `D:\Raymond\high_low_freq_NILM\multi_appliances_NILM`;
+- invoke `C:\Users\PC\anaconda3\envs\nilm\python.exe`;
+- redirect standard output and error to distinct files under `runs\_logs`;
+- write the process exit code to an `.exit.txt` file.
+
+Use a unique, descriptive task name for each experiment. Monitor it through the
+task state, exit-code file, log tail, GPU process, and run directory. After a
+terminal state has been recorded, unregister only that specific task. Never
+delete its logs or experiment outputs automatically.
+
+Example monitoring commands inside the remote PowerShell session:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\run_training_device_visible.ps1
+Get-ScheduledTask -TaskName <task-name>
+Get-Content runs\_logs\<experiment>.stdout.log -Tail 30
+Get-Content runs\_logs\<experiment>.stderr.log -Tail 30
+Get-Content runs\_logs\<experiment>.exit.txt
+nvidia-smi
 ```
 
-This opens a visible PowerShell window, logs into the training device with
-`plink`, enters `D:\Raymond\high_low_freq_NILM`, runs the remote command, and
-keeps the window open after finishing.
+## 6. Inspect and Record Results
 
-To run a different command:
+Do not judge an experiment only from the live loss plot. At minimum inspect:
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\run_training_device_visible.ps1 -RemoteCommand "git pull; nvidia-smi"
-```
+- `validation_metrics.csv` for model selection;
+- each test house's `metrics.csv` for report-only generalization;
+- fridge and microwave FPR, AP, F1, ON MAE, and OFF MAE;
+- representative waveform plots, especially noisy-background failures;
+- the selected checkpoint epoch and process exit code.
 
-## Notes For Future AI
+Use validation results to select configurations. Do not select a configuration
+because it performs better on UK-DALE house 2 or REFIT house 20. Record the
+controlled change, result paths, metrics, conclusion, and remaining failure in
+the experiment log.
+
+## Notes For Future Codex Sessions
 
 **Always use** `C:\Users\PC\anaconda3\envs\nilm\python.exe` for any remote
 training / eval / torch job on this machine (RTX 4090). Do not invent another
@@ -146,10 +175,11 @@ Always follow this order unless the user says otherwise:
 2. Test locally if possible.
 3. Commit the local changes.
 4. Push if the training device pulls from the remote repository.
-5. SSH / plink into the training device.
-6. Enter the password when prompted (or use secrets file if present).
+5. Connect by key-based SSH as user `PC`.
+6. Do not expose or store authentication secrets.
 7. `Set-Location D:\Raymond\high_low_freq_NILM`
-8. `git pull`
+8. `git pull --ff-only`
 9. Run the requested command with **`C:\Users\PC\anaconda3\envs\nilm\python.exe`**.
+10. Read metrics and waveform outputs and update the experiment log.
 
 Do not edit code directly on the training device unless the user explicitly asks.
