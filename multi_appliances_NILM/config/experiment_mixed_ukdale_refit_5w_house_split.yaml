@@ -41,7 +41,9 @@ evaluation:
     microwave: 100
   max_on_power_watts:
     kettle: 4000
-    fridge: 4000
+    # Training-only ON-power q99.9 is 512 W. Keep startup transients while
+    # preventing impossible kettle-sized fridge predictions.
+    fridge: 600
     dishwasher: 4000
     washingmachine: 3999
     microwave: 4000

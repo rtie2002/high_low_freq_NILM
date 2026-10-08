@@ -221,3 +221,15 @@ fridge。
 
 该修改不是用 test 调参，而是执行实验开始时已经声明的统一 label definition。
 下一实验保留已经有效的 microwave meter-lag 和 long context，只改变这项训练监督。
+
+## 10. Fridge 输出范围修正
+
+背景波形还揭示了独立的评估错误：`max_on_power_watts` 将 fridge 与 kettle 一样
+设为 4000 W，因此假 fridge 波形可达到 700 W 以上。训练集 fridge ON power 的
+99.9 分位数为 512 W；新的 prediction-only cap 设为 600 W，以保留启动瞬态并
+阻止明显不可能的输出。
+
+同时修正 `apply_power_postprocess_pair`：minimum-power threshold 与 maximum-power
+cap 只可作用于 prediction，ground truth 只做非负保护，不能为了让 prediction
+看起来更准确而被同步裁剪。该修正不改变 state probability 或 F1，但会提高功率
+指标的科学有效性并消除最不合理的 fridge 尖峰。

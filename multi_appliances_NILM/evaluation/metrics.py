@@ -511,8 +511,14 @@ def resolve_power_postprocess(experiment_cfg, appliances, model_cfg=None) -> Pow
 
 
 def apply_power_postprocess_pair(y_true_watts, y_pred_watts, config: PowerPostprocessConfig | None):
+    """Return untouched non-negative targets and postprocessed predictions.
+
+    Physical output limits are an inference rule, not a license to alter the
+    reference meter. Applying the same clipping to ``y_true`` can silently make
+    an implausible prediction look accurate and changes the evaluation target.
+    """
     y_true = np.maximum(np.asarray(y_true_watts, dtype=np.float64), 0.0)
     y_pred = np.maximum(np.asarray(y_pred_watts, dtype=np.float64), 0.0)
     if config is None or not config.enabled:
         return y_true, y_pred
-    return config.apply(y_true), config.apply(y_pred)
+    return y_true, config.apply(y_pred)

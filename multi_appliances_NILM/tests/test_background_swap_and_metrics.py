@@ -15,7 +15,12 @@ from data.dataloader import (
     get_background_consistency_enabled,
     get_random_mix_mode,
 )
-from evaluation.metrics import background_fpr_table, evaluate_bundle
+from evaluation.metrics import (
+    PowerPostprocessConfig,
+    apply_power_postprocess_pair,
+    background_fpr_table,
+    evaluate_bundle,
+)
 from evaluation.output_format import save_result_json, save_result_table
 from evaluation.state_postprocess import apply_state_calibration
 
@@ -221,6 +226,22 @@ class BackgroundSwapTests(unittest.TestCase):
 
 
 class DiagnosticMetricTests(unittest.TestCase):
+    def test_power_postprocess_never_changes_ground_truth(self) -> None:
+        config = PowerPostprocessConfig(
+            enabled=True,
+            min_power_watts=5.0,
+            max_on_power_watts=np.asarray([600.0]),
+        )
+        y_true = np.asarray([[2.0], [750.0]])
+        y_pred = np.asarray([[2.0], [750.0]])
+
+        processed_true, processed_pred = apply_power_postprocess_pair(
+            y_true, y_pred, config
+        )
+
+        np.testing.assert_allclose(processed_true, y_true)
+        np.testing.assert_allclose(processed_pred[:, 0], [0.0, 600.0])
+
     def test_state_calibration_can_update_detection_without_erasing_power(self) -> None:
         bundle = _bundle(
             np.asarray([[100.0], [100.0], [100.0]], dtype=np.float64),
