@@ -1,7 +1,7 @@
 # Recovery baseline: restore the early relational model that was used before
 # the dual-expert, local-contrast and mixture-output experiments. The new
 # cross-house dataset split is intentionally retained.
-experiment_id: multinilm_microwave_meter_lag_house_split
+experiment_id: multinilm_microwave_meter_lag_house_split_v2
 model_name: multinilm_fractional
 
 data:
