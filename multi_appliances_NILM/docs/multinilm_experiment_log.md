@@ -607,3 +607,23 @@ The next and final loss simplification is narrower: remove only OFF-MSE and
 relative energy, which overlap most directly with all-sample MSE, while keeping
 the edge-shape and false-positive terms implicated by the failed core ablation.
 No test house was evaluated.
+
+## Seeded compact-loss ablation — completed 2026-10-10
+
+Experiment: `multinilm_simplify_seeded_loss_compact_raw`
+
+This narrower candidate removed only OFF-MSE and relative-energy error, while
+retaining power-delta MSE and the state false-positive penalty.
+
+| Loss | MAE (W) | macro-F1 | AP | Microwave F1 | Microwave event NRMSE |
+|---|---:|---:|---:|---:|---:|
+| full retained loss | **14.590** | **0.771** | **0.794** | **0.474** | **0.579** |
+| compact loss | 15.110 | 0.763 | 0.788 | 0.445 | 0.789 |
+
+The compact objective is also rejected. Although fridge event NRMSE improves,
+microwave event detection falls from 0.637 to 0.589, event IoU from 0.460 to
+0.423, and median event NRMSE worsens sharply. Kettle event detection/IoU and
+the overall calibrated metrics also decline. Therefore the existing auxiliary
+losses cannot be removed without a measurable validation and waveform cost in
+the present model. The full loss is retained, and simplification proceeds to
+the architecture. No test house was evaluated.
