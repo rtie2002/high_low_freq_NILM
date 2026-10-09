@@ -424,3 +424,30 @@ Decision: restore `multinilm_clipped_per_appliance_balance_house_split` and
 its [0, +1, +2] microwave lag augmentation. Keep the aligned dataset only as a
 diagnostic protocol. Do not report its improved alignment audit as improved
 NILM performance.
+
+## Fixed-feature-bank simplification sweep — completed 2026-10-09
+
+Starting point: `multinilm_clipped_per_appliance_balance_house_split` at its
+validation-selected checkpoint (MAE 14.884 W, macro-F1 0.782, AP 0.809). The
+house split, architecture, loss, augmentation, optimizer, checkpoint rule,
+calibration, and postprocessing were fixed. Only the 13-channel input bank was
+replaced. All four candidates trained for 150 epochs with seed 2026 and were
+evaluated on the held-out validation houses only; no test scenario was run.
+
+| Candidate | Input channels | Validation MAE (W) | macro-F1 | AP |
+|---|---|---:|---:|---:|
+| retained starting point | 13: raw, delta, abs-delta, six rolling statistics, four GL | 14.884 | 0.782 | 0.809 |
+| `multinilm_simplify_feature_1_raw` | raw | **13.836** | 0.775 | **0.804** |
+| `multinilm_simplify_feature_2_raw_delta` | raw, signed delta | 14.406 | **0.776** | 0.793 |
+| `multinilm_simplify_feature_3_raw_delta_mean` | raw, delta, rolling mean (45) | 15.514 | 0.768 | 0.789 |
+| `multinilm_simplify_feature_4_raw_delta_mean_std` | raw, delta, rolling mean/std (45) | 15.339 | 0.759 | 0.781 |
+
+The derived channels are not collectively justified. Raw-only removes twelve
+fixed channels and improves MAE by 1.048 W, while losing only 0.007 macro-F1
+and 0.005 AP. Signed delta does not recover that small gap, and the added slow
+mean and variability channels worsen all three metrics when delta is present.
+The raw-only candidate is therefore the leading simplification, but it is not
+yet retained under the strict no-regression rule. One final replacement test
+will pair raw aggregate directly with a single 45-sample rolling mean, without
+the harmful signed-delta channel. No other hand-crafted feature combination is
+justified by this sweep.
