@@ -249,6 +249,7 @@ fridge 高 residual 背景误触发与 REFIT microwave 时间错位。下表中�
 | + fridge transition loss | 0.707 | 0.496 | 0.745 | 边缘更平滑但不可分性未改善 |
 | 单 fridge 模型 | 0.718 | -- | -- | 排除多任务梯度为主因 |
 | + 4--48 min 固定周期特征 | 0.700 | 0.415 | 0.685 | 明显退化，删除 |
+| guarded synthetic background | 0.716 | 0.481 | 0.713 | MAE 略降但分类退化，删除 |
 
 另外，使用最佳 checkpoint 做了无需重训的解码上限检查：
 

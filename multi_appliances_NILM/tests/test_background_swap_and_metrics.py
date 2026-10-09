@@ -12,7 +12,6 @@ import torch
 from data.common import PredictionBundle
 from data.dataloader import (
     WindowDataset,
-    _temporal_max_guard,
     get_background_consistency_enabled,
     get_random_mix_mode,
 )
@@ -56,17 +55,6 @@ def _bundle(
 
 
 class BackgroundSwapTests(unittest.TestCase):
-    def test_temporal_guard_removes_nearby_target_leakage_per_segment(self) -> None:
-        targets = np.asarray([[0.0], [0.0], [100.0], [100.0], [0.0], [50.0]])
-        segments = np.asarray([0, 0, 0, 0, 1, 1])
-
-        guarded = _temporal_max_guard(targets, radius=1, segment_ids=segments)
-
-        np.testing.assert_array_equal(
-            guarded[:, 0],
-            np.asarray([0.0, 100.0, 100.0, 100.0, 50.0, 50.0]),
-        )
-
     def test_default_mode_preserves_original_full_mix(self) -> None:
         self.assertEqual(get_random_mix_mode({"training": {}}), "full")
         self.assertFalse(get_background_consistency_enabled({"training": {}}))
