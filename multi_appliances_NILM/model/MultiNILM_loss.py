@@ -164,6 +164,8 @@ class MultiNILMLoss(nn.Module):
         self,
         loss_power: torch.Tensor,
         loss_state: torch.Tensor,
+        loss_power_per_appliance: torch.Tensor | None = None,
+        loss_state_per_appliance: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Build state_term that enters L_NILM = L_power + state_term.
 
@@ -185,13 +187,29 @@ class MultiNILMLoss(nn.Module):
 
             stop-grad on the ratio: only a magnitude ruler; gradients still
             flow through L_state (and L_power via the other term).
+
+        task_balance=per_appliance_equal
+            Apply the same detached magnitude matching independently for each
+            appliance, then sum. A large power error from one appliance cannot
+            change another appliance's state-loss scale.
         """
         if self.task_balance == "none":
             return self.lambda_state * loss_state
         if self.task_balance == "equal":
             scale = loss_power.detach() / loss_state.detach().clamp_min(1e-8)
             return self.lambda_state * loss_state * scale
-        raise ValueError(f"task_balance must be none|equal, got {self.task_balance!r}")
+        if self.task_balance == "per_appliance_equal":
+            if loss_power_per_appliance is None or loss_state_per_appliance is None:
+                raise ValueError("per_appliance_equal requires per-appliance losses")
+            scale = (
+                loss_power_per_appliance.detach()
+                / loss_state_per_appliance.detach().clamp_min(1e-8)
+            )
+            return self.lambda_state * (loss_state_per_appliance * scale).sum()
+        raise ValueError(
+            "task_balance must be none|equal|per_appliance_equal, "
+            f"got {self.task_balance!r}"
+        )
 
     def forward(
         self,
@@ -227,7 +245,12 @@ class MultiNILMLoss(nn.Module):
         loss_state_per_app = self._per_appliance_state_loss(state_logits, state_true)
         loss_power = loss_power_per_app.sum()
         loss_state = loss_state_per_app.sum()
-        loss_state_term = self._balanced_state_term(loss_power, loss_state)
+        loss_state_term = self._balanced_state_term(
+            loss_power,
+            loss_state,
+            loss_power_per_app,
+            loss_state_per_app,
+        )
         loss = loss_power + loss_state_term
 
         # --- MAE for logs only (not in L) ---

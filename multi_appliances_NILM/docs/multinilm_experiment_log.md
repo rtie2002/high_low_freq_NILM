@@ -198,7 +198,7 @@ Conclusion: reject and remove the feature implementation. The small REFIT
 microwave gain does not compensate for the cross-domain regression or the
 non-physical extra pulse.
 
-## Domain-agnostic normalization ablation — started 2026-10-09
+## Domain-agnostic normalization ablation — rejected 2026-10-09
 
 Experiment: `multinilm_groupnorm_house_split`
 
@@ -207,3 +207,32 @@ shared temporal encoder and appliance heads with GroupNorm. The IBN stem,
 convolutions, attention, loss, sampling, and checkpoint rule remain unchanged.
 This tests whether shared running statistics from mixed UK-DALE, REFIT, and
 synthetic samples cause the observed domain-dependent feature behaviour.
+
+Result at the validation-selected checkpoint (epoch 134):
+
+- Validation: MAE 14.324 W, macro-F1 0.768.
+- REFIT house 20: MAE 11.022 W, macro-F1 0.726, AP 0.716.
+- UK-DALE house 2: MAE 8.472 W, macro-F1 0.870, AP 0.927.
+- REFIT fridge F1 was 0.711 and microwave F1 was 0.434, both below the
+  BatchNorm baseline (0.723 and 0.521).
+
+Conclusion: reject and restore BatchNorm in the temporal encoder and heads.
+Batch-statistic mixing is not the dominant failure mechanism, and GroupNorm
+removes useful amplitude-distribution information without improving REFIT
+robustness.
+
+## Per-appliance power/state balancing — started 2026-10-09
+
+Experiment: `multinilm_per_appliance_balance_house_split`
+
+The selected meter-lag baseline is restored. No architecture, feature,
+augmentation, or individual loss component changes. Only the dynamic balance
+is moved inside each appliance:
+
+`L = sum_i [P_i + lambda * S_i * stopgrad(P_i / S_i)]`.
+
+At epoch 150 of the baseline, microwave contributed 52.4% of the total power
+loss while fridge contributed 43.9% of the state loss. The previous global
+ratio therefore coupled microwave regression to fridge classification. The new
+formula preserves the original power/state scale for every appliance but stops
+one appliance from setting another appliance's state weight.
