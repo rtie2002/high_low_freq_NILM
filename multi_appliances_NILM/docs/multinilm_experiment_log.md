@@ -441,13 +441,17 @@ evaluated on the held-out validation houses only; no test scenario was run.
 | `multinilm_simplify_feature_2_raw_delta` | raw, signed delta | 14.406 | **0.776** | 0.793 |
 | `multinilm_simplify_feature_3_raw_delta_mean` | raw, delta, rolling mean (45) | 15.514 | 0.768 | 0.789 |
 | `multinilm_simplify_feature_4_raw_delta_mean_std` | raw, delta, rolling mean/std (45) | 15.339 | 0.759 | 0.781 |
+| `multinilm_simplify_feature_2_raw_mean` | raw, rolling mean (45) | 15.571 | 0.766 | 0.795 |
 
 The derived channels are not collectively justified. Raw-only removes twelve
 fixed channels and improves MAE by 1.048 W, while losing only 0.007 macro-F1
 and 0.005 AP. Signed delta does not recover that small gap, and the added slow
 mean and variability channels worsen all three metrics when delta is present.
 The raw-only candidate is therefore the leading simplification, but it is not
-yet retained under the strict no-regression rule. One final replacement test
-will pair raw aggregate directly with a single 45-sample rolling mean, without
-the harmful signed-delta channel. No other hand-crafted feature combination is
-justified by this sweep.
+yet retained under the strict no-regression rule. The final replacement test
+paired raw aggregate directly with a 45-sample rolling mean and was worse than
+both the retained model and raw-only. Its main failure was microwave ranking
+(validation AP 0.410 and F1 0.444). No tested handcrafted feature is justified
+beside the raw aggregate. The next loss experiment therefore uses raw-only and
+tests whether the 0.007 macro-F1 and 0.005 AP gap can be recovered while also
+removing redundant objective terms. Test houses remain unopened for selection.
