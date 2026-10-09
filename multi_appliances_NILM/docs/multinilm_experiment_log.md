@@ -481,3 +481,17 @@ per-appliance weaknesses remain dishwasher AP 0.761 and microwave AP 0.465/F1
 the same core objective once with checkpoint selection based only on validation
 AP. This removes the bespoke MAE-plus-one-minus-AP monitor and tests whether the
 choice of epoch, rather than a missing auxiliary penalty, explains the gap.
+
+### AP-monitor implementation audit — invalid run, 2026-10-10
+
+The first `val_ap` monitor attempt is not a model result. It exposed a runner
+bug: `_epoch_score` could read `val_ap`, but `_resolve_checkpoint_monitor`
+treated every metric except F1 as a minimization target. Consequently, the run
+saved the *lowest*-AP early checkpoint and evaluated at MAE 36.611 W, macro-F1
+0.500, and AP 0.412. These numbers are invalid for the ablation and must not be
+compared with any model.
+
+The resolver is corrected so `val_ap` and `val_average_precision` both maximize
+AP, with a unit test for direction and score comparison. The invalid run folder
+is preserved under an explicit diagnostic name, and the intended AP-selected
+experiment is rerun from scratch. No test house was evaluated.

@@ -740,6 +740,8 @@ def _resolve_checkpoint_monitor(train_cfg: dict) -> tuple[str, str, float]:
     aliases = {
         "val_f1": "val_f1",
         "val_maf1": "val_f1",
+        "val_ap": "val_ap",
+        "val_average_precision": "val_ap",
         "val_loss": "loss",
         "val_mae": "mae",
         "val_mae_minus_f1": "val_mae_minus_f1",
@@ -748,7 +750,7 @@ def _resolve_checkpoint_monitor(train_cfg: dict) -> tuple[str, str, float]:
         "mae_plus_one_minus_ap": "val_mae_plus_one_minus_ap",
     }
     key = aliases.get(monitor, monitor)
-    if key == "val_f1":
+    if key in {"val_f1", "val_ap"}:
         return key, "max", float("-inf")
     return key, "min", float("inf")
 
