@@ -233,3 +233,54 @@ fridge。
 cap 只可作用于 prediction，ground truth 只做非负保护，不能为了让 prediction
 看起来更准确而被同步裁剪。该修正不改变 state probability 或 F1，但会提高功率
 指标的科学有效性并消除最不合理的 fridge 尖峰。
+
+## 11. 2026-10-09 系统消融结论
+
+本轮使用同一 seed、同一跨房屋 validation/test 和同一指标管线，逐项检验了
+fridge 高 residual 背景误触发与 REFIT microwave 时间错位。下表中的 test 数字
+仅用于最终比较，所有 checkpoint 和 threshold 仍由 validation 选择。
+
+| 实验 | REFIT fridge F1 | REFIT microwave F1 | REFIT macro-F1 | 结论 |
+|---|---:|---:|---:|---|
+| 当前最佳：early relation + meter-lag | **0.723** | **0.521** | **0.746** | 保留 |
+| + 67 min long context | 0.706 | 0.504 | 0.738 | FPR 降低但 recall 损失 |
+| + REFIT-11 fridge 强制重标 | 0.735 | 0.501 | 0.731 | 高背景 FPR 恶化至 0.86--0.91 |
+| 去除 REFIT 11 | 0.698 | 0.457 | 0.711 | 丢失有用的 REFIT 变化 |
+| + fridge transition loss | 0.707 | 0.496 | 0.745 | 边缘更平滑但不可分性未改善 |
+| 单 fridge 模型 | 0.718 | -- | -- | 排除多任务梯度为主因 |
+| + 4--48 min 固定周期特征 | 0.700 | 0.415 | 0.685 | 明显退化，删除 |
+
+另外，使用最佳 checkpoint 做了无需重训的解码上限检查：
+
+- 提高单阈值会降低 FPR，但同时使 recall 大幅下降；
+- 双阈值 hysteresis 未超过原解码；
+- 两状态 Viterbi/HMM 最好只把 REFIT fridge F1 提高到约 0.74，同时 FPR
+  上升到约 0.5，不能解决 noisy-background waveform；
+- 用局部差分、方差和周期滞后训练的轻量分类器也不能稳定超过深度模型。
+
+因此 fridge 的主要限制不是模型容量、共享梯度或后处理，而是单通道 8 s active
+power 下的可辨识性：REFIT 20 中有未知负载产生与 fridge 相近的 50--100 W 边缘和
+长平台。在这些区间，输入可与真实 fridge 状态高度相似，而监督标签不同。任何只读取
+同一 aggregate 的更大网络都不能恢复传感器没有提供的信息。
+
+### 最终保留的实现
+
+1. 恢复 1.38M 参数的 early relation 五电器模型；
+2. 保留 50:50 full mix 与 focal-event sampling；
+3. 保留 microwave 1--2 sample meter-lag augmentation；
+4. 保留 microwave 32 s minimum-ON / 24 s merge-gap；
+5. 保留 prediction-only fridge 600 W 物理上限；
+6. 删除 transition loss 和固定周期通道，不增加新 expert/head。
+
+### 真正可继续提高 fridge 的条件
+
+下一阶段不应再在同一输入上随机叠加 DWT、FFT 或 expert。至少需要以下一种新增信息：
+
+- reactive power、current、voltage 或高频 transient；
+- 更同步的 aggregate/submeter 时间戳；
+- 目标房屋的少量 fridge 校准数据；
+- 明确建模并标注主要 unknown loads。
+
+若论文必须坚持仅使用 8 s active power，应把贡献写成真实 aggregate 下的
+multi-appliance robustness、meter-asynchrony augmentation 和 background-stratified
+failure analysis，而不能声称 noisy-background fridge 已被完全解决。

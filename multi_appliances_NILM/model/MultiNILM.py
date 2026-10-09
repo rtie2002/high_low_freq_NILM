@@ -100,8 +100,7 @@ class FractionalFrontEnd(nn.Module):
                  rolling_windows=None, include_rolling_mean=False,
                  include_rolling_std=False, include_local_contrast=False,
                  local_contrast_span=45, local_contrast_alpha=1.0,
-                 local_contrast_eps=0.05, local_contrast_clip=5.0,
-                 context_lags=None):
+                 local_contrast_eps=0.05, local_contrast_clip=5.0):
         super().__init__()
         if alphas is None:
             alphas = [round((i + 1) / 8, 6) for i in range(8)]
@@ -120,9 +119,6 @@ class FractionalFrontEnd(nn.Module):
         self.include_delta = bool(include_delta)
         self.include_abs_delta = bool(include_abs_delta)
         self.include_local_contrast = bool(include_local_contrast)
-        self.context_lags = [int(v) for v in (context_lags or [])]
-        if any(v < 1 for v in self.context_lags):
-            raise ValueError(f"context_lags must be positive, got {self.context_lags}")
         self.local_contrast_span = int(local_contrast_span)
         self.local_contrast_alpha = float(local_contrast_alpha)
         self.local_contrast_eps = float(local_contrast_eps)
@@ -162,8 +158,6 @@ class FractionalFrontEnd(nn.Module):
             extra += len(self.rolling_windows)
         if self.include_rolling_std:
             extra += len(self.rolling_windows)
-        # Each lag contributes a centered contrast and a past-to-future slope.
-        extra += 2 * len(self.context_lags)
         self.out_channels = (1 if self.include_raw else 0) + len(self.alphas) + extra
         prefix_channels = self.out_channels - len(self.alphas)
         alpha_one_offset = next(
@@ -238,17 +232,6 @@ class FractionalFrontEnd(nn.Module):
                 parts.append(mean)
             if self.include_rolling_std:
                 parts.append(std)
-
-        # Fixed long-range context. Unlike another deep branch, these channels
-        # expose the only new information needed here: whether the present
-        # level belongs to a repeating compressor-scale pattern. Reflection
-        # padding avoids artificial zeros at window boundaries.
-        for lag in self.context_lags:
-            padded = F.pad(x, (lag, lag), mode="replicate")
-            past = padded[..., :x.shape[-1]]
-            future = padded[..., 2 * lag:2 * lag + x.shape[-1]]
-            parts.append(x - 0.5 * (past + future))
-            parts.append(0.5 * (future - past))
 
         alpha_one = None
         if self.alphas:
@@ -963,7 +946,6 @@ def build_multinilm_fractional(
         rolling_windows=[int(w) for w in (block.get("rolling_windows") or [])],
         include_rolling_mean=bool(block.get("include_rolling_mean", False)),
         include_rolling_std=bool(block.get("include_rolling_std", False)),
-        context_lags=[int(v) for v in (block.get("context_lags") or [])],
     )
     arch = dict(architecture)
     arch["input_channels"] = int(frontend.out_channels)
@@ -1031,8 +1013,6 @@ class MultiNILMAdapter(BaseNILMAdapter):
             power_delta_weight=float(cfg.get("power_delta_weight", 0.0)),
             power_delta_on_only=bool(cfg.get("power_delta_on_only", True)),
             state_fp_weight=float(cfg.get("state_fp_weight", 0.0)),
-            state_transition_weight=cfg.get("state_transition_weight", 0.0),
-            state_steady_weight=float(cfg.get("state_steady_weight", 0.1)),
             power_energy_relative_weight=float(cfg.get("power_energy_relative_weight", 0.0)),
             energy_floor_watts=float(cfg.get("energy_floor_watts", 10.0)),
         )

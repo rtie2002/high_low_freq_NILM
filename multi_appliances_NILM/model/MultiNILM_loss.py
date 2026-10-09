@@ -48,8 +48,6 @@ class MultiNILMLoss(nn.Module):
         power_delta_weight: float = 0.0,
         power_delta_on_only: bool = True,
         state_fp_weight: float = 0.0,
-        state_transition_weight: float | list[float] | torch.Tensor = 0.0,
-        state_steady_weight: float = 0.1,
         power_energy_relative_weight: float = 0.0,
         energy_floor_watts: float = 10.0,
         target_mean: torch.Tensor | list[float] | None = None,
@@ -62,11 +60,6 @@ class MultiNILMLoss(nn.Module):
         self.power_delta_weight = float(power_delta_weight)
         self.power_delta_on_only = bool(power_delta_on_only)
         self.state_fp_weight = float(state_fp_weight)
-        self.register_buffer(
-            "state_transition_weight",
-            torch.as_tensor(state_transition_weight, dtype=torch.float32),
-        )
-        self.state_steady_weight = float(state_steady_weight)
         self.power_energy_relative_weight = float(power_energy_relative_weight)
         self.energy_floor_watts = float(energy_floor_watts)
         # MAE logging scale (watts / std); not used in the training objective.
@@ -144,35 +137,6 @@ class MultiNILMLoss(nn.Module):
                 fp_i = (state_prob[..., app_i].pow(2) * off_i).sum() / denom
                 loss_i = loss_i + self.state_fp_weight * fp_i
 
-            transition_weight = self.state_transition_weight
-            if transition_weight.ndim > 0:
-                transition_weight = transition_weight[app_i]
-            if float(transition_weight) > 0.0 and state_logits.shape[1] > 1:
-                # State boundaries are physical ON/OFF events. Match their
-                # signed direction, then weakly suppress probability jitter in
-                # steady regions. The two means are balanced separately so the
-                # rare true boundaries are not drowned by long OFF periods.
-                delta_prob = (
-                    state_prob[:, 1:, app_i] - state_prob[:, :-1, app_i]
-                )
-                delta_true = (
-                    state_true[:, 1:, app_i] - state_true[:, :-1, app_i]
-                )
-                boundary = delta_true.abs() > 0.5
-                if boundary.any():
-                    boundary_loss = F.smooth_l1_loss(
-                        delta_prob[boundary], delta_true[boundary]
-                    )
-                else:
-                    boundary_loss = delta_prob.sum() * 0.0
-                steady = ~boundary
-                if steady.any():
-                    steady_loss = delta_prob[steady].pow(2).mean()
-                else:
-                    steady_loss = delta_prob.sum() * 0.0
-                loss_i = loss_i + transition_weight * (
-                    boundary_loss + self.state_steady_weight * steady_loss
-                )
             losses.append(loss_i)
         return torch.stack(losses)
 
