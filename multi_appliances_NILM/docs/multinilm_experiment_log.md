@@ -366,3 +366,61 @@ Conclusion: reject and remove the complete global-context implementation. The
 active model returns to the 1.38M clipped-balance configuration. Both explicit
 long-dilation context and pooled attention context have now failed to remove the
 same false fridge plateaus; longer context alone is not the missing information.
+
+## Aggregate transition-support audit — 2026-10-09
+
+The saved best-checkpoint predictions were audited without retraining. For
+each predicted ON transition, the audit measured the strongest positive mains
+edge within +/-2 samples.
+
+- REFIT20 true fridge onsets: median support 83 W; 89.8% had at least 50 W.
+- REFIT20 false fridge onsets: median support 29 W; 43.4% had at least 50 W.
+- UK-DALE2 true fridge onsets: median support 215 W; 99.1% had at least 50 W.
+- UK-DALE2 false fridge onsets: median support 23 W; 45.3% had at least 50 W.
+
+The edge is informative, but a validation-only hard event gate failed. The
+validation-optimal threshold was 0 W (no gate). At 25 W, validation fridge F1
+fell from 0.813 to 0.686 because long predictions containing true-ON samples
+were deleted together with their unsupported onset. Therefore aggregate edge
+support must not be used as a hard whole-event filter. It remains suitable as
+a diagnostic or a soft boundary cue.
+
+Microwave false onsets were different: their median edge support was 618 W on
+REFIT20 and 859 W on UK-DALE2. Most microwave false detections are therefore
+supported by a real high-power aggregate event; a generic edge constraint
+cannot distinguish the target microwave from another high-power appliance.
+
+## Event-level REFIT microwave target alignment — rejected 2026-10-09
+
+Experiment: `multinilm_refit_microwave_aligned_house_split`
+
+A secondary dataset was created without overwriting the benchmark. Complete
+REFIT microwave target events were shifted by at most +/-3 samples to the
+strongest physically plausible mains rise. Aggregate power, UK-DALE, all other
+targets, houses, and time ranges were unchanged. The same deterministic rule
+was used for train, validation, and test. Synthetic microwave lag augmentation
+was disabled because the corrected protocol was intended to remove that lag.
+
+The alignment audit improved mechanically: on REFIT20, 131/145 audited starts
+had their strongest mains rise at lag zero, and aggregate-below-microwave at
+the labelled onset fell from about 59% to 10.3%. This did not improve learning.
+The validation-selected checkpoint was epoch 118 (exit 0):
+
+- Validation: MAE 15.438 W, macro-F1 0.765; microwave F1 0.443.
+- REFIT20: MAE 10.190 W, macro-F1 0.718, AP 0.717; microwave F1 0.491;
+  fridge F1 0.718.
+- UK-DALE2: MAE 8.369 W, macro-F1 0.868, AP 0.927; microwave F1 0.698.
+
+The retained original-label run achieved validation MAE/F1/AP of
+14.884/0.782/0.809 and REFIT20 microwave F1 0.561. The aligned protocol is
+therefore rejected for model training. REFIT's lag is event- and period-
+dependent, and choosing the largest local mains edge can attach a microwave
+label to an unrelated simultaneous load. Training-house corrections also do
+not match the severe lag distribution in the selected REFIT20 period. The
+probabilistic synthetic lag augmentation is more robust than rewriting the
+ground truth.
+
+Decision: restore `multinilm_clipped_per_appliance_balance_house_split` and
+its [0, +1, +2] microwave lag augmentation. Keep the aligned dataset only as a
+diagnostic protocol. Do not report its improved alignment audit as improved
+NILM performance.

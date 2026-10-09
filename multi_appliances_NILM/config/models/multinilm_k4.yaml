@@ -1,7 +1,7 @@
 # Recovery baseline: restore the early relational model that was used before
 # the dual-expert, local-contrast and mixture-output experiments. The new
 # cross-house dataset split is intentionally retained.
-experiment_id: multinilm_refit_microwave_aligned_house_split
+experiment_id: multinilm_clipped_per_appliance_balance_house_split
 model_name: multinilm_fractional
 
 data:
@@ -185,11 +185,10 @@ training:
       # reduced the validation AP and lost part of the fridge-FPR improvement.
       prob: 1.0
       background_bins_watts: [0, 100, 200, 400, 800]
-    # The secondary REFIT sensor-aligned dataset already moves reliable
-    # microwave events onto their observed aggregate edge.  Do not reintroduce
-    # the old sensor lag in synthetic mixtures.
+    # Restore the strongest completed baseline exactly: half of synthetic
+    # microwave traces stay aligned; one quarter shift by +1 and +2 samples.
     alignment_jitter:
-      enabled: false
+      enabled: true
       source_dataset: all
       appliance: microwave
       offsets_samples: [0, 1, 2]
