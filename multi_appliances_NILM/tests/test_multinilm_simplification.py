@@ -74,6 +74,20 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         ):
             self.assertEqual(cfg["loss"][name], 0.0)
 
+    def test_compact_loss_keeps_edge_and_false_positive_terms(self):
+        self.base["loss"] = {
+            "power_off_weight": 0.5,
+            "power_delta_weight": 0.15,
+            "power_energy_relative_weight": 0.25,
+            "state_fp_weight": 1.0,
+        }
+        cfg = _loss_candidate(self.base, "loss_compact", "feature_1")
+
+        self.assertEqual(cfg["loss"]["power_off_weight"], 0.0)
+        self.assertEqual(cfg["loss"]["power_energy_relative_weight"], 0.0)
+        self.assertEqual(cfg["loss"]["power_delta_weight"], 0.15)
+        self.assertEqual(cfg["loss"]["state_fp_weight"], 1.0)
+
     def test_ap_monitor_changes_selection_not_loss(self):
         self.base["loss"] = {"power_on_weight": 1.0}
         self.base["training"] = {

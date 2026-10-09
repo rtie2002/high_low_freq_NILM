@@ -581,3 +581,29 @@ composite checkpoint rule for the next controlled loss ablation. Raw-only is
 the working simplification, but the original reported result remains the
 absolute target until the remaining controlled ablations are complete. Test
 houses remain unopened.
+
+## Seeded core-loss ablation — completed 2026-10-10
+
+Experiment: `multinilm_simplify_seeded_loss_core_raw`
+
+On the seeded raw-only model, the core objective removed OFF-MSE, power-delta
+MSE, relative energy error, and the extra state false-positive penalty together.
+It retained all-sample MSE, ON-MSE, weighted BCE, and clipped per-appliance
+power/state balancing.
+
+| Loss | MAE (W) | macro-F1 | AP | Event-F1 | False events |
+|---|---:|---:|---:|---:|---:|
+| full retained loss | **14.590** | **0.771** | **0.794** | **0.392** | **381** |
+| core loss | 15.134 | 0.762 | 0.790 | 0.350 | 391 |
+
+The core loss is rejected. Its matched-event waveform comparison shows a real
+trade-off rather than a harmless simplification. Fridge median event NRMSE
+improves from 0.384 to 0.294, but microwave detection rate falls from 0.637 to
+0.568, median event NRMSE worsens from 0.579 to 0.778, waveform correlation
+falls from 0.377 to 0.322, and microwave false events rise from 93 to 101.
+Kettle and washing-machine event IoU also decline.
+
+The next and final loss simplification is narrower: remove only OFF-MSE and
+relative energy, which overlap most directly with all-sample MSE, while keeping
+the edge-shape and false-positive terms implicated by the failed core ablation.
+No test house was evaluated.

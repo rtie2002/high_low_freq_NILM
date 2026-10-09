@@ -77,6 +77,13 @@ FEATURE_VARIANTS = {
 }
 
 LOSS_VARIANTS = {
+    # Remove the two aggregate reconstruction terms that are most directly
+    # duplicated by all-sample MSE. Keep edge shape and false-positive control.
+    "loss_compact": {
+        "experiment_id": "multinilm_simplify_seeded_loss_compact_raw",
+        "power_off_weight": 0.0,
+        "power_energy_relative_weight": 0.0,
+    },
     # Smallest objective that preserves the two reasons for having two heads:
     # ON-weighted power reconstruction and imbalanced ON/OFF classification.
     # The bounded per-appliance scale matching is retained at this stage so
