@@ -100,6 +100,19 @@ LOSS_VARIANTS = {
     },
 }
 
+ARCHITECTURE_VARIANTS = {
+    # Bottom-up relational TCN: retain the shared temporal encoder and the
+    # explicit multi-appliance interaction, remove the nested refinements
+    # around them. The full retained loss is used so this tests architecture.
+    "plain_relation": {
+        "experiment_id": "multinilm_simplify_plain_relation_raw",
+        "use_multiscale_stem": False,
+        "stem_norm_type": "batch",
+        "head_local_layers": 1,
+        "task_attention": {"enabled": False},
+    },
+}
+
 
 def _feature_candidate(base: dict, name: str) -> dict:
     """Return one feature-only ablation while preserving every other setting."""
@@ -155,13 +168,26 @@ def _loss_candidate(base: dict, name: str, feature_base: str) -> dict:
     return candidate
 
 
+def _architecture_candidate(base: dict, name: str) -> dict:
+    """Return a bottom-up architecture candidate with raw aggregate input."""
+    candidate = _feature_candidate(base, "feature_1")
+    spec = ARCHITECTURE_VARIANTS[name]
+    candidate["experiment_id"] = spec["experiment_id"]
+    architecture = copy.deepcopy(candidate.get("architecture", {}))
+    architecture.update(
+        {key: copy.deepcopy(value) for key, value in spec.items() if key != "experiment_id"}
+    )
+    candidate["architecture"] = architecture
+    return candidate
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--experiment", type=Path, default=DEFAULT_EXPERIMENT)
     parser.add_argument("--model-config", type=Path, default=DEFAULT_MODEL_CONFIG)
     parser.add_argument(
         "--stage",
-        choices=("features", "loss"),
+        choices=("features", "loss", "architecture"),
         default="features",
         help="Controlled simplification family to run.",
     )
@@ -185,7 +211,12 @@ def main() -> None:
     experiment = load_experiment(args.experiment)
     base_model_cfg = load_model_config(args.model_config)
 
-    variants = FEATURE_VARIANTS if args.stage == "features" else LOSS_VARIANTS
+    variants_by_stage = {
+        "features": FEATURE_VARIANTS,
+        "loss": LOSS_VARIANTS,
+        "architecture": ARCHITECTURE_VARIANTS,
+    }
+    variants = variants_by_stage[args.stage]
     candidates = args.candidates or list(variants)
     unknown = sorted(set(candidates) - set(variants))
     if unknown:
@@ -194,8 +225,10 @@ def main() -> None:
     for name in candidates:
         if args.stage == "features":
             model_cfg = _feature_candidate(base_model_cfg, name)
-        else:
+        elif args.stage == "loss":
             model_cfg = _loss_candidate(base_model_cfg, name, args.feature_base)
+        else:
+            model_cfg = _architecture_candidate(base_model_cfg, name)
         merged = merge_configs(experiment, model_cfg)
         data_root = Path(merged["data_root"])
         if not data_root.is_absolute():

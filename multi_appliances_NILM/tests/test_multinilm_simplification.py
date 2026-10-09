@@ -2,6 +2,7 @@ import unittest
 
 from scripts.run_multinilm_simplification import (
     FEATURE_VARIANTS,
+    _architecture_candidate,
     _feature_candidate,
     _loss_candidate,
 )
@@ -83,6 +84,25 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         self.assertEqual(cfg["training"]["checkpoint_monitor"], "val_ap")
         self.assertEqual(cfg["training"]["learning_rate"], 1e-4)
         self.assertNotIn("checkpoint_monitor", cfg["loss"])
+
+    def test_plain_relation_removes_nested_refinements_only(self):
+        self.base["architecture"] = {
+            "use_multiscale_stem": True,
+            "stem_norm_type": "ibn",
+            "num_blocks": 5,
+            "head_local_layers": 2,
+            "task_attention": {"enabled": True, "reduction": 4},
+            "cross_appliance": {"enabled": True, "mode": "relation_attention"},
+        }
+        cfg = _architecture_candidate(self.base, "plain_relation")
+        architecture = cfg["architecture"]
+
+        self.assertFalse(architecture["use_multiscale_stem"])
+        self.assertEqual(architecture["stem_norm_type"], "batch")
+        self.assertEqual(architecture["head_local_layers"], 1)
+        self.assertFalse(architecture["task_attention"]["enabled"])
+        self.assertEqual(architecture["num_blocks"], 5)
+        self.assertTrue(architecture["cross_appliance"]["enabled"])
 
 
 if __name__ == "__main__":
