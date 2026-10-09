@@ -455,3 +455,29 @@ both the retained model and raw-only. Its main failure was microwave ranking
 beside the raw aggregate. The next loss experiment therefore uses raw-only and
 tests whether the 0.007 macro-F1 and 0.005 AP gap can be recovered while also
 removing redundant objective terms. Test houses remain unopened for selection.
+
+## Core-loss simplification on raw aggregate — completed 2026-10-09
+
+Experiment: `multinilm_simplify_loss_core_raw`
+
+Starting from the raw-only feature candidate, remove OFF-MSE, on-only delta
+MSE, relative window-energy error, and the additional false-positive penalty.
+Retain all-sample MSE, ON-MSE, positive-weighted BCE, and the already selected
+bounded per-appliance power/state balancing. Architecture, augmentation,
+optimizer, checkpoint rule, calibration, and postprocessing are unchanged.
+
+Validation-selected result (150 epochs, seed 2026, process exit 0):
+
+| Configuration | MAE (W) | macro-F1 | AP |
+|---|---:|---:|---:|
+| retained 13-feature starting point | 14.884 | 0.782 | 0.809 |
+| raw-only with full loss | **13.836** | 0.775 | 0.804 |
+| raw-only with core loss | 14.248 | 0.775 | 0.802 |
+
+The core loss is much shorter, but it does not recover the small classification
+gap and is also worse than raw-only with the full loss on MAE and AP. Its main
+per-appliance weaknesses remain dishwasher AP 0.761 and microwave AP 0.465/F1
+0.461. It is therefore not yet retained. Before adding any loss term back, run
+the same core objective once with checkpoint selection based only on validation
+AP. This removes the bespoke MAE-plus-one-minus-AP monitor and tests whether the
+choice of epoch, rather than a missing auxiliary penalty, explains the gap.

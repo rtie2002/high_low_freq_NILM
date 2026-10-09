@@ -72,6 +72,18 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         ):
             self.assertEqual(cfg["loss"][name], 0.0)
 
+    def test_ap_monitor_changes_selection_not_loss(self):
+        self.base["loss"] = {"power_on_weight": 1.0}
+        self.base["training"] = {
+            "checkpoint_monitor": "val_mae_plus_one_minus_ap",
+            "learning_rate": 1e-4,
+        }
+        cfg = _loss_candidate(self.base, "loss_core_ap_monitor", "feature_1")
+
+        self.assertEqual(cfg["training"]["checkpoint_monitor"], "val_ap")
+        self.assertEqual(cfg["training"]["learning_rate"], 1e-4)
+        self.assertNotIn("checkpoint_monitor", cfg["loss"])
+
 
 if __name__ == "__main__":
     unittest.main()

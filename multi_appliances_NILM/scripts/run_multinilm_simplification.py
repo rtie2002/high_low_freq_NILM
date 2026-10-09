@@ -88,6 +88,16 @@ LOSS_VARIANTS = {
         "power_energy_relative_weight": 0.0,
         "state_fp_weight": 0.0,
     },
+    # Same training objective, but select the checkpoint by the standard,
+    # threshold-independent validation AP instead of a bespoke composite.
+    "loss_core_ap_monitor": {
+        "experiment_id": "multinilm_simplify_loss_core_ap_monitor_raw",
+        "power_off_weight": 0.0,
+        "power_delta_weight": 0.0,
+        "power_energy_relative_weight": 0.0,
+        "state_fp_weight": 0.0,
+        "checkpoint_monitor": "val_ap",
+    },
 }
 
 
@@ -130,8 +140,18 @@ def _loss_candidate(base: dict, name: str, feature_base: str) -> dict:
         "_raw", "_raw_mean" if feature_base == "feature_2_mean" else "_raw"
     )
     loss = copy.deepcopy(candidate.get("loss", {}))
-    loss.update({key: value for key, value in spec.items() if key != "experiment_id"})
+    loss.update(
+        {
+            key: value
+            for key, value in spec.items()
+            if key not in {"experiment_id", "checkpoint_monitor"}
+        }
+    )
     candidate["loss"] = loss
+    if "checkpoint_monitor" in spec:
+        training = copy.deepcopy(candidate.get("training", {}))
+        training["checkpoint_monitor"] = spec["checkpoint_monitor"]
+        candidate["training"] = training
     return candidate
 
 
