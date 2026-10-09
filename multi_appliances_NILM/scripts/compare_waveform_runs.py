@@ -27,6 +27,13 @@ from evaluation.event_diagnostics import (
     save_paired_waveform_plots,
     snr_summary_table,
 )
+from evaluation.plots import (
+    bundle_aggregate_watts,
+    bundle_csv_appliance_watts,
+    dataset_on_labels_for_bundle,
+)
+from config import merge_configs
+from main import get_adapter
 
 
 @dataclass
@@ -79,7 +86,11 @@ def _resolve_data_root(experiment: dict) -> Path:
 
 
 def _prediction_path(run_dir: Path, split: str) -> Path:
-    path = run_dir / "test" / split / "predictions.npz"
+    path = (
+        run_dir / "validation_predictions.npz"
+        if split == "validation"
+        else run_dir / "test" / split / "predictions.npz"
+    )
     if not path.is_file():
         raise FileNotFoundError(f"Missing saved predictions: {path}")
     return path
@@ -157,6 +168,45 @@ def _load_raw_timeline(
     return aggregate, true_watts, true_on
 
 
+def _load_timeline(
+    experiment: dict,
+    model: dict,
+    split: str,
+    bundle: SavedPredictionBundle,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return aligned aggregate, appliance powers, states, and segment IDs."""
+    if split != "validation":
+        aggregate, true_watts, true_on = _load_raw_timeline(
+            experiment,
+            split,
+            bundle.appliances,
+            bundle.csv_timesteps,
+        )
+        segments = bundle.segment_ids
+        if segments is None:
+            segments = np.zeros(len(bundle.csv_timesteps), dtype=np.int64)
+        return aggregate, true_watts, true_on, segments
+
+    merged = merge_configs(experiment, model)
+    data_root = _resolve_data_root(experiment)
+    adapter = get_adapter(merged["model_name"], merged, data_root=str(data_root))
+    data_loader = adapter._data_loader()
+    n_points = len(bundle.y_true_watts)
+    aggregate = bundle_aggregate_watts(
+        data_loader, split, n_points, csv_timesteps=bundle.csv_timesteps
+    )
+    true_watts = bundle_csv_appliance_watts(
+        data_loader, split, n_points, csv_timesteps=bundle.csv_timesteps
+    )
+    true_on = dataset_on_labels_for_bundle(
+        data_loader, split, n_points, bundle.csv_timesteps
+    )
+    segments = data_loader.segment_ids_at_timesteps(split, bundle.csv_timesteps)
+    if aggregate is None or true_watts is None or true_on is None:
+        raise ValueError("Could not align validation predictions to validation CSV files")
+    return aggregate, true_watts, true_on, segments
+
+
 def _best_epoch(run_dir: Path) -> int | None:
     path = run_dir / "run_manifest.json"
     if not path.is_file():
@@ -176,7 +226,7 @@ def main() -> None:
     )
     output.mkdir(parents=True, exist_ok=True)
 
-    experiment, _ = _load_merged_config(run_a)
+    experiment, model = _load_merged_config(run_a)
     all_events: list[pd.DataFrame] = []
     all_summaries: list[pd.DataFrame] = []
     all_differences: list[pd.DataFrame] = []
@@ -185,16 +235,12 @@ def main() -> None:
         bundle_a = _load_bundle(_prediction_path(run_a, split))
         bundle_b = _load_bundle(_prediction_path(run_b, split))
         _assert_aligned(bundle_a, bundle_b)
-        csv_rows = bundle_a.csv_timesteps
-        aggregate, true_watts, true_on = _load_raw_timeline(
+        aggregate, true_watts, true_on, segment_ids = _load_timeline(
             experiment,
+            model,
             split,
-            bundle_a.appliances,
-            csv_rows,
+            bundle_a,
         )
-        segment_ids = bundle_a.segment_ids
-        if segment_ids is None:
-            segment_ids = np.zeros(len(csv_rows), dtype=np.int64)
         sample_seconds = float(experiment["csv"]["sample_seconds"])
         bundles = {args.label_a: bundle_a, args.label_b: bundle_b}
 

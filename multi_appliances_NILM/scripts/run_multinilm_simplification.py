@@ -103,11 +103,17 @@ LOSS_VARIANTS = {
 }
 
 ARCHITECTURE_VARIANTS = {
+    # First remove the per-head channel attention. Appliance-specific heads
+    # and explicit cross-appliance relation attention remain unchanged.
+    "no_task_attention": {
+        "experiment_id": "multinilm_simplify_seeded_raw_no_task_attention",
+        "task_attention": {"enabled": False},
+    },
     # Bottom-up relational TCN: retain the shared temporal encoder and the
     # explicit multi-appliance interaction, remove the nested refinements
     # around them. The full retained loss is used so this tests architecture.
     "plain_relation": {
-        "experiment_id": "multinilm_simplify_plain_relation_raw",
+        "experiment_id": "multinilm_simplify_seeded_plain_relation_raw",
         "use_multiscale_stem": False,
         "stem_norm_type": "batch",
         "head_local_layers": 1,

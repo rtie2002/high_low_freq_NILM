@@ -105,6 +105,24 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         self.assertEqual(architecture["num_blocks"], 5)
         self.assertTrue(architecture["cross_appliance"]["enabled"])
 
+    def test_no_task_attention_preserves_other_architecture(self):
+        self.base["architecture"] = {
+            "use_multiscale_stem": True,
+            "stem_norm_type": "ibn",
+            "num_blocks": 5,
+            "head_local_layers": 2,
+            "task_attention": {"enabled": True, "reduction": 4},
+            "cross_appliance": {"enabled": True, "mode": "relation_attention"},
+        }
+        cfg = _architecture_candidate(self.base, "no_task_attention")
+        architecture = cfg["architecture"]
+
+        self.assertFalse(architecture["task_attention"]["enabled"])
+        self.assertTrue(architecture["use_multiscale_stem"])
+        self.assertEqual(architecture["stem_norm_type"], "ibn")
+        self.assertEqual(architecture["head_local_layers"], 2)
+        self.assertTrue(architecture["cross_appliance"]["enabled"])
+
     def test_seeded_reference_and_raw_change_only_features(self):
         baseline = _repro_candidate(self.base, "seeded_baseline")
         raw = _repro_candidate(self.base, "seeded_raw")

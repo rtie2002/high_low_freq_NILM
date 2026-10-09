@@ -565,12 +565,14 @@ The AP-only checkpoint gains 0.007 AP but loses 0.986 W MAE, 0.001 macro-F1,
 also shows why a ranking metric alone is insufficient for checkpoint selection
 in a joint detection-and-regression model.
 
-A fixed-event waveform audit compared all 50 validation plots from the seeded
-13-channel reference and seeded raw-only composite checkpoint. The raw-only
-model introduced no new giant pulses or power/state contradictions. Fridge
-cycles were at least as continuous on the inspected noisy segments; microwave
-pulses retained sharp boundaries; dishwasher and washing-machine waveform
-quality was broadly comparable. This agrees with the aggregate metrics: raw-only
+A fixed-event waveform audit used the identically selected 50-plot validation
+sets from the seeded 13-channel reference and seeded raw-only composite
+checkpoint. Representative matched fridge, microwave, dishwasher, and
+washing-machine events were inspected directly. The raw-only model introduced
+no new giant pulses or power/state contradictions in those matched plots.
+Fridge cycles were at least as continuous on the inspected noisy segment;
+microwave pulses retained sharp boundaries; dishwasher and washing-machine
+waveform quality was broadly comparable. This agrees with the aggregate metrics: raw-only
 improves MAE, off-MAE, event-F1, and false-event count relative to the seeded
 13-channel reference, while macro-F1/AP change by only -0.001/-0.001.
 
