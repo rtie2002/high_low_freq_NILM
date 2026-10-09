@@ -221,7 +221,7 @@ Batch-statistic mixing is not the dominant failure mechanism, and GroupNorm
 removes useful amplitude-distribution information without improving REFIT
 robustness.
 
-## Per-appliance power/state balancing — started 2026-10-09
+## Per-appliance power/state balancing — partially successful 2026-10-09
 
 Experiment: `multinilm_per_appliance_balance_house_split`
 
@@ -236,3 +236,48 @@ loss while fridge contributed 43.9% of the state loss. The previous global
 ratio therefore coupled microwave regression to fridge classification. The new
 formula preserves the original power/state scale for every appliance but stops
 one appliance from setting another appliance's state weight.
+
+Result at the validation-selected checkpoint (epoch 150):
+
+- Validation: MAE 15.369 W, macro-F1 0.779, AP 0.800.
+- REFIT house 20: MAE 10.182 W, macro-F1 0.731, AP 0.746.
+- UK-DALE house 2: MAE 8.971 W, macro-F1 0.867, AP 0.925.
+- REFIT fridge AP improved from 0.713 to 0.773, FPR fell from 0.468 to
+  0.403, and MAE fell from 31.836 W to 30.294 W.
+- Validation microwave AP/F1 improved from 0.349/0.449 to 0.456/0.493;
+  UK-DALE microwave AP/F1 improved from 0.730/0.714 to 0.756/0.751.
+- REFIT microwave F1 nevertheless fell from 0.521 to 0.489, although ON-MAE
+  improved from 478.462 W to 419.183 W.
+
+The waveform audit explains the mixed microwave result. At the baseline's
+epoch-150 losses, the local power/state ratios were approximately 177 for
+microwave and 3.3 for fridge, compared with a global ratio near 17. Full local
+balancing therefore amplified the microwave state gradient by roughly 10x and
+reduced the fridge state gradient to roughly one fifth of the global scale.
+The REFIT microwave example gained two high-power activations immediately
+before the labelled event. The fridge removed one late false tail, consistent
+with its lower aggregate FPR, but retained long false-ON plateaus under changing
+background load.
+
+Conclusion: the experiment confirms that global cross-appliance loss coupling
+was harmful, but unrestricted local equality is too aggressive. Retain the
+idea, not the exact rule. The next controlled run clips every local ratio to a
+factor of three around the batch-global ratio. No architecture, input feature,
+sampling, or individual loss component is changed.
+
+## Clipped per-appliance power/state balancing — started 2026-10-09
+
+Experiment: `multinilm_clipped_per_appliance_balance_house_split`
+
+Use
+
+`r = L_power / L_state`,
+
+`r_i = clip(P_i / S_i, r / 3, 3r)`,
+
+`L = L_power + lambda * sum_i r_i S_i`.
+
+This is a bounded gradient-normalisation experiment. It preserves partial
+task separation while preventing the microwave state objective from receiving
+the approximately 10x jump observed above. All other settings are identical to
+the completed per-appliance run.

@@ -43,6 +43,7 @@ class MultiNILMLoss(nn.Module):
         power_scale: float | list[float] | torch.Tensor = 1.0,
         *,
         task_balance: str = "equal",
+        task_balance_ratio_limit: float = 3.0,
         power_on_weight: float = 0.0,
         power_off_weight: float = 0.0,
         power_delta_weight: float = 0.0,
@@ -55,6 +56,9 @@ class MultiNILMLoss(nn.Module):
         super().__init__()
         self.lambda_state = float(lambda_state)
         self.task_balance = str(task_balance or "none").lower()
+        self.task_balance_ratio_limit = float(task_balance_ratio_limit)
+        if self.task_balance_ratio_limit < 1.0:
+            raise ValueError("task_balance_ratio_limit must be >= 1")
         self.power_on_weight = float(power_on_weight)
         self.power_off_weight = float(power_off_weight)
         self.power_delta_weight = float(power_delta_weight)
@@ -192,6 +196,16 @@ class MultiNILMLoss(nn.Module):
             Apply the same detached magnitude matching independently for each
             appliance, then sum. A large power error from one appliance cannot
             change another appliance's state-loss scale.
+
+        task_balance=per_appliance_clipped
+            Start from the per-appliance ratio, but clip it around the global
+            ratio. This keeps appliances partly decoupled without allowing a
+            very small state loss to create an extreme state gradient:
+
+                r_global = L_power / L_state
+                r_i = clip(P_i / S_i, r_global / c, c * r_global)
+
+            where c is task_balance_ratio_limit.
         """
         if self.task_balance == "none":
             return self.lambda_state * loss_state
@@ -206,8 +220,25 @@ class MultiNILMLoss(nn.Module):
                 / loss_state_per_appliance.detach().clamp_min(1e-8)
             )
             return self.lambda_state * (loss_state_per_appliance * scale).sum()
+        if self.task_balance == "per_appliance_clipped":
+            if loss_power_per_appliance is None or loss_state_per_appliance is None:
+                raise ValueError("per_appliance_clipped requires per-appliance losses")
+            global_scale = (
+                loss_power.detach() / loss_state.detach().clamp_min(1e-8)
+            )
+            local_scale = (
+                loss_power_per_appliance.detach()
+                / loss_state_per_appliance.detach().clamp_min(1e-8)
+            )
+            limit = self.task_balance_ratio_limit
+            scale = torch.minimum(
+                torch.maximum(local_scale, global_scale / limit),
+                global_scale * limit,
+            )
+            return self.lambda_state * (loss_state_per_appliance * scale).sum()
         raise ValueError(
-            "task_balance must be none|equal|per_appliance_equal, "
+            "task_balance must be none|equal|per_appliance_equal|"
+            "per_appliance_clipped, "
             f"got {self.task_balance!r}"
         )
 

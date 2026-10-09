@@ -1,7 +1,7 @@
 # Recovery baseline: restore the early relational model that was used before
 # the dual-expert, local-contrast and mixture-output experiments. The new
 # cross-house dataset split is intentionally retained.
-experiment_id: multinilm_per_appliance_balance_house_split
+experiment_id: multinilm_clipped_per_appliance_balance_house_split
 model_name: multinilm_fractional
 
 data:
@@ -126,10 +126,11 @@ architecture:
 # (std 60 W). REL_ENERGY is computed in watts.
 # ---------------------------------------------------------------------------
 loss:
-  # Balance power/state inside each appliance rather than with one global ratio.
-  # This retains the original loss terms while removing cross-appliance scaling.
-  task_balance: per_appliance_equal
-  # After balancing, state_term = 0.8 * L_power in value.
+  # Partly decouple appliance tasks, but stop rare/low-loss tasks from receiving
+  # an extreme state gradient. Each local ratio stays within 1/3--3x of the
+  # batch-global power/state ratio.
+  task_balance: per_appliance_clipped
+  task_balance_ratio_limit: 3.0
   lambda_state: 0.8
 
   # BCE weight on ON samples: pos_weight_i = min(N_OFF / N_ON, cap), from the

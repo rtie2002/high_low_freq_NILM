@@ -1005,6 +1005,7 @@ class MultiNILMAdapter(BaseNILMAdapter):
         return MultiNILMLoss(
             lambda_state=float(cfg.get("lambda_state", 0.1)),
             task_balance=str(cfg.get("task_balance", "none")),
+            task_balance_ratio_limit=float(cfg.get("task_balance_ratio_limit", 3.0)),
             pos_weight=_resolve_pos_weight(self, cfg),
             power_scale=loader.loss_scale,
             target_mean=loader.norm.target_mean,
