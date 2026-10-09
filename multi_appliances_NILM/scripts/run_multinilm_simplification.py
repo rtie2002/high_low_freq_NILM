@@ -66,6 +66,14 @@ FEATURE_VARIANTS = {
         "include_rolling_mean": True,
         "include_rolling_std": True,
     },
+    # Replacement candidate used only if signed delta proves unhelpful. It
+    # keeps one directly interpretable slow-background channel beside raw.
+    "feature_2_mean": {
+        "experiment_id": "multinilm_simplify_feature_2_raw_mean",
+        "include_delta": False,
+        "include_rolling_mean": True,
+        "include_rolling_std": False,
+    },
 }
 
 

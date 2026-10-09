@@ -21,7 +21,14 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         }
 
     def test_feature_candidates_have_one_to_four_channels(self):
-        for expected_channels, name in enumerate(FEATURE_VARIANTS, start=1):
+        expected = {
+            "feature_1": 1,
+            "feature_2": 2,
+            "feature_3": 3,
+            "feature_4": 4,
+            "feature_2_mean": 2,
+        }
+        for name in FEATURE_VARIANTS:
             with self.subTest(name=name):
                 cfg = _feature_candidate(self.base, name)["fractional"]
                 channels = (
@@ -31,7 +38,7 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
                     + len(cfg["rolling_windows"]) * int(cfg["include_rolling_std"])
                     + len(cfg["alphas"])
                 )
-                self.assertEqual(channels, expected_channels)
+                self.assertEqual(channels, expected[name])
 
     def test_candidate_does_not_mutate_base_config(self):
         _feature_candidate(self.base, "feature_1")
