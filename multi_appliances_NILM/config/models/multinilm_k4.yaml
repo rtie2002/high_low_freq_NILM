@@ -1,7 +1,7 @@
 # Recovery baseline: restore the early relational model that was used before
 # the dual-expert, local-contrast and mixture-output experiments. The new
 # cross-house dataset split is intentionally retained.
-experiment_id: multinilm_fridge_global_context_house_split
+experiment_id: multinilm_clipped_per_appliance_balance_house_split
 model_name: multinilm_fractional
 
 data:
@@ -81,20 +81,6 @@ architecture:
   kernel_size: 9
   max_dilation: 16
   dropout: 0.25
-
-  # The TCN sees about 33 minutes although the input covers 136 minutes.
-  # Give only the fridge head a cheap full-window view: pool to 128 tokens,
-  # apply one attention block, upsample, and add it through a 0.1 residual.
-  # All other appliance paths remain exactly on the selected TCN baseline.
-  global_context:
-    enabled: true
-    app_indices: [1]  # kettle, fridge, dishwasher, washing machine, microwave
-    pool_size: 8
-    num_heads: 4
-    num_layers: 1
-    feedforward_multiplier: 2
-    dropout: 0.10
-    residual_scale: 0.10
 
   # Two local blocks preserve the multi-stage washing-machine waveform better.
   head_local_layers: 2

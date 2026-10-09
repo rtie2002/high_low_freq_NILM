@@ -271,74 +271,6 @@ class ResidualTemporalBlock(nn.Module):
         return x + self.dropout(self.activation(self.norm(self.conv(x))))
 
 
-class PooledGlobalContext(nn.Module):
-    """Low-resolution full-window context with a residual return path.
-
-    The TCN preserves local edges. Average pooling shortens the sequence before
-    self-attention, allowing one small block to inspect the complete input
-    window. The output projection starts at zero, so enabling this module starts
-    from the proven convolutional model instead of perturbing it immediately.
-    """
-
-    def __init__(
-        self,
-        channels,
-        *,
-        pool_size=8,
-        num_heads=4,
-        num_layers=1,
-        feedforward_multiplier=2,
-        dropout=0.1,
-        residual_scale=0.1,
-    ):
-        super().__init__()
-        channels = int(channels)
-        self.pool_size = int(pool_size)
-        self.residual_scale = float(residual_scale)
-        if self.pool_size < 1:
-            raise ValueError("global_context.pool_size must be >= 1")
-        if channels % int(num_heads) != 0:
-            raise ValueError("hidden_channels must be divisible by global_context.num_heads")
-        if int(num_layers) < 1:
-            raise ValueError("global_context.num_layers must be >= 1")
-
-        # A depthwise convolution supplies local token order before attention
-        # without requiring a fixed maximum sequence length.
-        self.position = nn.Conv1d(
-            channels, channels, kernel_size=3, padding=1, groups=channels
-        )
-        layer = nn.TransformerEncoderLayer(
-            d_model=channels,
-            nhead=int(num_heads),
-            dim_feedforward=channels * int(feedforward_multiplier),
-            dropout=float(dropout),
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
-        )
-        self.encoder = nn.TransformerEncoder(layer, num_layers=int(num_layers))
-        self.output_projection = nn.Conv1d(channels, channels, 1)
-        nn.init.zeros_(self.output_projection.weight)
-        nn.init.zeros_(self.output_projection.bias)
-
-    def forward(self, features):
-        pooled = F.avg_pool1d(
-            features,
-            kernel_size=self.pool_size,
-            stride=self.pool_size,
-            ceil_mode=True,
-        )
-        tokens = (pooled + self.position(pooled)).transpose(1, 2)
-        context = self.encoder(tokens).transpose(1, 2)
-        context = F.interpolate(
-            context,
-            size=features.shape[-1],
-            mode="linear",
-            align_corners=False,
-        )
-        return features + self.residual_scale * self.output_projection(context)
-
-
 class LocalTransientExpert(nn.Module):
     """Short-range expert over raw aggregate and the alpha=1 GL channel.
 
@@ -651,10 +583,6 @@ class MultiNILM(nn.Module):
         dual_expert_gate_hidden_channels=32,
         dual_expert_gate_initial_local_weight=0.1,
         dual_expert_share_local=True,
-        global_context_enabled=False, global_context_app_indices=None,
-        global_context_pool_size=8, global_context_num_heads=4,
-        global_context_num_layers=1, global_context_feedforward_multiplier=2,
-        global_context_dropout=0.1, global_context_residual_scale=0.1,
     ):
         super().__init__()
         self.input_channels = int(input_channels)
@@ -666,9 +594,6 @@ class MultiNILM(nn.Module):
         self.dual_expert_enabled = bool(dual_expert_enabled)
         self.dual_expert_share_local = bool(dual_expert_share_local)
         self.last_expert_gates = None
-        self.global_context_app_indices = tuple(
-            int(index) for index in (global_context_app_indices or [])
-        )
         off_norms = list(appliance_off_norm or [0.0] * self.num_appliances)
         if len(off_norms) != self.num_appliances:
             raise ValueError(f"appliance_off_norm length {len(off_norms)} != {self.num_appliances}")
@@ -712,26 +637,6 @@ class MultiNILM(nn.Module):
             )
             for i in range(num_blocks)
         ])
-        self.global_context = None
-        if global_context_enabled:
-            if not self.global_context_app_indices:
-                raise ValueError(
-                    "global_context.app_indices must select at least one appliance"
-                )
-            if any(
-                index < 0 or index >= self.num_appliances
-                for index in self.global_context_app_indices
-            ):
-                raise ValueError("global_context appliance index is out of range")
-            self.global_context = PooledGlobalContext(
-                self.hidden_channels,
-                pool_size=int(global_context_pool_size),
-                num_heads=int(global_context_num_heads),
-                num_layers=int(global_context_num_layers),
-                feedforward_multiplier=int(global_context_feedforward_multiplier),
-                dropout=float(global_context_dropout),
-                residual_scale=float(global_context_residual_scale),
-            )
         self.local_expert = None
         self.local_experts = None
         self.expert_gates = None
@@ -802,12 +707,6 @@ class MultiNILM(nn.Module):
 
         context_features = _match_time_length(h, self.output_length)  # (B, C, T_out)
         routed_features = [context_features] * self.num_appliances
-        if self.global_context is not None:
-            global_features = self.global_context(context_features)
-            routed_features = [
-                global_features if index in self.global_context_app_indices else context_features
-                for index in range(self.num_appliances)
-            ]
         self.last_expert_gates = None
         if self.dual_expert_enabled:
             if raw_input is None:
@@ -954,14 +853,6 @@ class MultiNILMConfig:
     dual_expert_gate_hidden_channels: int = 32
     dual_expert_gate_initial_local_weight: float = 0.1
     dual_expert_share_local: bool = True
-    global_context_enabled: bool = False
-    global_context_app_indices: list[int] = field(default_factory=list)
-    global_context_pool_size: int = 8
-    global_context_num_heads: int = 4
-    global_context_num_layers: int = 1
-    global_context_feedforward_multiplier: int = 2
-    global_context_dropout: float = 0.1
-    global_context_residual_scale: float = 0.1
 
 
 def multinilm_config(architecture):
@@ -970,11 +861,6 @@ def multinilm_config(architecture):
     task = a.get("task_attention") if isinstance(a.get("task_attention"), dict) else {}
     cross = a.get("cross_appliance") if isinstance(a.get("cross_appliance"), dict) else {}
     dual = a.get("dual_expert") if isinstance(a.get("dual_expert"), dict) else {}
-    global_context = (
-        a.get("global_context")
-        if isinstance(a.get("global_context"), dict)
-        else {}
-    )
     mid = cross.get("mid_channels", None)
     return MultiNILMConfig(
         input_channels=int(a.get("input_channels", a.get("input_size", 1))),
@@ -1017,20 +903,6 @@ def multinilm_config(architecture):
         dual_expert_gate_hidden_channels=int(dual.get("gate_hidden_channels", 32)),
         dual_expert_gate_initial_local_weight=float(dual.get("gate_initial_local_weight", 0.1)),
         dual_expert_share_local=bool(dual.get("share_local_expert", True)),
-        global_context_enabled=bool(global_context.get("enabled", False)),
-        global_context_app_indices=[
-            int(index) for index in global_context.get("app_indices", [])
-        ],
-        global_context_pool_size=int(global_context.get("pool_size", 8)),
-        global_context_num_heads=int(global_context.get("num_heads", 4)),
-        global_context_num_layers=int(global_context.get("num_layers", 1)),
-        global_context_feedforward_multiplier=int(
-            global_context.get("feedforward_multiplier", 2)
-        ),
-        global_context_dropout=float(global_context.get("dropout", legacy_dropout)),
-        global_context_residual_scale=float(
-            global_context.get("residual_scale", 0.1)
-        ),
     )
 
 

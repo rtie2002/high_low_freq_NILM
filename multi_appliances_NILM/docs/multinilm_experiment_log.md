@@ -324,7 +324,7 @@ examples already abundant in training and risks trading recall for lower FPR.
 The next experiment instead tests whether the fixed 33-minute TCN receptive
 field fails to use the 136-minute input's repeated fridge-cycle context.
 
-## Fridge-only pooled global context — started 2026-10-09
+## Fridge-only pooled global context — rejected 2026-10-09
 
 Experiment: `multinilm_fridge_global_context_house_split`
 
@@ -343,3 +343,26 @@ three appliance paths do not receive this branch. This is a controlled test of
 global temporal information, motivated by dual-path single-channel source
 separation: local convolutions retain edge detail while a compressed global
 path can compare repeated patterns across the full sequence.
+
+Result at the validation-selected checkpoint (epoch 100, exit 0):
+
+- Validation: MAE 16.342 W, macro-F1 0.770, AP 0.791; checkpoint score 0.386,
+  worse than 0.364 without the branch.
+- REFIT house 20: MAE 10.214 W, macro-F1 0.710, AP 0.707.
+- UK-DALE house 2: MAE 8.251 W, macro-F1 0.858, AP 0.918.
+- REFIT fridge FPR worsened from 0.396 to 0.417. The 200--400 W bin worsened
+  from 0.674 to 0.725 and the 400--800 W bin from 0.836 to 0.838.
+- REFIT microwave F1 fell from 0.561 to 0.447 even though the new path was
+  routed only to fridge.
+
+The last observation exposes an additional reproducibility issue: constructing
+the extra module consumes random numbers before the appliance heads are
+initialized, so a fixed global seed does not preserve the original head
+initialization or subsequent stochastic training path. The experiment therefore
+does not isolate the branch perfectly. It nevertheless provides no validation
+or fridge-FPR evidence for retaining another 0.15M parameters.
+
+Conclusion: reject and remove the complete global-context implementation. The
+active model returns to the 1.38M clipped-balance configuration. Both explicit
+long-dilation context and pooled attention context have now failed to remove the
+same false fridge plateaus; longer context alone is not the missing information.
