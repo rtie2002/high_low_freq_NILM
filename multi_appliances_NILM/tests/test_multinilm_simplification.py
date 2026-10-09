@@ -113,6 +113,9 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         self.assertFalse(raw["fractional"]["include_abs_delta"])
         self.assertEqual(raw["fractional"]["alphas"], [])
 
+        ap_selected = _repro_candidate(self.base, "seeded_raw_ap_monitor")
+        self.assertEqual(ap_selected["training"]["checkpoint_monitor"], "val_ap")
+
 
 if __name__ == "__main__":
     unittest.main()

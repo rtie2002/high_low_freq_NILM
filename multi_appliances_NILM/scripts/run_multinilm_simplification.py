@@ -122,6 +122,11 @@ REPRO_VARIANTS = {
         "experiment_id": "multinilm_simplify_seeded_raw",
         "feature_base": "feature_1",
     },
+    "seeded_raw_ap_monitor": {
+        "experiment_id": "multinilm_simplify_seeded_raw_ap_monitor",
+        "feature_base": "feature_1",
+        "checkpoint_monitor": "val_ap",
+    },
 }
 
 
@@ -202,6 +207,10 @@ def _repro_candidate(base: dict, name: str) -> dict:
         else _feature_candidate(base, feature_base)
     )
     candidate["experiment_id"] = spec["experiment_id"]
+    if "checkpoint_monitor" in spec:
+        training = copy.deepcopy(candidate.get("training", {}))
+        training["checkpoint_monitor"] = spec["checkpoint_monitor"]
+        candidate["training"] = training
     return candidate
 
 

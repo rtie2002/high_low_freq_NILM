@@ -521,3 +521,28 @@ the complete 13-feature starting configuration and raw-only with every other
 setting fixed. Subsequent loss and architecture experiments inherit the same
 pre-construction seed. The original reported validation result
 (14.884 W, 0.782 macro-F1, 0.809 AP) remains the absolute no-regression target.
+
+## Seeded feature decision — completed 2026-10-10
+
+The complete starting configuration and raw-only were rerun after moving the
+seed before model construction. Both used seed 2026 and the original loss,
+architecture, augmentation, optimizer, composite checkpoint rule, calibration,
+and postprocessing. No test house was evaluated.
+
+| Seeded configuration | Input channels | MAE (W) | macro-F1 | AP |
+|---|---:|---:|---:|---:|
+| complete starting model | 13 | 15.586 | 0.772 | 0.795 |
+| raw-only | **1** | **14.590** | 0.771 | 0.794 |
+
+Raw-only removes twelve fixed transforms, improves MAE by 0.996 W, and changes
+macro-F1/AP by only -0.001/-0.001 relative to the controlled baseline. The
+handcrafted feature bank therefore has no stable classification contribution
+and is rejected. This conclusion is stronger than the earlier exploratory
+sweep because both candidates now start from the same seeded initialization.
+
+The seeded raw history reaches its highest validation AP at epoch 137, whereas
+the bespoke composite monitor saved epoch 126. One final raw-only run uses the
+corrected `val_ap` monitor. It retains the full loss and changes only checkpoint
+selection. Keep it only if formal calibrated validation also satisfies the
+absolute original target; otherwise raw-only remains promising but cannot yet
+become the retained final model.
