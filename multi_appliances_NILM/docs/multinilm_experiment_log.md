@@ -506,14 +506,18 @@ different validation trajectories. The feature and core-loss results above are
 useful screening evidence, but they are not accepted as final controlled
 ablations.
 
-The runner now resolves and applies the seed before model construction. A
-`training.deterministic` option also disables cuDNN benchmarking, requests
-deterministic cuDNN kernels, and enables PyTorch deterministic algorithms with
-warnings. The interrupted AP retry is preserved as
+The runner now resolves and applies the seed before model construction. The
+interrupted AP retry is preserved as
 `multinilm_simplify_loss_core_ap_monitor_raw_invalid_unseeded_init`.
 
-To avoid repeating a large sweep, only two deterministic references are run:
+An initial strict deterministic-kernel check was stopped after confirming that
+it increased epoch time from about 4 s to about 25 s. Its partial folder is
+preserved as `multinilm_simplify_deterministic_baseline_invalid_slow_kernel_mode`.
+Strict kernels are not a model contribution and are not retained; the corrected
+seed order is used with the original CUDA speed settings.
+
+To avoid repeating a large sweep, only two seeded references are run:
 the complete 13-feature starting configuration and raw-only with every other
-setting fixed. Subsequent loss and architecture experiments must inherit the
-same deterministic settings. The original reported validation result
+setting fixed. Subsequent loss and architecture experiments inherit the same
+pre-construction seed. The original reported validation result
 (14.884 W, 0.782 macro-F1, 0.809 AP) remains the absolute no-regression target.

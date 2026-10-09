@@ -3,7 +3,6 @@ import unittest
 import torch
 
 from runner import (
-    _configure_cuda,
     _epoch_score,
     _is_better,
     _resolve_checkpoint_monitor,
@@ -30,15 +29,6 @@ class CheckpointMonitorTests(unittest.TestCase):
         seed_everything(2026)
         second = torch.nn.Linear(4, 3).weight.detach().clone()
         self.assertTrue(torch.equal(first, second))
-
-    def test_deterministic_flag_controls_torch_algorithms(self):
-        previous = torch.are_deterministic_algorithms_enabled()
-        try:
-            _configure_cuda({"deterministic": True, "cudnn_benchmark": False})
-            self.assertTrue(torch.are_deterministic_algorithms_enabled())
-        finally:
-            torch.use_deterministic_algorithms(previous, warn_only=True)
-
 
 if __name__ == "__main__":
     unittest.main()

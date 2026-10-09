@@ -114,12 +114,12 @@ ARCHITECTURE_VARIANTS = {
 }
 
 REPRO_VARIANTS = {
-    "deterministic_baseline": {
-        "experiment_id": "multinilm_simplify_deterministic_baseline",
+    "seeded_baseline": {
+        "experiment_id": "multinilm_simplify_seeded_baseline",
         "feature_base": None,
     },
-    "deterministic_raw": {
-        "experiment_id": "multinilm_simplify_deterministic_raw",
+    "seeded_raw": {
+        "experiment_id": "multinilm_simplify_seeded_raw",
         "feature_base": "feature_1",
     },
 }
@@ -193,7 +193,7 @@ def _architecture_candidate(base: dict, name: str) -> dict:
 
 
 def _repro_candidate(base: dict, name: str) -> dict:
-    """Build a seeded, deterministic reference or its raw-only ablation."""
+    """Build a reference whose seed is applied before model construction."""
     spec = REPRO_VARIANTS[name]
     feature_base = spec["feature_base"]
     candidate = (
@@ -202,10 +202,6 @@ def _repro_candidate(base: dict, name: str) -> dict:
         else _feature_candidate(base, feature_base)
     )
     candidate["experiment_id"] = spec["experiment_id"]
-    training = copy.deepcopy(candidate.get("training", {}))
-    training["deterministic"] = True
-    training["cudnn_benchmark"] = False
-    candidate["training"] = training
     return candidate
 
 

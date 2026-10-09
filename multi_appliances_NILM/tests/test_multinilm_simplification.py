@@ -105,13 +105,10 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         self.assertEqual(architecture["num_blocks"], 5)
         self.assertTrue(architecture["cross_appliance"]["enabled"])
 
-    def test_repro_candidates_share_deterministic_training(self):
-        baseline = _repro_candidate(self.base, "deterministic_baseline")
-        raw = _repro_candidate(self.base, "deterministic_raw")
+    def test_seeded_reference_and_raw_change_only_features(self):
+        baseline = _repro_candidate(self.base, "seeded_baseline")
+        raw = _repro_candidate(self.base, "seeded_raw")
 
-        for cfg in (baseline, raw):
-            self.assertTrue(cfg["training"]["deterministic"])
-            self.assertFalse(cfg["training"]["cudnn_benchmark"])
         self.assertTrue(baseline["fractional"]["include_abs_delta"])
         self.assertFalse(raw["fractional"]["include_abs_delta"])
         self.assertEqual(raw["fractional"]["alphas"], [])

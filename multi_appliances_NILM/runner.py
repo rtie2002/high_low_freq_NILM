@@ -830,14 +830,10 @@ def _resolve_amp_dtype(train_cfg: dict) -> torch.dtype:
 
 def _configure_cuda(train_cfg: dict) -> None:
     """Apply optional CUDA speed settings from training config."""
-    deterministic = bool(train_cfg.get("deterministic", False))
-    torch.use_deterministic_algorithms(deterministic, warn_only=True)
     if not torch.cuda.is_available():
         return
-    torch.backends.cudnn.benchmark = (
-        bool(train_cfg.get("cudnn_benchmark", True)) and not deterministic
-    )
-    torch.backends.cudnn.deterministic = deterministic
+    if bool(train_cfg.get("cudnn_benchmark", True)):
+        torch.backends.cudnn.benchmark = True
     if bool(train_cfg.get("tf32", True)):
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
