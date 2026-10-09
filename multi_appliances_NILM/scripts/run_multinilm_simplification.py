@@ -82,7 +82,9 @@ LOSS_VARIANTS = {
     # The bounded per-appliance scale matching is retained at this stage so
     # the experiment removes auxiliary losses without changing task coupling.
     "loss_core": {
-        "experiment_id": "multinilm_simplify_loss_core_raw",
+        # The earlier folder used this loss before model initialization was
+        # seeded.  Keep the corrected controlled run under an unambiguous ID.
+        "experiment_id": "multinilm_simplify_seeded_loss_core_raw",
         "power_off_weight": 0.0,
         "power_delta_weight": 0.0,
         "power_energy_relative_weight": 0.0,

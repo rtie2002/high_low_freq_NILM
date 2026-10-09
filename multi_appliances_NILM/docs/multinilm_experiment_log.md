@@ -546,3 +546,36 @@ corrected `val_ap` monitor. It retains the full loss and changes only checkpoint
 selection. Keep it only if formal calibrated validation also satisfies the
 absolute original target; otherwise raw-only remains promising but cannot yet
 become the retained final model.
+
+## Raw-only AP checkpoint and waveform audit — completed 2026-10-10
+
+Experiment: `multinilm_simplify_seeded_raw_ap_monitor`
+
+Changing only checkpoint selection from the original composite score to maximum
+validation AP selected epoch 143. It did not improve the final calibrated
+validation result:
+
+| Raw-only checkpoint rule | MAE (W) | macro-F1 | AP | Event-F1 | False events |
+|---|---:|---:|---:|---:|---:|
+| original composite, epoch 126 | **14.590** | **0.771** | 0.794 | **0.392** | **381** |
+| maximum AP, epoch 143 | 15.576 | 0.770 | **0.801** | 0.365 | 403 |
+
+The AP-only checkpoint gains 0.007 AP but loses 0.986 W MAE, 0.001 macro-F1,
+0.027 event-F1, and creates 22 additional false events. It is rejected. This
+also shows why a ranking metric alone is insufficient for checkpoint selection
+in a joint detection-and-regression model.
+
+A fixed-event waveform audit compared all 50 validation plots from the seeded
+13-channel reference and seeded raw-only composite checkpoint. The raw-only
+model introduced no new giant pulses or power/state contradictions. Fridge
+cycles were at least as continuous on the inspected noisy segments; microwave
+pulses retained sharp boundaries; dishwasher and washing-machine waveform
+quality was broadly comparable. This agrees with the aggregate metrics: raw-only
+improves MAE, off-MAE, event-F1, and false-event count relative to the seeded
+13-channel reference, while macro-F1/AP change by only -0.001/-0.001.
+
+Decision: delete the AP-only checkpoint candidate and retain the original
+composite checkpoint rule for the next controlled loss ablation. Raw-only is
+the working simplification, but the original reported result remains the
+absolute target until the remaining controlled ablations are complete. Test
+houses remain unopened.
