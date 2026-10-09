@@ -111,12 +111,13 @@ architecture:
 #   L_state = sum_i [ BCE_i                                   ON samples x pos_weight_i
 #                   + state_fp_weight     * FP_i ]            p^2 on true-OFF samples
 #
-#   state_term = sum_i lambda_state * L_state_i
-#                * stopgrad(L_power_i / L_state_i)
+#   global_ratio = L_power / L_state
+#   local_ratio_i = clip(L_power_i / L_state_i,
+#                        global_ratio / 3, 3 * global_ratio)
+#   state_term = sum_i lambda_state * L_state_i * stopgrad(local_ratio_i)
 #
-# Each stop-grad ratio fixes one appliance's state contribution at
-# lambda_state * L_power_i in value. Gradients still flow through L_state_i,
-# without coupling microwave power to fridge classification (or vice versa).
+# Each detached ratio partly separates appliance tasks while preventing one
+# rare/low-loss state task from receiving an extreme gradient multiplier.
 # To follow ON/OFF learning, read val_loss_state and val_loss_state_<app> in
 # loss_detail.csv, and val_ap in history.csv.
 #

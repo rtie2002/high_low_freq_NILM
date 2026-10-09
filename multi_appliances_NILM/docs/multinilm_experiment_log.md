@@ -265,7 +265,7 @@ idea, not the exact rule. The next controlled run clips every local ratio to a
 factor of three around the batch-global ratio. No architecture, input feature,
 sampling, or individual loss component is changed.
 
-## Clipped per-appliance power/state balancing — started 2026-10-09
+## Clipped per-appliance power/state balancing — retained 2026-10-09
 
 Experiment: `multinilm_clipped_per_appliance_balance_house_split`
 
@@ -281,3 +281,29 @@ This is a bounded gradient-normalisation experiment. It preserves partial
 task separation while preventing the microwave state objective from receiving
 the approximately 10x jump observed above. All other settings are identical to
 the completed per-appliance run.
+
+Result at the validation-selected checkpoint (epoch 125, process exit 0):
+
+- Validation: MAE 14.884 W, macro-F1 0.782, AP 0.809.
+- REFIT house 20: MAE 9.840 W, macro-F1 0.744, AP 0.771.
+- UK-DALE house 2: MAE 8.402 W, macro-F1 0.850, AP 0.922.
+- REFIT fridge: AP 0.754, F1 0.712, FPR 0.396. In the difficult residual
+  ranges, FPR remains 0.674 at 200--400 W and 0.836 at 400--800 W.
+- REFIT microwave: AP 0.570 and F1 0.561, exceeding the meter-lag baseline's
+  0.455 and 0.521. ON-MAE worsened from 478.462 W to 543.416 W.
+- UK-DALE microwave: AP 0.722 and F1 0.682, below the baseline's 0.730 and
+  0.714.
+
+Waveform inspection shows that clipping reduced the two premature REFIT
+microwave pulses of unrestricted local balancing to one, but did not restore
+the clean single event of the global-balance baseline. The representative
+fridge trace still contains long false-ON plateaus at 30--80 W during true-OFF
+periods, despite the lower aggregate FPR.
+
+Decision: retain clipped balancing as the working validation-selected loss.
+It gives the strongest validation AP/F1 and strongest REFIT AP obtained in this
+controlled sequence, without adding inference-time components. Do not claim
+that it solves fridge identifiability: high-background false activation remains
+the dominant failure. The next investigation must target the information or
+sampling available for fridge-like OFF confusers rather than add another loss
+multiplier.
