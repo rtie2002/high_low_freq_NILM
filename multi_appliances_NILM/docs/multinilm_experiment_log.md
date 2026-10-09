@@ -167,7 +167,7 @@ is not merely a one- or two-sample scoring offset. The source-aware empirical
 distribution also weakened the stronger positive-delay regularisation that had
 produced REFIT microwave F1 0.521 in `multinilm_meter_lag_house_split`.
 
-## EMA-residual input ablation — started 2026-10-09
+## EMA-residual input ablation — rejected 2026-10-09
 
 Experiment: `multinilm_ema_residual_house_split`
 
@@ -181,3 +181,29 @@ loss, sampling, and checkpoint rule remain unchanged. Unlike the rejected
 local-contrast channel, this feature does not divide by a small local scale and
 does not clip values. It tests whether slow-background removal exposes weak
 fridge and microwave evidence without amplifying noise into artificial pulses.
+
+Result at the validation-selected checkpoint (epoch 146):
+
+- Validation: MAE 14.916 W, macro-F1 0.772, AP 0.786.
+- REFIT house 20: MAE 10.557 W, macro-F1 0.735, AP 0.741.
+- UK-DALE house 2: MAE 7.983 W, macro-F1 0.859, AP 0.917.
+- REFIT fridge F1 changed from 0.723 to 0.720.
+- REFIT microwave F1 changed from 0.521 to 0.527, but UK-DALE microwave F1
+  fell from 0.714 to 0.642.
+- The inspected REFIT microwave waveform gained a false approximately 1 kW
+  pulse immediately before the true event; the noisy-background fridge false
+  activations remained.
+
+Conclusion: reject and remove the feature implementation. The small REFIT
+microwave gain does not compensate for the cross-domain regression or the
+non-physical extra pulse.
+
+## Domain-agnostic normalization ablation — started 2026-10-09
+
+Experiment: `multinilm_groupnorm_house_split`
+
+Return to the 13-channel meter-lag baseline. Replace BatchNorm only in the
+shared temporal encoder and appliance heads with GroupNorm. The IBN stem,
+convolutions, attention, loss, sampling, and checkpoint rule remain unchanged.
+This tests whether shared running statistics from mixed UK-DALE, REFIT, and
+synthetic samples cause the observed domain-dependent feature behaviour.

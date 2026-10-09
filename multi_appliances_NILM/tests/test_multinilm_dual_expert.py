@@ -15,24 +15,6 @@ from model.MultiNILM import (
 
 
 class MultiNILMDualExpertTests(unittest.TestCase):
-    def test_ema_residual_is_stable_and_preserves_raw_channel(self) -> None:
-        frontend = FractionalFrontEnd(
-            alphas=[1.0],
-            include_raw=True,
-            include_delta=True,
-            include_ema_residual=True,
-            ema_residual_span=3,
-            channel_normalize="none",
-            memory=2,
-        )
-        x = torch.tensor([[[0.0, 0.0, 2.0, 2.0, 2.0]]])
-        out = frontend(x)
-
-        self.assertEqual(tuple(out.shape), (1, 4, 5))
-        torch.testing.assert_close(out[:, 0:1], x)
-        self.assertTrue(torch.isfinite(out).all())
-        self.assertGreater(float(out[0, 2, 2]), 0.0)
-
     def test_early_relational_frontend_has_signed_delta_and_thirteen_channels(self) -> None:
         frontend = FractionalFrontEnd(
             alphas=[0.25, 0.5, 0.75, 1.0],

@@ -1,7 +1,7 @@
 # Recovery baseline: restore the early relational model that was used before
 # the dual-expert, local-contrast and mixture-output experiments. The new
 # cross-house dataset split is intentionally retained.
-experiment_id: multinilm_ema_residual_house_split
+experiment_id: multinilm_groupnorm_house_split
 model_name: multinilm_fractional
 
 data:
@@ -44,15 +44,11 @@ windowing:
   training_targets: auto
 
 fractional:
-  # Early feature bank plus one controlled EMA-residual ablation: 14 channels.
+  # Exact early feature bank: 13 channels in total.
   k: 4
   include_raw: true
   include_delta: true
   include_abs_delta: true
-  # Causal high-pass evidence without the unstable local-scale division used
-  # by the rejected local-contrast feature: residual = x - EMA_45(x).
-  include_ema_residual: true
-  ema_residual_span: 45
   include_local_contrast: false
   include_rolling_mean: true
   include_rolling_std: true
@@ -61,7 +57,7 @@ fractional:
   channel_normalize: none
 
 architecture:
-  # 14 channels: the original 13 plus one fixed EMA-residual channel.
+  # 13 channels: raw, signed delta, |delta|, six rolling statistics and 4 GL.
   channel_schedule: [32, 64, 128]
   hidden_channels: 128
 
@@ -76,8 +72,10 @@ architecture:
   # IBN in the early feature extractor improves cross-house robustness while
   # retaining amplitude-sensitive BatchNorm channels for appliance identity.
   stem_norm_type: ibn
-  temporal_norm_type: batch
-  head_norm_type: batch
+  # Cross-domain batches mix UK-DALE, REFIT, and synthetic recompositions.
+  # GroupNorm avoids shared running statistics that depend on that mixture.
+  temporal_norm_type: group
+  head_norm_type: group
 
   # Proven early TCN. The dilation-32 extension reduced REFIT fridge F1 and is
   # removed so this experiment isolates training-label quality.
