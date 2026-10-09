@@ -193,10 +193,10 @@ def _load_timeline(
     data_loader = adapter._data_loader()
     n_points = len(bundle.y_true_watts)
     aggregate = bundle_aggregate_watts(
-        data_loader, split, n_points, csv_timesteps=bundle.csv_timesteps
+        data_loader, split, n_points=n_points, csv_timesteps=bundle.csv_timesteps
     )
     true_watts = bundle_csv_appliance_watts(
-        data_loader, split, n_points, csv_timesteps=bundle.csv_timesteps
+        data_loader, split, n_points=n_points, csv_timesteps=bundle.csv_timesteps
     )
     true_on = dataset_on_labels_for_bundle(
         data_loader, split, n_points, bundle.csv_timesteps
