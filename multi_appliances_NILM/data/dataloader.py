@@ -228,6 +228,43 @@ def _target_mode(windowing: dict[str, Any], split: str) -> TargetMode:
     return "output_window"
 
 
+def _temporal_max_guard(
+    targets: np.ndarray,
+    *,
+    radius: int,
+    segment_ids: np.ndarray | None,
+) -> np.ndarray:
+    """Dilate appliance power locally before estimating nuisance residual.
+
+    Aggregate and submeter samples are not perfectly synchronized. Directly
+    subtracting only ``target[t]`` can therefore leave a target edge inside the
+    synthetic "background" at ``t +/- 1``. Taking a local maximum removes that
+    leaked edge from background donors. The operation is used only for data
+    augmentation; supervised targets and all real/evaluation windows are
+    untouched.
+    """
+    source = np.asarray(targets)
+    guard = source.copy()
+    radius = int(radius)
+    if radius <= 0 or len(source) == 0:
+        return guard
+
+    segments = None if segment_ids is None else np.asarray(segment_ids)
+    for shift in range(1, radius + 1):
+        left_valid = np.ones(len(source) - shift, dtype=bool)
+        if segments is not None:
+            left_valid &= segments[shift:] == segments[:-shift]
+
+        current = guard[shift:]
+        candidate = source[:-shift]
+        current[left_valid] = np.maximum(current[left_valid], candidate[left_valid])
+
+        current = guard[:-shift]
+        candidate = source[shift:]
+        current[left_valid] = np.maximum(current[left_valid], candidate[left_valid])
+    return guard
+
+
 class WindowDataset(Dataset):
     """Sliding-window dataset; windowing rules come from model config."""
 
@@ -250,6 +287,7 @@ class WindowDataset(Dataset):
         random_mix_focal_event: bool = False,
         random_mix_focal_event_prob: float = 1.0,
         random_mix_background_bins_watts: list[float] | None = None,
+        random_mix_background_guard_samples: int = 0,
         random_mix_meter_lag_prob: float = 0.0,
         random_mix_meter_lag_max_samples: list[int] | None = None,
         paired_background: bool = False,
@@ -274,6 +312,9 @@ class WindowDataset(Dataset):
         self.random_mix_mode = str(random_mix_mode)
         self.random_mix_focal_event = bool(random_mix_focal_event)
         self.random_mix_focal_event_prob = float(random_mix_focal_event_prob)
+        self.random_mix_background_guard_samples = int(random_mix_background_guard_samples)
+        if self.random_mix_background_guard_samples < 0:
+            raise ValueError("random_mix background guard samples cannot be negative")
         self.random_mix_meter_lag_prob = float(random_mix_meter_lag_prob)
         self.random_mix_meter_lag_max_samples = np.asarray(
             random_mix_meter_lag_max_samples
@@ -308,8 +349,13 @@ class WindowDataset(Dataset):
             # Mixes are summed in watts. Clip the background at 0: mains can dip
             # below the submeter sum when the channels are slightly misaligned.
             self.targets_watts = self.targets
+            guarded_targets = _temporal_max_guard(
+                self.targets,
+                radius=self.random_mix_background_guard_samples,
+                segment_ids=segment_ids,
+            )
             self.residual_watts = np.clip(
-                inputs - self.targets.sum(axis=1), 0.0, None
+                inputs - guarded_targets.sum(axis=1), 0.0, None
             ).astype(tensor_dtype)
 
         self.targets = np.ascontiguousarray(norm.normalize_targets(self.targets), dtype=tensor_dtype)
@@ -658,6 +704,9 @@ class NILMDataLoader:
         self.random_mix_background_bins_watts = list(
             focal_cfg.get("background_bins_watts", [0, 100, 200, 400, 800])
         )
+        self.random_mix_background_guard_samples = int(
+            mix_cfg.get("background_guard_samples", 0)
+        )
         lag_cfg = mix_cfg.get("meter_lag_augmentation") or {}
         self.random_mix_meter_lag_prob = (
             float(lag_cfg.get("prob", 0.0)) if bool(lag_cfg.get("enabled", False)) else 0.0
@@ -719,6 +768,9 @@ class NILMDataLoader:
             ),
             random_mix_focal_event_prob=self.random_mix_focal_event_prob,
             random_mix_background_bins_watts=self.random_mix_background_bins_watts,
+            random_mix_background_guard_samples=(
+                self.random_mix_background_guard_samples if split == "train" else 0
+            ),
             random_mix_meter_lag_prob=(
                 self.random_mix_meter_lag_prob if split == "train" else 0.0
             ),

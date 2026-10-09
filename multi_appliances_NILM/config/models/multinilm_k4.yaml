@@ -1,7 +1,7 @@
 # Recovery baseline: restore the early relational model that was used before
 # the dual-expert, local-contrast and mixture-output experiments. The new
 # cross-house dataset split is intentionally retained.
-experiment_id: multinilm_meter_lag_house_split
+experiment_id: multinilm_guarded_background_meter_lag_house_split
 model_name: multinilm_fractional
 
 data:
@@ -170,6 +170,10 @@ training:
     enabled: true
     mode: full
     prob: 0.5
+    # Remove target edges that leak into residual background when aggregate and
+    # submeters are offset by up to two 8 s samples. This changes synthetic
+    # background donors only; real windows and all labels remain untouched.
+    background_guard_samples: 2
     # Preserve the original additive full mix, but make its sampling useful:
     # every synthetic window contains one real ON appliance window, while the
     # residual background is drawn uniformly from the non-empty power ranges.
