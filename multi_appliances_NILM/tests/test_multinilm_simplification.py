@@ -1,6 +1,10 @@
 import unittest
 
-from scripts.run_multinilm_simplification import FEATURE_VARIANTS, _feature_candidate
+from scripts.run_multinilm_simplification import (
+    FEATURE_VARIANTS,
+    _feature_candidate,
+    _loss_candidate,
+)
 
 
 class SimplificationFeatureConfigTests(unittest.TestCase):
@@ -44,6 +48,29 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         _feature_candidate(self.base, "feature_1")
         self.assertEqual(self.base["fractional"]["k"], 4)
         self.assertTrue(self.base["fractional"]["include_abs_delta"])
+
+    def test_core_loss_removes_only_auxiliary_terms(self):
+        self.base["loss"] = {
+            "task_balance": "per_appliance_clipped",
+            "lambda_state": 0.8,
+            "power_on_weight": 1.0,
+            "power_off_weight": 0.5,
+            "power_delta_weight": 0.15,
+            "power_energy_relative_weight": 0.25,
+            "state_fp_weight": 1.0,
+        }
+        cfg = _loss_candidate(self.base, "loss_core", "feature_1")
+
+        self.assertEqual(cfg["loss"]["task_balance"], "per_appliance_clipped")
+        self.assertEqual(cfg["loss"]["lambda_state"], 0.8)
+        self.assertEqual(cfg["loss"]["power_on_weight"], 1.0)
+        for name in (
+            "power_off_weight",
+            "power_delta_weight",
+            "power_energy_relative_weight",
+            "state_fp_weight",
+        ):
+            self.assertEqual(cfg["loss"][name], 0.0)
 
 
 if __name__ == "__main__":

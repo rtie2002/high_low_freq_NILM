@@ -6,7 +6,7 @@ changes one experiment family at a time.  Each run stores its fully merged
 configuration in the normal run directory, so temporary candidate YAML files
 are unnecessary.
 
-The first family tests whether the 13-channel fixed feature bank is needed:
+The feature family tests whether the 13-channel fixed feature bank is needed:
 
 ``feature_1``
     Raw aggregate only.
@@ -76,6 +76,20 @@ FEATURE_VARIANTS = {
     },
 }
 
+LOSS_VARIANTS = {
+    # Smallest objective that preserves the two reasons for having two heads:
+    # ON-weighted power reconstruction and imbalanced ON/OFF classification.
+    # The bounded per-appliance scale matching is retained at this stage so
+    # the experiment removes auxiliary losses without changing task coupling.
+    "loss_core": {
+        "experiment_id": "multinilm_simplify_loss_core_raw",
+        "power_off_weight": 0.0,
+        "power_delta_weight": 0.0,
+        "power_energy_relative_weight": 0.0,
+        "state_fp_weight": 0.0,
+    },
+}
+
 
 def _feature_candidate(base: dict, name: str) -> dict:
     """Return one feature-only ablation while preserving every other setting."""
@@ -106,16 +120,42 @@ def _feature_candidate(base: dict, name: str) -> dict:
     return candidate
 
 
+def _loss_candidate(base: dict, name: str, feature_base: str) -> dict:
+    """Return one loss-only ablation on a previously tested feature base."""
+    if feature_base not in {"feature_1", "feature_2_mean"}:
+        raise ValueError("loss candidates require feature_1 or feature_2_mean")
+    candidate = _feature_candidate(base, feature_base)
+    spec = LOSS_VARIANTS[name]
+    candidate["experiment_id"] = spec["experiment_id"].replace(
+        "_raw", "_raw_mean" if feature_base == "feature_2_mean" else "_raw"
+    )
+    loss = copy.deepcopy(candidate.get("loss", {}))
+    loss.update({key: value for key, value in spec.items() if key != "experiment_id"})
+    candidate["loss"] = loss
+    return candidate
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--experiment", type=Path, default=DEFAULT_EXPERIMENT)
     parser.add_argument("--model-config", type=Path, default=DEFAULT_MODEL_CONFIG)
     parser.add_argument(
+        "--stage",
+        choices=("features", "loss"),
+        default="features",
+        help="Controlled simplification family to run.",
+    )
+    parser.add_argument(
         "--candidates",
         nargs="+",
-        choices=tuple(FEATURE_VARIANTS),
-        default=list(FEATURE_VARIANTS),
-        help="Candidates to run in order (default: all four feature ablations).",
+        default=None,
+        help="Named candidates to run in order (default: every candidate in the stage).",
+    )
+    parser.add_argument(
+        "--feature-base",
+        choices=("feature_1", "feature_2_mean"),
+        default="feature_1",
+        help="Validated compact input used by loss-stage candidates.",
     )
     return parser.parse_args()
 
@@ -125,8 +165,17 @@ def main() -> None:
     experiment = load_experiment(args.experiment)
     base_model_cfg = load_model_config(args.model_config)
 
-    for name in args.candidates:
-        model_cfg = _feature_candidate(base_model_cfg, name)
+    variants = FEATURE_VARIANTS if args.stage == "features" else LOSS_VARIANTS
+    candidates = args.candidates or list(variants)
+    unknown = sorted(set(candidates) - set(variants))
+    if unknown:
+        raise ValueError(f"Unknown {args.stage} candidates: {unknown}")
+
+    for name in candidates:
+        if args.stage == "features":
+            model_cfg = _feature_candidate(base_model_cfg, name)
+        else:
+            model_cfg = _loss_candidate(base_model_cfg, name, args.feature_base)
         merged = merge_configs(experiment, model_cfg)
         data_root = Path(merged["data_root"])
         if not data_root.is_absolute():
