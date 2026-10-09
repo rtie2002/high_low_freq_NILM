@@ -51,4 +51,7 @@ evaluation:
     enabled: true
     min_power_watts: 5
   sae_period: 1200
+  # Report event-onset F1 with the known two-sample REFIT timing uncertainty.
+  # Strict pointwise F1 remains unchanged and is still reported separately.
+  event_tolerance_seconds: 16
   power_unit: watts

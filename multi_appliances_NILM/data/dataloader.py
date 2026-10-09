@@ -21,6 +21,8 @@ OutputAlignment = Literal["end", "center"]
 TargetMode = Literal["output_window", "full_input"]
 RandomMixMode = Literal["full", "background_swap"]
 
+_SOURCE_DATASET_CODES = {"unknown": 0, "refit": 1, "ukdale": 2, "redd": 3}
+
 _SPLIT_FILE_KEYS = {
     "train": "train_file",
     "validation": "validation_file",
@@ -82,6 +84,34 @@ def get_random_mix_mode(model_cfg: dict[str, Any]) -> RandomMixMode:
             "training.random_mix.mode must be one of: full, background_swap"
         )
     return mode  # type: ignore[return-value]
+
+
+def _source_dataset_code(name: str) -> int:
+    normalized = str(name).strip().lower()
+    if normalized not in _SOURCE_DATASET_CODES or normalized == "unknown":
+        raise ValueError(
+            "alignment_jitter.source_dataset must be one of: refit, ukdale, redd"
+        )
+    return _SOURCE_DATASET_CODES[normalized]
+
+
+def _shift_with_edge_fill(trace: np.ndarray, offset: int) -> np.ndarray:
+    """Shift a 1-D trace in samples without wrapping unrelated edge values."""
+    offset = int(offset)
+    if offset == 0:
+        return trace.copy()
+    if abs(offset) >= len(trace):
+        raise ValueError("alignment offset must be shorter than the training window")
+
+    shifted = np.empty_like(trace)
+    if offset > 0:
+        shifted[offset:] = trace[:-offset]
+        shifted[:offset] = trace[0]
+    else:
+        advance = -offset
+        shifted[:-advance] = trace[advance:]
+        shifted[-advance:] = trace[-1]
+    return shifted
 
 
 def get_background_consistency_enabled(model_cfg: dict[str, Any]) -> bool:
@@ -250,8 +280,11 @@ class WindowDataset(Dataset):
         random_mix_focal_event: bool = False,
         random_mix_focal_event_prob: float = 1.0,
         random_mix_background_bins_watts: list[float] | None = None,
-        random_mix_meter_lag_prob: float = 0.0,
-        random_mix_meter_lag_max_samples: list[int] | None = None,
+        source_codes: np.ndarray | None = None,
+        random_mix_alignment_app_index: int | None = None,
+        random_mix_alignment_source_code: int = 0,
+        random_mix_alignment_offsets: list[int] | None = None,
+        random_mix_alignment_probabilities: list[float] | None = None,
         paired_background: bool = False,
     ):
         norm = normalization or NormalizationStats()
@@ -274,12 +307,17 @@ class WindowDataset(Dataset):
         self.random_mix_mode = str(random_mix_mode)
         self.random_mix_focal_event = bool(random_mix_focal_event)
         self.random_mix_focal_event_prob = float(random_mix_focal_event_prob)
-        self.random_mix_meter_lag_prob = float(random_mix_meter_lag_prob)
-        self.random_mix_meter_lag_max_samples = np.asarray(
-            random_mix_meter_lag_max_samples
-            if random_mix_meter_lag_max_samples is not None
-            else np.zeros(self.targets.shape[1], dtype=np.int64),
-            dtype=np.int64,
+        self.source_codes = np.asarray(
+            source_codes if source_codes is not None else np.zeros(len(inputs)),
+            dtype=np.int8,
+        )
+        self.random_mix_alignment_app_index = random_mix_alignment_app_index
+        self.random_mix_alignment_source_code = int(random_mix_alignment_source_code)
+        self.random_mix_alignment_offsets = np.asarray(
+            random_mix_alignment_offsets or [0], dtype=np.int64
+        )
+        self.random_mix_alignment_probabilities = torch.as_tensor(
+            random_mix_alignment_probabilities or [1.0], dtype=torch.float64
         )
         self.paired_background = bool(paired_background)
         if self.paired_background and self.random_mix_prob > 0.0:
@@ -296,14 +334,27 @@ class WindowDataset(Dataset):
             raise ValueError("focal-event sampling requires random_mix to be enabled")
         if self.random_mix_focal_event and not 0.0 < self.random_mix_focal_event_prob <= 1.0:
             raise ValueError("focal-event sampling probability must be in (0, 1]")
-        if not 0.0 <= self.random_mix_meter_lag_prob <= 1.0:
-            raise ValueError("random_mix meter-lag probability must be in [0, 1]")
-        if self.random_mix_meter_lag_max_samples.shape != (self.targets.shape[1],):
-            raise ValueError("random_mix meter-lag limits must have one value per appliance")
-        if np.any(self.random_mix_meter_lag_max_samples < 0):
-            raise ValueError("random_mix meter-lag limits cannot be negative")
-        if self.random_mix_meter_lag_prob > 0.0 and self.random_mix_prob <= 0.0:
-            raise ValueError("meter-lag augmentation requires random_mix to be enabled")
+        if self.source_codes.shape != (len(inputs),):
+            raise ValueError("source_codes must contain one code per input row")
+        if self.random_mix_alignment_app_index is not None:
+            app_i = int(self.random_mix_alignment_app_index)
+            if not 0 <= app_i < self.targets.shape[1]:
+                raise ValueError("alignment-jitter appliance index is out of range")
+            if self.random_mix_prob <= 0.0:
+                raise ValueError("alignment jitter requires random_mix to be enabled")
+            if self.random_mix_alignment_source_code <= 0:
+                raise ValueError("alignment jitter requires a known source dataset")
+            if self.random_mix_alignment_offsets.ndim != 1:
+                raise ValueError("alignment-jitter offsets must be one-dimensional")
+            if len(self.random_mix_alignment_offsets) != len(
+                self.random_mix_alignment_probabilities
+            ):
+                raise ValueError("alignment-jitter offsets and probabilities must match")
+            if torch.any(self.random_mix_alignment_probabilities < 0):
+                raise ValueError("alignment-jitter probabilities cannot be negative")
+            probability_sum = float(self.random_mix_alignment_probabilities.sum())
+            if not np.isclose(probability_sum, 1.0, atol=1e-6):
+                raise ValueError("alignment-jitter probabilities must sum to 1")
         if self.random_mix_prob > 0.0 or self.paired_background:
             # Mixes are summed in watts. Clip the background at 0: mains can dip
             # below the submeter sum when the channels are slightly misaligned.
@@ -444,19 +495,25 @@ class WindowDataset(Dataset):
         states = np.stack(
             [self.states[s:s + seq_len, a] for a, s in enumerate(app_starts)], axis=1
         )
-        # REFIT meters are sampled asynchronously. Around a short transition,
-        # the aggregate can therefore show the appliance edge one or two 8 s
-        # bins after its submeter label. Reproduce that measurement effect only
-        # in the synthetic input: targets remain on the submeter time grid.
         mains_power = power.copy()
-        if self.random_mix_meter_lag_prob > 0.0:
-            for app_i, max_lag in enumerate(self.random_mix_meter_lag_max_samples):
-                if max_lag <= 0 or float(torch.rand(())) >= self.random_mix_meter_lag_prob:
-                    continue
-                lag = int(torch.randint(1, int(max_lag) + 1, ()).item())
-                trace = mains_power[:, app_i].copy()
-                mains_power[lag:, app_i] = trace[:-lag]
-                mains_power[:lag, app_i] = trace[0]
+        app_i = self.random_mix_alignment_app_index
+        if (
+            app_i is not None
+            and self.source_codes[app_starts[app_i]]
+            == self.random_mix_alignment_source_code
+        ):
+            # Synthetic recomposition otherwise makes every appliance perfectly
+            # aligned with the aggregate. Restore the timing uncertainty measured
+            # from training REFIT only; labels remain on the submeter time grid.
+            choice = int(
+                torch.multinomial(
+                    self.random_mix_alignment_probabilities, 1
+                ).item()
+            )
+            offset = int(self.random_mix_alignment_offsets[choice])
+            mains_power[:, app_i] = _shift_with_edge_fill(
+                mains_power[:, app_i], offset
+            )
 
         mains = mains_power.sum(axis=1) + self.residual_watts[bg:bg + seq_len]
 
@@ -563,6 +620,7 @@ class SplitArrays:
     targets: np.ndarray
     states: np.ndarray
     segment_ids: np.ndarray
+    source_codes: np.ndarray
 
 
 def _sequence_ids_from_csv(df: pd.DataFrame, sample_seconds: float | None) -> np.ndarray:
@@ -623,7 +681,19 @@ def load_csv_arrays(
     segment_ids = _sequence_ids_from_csv(
         df, float(sample_seconds) if sample_seconds is not None else None
     )
-    return SplitArrays(x, y, z, segment_ids)
+    if "dataset" in df.columns:
+        source_codes = (
+            df["dataset"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .map(_SOURCE_DATASET_CODES)
+            .fillna(0)
+            .to_numpy(dtype=np.int8)
+        )
+    else:
+        source_codes = np.zeros(len(df), dtype=np.int8)
+    return SplitArrays(x, y, z, segment_ids, source_codes)
 
 
 class NILMDataLoader:
@@ -658,14 +728,26 @@ class NILMDataLoader:
         self.random_mix_background_bins_watts = list(
             focal_cfg.get("background_bins_watts", [0, 100, 200, 400, 800])
         )
-        lag_cfg = mix_cfg.get("meter_lag_augmentation") or {}
-        self.random_mix_meter_lag_prob = (
-            float(lag_cfg.get("prob", 0.0)) if bool(lag_cfg.get("enabled", False)) else 0.0
-        )
-        lag_by_appliance = lag_cfg.get("max_lag_samples", {}) or {}
-        self.random_mix_meter_lag_max_samples = [
-            int(lag_by_appliance.get(app, 0)) for app in self.appliances
-        ]
+        alignment_cfg = mix_cfg.get("alignment_jitter") or {}
+        if bool(alignment_cfg.get("enabled", False)):
+            app = str(alignment_cfg.get("appliance", "microwave"))
+            if app not in self.appliances:
+                raise ValueError(f"alignment-jitter appliance is not configured: {app}")
+            self.random_mix_alignment_app_index = self.appliances.index(app)
+            self.random_mix_alignment_source_code = _source_dataset_code(
+                str(alignment_cfg.get("source_dataset", "refit"))
+            )
+            self.random_mix_alignment_offsets = [
+                int(value) for value in alignment_cfg.get("offsets_samples", [])
+            ]
+            self.random_mix_alignment_probabilities = [
+                float(value) for value in alignment_cfg.get("probabilities", [])
+            ]
+        else:
+            self.random_mix_alignment_app_index = None
+            self.random_mix_alignment_source_code = 0
+            self.random_mix_alignment_offsets = [0]
+            self.random_mix_alignment_probabilities = [1.0]
         self.paired_background = get_background_consistency_enabled(model_cfg)
         self._splits: dict[SplitName, SplitArrays] = {}
 
@@ -719,10 +801,13 @@ class NILMDataLoader:
             ),
             random_mix_focal_event_prob=self.random_mix_focal_event_prob,
             random_mix_background_bins_watts=self.random_mix_background_bins_watts,
-            random_mix_meter_lag_prob=(
-                self.random_mix_meter_lag_prob if split == "train" else 0.0
+            source_codes=data.source_codes,
+            random_mix_alignment_app_index=(
+                self.random_mix_alignment_app_index if split == "train" else None
             ),
-            random_mix_meter_lag_max_samples=self.random_mix_meter_lag_max_samples,
+            random_mix_alignment_source_code=self.random_mix_alignment_source_code,
+            random_mix_alignment_offsets=self.random_mix_alignment_offsets,
+            random_mix_alignment_probabilities=self.random_mix_alignment_probabilities,
             paired_background=self.paired_background if split == "train" else False,
         )
         if len(dataset) == 0:

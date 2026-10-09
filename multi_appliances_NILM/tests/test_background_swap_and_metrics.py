@@ -195,7 +195,7 @@ class BackgroundSwapTests(unittest.TestCase):
             [len(pool) for pool in dataset.random_mix_background_starts], [1, 1]
         )
 
-    def test_meter_lag_changes_only_synthetic_input_timing(self) -> None:
+    def test_alignment_jitter_changes_only_matching_source_input(self) -> None:
         targets = np.asarray([[0.0], [100.0], [100.0], [0.0]], dtype=np.float32)
         states = (targets > 0).astype(np.int64)
         background = np.full(4, 10.0, dtype=np.float32)
@@ -212,8 +212,11 @@ class BackgroundSwapTests(unittest.TestCase):
             target_mode="full_input",
             random_mix_prob=1.0,
             random_mix_mode="full",
-            random_mix_meter_lag_prob=1.0,
-            random_mix_meter_lag_max_samples=[2],
+            source_codes=np.ones(4, dtype=np.int8),
+            random_mix_alignment_app_index=0,
+            random_mix_alignment_source_code=1,
+            random_mix_alignment_offsets=[2],
+            random_mix_alignment_probabilities=[1.0],
         )
 
         torch.manual_seed(3)
@@ -224,8 +227,63 @@ class BackgroundSwapTests(unittest.TestCase):
         np.testing.assert_array_equal(mixed_states.numpy(), states)
         self.assertGreater(int(np.flatnonzero(input_appliance > 50)[0]), 1)
 
+    def test_alignment_jitter_leaves_other_sources_aligned(self) -> None:
+        targets = np.asarray([[0.0], [100.0], [100.0], [0.0]], dtype=np.float32)
+        background = np.full(4, 10.0, dtype=np.float32)
+        dataset = WindowDataset(
+            targets[:, 0] + background,
+            targets,
+            (targets > 0).astype(np.int64),
+            {
+                "input_window_length": 4,
+                "output_window_length": 4,
+                "output_alignment": "end",
+            },
+            stride=4,
+            target_mode="full_input",
+            random_mix_prob=1.0,
+            random_mix_mode="full",
+            source_codes=np.full(4, 2, dtype=np.int8),
+            random_mix_alignment_app_index=0,
+            random_mix_alignment_source_code=1,
+            random_mix_alignment_offsets=[2],
+            random_mix_alignment_probabilities=[1.0],
+        )
+
+        mixed_input, mixed_targets, _ = dataset[0]
+        np.testing.assert_allclose(
+            mixed_input.squeeze(-1).numpy() - background,
+            mixed_targets.numpy().squeeze(-1),
+        )
+
 
 class DiagnosticMetricTests(unittest.TestCase):
+    def test_event_f1_accepts_onsets_within_tolerance(self) -> None:
+        truth = np.asarray([[0], [0], [1], [1], [0], [0]], dtype=np.int32)
+        prediction = np.asarray([[0], [0], [0], [0], [1], [1]], dtype=np.int32)
+        bundle = _bundle(
+            truth.astype(np.float64) * 100.0,
+            prediction.astype(np.float64) * 100.0,
+            truth,
+            prediction,
+        )
+
+        strict = evaluate_bundle(
+            bundle,
+            state_label_source="csv",
+            sample_seconds=8,
+            event_tolerance_seconds=0,
+        ).iloc[0]
+        tolerant = evaluate_bundle(
+            bundle,
+            state_label_source="csv",
+            sample_seconds=8,
+            event_tolerance_seconds=16,
+        ).iloc[0]
+
+        self.assertEqual(strict["event_f1"], 0.0)
+        self.assertEqual(tolerant["event_f1"], 1.0)
+
     def test_power_postprocess_never_changes_ground_truth(self) -> None:
         config = PowerPostprocessConfig(
             enabled=True,

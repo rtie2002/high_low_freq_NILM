@@ -1928,6 +1928,9 @@ def evaluate_model(
         state_label_source=get_state_label_source(adapter.model_cfg),
         power_postprocess=power_postprocess,
         sample_seconds=sample_seconds,
+        event_tolerance_seconds=float(
+            adapter.experiment["evaluation"].get("event_tolerance_seconds", 0.0)
+        ),
     )
     metrics_path = (
         result_dir / f"{split}_metrics.csv"

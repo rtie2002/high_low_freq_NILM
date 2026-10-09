@@ -232,6 +232,52 @@ def _false_event_counts(
     return counts
 
 
+def _event_onset_metrics(
+    bundle: PredictionBundle,
+    z_true: np.ndarray,
+    z_pred: np.ndarray,
+    tolerance_samples: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """One-to-one ON-event matching with a symmetric onset-time tolerance."""
+    if tolerance_samples < 0:
+        raise ValueError("event tolerance cannot be negative")
+    n_samples, n_apps = z_true.shape
+    breaks = _sequence_breaks(bundle, n_samples)
+    segment_starts = np.flatnonzero(breaks)
+    segment_ends = np.r_[segment_starts[1:], n_samples]
+
+    true_counts = np.zeros(n_apps, dtype=np.float64)
+    pred_counts = np.zeros(n_apps, dtype=np.float64)
+    matched_counts = np.zeros(n_apps, dtype=np.float64)
+    for app_i in range(n_apps):
+        for start, end in zip(segment_starts, segment_ends):
+            truth = z_true[start:end, app_i].astype(bool)
+            prediction = z_pred[start:end, app_i].astype(bool)
+            true_starts = np.flatnonzero(truth & np.r_[True, ~truth[:-1]])
+            pred_starts = np.flatnonzero(prediction & np.r_[True, ~prediction[:-1]])
+            true_counts[app_i] += len(true_starts)
+            pred_counts[app_i] += len(pred_starts)
+
+            true_i = pred_i = 0
+            while true_i < len(true_starts) and pred_i < len(pred_starts):
+                delta = int(pred_starts[pred_i] - true_starts[true_i])
+                if abs(delta) <= tolerance_samples:
+                    matched_counts[app_i] += 1
+                    true_i += 1
+                    pred_i += 1
+                elif delta < -tolerance_samples:
+                    pred_i += 1
+                else:
+                    true_i += 1
+
+    precision = _safe_ratio(matched_counts, pred_counts)
+    recall = _safe_ratio(matched_counts, true_counts)
+    f1 = _safe_ratio(2.0 * precision * recall, precision + recall)
+    no_matches = (matched_counts == 0) & ((true_counts + pred_counts) > 0)
+    f1[no_matches] = 0.0
+    return precision, recall, f1
+
+
 def _sample_seconds_or_nan(sample_seconds: float | None) -> float:
     if sample_seconds is None:
         return float("nan")
@@ -249,6 +295,7 @@ def evaluate_bundle(
     state_label_source: str = "auto",
     power_postprocess: PowerPostprocessConfig | None = None,
     sample_seconds: float | None = None,
+    event_tolerance_seconds: float = 0.0,
 ) -> pd.DataFrame:
     """Per-appliance power, sample-state, and energy diagnostics."""
     y_true, y_pred = apply_power_postprocess_pair(
@@ -294,6 +341,14 @@ def evaluate_bundle(
         else np.full(y_true.shape[1], np.nan)
     )
     false_event_count_vals = _false_event_counts(bundle, z_true, z_pred)
+    tolerance_samples = (
+        int(round(float(event_tolerance_seconds) / seconds))
+        if np.isfinite(seconds)
+        else 0
+    )
+    event_precision_vals, event_recall_vals, event_f1_vals = _event_onset_metrics(
+        bundle, z_true, z_pred, tolerance_samples
+    )
 
     base = {
         "experiment_id": bundle.experiment_id,
@@ -319,6 +374,10 @@ def evaluate_bundle(
             "false_negative_rate": float(false_negative_rate_vals[i]),
             "false_positive_energy_wh": float(false_positive_energy_wh_vals[i]),
             "false_event_count": int(false_event_count_vals[i]),
+            "event_precision": float(event_precision_vals[i]),
+            "event_recall": float(event_recall_vals[i]),
+            "event_f1": float(event_f1_vals[i]),
+            "event_tolerance_seconds": float(event_tolerance_seconds),
             "on_mae": float(on_mae_vals[i]),
             "off_mae": float(off_mae_vals[i]),
             "energy_ratio": float(energy_ratio_vals[i]),
@@ -344,6 +403,10 @@ def evaluate_bundle(
         "false_negative_rate": _mean_finite(false_negative_rate_vals),
         "false_positive_energy_wh": _sum_finite(false_positive_energy_wh_vals),
         "false_event_count": int(false_event_count_vals.sum()),
+        "event_precision": _mean_finite(event_precision_vals),
+        "event_recall": _mean_finite(event_recall_vals),
+        "event_f1": _mean_finite(event_f1_vals),
+        "event_tolerance_seconds": float(event_tolerance_seconds),
         "on_mae": _mean_finite(on_mae_vals),
         "off_mae": _mean_finite(off_mae_vals),
         "energy_ratio": _mean_finite(energy_ratio_vals),
