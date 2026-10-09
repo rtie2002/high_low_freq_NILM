@@ -9,12 +9,66 @@ from model.MultiNILM import (
     FractionalFrontEnd,
     MultiNILM,
     MultiNILMAdapter,
+    PooledGlobalContext,
     build_multinilm_fractional,
     multinilm_config,
 )
 
 
 class MultiNILMDualExpertTests(unittest.TestCase):
+    def test_pooled_global_context_starts_as_exact_residual_identity(self) -> None:
+        module = PooledGlobalContext(
+            16,
+            pool_size=8,
+            num_heads=4,
+            num_layers=1,
+            dropout=0.0,
+            residual_scale=0.1,
+        )
+        features = torch.randn(2, 16, 65, requires_grad=True)
+        output = module(features)
+
+        self.assertEqual(output.shape, features.shape)
+        torch.testing.assert_close(output, features)
+        output.square().mean().backward()
+        self.assertIsNotNone(module.output_projection.weight.grad)
+
+    def test_global_context_config_selects_fridge_only(self) -> None:
+        cfg = multinilm_config({
+            "hidden_channels": 16,
+            "global_context": {
+                "enabled": True,
+                "app_indices": [1],
+                "pool_size": 4,
+                "num_heads": 4,
+                "num_layers": 1,
+                "feedforward_multiplier": 2,
+                "dropout": 0.0,
+                "residual_scale": 0.1,
+            },
+        })
+        self.assertTrue(cfg.global_context_enabled)
+        self.assertEqual(cfg.global_context_app_indices, [1])
+
+        model = MultiNILM(
+            input_channels=1,
+            num_appliances=2,
+            output_length=32,
+            hidden_channels=16,
+            num_blocks=1,
+            kernel_size=3,
+            temporal_dropout=0.0,
+            head_dropout=0.0,
+            global_context_enabled=True,
+            global_context_app_indices=[1],
+            global_context_pool_size=4,
+            global_context_num_heads=4,
+            global_context_dropout=0.0,
+        )
+        power, logits = model(torch.randn(2, 32))
+        self.assertEqual(power.shape, (2, 32, 2))
+        self.assertEqual(logits.shape, (2, 32, 2))
+
     def test_early_relational_frontend_has_signed_delta_and_thirteen_channels(self) -> None:
         frontend = FractionalFrontEnd(
             alphas=[0.25, 0.5, 0.75, 1.0],

@@ -307,3 +307,39 @@ that it solves fridge identifiability: high-background false activation remains
 the dominant failure. The next investigation must target the information or
 sampling available for fridge-like OFF confusers rather than add another loss
 multiplier.
+
+## Fridge-confuser coverage audit — 2026-10-09
+
+Before changing the sampler, count 40--150 W positive and negative residual
+edges while the fridge label is OFF. These are simple proxies for unmonitored
+loads that can resemble a fridge transition. The training houses contain
+2,264--6,690 such edges per 100,000 OFF samples, while REFIT house 20 contains
+1,857 and UK-DALE house 2 contains 1,137. Training also includes REFIT houses 3
+and 5, where respectively 85.3% and 98.1% of fridge-OFF samples have residual
+background above 200 W.
+
+Conclusion: insufficient high-background or edge-negative coverage is not the
+main limitation. Do not add another hard-negative sampler; it would duplicate
+examples already abundant in training and risks trading recall for lower FPR.
+The next experiment instead tests whether the fixed 33-minute TCN receptive
+field fails to use the 136-minute input's repeated fridge-cycle context.
+
+## Fridge-only pooled global context — started 2026-10-09
+
+Experiment: `multinilm_fridge_global_context_house_split`
+
+Keep the selected clipped loss, 13 input features, TCN, task attention,
+cross-appliance relation attention, and all data augmentation unchanged. Add
+one low-resolution full-window branch after the shared TCN:
+
+1. average-pool 1024 steps to 128 tokens;
+2. apply one 4-head self-attention encoder layer;
+3. linearly upsample to 1024 steps;
+4. add through a 0.1 residual only to the fridge head.
+
+The output projection is initialized to zero, so epoch zero is exactly the
+selected TCN rather than an abruptly perturbed model. Microwave and the other
+three appliance paths do not receive this branch. This is a controlled test of
+global temporal information, motivated by dual-path single-channel source
+separation: local convolutions retain edge detail while a compressed global
+path can compare repeated patterns across the full sequence.
