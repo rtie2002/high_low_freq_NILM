@@ -830,10 +830,14 @@ def _resolve_amp_dtype(train_cfg: dict) -> torch.dtype:
 
 def _configure_cuda(train_cfg: dict) -> None:
     """Apply optional CUDA speed settings from training config."""
+    deterministic = bool(train_cfg.get("deterministic", False))
+    torch.use_deterministic_algorithms(deterministic, warn_only=True)
     if not torch.cuda.is_available():
         return
-    if bool(train_cfg.get("cudnn_benchmark", True)):
-        torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = (
+        bool(train_cfg.get("cudnn_benchmark", True)) and not deterministic
+    )
+    torch.backends.cudnn.deterministic = deterministic
     if bool(train_cfg.get("tf32", True)):
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
@@ -1313,6 +1317,11 @@ def train_model(
     if epochs <= 0:
         raise ValueError("epochs must be greater than 0. Use a one-batch smoke test for pipeline checks.")
 
+    # Resolve and apply the seed before model construction. Seeding later makes
+    # nominally controlled runs start from different initial weights.
+    seed_int = _resolve_seed(adapter, train_cfg, seed)
+    seed_everything(seed_int)
+
     _, tensor_dtype = resolve_tensor_dtype(adapter.model_cfg)
 
     # Step 2:
@@ -1395,8 +1404,7 @@ def train_model(
         )
 
     # Step 5:
-    # Resolve the final seed and print the data pipeline summary.
-    seed_int = _resolve_seed(adapter, train_cfg, seed)
+    # Print the data pipeline summary using the already applied seed.
     data_loader = adapter._data_loader()
     _print_training_data_summary(
         experiment_id=adapter.experiment["experiment_id"],
@@ -1411,8 +1419,6 @@ def train_model(
     )
 
     plot_cfg = train_cfg.get("plots", {})
-    seed_everything(seed_int)
-
     # Step 6:
     # Prepare output paths, checkpoint selection rules, and live monitor.
     run_dir.mkdir(parents=True, exist_ok=True)

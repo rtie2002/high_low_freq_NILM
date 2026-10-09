@@ -495,3 +495,25 @@ The resolver is corrected so `val_ap` and `val_average_precision` both maximize
 AP, with a unit test for direction and score comparison. The invalid run folder
 is preserved under an explicit diagnostic name, and the intended AP-selected
 experiment is rerun from scratch. No test house was evaluated.
+
+### Seed-order audit — prior simplification comparisons are exploratory
+
+The corrected AP retry exposed a larger reproducibility defect. In
+`train_model`, `seed_everything` was called only after `_build_model`; the
+configured seed therefore controlled later sampling but not neural-network
+initialization. Repeated nominally identical configurations followed materially
+different validation trajectories. The feature and core-loss results above are
+useful screening evidence, but they are not accepted as final controlled
+ablations.
+
+The runner now resolves and applies the seed before model construction. A
+`training.deterministic` option also disables cuDNN benchmarking, requests
+deterministic cuDNN kernels, and enables PyTorch deterministic algorithms with
+warnings. The interrupted AP retry is preserved as
+`multinilm_simplify_loss_core_ap_monitor_raw_invalid_unseeded_init`.
+
+To avoid repeating a large sweep, only two deterministic references are run:
+the complete 13-feature starting configuration and raw-only with every other
+setting fixed. Subsequent loss and architecture experiments must inherit the
+same deterministic settings. The original reported validation result
+(14.884 W, 0.782 macro-F1, 0.809 AP) remains the absolute no-regression target.

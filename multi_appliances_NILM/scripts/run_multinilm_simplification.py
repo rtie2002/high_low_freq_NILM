@@ -113,6 +113,17 @@ ARCHITECTURE_VARIANTS = {
     },
 }
 
+REPRO_VARIANTS = {
+    "deterministic_baseline": {
+        "experiment_id": "multinilm_simplify_deterministic_baseline",
+        "feature_base": None,
+    },
+    "deterministic_raw": {
+        "experiment_id": "multinilm_simplify_deterministic_raw",
+        "feature_base": "feature_1",
+    },
+}
+
 
 def _feature_candidate(base: dict, name: str) -> dict:
     """Return one feature-only ablation while preserving every other setting."""
@@ -181,13 +192,30 @@ def _architecture_candidate(base: dict, name: str) -> dict:
     return candidate
 
 
+def _repro_candidate(base: dict, name: str) -> dict:
+    """Build a seeded, deterministic reference or its raw-only ablation."""
+    spec = REPRO_VARIANTS[name]
+    feature_base = spec["feature_base"]
+    candidate = (
+        copy.deepcopy(base)
+        if feature_base is None
+        else _feature_candidate(base, feature_base)
+    )
+    candidate["experiment_id"] = spec["experiment_id"]
+    training = copy.deepcopy(candidate.get("training", {}))
+    training["deterministic"] = True
+    training["cudnn_benchmark"] = False
+    candidate["training"] = training
+    return candidate
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--experiment", type=Path, default=DEFAULT_EXPERIMENT)
     parser.add_argument("--model-config", type=Path, default=DEFAULT_MODEL_CONFIG)
     parser.add_argument(
         "--stage",
-        choices=("features", "loss", "architecture"),
+        choices=("features", "loss", "architecture", "repro"),
         default="features",
         help="Controlled simplification family to run.",
     )
@@ -215,6 +243,7 @@ def main() -> None:
         "features": FEATURE_VARIANTS,
         "loss": LOSS_VARIANTS,
         "architecture": ARCHITECTURE_VARIANTS,
+        "repro": REPRO_VARIANTS,
     }
     variants = variants_by_stage[args.stage]
     candidates = args.candidates or list(variants)
@@ -227,8 +256,10 @@ def main() -> None:
             model_cfg = _feature_candidate(base_model_cfg, name)
         elif args.stage == "loss":
             model_cfg = _loss_candidate(base_model_cfg, name, args.feature_base)
-        else:
+        elif args.stage == "architecture":
             model_cfg = _architecture_candidate(base_model_cfg, name)
+        else:
+            model_cfg = _repro_candidate(base_model_cfg, name)
         merged = merge_configs(experiment, model_cfg)
         data_root = Path(merged["data_root"])
         if not data_root.is_absolute():
