@@ -7,9 +7,11 @@
 当前问题不是单一的“网络容量不足”，而是两个不同问题：
 
 1. **Microwave：稀有短事件、异步采样与状态碎片化。** REFIT 的 aggregate
-   与 appliance meter 在同一个 8 s 时间格内分别求均值，但两者并非同时采样。
+   sensor 与 IAM appliance sensors 本来就不同步。我们的代码对所有列执行同一次
+   8 s mean resampling，并没有使用两个不同网格；但该操作无法消除 cleaned raw
+   CSV 中已有的时间不一致，还会将不规则的原始延迟表示成 partial-power bins。
    REFIT house 20 的 microwave 完整 aggregate 边缘经常比 appliance state 晚
-   约 1--2 个采样点出现。模型因此会收到“标签已经 ON，但输入边缘仍不完整”
+   约 1--2 个固定采样点出现。模型因此会收到“标签已经 ON，但输入边缘仍不完整”
    的样本。
 2. **Fridge：弱目标与未知背景不可辨识。** Fridge 通常只有约 80--130 W；
    未监测负载也会形成相近的平台和边缘。REFIT house 20 中，fridge 的 FPR

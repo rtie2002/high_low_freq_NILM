@@ -106,9 +106,31 @@ validation 选择：
 
 ### 3.5 Microwave meter-lag augmentation
 
-数据审计发现，REFIT 的 aggregate 与 appliance channel 分别在 8 s 区间求均值，
-两只电表并非总在同一时刻采样。真实 microwave target 已经 ON 时，aggregate 中的
-完整跳变有时会晚 1--2 个 sample 出现。模型因此会收到互相矛盾的输入和标签。
+REFIT 官方数据说明指出，whole-house aggregate sensor 与各个 IAM appliance sensor
+并不同步；CSV 中的共用 timestamp 不代表各列是在同一物理时刻测得。我们的预处理
+并没有给 aggregate 和 appliance 使用不同的时间网格：所有列通过同一次
+`DataFrame.resample("8s").mean()` 放到共同的 8 s 网格。因此，这不是由两条独立
+resample pipeline 造成的对齐 bug。
+
+House 20 的 cleaned raw CSV 本身已经存在可见的不一致。例如 2014-05-29 的一次
+microwave 启动：
+
+| Raw timestamp | Aggregate (W) | Appliance8 / microwave (W) |
+|---|---:|---:|
+| 06:04:05 | 369 | 2 |
+| 06:04:19 | 371 | 1358 |
+| 06:04:20 | 371 | 1358 |
+| 06:04:34 | 1814 | 1356 |
+
+microwave channel 在 aggregate 出现对应完整边缘前约 14--15 s 已经升高。固定 8 s
+mean resampling 没有制造这个原始矛盾，但会把不规则的原始时间差表示成 1--2 个
+固定 sample，并在边界产生 partial-power bins。于是模型会看到 target 已经 ON，
+而 aggregate 的完整边缘仍未出现。
+
+在当前 held-out REFIT house 20 block 中，以 146 个 microwave 启动做简单的
+±3-sample edge search，最大 aggregate 正边缘位于同一 sample、后 1 sample、后 2
+samples 的事件数分别为 28、25、74。该统计会受同时运行的 unknown loads 影响，
+不能被解释为每个事件的精确 sensor delay，但它确认了问题不是只存在于一张图中。
 
 训练时只对 synthetic microwave contribution 加入随机延迟：
 
@@ -250,7 +272,7 @@ aggregate，未知负载可能产生与 fridge 相同的低功率平台。增加
 
 不是因为 training loss 更低，而是因为以下证据同时成立：
 
-1. 数据管线中确认存在符合机制的 aggregate/submeter 时间错位；
+1. 官方数据说明与 cleaned raw CSV 均确认 aggregate/IAM 存在时间不一致；
 2. augmentation 只改变 training input，不污染 validation/test；
 3. validation microwave F1 有小幅提升；
 4. 最严重的 REFIT microwave F1 从约 `0.420` 提高到 `0.521`；
