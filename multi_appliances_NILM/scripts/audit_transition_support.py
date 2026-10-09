@@ -35,6 +35,8 @@ class Bundle:
     appliances: list[str]
     true_on: np.ndarray
     pred_on: np.ndarray
+    true_power: np.ndarray
+    pred_power: np.ndarray
     csv_timesteps: np.ndarray
     segment_ids: np.ndarray
 
@@ -48,6 +50,8 @@ def load_bundle(path: Path) -> Bundle:
             appliances=[str(value) for value in data["appliances"].tolist()],
             true_on=np.asarray(data["y_true_on"], dtype=bool),
             pred_on=np.asarray(data["y_pred_on"], dtype=bool),
+            true_power=np.asarray(data["y_true_watts"], dtype=np.float64),
+            pred_power=np.asarray(data["y_pred_watts"], dtype=np.float64),
             csv_timesteps=np.asarray(data["csv_timesteps"], dtype=np.int64),
             segment_ids=segment_ids,
         )
@@ -119,6 +123,101 @@ def prediction_path(run_dir: Path, scenario: str) -> Path:
     if scenario == "validation":
         return run_dir / "validation_predictions.npz"
     return run_dir / "test" / scenario / "predictions.npz"
+
+
+def binary_metrics(true_state: np.ndarray, pred_state: np.ndarray) -> dict[str, float]:
+    true_state = np.asarray(true_state, dtype=bool)
+    pred_state = np.asarray(pred_state, dtype=bool)
+    tp = int(np.sum(true_state & pred_state))
+    fp = int(np.sum(~true_state & pred_state))
+    fn = int(np.sum(true_state & ~pred_state))
+    tn = int(np.sum(~true_state & ~pred_state))
+    precision = tp / max(tp + fp, 1)
+    recall = tp / max(tp + fn, 1)
+    return {
+        "precision": precision,
+        "recall": recall,
+        "f1": 2.0 * precision * recall / max(precision + recall, 1e-12),
+        "fpr": fp / max(fp + tn, 1),
+    }
+
+
+def event_slices(state: np.ndarray, segment_ids: np.ndarray) -> list[tuple[int, int]]:
+    events: list[tuple[int, int]] = []
+    for start in onset_indices(state, segment_ids):
+        end = int(start) + 1
+        while (
+            end < len(state)
+            and segment_ids[end] == segment_ids[start]
+            and state[end]
+        ):
+            end += 1
+        events.append((int(start), end))
+    return events
+
+
+def apply_fridge_edge_gate(
+    bundle: Bundle,
+    aggregate_full: np.ndarray,
+    threshold_watts: float,
+    radius: int,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    app_index = bundle.appliances.index("fridge")
+    state = bundle.pred_on[:, app_index].copy()
+    power = bundle.pred_power[:, app_index].copy()
+    removed = 0
+    for start, end in event_slices(state, bundle.segment_ids):
+        support = positive_edge_support(
+            aggregate_full,
+            bundle.csv_timesteps,
+            bundle.segment_ids,
+            np.asarray([start]),
+            radius,
+        )[0]
+        if support < threshold_watts:
+            state[start:end] = False
+            power[start:end] = 0.0
+            removed += 1
+    return state, power, removed
+
+
+def sweep_fridge_gate(
+    run_dir: Path,
+    dataset_root: Path,
+    radius: int,
+) -> tuple[list[dict[str, object]], float]:
+    thresholds = np.arange(0.0, 205.0, 5.0)
+    scenario_cache: dict[str, tuple[Bundle, np.ndarray]] = {}
+    for scenario, csv_path in SCENARIO_CSV.items():
+        scenario_cache[scenario] = (
+            load_bundle(prediction_path(run_dir, scenario)),
+            load_aggregate(dataset_root / csv_path),
+        )
+
+    rows: list[dict[str, object]] = []
+    for scenario, (bundle, aggregate) in scenario_cache.items():
+        app_index = bundle.appliances.index("fridge")
+        for threshold in thresholds:
+            pred_state, pred_power, removed = apply_fridge_edge_gate(
+                bundle, aggregate, float(threshold), radius
+            )
+            metrics = binary_metrics(bundle.true_on[:, app_index], pred_state)
+            rows.append({
+                "scenario": scenario,
+                "threshold_w": float(threshold),
+                **metrics,
+                "mae_w": float(np.mean(np.abs(bundle.true_power[:, app_index] - pred_power))),
+                "removed_events": removed,
+            })
+
+    validation = [row for row in rows if row["scenario"] == "validation"]
+    # Select only on held-out validation.  F1 is the primary state objective;
+    # lower MAE and then the smaller threshold break exact ties.
+    best = max(
+        validation,
+        key=lambda row: (float(row["f1"]), -float(row["mae_w"]), -float(row["threshold_w"])),
+    )
+    return rows, float(best["threshold_w"])
 
 
 def audit_scenario(
@@ -202,7 +301,17 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(results)
 
+    sweep_rows, selected_threshold = sweep_fridge_gate(
+        args.run_dir, args.dataset_root, args.radius_samples
+    )
+    sweep_output = output.with_name("fridge_edge_gate_sweep.csv")
+    with sweep_output.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(sweep_rows[0]))
+        writer.writeheader()
+        writer.writerows(sweep_rows)
+
     print(f"Saved {output}")
+    print(f"Saved {sweep_output}")
     for row in results:
         if row["appliance"] in {"fridge", "microwave"}:
             print(
@@ -210,6 +319,16 @@ def main() -> None:
                 f"{row['category']:18s} n={row['count']:4d} "
                 f"median={row['median_w']:7.1f}W q10={row['q10_w']:7.1f}W "
                 f"q90={row['q90_w']:7.1f}W >=50W={row['ge50_rate']:.3f}"
+            )
+
+    print(f"Validation-selected fridge edge threshold: {selected_threshold:.1f} W")
+    for row in sweep_rows:
+        if float(row["threshold_w"]) in {0.0, selected_threshold}:
+            print(
+                f"gate {row['scenario']:14s} threshold={row['threshold_w']:5.1f}W "
+                f"F1={row['f1']:.4f} precision={row['precision']:.4f} "
+                f"recall={row['recall']:.4f} FPR={row['fpr']:.4f} "
+                f"MAE={row['mae_w']:.3f}W removed={row['removed_events']}"
             )
 
 
