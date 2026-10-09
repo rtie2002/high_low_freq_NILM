@@ -256,6 +256,33 @@ class BackgroundSwapTests(unittest.TestCase):
             mixed_targets.numpy().squeeze(-1),
         )
 
+    def test_alignment_jitter_all_sources(self) -> None:
+        targets = np.asarray([[0.0], [100.0], [100.0], [0.0]], dtype=np.float32)
+        background = np.full(4, 10.0, dtype=np.float32)
+        dataset = WindowDataset(
+            targets[:, 0] + background,
+            targets,
+            (targets > 0).astype(np.int64),
+            {
+                "input_window_length": 4,
+                "output_window_length": 4,
+                "output_alignment": "end",
+            },
+            stride=4,
+            target_mode="full_input",
+            random_mix_prob=1.0,
+            random_mix_mode="full",
+            source_codes=np.full(4, 2, dtype=np.int8),
+            random_mix_alignment_app_index=0,
+            random_mix_alignment_source_code=-1,
+            random_mix_alignment_offsets=[1],
+            random_mix_alignment_probabilities=[1.0],
+        )
+
+        mixed_input, _, _ = dataset[0]
+        input_appliance = mixed_input.squeeze(-1).numpy() - background
+        self.assertEqual(int(np.flatnonzero(input_appliance > 50)[0]), 2)
+
 
 class DiagnosticMetricTests(unittest.TestCase):
     def test_event_f1_accepts_onsets_within_tolerance(self) -> None:

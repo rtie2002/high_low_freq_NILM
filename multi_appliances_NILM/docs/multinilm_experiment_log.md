@@ -143,3 +143,41 @@ minimum ON duration and a 24 s maximum gap to merge. No model was retrained.
 The same search did not find a fridge hysteresis/duration rule that transferred
 reliably. Therefore only the microwave duration settings are retained. This is a
 small sequence-cleanup improvement, not a solution to weak state ranking.
+
+## Source-aware REFIT alignment jitter — rejected 2026-10-09
+
+Experiment: `multinilm_refit_alignment_jitter_house_split`
+
+The previous generic microwave augmentation delayed 50% of all synthetic
+microwave traces by one or two samples. This run replaced it with offsets drawn
+only for REFIT traces from the REFIT training-house distribution
+`P(-1,0,+1,+2) = (0.149,0.571,0.211,0.069)`. Architecture, loss, dataset split,
+and random-mix sampling were unchanged.
+
+Result at the validation-selected checkpoint (epoch 125):
+
+- Validation: MAE 14.777 W, macro-F1 0.770, AP 0.798.
+- REFIT house 20: MAE 11.067 W, macro-F1 0.724, AP 0.742.
+- UK-DALE house 2: MAE 8.121 W, macro-F1 0.871, AP 0.932.
+- REFIT fridge: F1 0.709, FPR 0.429.
+- REFIT microwave: F1 0.403, AP 0.449, and ±16 s event-onset F1 0.276.
+
+Conclusion: reject. The tolerant event score shows that the microwave failure
+is not merely a one- or two-sample scoring offset. The source-aware empirical
+distribution also weakened the stronger positive-delay regularisation that had
+produced REFIT microwave F1 0.521 in `multinilm_meter_lag_house_split`.
+
+## EMA-residual input ablation — started 2026-10-09
+
+Experiment: `multinilm_ema_residual_house_split`
+
+Return to the strongest completed meter-lag baseline and add one fixed causal
+feature only:
+
+`residual[t] = x[t] - EMA_45(x)[t]`.
+
+The raw aggregate, signed delta, rolling statistics, GL features, architecture,
+loss, sampling, and checkpoint rule remain unchanged. Unlike the rejected
+local-contrast channel, this feature does not divide by a small local scale and
+does not clip values. It tests whether slow-background removal exposes weak
+fridge and microwave evidence without amplifying noise into artificial pulses.

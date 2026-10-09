@@ -1,7 +1,7 @@
 # Recovery baseline: restore the early relational model that was used before
 # the dual-expert, local-contrast and mixture-output experiments. The new
 # cross-house dataset split is intentionally retained.
-experiment_id: multinilm_refit_alignment_jitter_house_split
+experiment_id: multinilm_ema_residual_house_split
 model_name: multinilm_fractional
 
 data:
@@ -44,11 +44,15 @@ windowing:
   training_targets: auto
 
 fractional:
-  # Exact early feature bank: 13 channels in total.
+  # Early feature bank plus one controlled EMA-residual ablation: 14 channels.
   k: 4
   include_raw: true
   include_delta: true
   include_abs_delta: true
+  # Causal high-pass evidence without the unstable local-scale division used
+  # by the rejected local-contrast feature: residual = x - EMA_45(x).
+  include_ema_residual: true
+  ema_residual_span: 45
   include_local_contrast: false
   include_rolling_mean: true
   include_rolling_std: true
@@ -57,7 +61,7 @@ fractional:
   channel_normalize: none
 
 architecture:
-  # 13 channels: raw, signed delta, |delta|, six rolling statistics and 4 GL.
+  # 14 channels: the original 13 plus one fixed EMA-residual channel.
   channel_schedule: [32, 64, 128]
   hidden_channels: 128
 
@@ -181,16 +185,14 @@ training:
       # reduced the validation AP and lost part of the fridge-FPR improvement.
       prob: 1.0
       background_bins_watts: [0, 100, 200, 400, 800]
-    # Synthetic recomposition removes the aggregate/IAM timing mismatch found
-    # in real REFIT. Restore the training-only empirical distribution for the
-    # microwave source trace. UK-DALE and every other appliance remain aligned.
+    # Restore the strongest completed baseline exactly: half of synthetic
+    # microwave traces stay aligned; one quarter shift by +1 and +2 samples.
     alignment_jitter:
       enabled: true
-      source_dataset: refit
+      source_dataset: all
       appliance: microwave
-      offsets_samples: [-1, 0, 1, 2]
-      # REFIT training counts within these offsets: [92, 352, 130, 43].
-      probabilities: [0.149, 0.571, 0.211, 0.069]
+      offsets_samples: [0, 1, 2]
+      probabilities: [0.50, 0.25, 0.25]
 
   use_amp: false
   amp_dtype: bf16

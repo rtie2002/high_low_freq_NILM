@@ -88,9 +88,11 @@ def get_random_mix_mode(model_cfg: dict[str, Any]) -> RandomMixMode:
 
 def _source_dataset_code(name: str) -> int:
     normalized = str(name).strip().lower()
+    if normalized in {"all", "any"}:
+        return -1
     if normalized not in _SOURCE_DATASET_CODES or normalized == "unknown":
         raise ValueError(
-            "alignment_jitter.source_dataset must be one of: refit, ukdale, redd"
+            "alignment_jitter.source_dataset must be one of: all, refit, ukdale, redd"
         )
     return _SOURCE_DATASET_CODES[normalized]
 
@@ -342,7 +344,7 @@ class WindowDataset(Dataset):
                 raise ValueError("alignment-jitter appliance index is out of range")
             if self.random_mix_prob <= 0.0:
                 raise ValueError("alignment jitter requires random_mix to be enabled")
-            if self.random_mix_alignment_source_code <= 0:
+            if self.random_mix_alignment_source_code == 0:
                 raise ValueError("alignment jitter requires a known source dataset")
             if self.random_mix_alignment_offsets.ndim != 1:
                 raise ValueError("alignment-jitter offsets must be one-dimensional")
@@ -499,12 +501,15 @@ class WindowDataset(Dataset):
         app_i = self.random_mix_alignment_app_index
         if (
             app_i is not None
-            and self.source_codes[app_starts[app_i]]
-            == self.random_mix_alignment_source_code
+            and (
+                self.random_mix_alignment_source_code < 0
+                or self.source_codes[app_starts[app_i]]
+                == self.random_mix_alignment_source_code
+            )
         ):
             # Synthetic recomposition otherwise makes every appliance perfectly
-            # aligned with the aggregate. Restore the timing uncertainty measured
-            # from training REFIT only; labels remain on the submeter time grid.
+            # aligned with the aggregate. Restore the configured measurement-time
+            # uncertainty; labels remain on the submeter time grid.
             choice = int(
                 torch.multinomial(
                     self.random_mix_alignment_probabilities, 1

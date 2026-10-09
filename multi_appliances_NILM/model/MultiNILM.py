@@ -1,7 +1,7 @@
 """Beginner path: read MultiNILMFractional.forward, then MultiNILM.forward.
 
 Every Conv1d tensor is (B, C, T) = batch, channels, time.
-Relational multi-appliance example: B=64, C_in=13, C=128, T=1024,
+Relational multi-appliance example: B=64, C_in=14, C=128, T=1024,
 A=5 appliances.
 
   mains (B, T)
@@ -90,13 +90,14 @@ class FractionalFrontEnd(nn.Module):
     """One mains channel -> several derived channels, same T.
 
     Concat order:
-      raw, optional signed delta, |delta|, optional local contrast,
+      raw, optional signed delta, |delta|, optional EMA residual/local contrast,
       rolling mean, rolling std, GL fractional channels.
     """
 
     def __init__(self, alphas=None, *, include_raw=True, memory=None, h=1.0, max_memory=256,
                  channel_normalize="mean_std", channel_norm_eps=1e-5,
                  include_delta=False, include_abs_delta=False,
+                 include_ema_residual=False, ema_residual_span=45,
                  rolling_windows=None, include_rolling_mean=False,
                  include_rolling_std=False, include_local_contrast=False,
                  local_contrast_span=45, local_contrast_alpha=1.0,
@@ -118,11 +119,15 @@ class FractionalFrontEnd(nn.Module):
         self.channel_norm_eps = float(channel_norm_eps)
         self.include_delta = bool(include_delta)
         self.include_abs_delta = bool(include_abs_delta)
+        self.include_ema_residual = bool(include_ema_residual)
+        self.ema_residual_span = int(ema_residual_span)
         self.include_local_contrast = bool(include_local_contrast)
         self.local_contrast_span = int(local_contrast_span)
         self.local_contrast_alpha = float(local_contrast_alpha)
         self.local_contrast_eps = float(local_contrast_eps)
         self.local_contrast_clip = float(local_contrast_clip)
+        if self.include_ema_residual and self.ema_residual_span < 2:
+            raise ValueError("ema_residual_span must be >= 2")
         if self.include_local_contrast:
             if self.local_contrast_span < 2:
                 raise ValueError("local_contrast_span must be >= 2")
@@ -144,6 +149,17 @@ class FractionalFrontEnd(nn.Module):
         # Fixed feature derived from config; it has no trainable parameters.
         self.register_buffer("local_contrast_ema_weight", ema_weight, persistent=False)
 
+        if self.include_ema_residual:
+            smoothing = 2.0 / (self.ema_residual_span + 1.0)
+            lags = torch.arange(
+                self.ema_residual_span - 1, -1, -1, dtype=torch.float32
+            )
+            residual_weight = smoothing * (1.0 - smoothing) ** lags
+            residual_weight = (residual_weight / residual_weight.sum()).view(1, 1, -1)
+        else:
+            residual_weight = torch.zeros(0, dtype=torch.float32)
+        self.register_buffer("ema_residual_weight", residual_weight, persistent=False)
+
         self.rolling_windows = [int(w) for w in (rolling_windows or [])]
         if any(w < 1 for w in self.rolling_windows):
             raise ValueError(f"rolling_windows must be positive, got {self.rolling_windows}")
@@ -152,6 +168,7 @@ class FractionalFrontEnd(nn.Module):
         extra = (
             int(self.include_delta)
             + int(self.include_abs_delta)
+            + int(self.include_ema_residual)
             + int(self.include_local_contrast)
         )
         if self.include_rolling_mean:
@@ -206,6 +223,12 @@ class FractionalFrontEnd(nn.Module):
                 parts.append(delta)
             if self.include_abs_delta:
                 parts.append(delta.abs())
+
+        if self.include_ema_residual:
+            weight = self.ema_residual_weight.to(dtype=x.dtype)
+            pad = self.ema_residual_span - 1
+            local_mean = F.conv1d(F.pad(x, (pad, 0), mode="replicate"), weight)
+            parts.append(x - local_mean)
 
         if self.include_local_contrast:
             weight = self.local_contrast_ema_weight.to(dtype=x.dtype)
@@ -938,6 +961,8 @@ def build_multinilm_fractional(
         channel_normalize=str(block.get("channel_normalize", "mean_std")),
         include_delta=bool(block.get("include_delta", False)),
         include_abs_delta=bool(block.get("include_abs_delta", False)),
+        include_ema_residual=bool(block.get("include_ema_residual", False)),
+        ema_residual_span=int(block.get("ema_residual_span", 45)),
         include_local_contrast=bool(block.get("include_local_contrast", False)),
         local_contrast_span=int(block.get("local_contrast_span", 45)),
         local_contrast_alpha=float(block.get("local_contrast_alpha", 1.0)),
