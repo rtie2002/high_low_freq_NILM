@@ -156,31 +156,6 @@ def event_slices(state: np.ndarray, segment_ids: np.ndarray) -> list[tuple[int, 
     return events
 
 
-def apply_fridge_edge_gate(
-    bundle: Bundle,
-    aggregate_full: np.ndarray,
-    threshold_watts: float,
-    radius: int,
-) -> tuple[np.ndarray, np.ndarray, int]:
-    app_index = bundle.appliances.index("fridge")
-    state = bundle.pred_on[:, app_index].copy()
-    power = bundle.pred_power[:, app_index].copy()
-    removed = 0
-    for start, end in event_slices(state, bundle.segment_ids):
-        support = positive_edge_support(
-            aggregate_full,
-            bundle.csv_timesteps,
-            bundle.segment_ids,
-            np.asarray([start]),
-            radius,
-        )[0]
-        if support < threshold_watts:
-            state[start:end] = False
-            power[start:end] = 0.0
-            removed += 1
-    return state, power, removed
-
-
 def sweep_fridge_gate(
     run_dir: Path,
     dataset_root: Path,
@@ -197,10 +172,24 @@ def sweep_fridge_gate(
     rows: list[dict[str, object]] = []
     for scenario, (bundle, aggregate) in scenario_cache.items():
         app_index = bundle.appliances.index("fridge")
+        events = event_slices(bundle.pred_on[:, app_index], bundle.segment_ids)
+        starts = np.asarray([start for start, _ in events], dtype=np.int64)
+        supports = positive_edge_support(
+            aggregate,
+            bundle.csv_timesteps,
+            bundle.segment_ids,
+            starts,
+            radius,
+        )
         for threshold in thresholds:
-            pred_state, pred_power, removed = apply_fridge_edge_gate(
-                bundle, aggregate, float(threshold), radius
-            )
+            pred_state = bundle.pred_on[:, app_index].copy()
+            pred_power = bundle.pred_power[:, app_index].copy()
+            removed = 0
+            for (start, end), support in zip(events, supports):
+                if support < threshold:
+                    pred_state[start:end] = False
+                    pred_power[start:end] = 0.0
+                    removed += 1
             metrics = binary_metrics(bundle.true_on[:, app_index], pred_state)
             rows.append({
                 "scenario": scenario,
