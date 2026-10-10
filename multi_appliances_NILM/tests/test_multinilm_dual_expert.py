@@ -32,6 +32,30 @@ class MultiNILMDualExpertTests(unittest.TestCase):
         self.assertIsNone(state_logit.grad)
         self.assertIsNotNone(regression.grad)
 
+    def test_soft_gate_gradient_scale_changes_gradient_not_forward_value(self) -> None:
+        full_logit = torch.tensor([0.4], requires_grad=True)
+        half_logit = torch.tensor([0.4], requires_grad=True)
+        full_prob = torch.sigmoid(full_logit)
+        half_prob = torch.sigmoid(half_logit)
+
+        full_gate = state_gate(
+            full_prob,
+            mode="soft",
+            training=True,
+            gradient_scale=1.0,
+        )
+        half_gate = state_gate(
+            half_prob,
+            mode="soft",
+            training=True,
+            gradient_scale=0.5,
+        )
+        self.assertTrue(torch.allclose(full_gate, half_gate))
+
+        full_gate.sum().backward()
+        half_gate.sum().backward()
+        self.assertTrue(torch.allclose(half_logit.grad, 0.5 * full_logit.grad))
+
     def test_early_relational_frontend_has_signed_delta_and_thirteen_channels(self) -> None:
         frontend = FractionalFrontEnd(
             alphas=[0.25, 0.5, 0.75, 1.0],

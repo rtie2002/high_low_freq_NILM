@@ -222,6 +222,20 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         self.assertTrue(cfg["architecture"]["task_attention"]["enabled"])
         self.assertTrue(cfg["architecture"]["cross_appliance"]["enabled"])
 
+    def test_half_gradient_gate_preserves_soft_forward_mode(self):
+        self.base["architecture"] = {
+            "gate_mode": "soft",
+            "gate_gradient_scale": 1.0,
+            "head_local_layers": 2,
+            "cross_appliance": {"enabled": True},
+        }
+        cfg = _architecture_candidate(self.base, "half_gradient_train_power_gate")
+
+        self.assertEqual(cfg["architecture"]["gate_mode"], "soft")
+        self.assertEqual(cfg["architecture"]["gate_gradient_scale"], 0.5)
+        self.assertEqual(cfg["architecture"]["head_local_layers"], 2)
+        self.assertTrue(cfg["architecture"]["cross_appliance"]["enabled"])
+
     def test_seeded_reference_and_raw_change_only_features(self):
         baseline = _repro_candidate(self.base, "seeded_baseline")
         raw = _repro_candidate(self.base, "seeded_raw")

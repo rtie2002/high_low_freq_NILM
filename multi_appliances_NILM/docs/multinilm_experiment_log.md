@@ -763,3 +763,19 @@ events rise from 93 to 97. Fridge false events also rise from 228 to 236.
 Visual inspection confirms that repeated high-background fridge pulses and
 truncated microwave plateaus remain. The 0.25 residual scale is retained and
 no fine-grained scale sweep is performed. No test house was evaluated.
+
+## Seeded detached soft-gate ablation - completed 2026-10-10
+
+Experiment: `multinilm_simplify_seeded_raw_detached_train_power_gate`
+
+The forward gate remains numerically identical, but the power loss is stopped
+from back-propagating through state probability. This global decoupling is
+rejected as the retained model, but it exposes a real task conflict. Fridge
+improves from 20.399 to 18.540 W MAE and from 0.837 to 0.840 F1; its median
+event NRMSE improves from 0.384 to 0.360 and the extreme repeated-pulse case
+falls from roughly 1.2 kW to roughly 100--150 W. In contrast, microwave F1
+falls from 0.474 to 0.431, median event NRMSE worsens from 0.579 to 0.682,
+and false events rise from 93 to 136. Overall MAE/F1/AP are 15.139/0.763/0.773,
+all below the retained raw model. A single midpoint gradient-scale experiment
+is justified by these opposing endpoint results; appliance-specific exceptions
+are not introduced. No test house was evaluated.
