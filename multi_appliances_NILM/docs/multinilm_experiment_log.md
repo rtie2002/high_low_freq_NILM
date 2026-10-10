@@ -795,3 +795,25 @@ waveform becomes physically worse: repeated false pulses grow from roughly
 case, and total fridge false events rise from 228 to 246. The lower average
 MAE therefore hides a severe waveform regression. Gradient scaling is not
 retained and no further interpolation grid is run. No test house was evaluated.
+
+## Shared BiGRU context - rejected 2026-10-10
+
+Experiment: `multinilm_seeded_raw_shared_bigru_context`
+
+A single bidirectional GRU (64 units per direction) was added as a 0.1-scale
+residual after the shared TCN. It increased the model from 1.373 M to 1.447 M
+parameters and exposed every output position to the full 1024-sample window.
+The local TCN path, heads, loss, sampling, and evaluation remained unchanged.
+
+Validation MAE/F1/AP changed from 14.590/0.771/0.794 to
+16.887/0.741/0.789. Fridge event NRMSE worsened from 0.384 to 0.411 and its
+false-event count increased from 228 to 2,461. Microwave detection fell from
+0.637 to 0.610 and event NRMSE worsened from 0.579 to 0.727. Dishwasher and
+washing-machine false events also rose from 16/7 to 402/242.
+
+Conclusion: reject and remove the recurrent code. Full-window recurrent mixing
+propagates ambiguous background evidence instead of resolving appliance
+identity. The next experiment adds no component: reduce the common width from
+128 to 96 channels to test whether lower capacity improves cross-house
+generalisation while making the retained model smaller. No test house was
+evaluated.

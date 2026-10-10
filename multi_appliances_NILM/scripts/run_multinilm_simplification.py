@@ -117,16 +117,12 @@ LOSS_VARIANTS = {
 }
 
 ARCHITECTURE_VARIANTS = {
-    # One full-window recurrent residual tests whether fridge needs longer
-    # context while retaining the edge-sensitive TCN path for microwave.
-    "shared_bigru_context": {
-        "experiment_id": "multinilm_seeded_raw_shared_bigru_context",
-        "temporal_context": {
-            "type": "bigru",
-            "hidden_channels": 64,
-            "dropout": 0.1,
-            "residual_scale": 0.1,
-        },
+    # Direct capacity control: remove channels without adding another module
+    # or changing the temporal receptive field.
+    "hidden_96": {
+        "experiment_id": "multinilm_seeded_raw_hidden_96",
+        "channel_schedule": [32, 64, 96],
+        "hidden_channels": 96,
     },
     # Decouple the regression value from the state probability during
     # training. Evaluation still applies the calibrated binary state mask, so
