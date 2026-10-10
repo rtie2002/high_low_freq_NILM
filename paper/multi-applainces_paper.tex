@@ -56,9 +56,47 @@ non-intrusive load monitoring, energy disaggregation, household appliances
 
 \section{Introduction}
 
-Non-intrusive load monitoring estimates appliance demand from one aggregate meter, without a sensor on each appliance. A recent systematic review groups more than thirty years of work into deterministic low-frequency methods, probabilistic and optimization models, and deep networks, and finds that reported accuracy depends as much on the sensing setup and the evaluation protocol as on the model~\cite{dasilva2026nilm}. In homes, deep learning is now the usual approach, while data requirements, real-time use, and interpretability remain open~\cite{rafiq2024nilm}.
+Non-intrusive load monitoring estimates the power and the on--off state of household appliances from one aggregate meter, without a sensor on each appliance. A recent systematic review groups more than thirty years of work into deterministic low-frequency methods, probabilistic and optimization models, and deep networks, and finds that reported accuracy depends as much on the sensing setup and the evaluation protocol as on the model~\cite{dasilva2026nilm}. In homes, deep learning is now the usual approach, while data requirements, real-time use, and interpretability remain open~\cite{rafiq2024nilm}.
 
-The aggregate is the sum of several appliances, and those appliances can run at the same time. A single-appliance estimate therefore leaves the overlap unresolved. Hybrid, sequence, and Transformer models have been used to infer several appliances together~\cite{dasilva2026nilm}. This paper follows that setting: from the same aggregate record, it predicts the power and the on-off state of several household appliances.
+A common design trains a separate network for each appliance. Separate networks repeat the extraction of features from the same aggregate, increase the number of stored models, and leave appliances that operate together unrepresented~\cite{alami2023convnilm,xiong2024matnilm,virtsionis2023multitarget}. One network can instead map one aggregate window to several appliances~\cite{faustine2020unet,li2023onemany}. The useful form of that sharing is an explicit relation among appliances, rather than a feature extractor that happens to have several output heads.
+
+A joint network is not, by itself, evidence about an unseen home. Table~\ref{tab:protocol} lists recent multi-appliance models by whether the test leaves the training house, by how training, validation, and test are divided, by the network, and by the claim each paper makes. The measured aggregate is
+\begin{equation}
+x_{t}=\sum_{i=1}^{M}P_{t,i}+b_{t}+\epsilon_{t},
+\label{eq:aggregate}
+\end{equation}
+where $t$ is time, $i=1,\ldots,M$ indexes the target appliances, $M$ is their number, $P_{t,i}$ is the power of appliance $i$, $b_{t}$ is the unmonitored background, and $\epsilon_{t}$ collects measurement error and timing inconsistency. The background includes every load outside the target set. A model can treat patterns in $b_{t}$ as evidence for a target that merely co-occurs with them~\cite{liu2026recomposition}. This term is not a small disturbance: it can be far larger than the roughly 80~W demand of a fridge.
+\begin{table*}[!t]
+\caption{Multi-appliance studies. The split column states how training, validation, and test are divided. An entry $a{\to}b$ means training on houses $a$ and testing on houses $b$. ``Val.\ in train'' means validation uses part of a training house.}
+\label{tab:protocol}
+\centering
+\renewcommand{\arraystretch}{1.15}
+\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{2.05cm} >{\raggedright\arraybackslash}p{1.85cm} >{\raggedright\arraybackslash}p{4.15cm} >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X@{}}
+\hline
+Study & Scenario & Train / val.\ / test & Architecture & Contribution \\
+\hline
+UNet-NILM~\cite{faustine2020unet} & Inside one house & One house: UK-DALE 1, Jan.--Mar.\ 2015 & 1-D U-Net & Joint state and power from a sum of the monitored appliances \\
+SAMNet~\cite{liu2022samnet} & Cross-house & Train${\to}$test: UK-DALE $1,5{\to}2$; REFIT $2$--$6{\to}1$ & Shared experts and self-attention & Joint state and power on an unseen house \\
+Conv-NILM-Net~\cite{alami2023convnilm} & Inside each house & 10-fold inside each REDD building & Causal temporal convolution & One network separates several appliances at once \\
+Virtsionis et al.~\cite{virtsionis2023multitarget} & One training house & 3 tests, all trained on UK-DALE 1: house 1; house 2; REFIT 2, 5 & Variational CNN, one head per appliance & One model estimates every target appliance \\
+Li et al.~\cite{li2023onemany} & Cross-house & 4 cases: pretrain REFIT 11, then fine-tune and test the target houses & CNN with transferable heads & One model transferred across houses and datasets \\
+Tanoni et al.~\cite{tanoni2023weak} & Cross-house & Val.\ in train. Test: UK-DALE 2; REFIT 4, 9, 15 & Convolutional recurrent network & Appliance states from coarse labels \\
+MATNilm~\cite{xiong2024matnilm} & Cross-house & S1: REDD $2$--$6{\to}1$, val.\ in 2, 3. S2: 1-day train and val., unseen test. S3: S2 plus profiles & Convolutional encoder and attention & Joint state and power from little labeled data \\
+Dash and Sahoo~\cite{dash2024jestie} & Inside and cross-house & Train REFIT 2. Three 1-week tests: house 2, 9, and 20 & Dilated causal convolution and attention & One model detects several appliance states \\
+Liu and Fan~\cite{liu2026recomposition} & Cross-house & Separate datasets. Val.\ is the tail of each train house. Test: REDD 1, UK-DALE 2, REFIT 2 & Two-stage mixture of experts & Estimates that stay stable when the unmonitored load changes \\
+Proposed & Cross-house & One mixed set. Disjoint houses: train UK-DALE 1, REFIT 3, 5, 9, 11; val.\ UK-DALE 5, REFIT 2; test UK-DALE 2, REFIT 20 & Multiscale stem, temporal convolution, and cross-appliance attention & Joint power and state on houses held out of training and validation \\
+\hline
+\end{tabularx}
+\end{table*}
+Cross-house evaluation is already present in several of these studies. The distinction in the last row is that the validation houses are held out as well, and the test uses the recorded meter on two datasets.
+
+Two problems follow. A rare on event may be seen only against the backgrounds of the training houses, so the network can treat that background as evidence for the appliance. Joint training creates a second problem. For one appliance, power is a regression loss and the on--off state is a classification loss. The two losses do not share a scale, and the scale is different for each appliance. One ratio taken over all appliances would multiply every classification loss by the same number, so a large regression error on the microwave would change the weight of the fridge's classification error.
+
+One network reads the aggregate and estimates the five appliances together. During training, a real on event is placed against different levels of the remaining household load. The recorded meter is left unchanged at test time. For each appliance, the regression loss and the classification loss are placed on one scale and added. The training objective is the sum of these appliance losses. Training, validation, and test use different houses.
+
+The contributions are threefold. First, training, validation, and test use different houses, the test meter keeps its recorded residual, and five appliances are scored together on UK-DALE and REFIT. Second, training shows rare on events against a range of the remaining household load, and this step adds nothing at test time. Third, the objective is the sum over appliances of a regression loss and a classification loss. The classification loss of each appliance is scaled by that appliance's own ratio of the two losses.
 
 \section{Related Work}
 
@@ -67,210 +105,181 @@ UNet-NILM estimates the on-off state and the power of several appliances with on
 \section{Methodology}
 \label{sec:method}
 
+\subsection{Problem Formulation}
+\label{sec:problem}
+
+Let $x_{t}$ be the aggregate power in watts and $P_{t,i}$ the power of target appliance $i$, as in \eqref{eq:aggregate}. One input is a window $\mathbf{x}\in\mathbb{R}^{T}$ of $T$ consecutive samples. The window is standardized by the mean and standard deviation of the aggregate on the training houses. In this work $M=5$. The network returns a standardized power sequence and an on-state probability,
+\begin{equation}
+\hat{\mathbf{Y}}\in\mathbb{R}^{T\times M},
+\qquad
+\hat{\mathbf{P}}\in[0,1]^{T\times M}.
+\label{eq:outputs}
+\end{equation}
+The entries $\hat{y}_{t,i}$ and $\hat{p}_{t,i}$ are the standardized power and the on-state probability of appliance $i$ at sample $t$. The standardized power passed forward is their product,
+\begin{equation}
+\tilde{y}_{t,i}=\hat{y}_{t,i}\hat{p}_{t,i}.
+\label{eq:gated-power}
+\end{equation}
+The meter residual and the two terms in \eqref{eq:aggregate} are the same quantity,
+\begin{equation}
+x_{t}-\sum_{i=1}^{M}P_{t,i}=b_{t}+\epsilon_{t}.
+\label{eq:residual}
+\end{equation}
+
+\subsection{Input Representation}
+\label{sec:input}
+
+The aggregate is described by three kinds of information from the same series: the power at the current sample, the change from the previous sample, and the level over a longer recent interval. The longer view places a short edge, such as a microwave, against the slower loads around it.
+
 \subsection{Model Architecture}
 \label{sec:architecture}
 
 \subsection{Loss Function}
 \label{sec:loss}
 
-We optimize power estimation and state detection jointly. To reduce sensitivity
-to unobserved household loads, the objective also requires consistent
-predictions when the appliance signals are placed on a different background.
+The objective is assembled in two steps, as in joint state-and-power estimation for a single appliance~\cite{faustine2020unet}. For appliance $i$, a regression loss is computed from the power and a classification loss from the on--off state. The two losses are placed on one scale and added, giving the loss of that appliance. The training objective is the sum of these losses over $i=1,\ldots,M$. A mini-batch contains $B$ windows of length $N$, indexed by $n=1,\ldots,B$. The measured power $P_{n,t,i}$, the standardized target $y_{n,t,i}$, and the label $z_{n,t,i}\in\{0,1\}$ are defined in Section~\ref{sec:preprocess}. The network outputs are $\hat{y}_{n,t,i}$ and $\hat{p}_{n,t,i}$.
 
-\paragraph{Notation.}
-A mini-batch contains $B$ windows, each with $N$ time samples and $M=5$
-appliances. Indices $b$, $t$, and $i$ refer to the window, time, and appliance,
-respectively. Let $P_{b,t,i}$ be the measured appliance power in watts and
-$z_{b,t,i}\in\{0,1\}$ its on--off state. Power is standardized using the mean
-$\mu_i$ and standard deviation $\sigma_i$ estimated from the training set:
-\begin{equation}
-y_{b,t,i}=\frac{P_{b,t,i}-\mu_i}{\sigma_i}.
-\label{eq:power-normalization}
-\end{equation}
-The model outputs standardized power $\hat{y}_{b,t,i}$ and on-state probability
-$\hat{p}_{b,t,i}$. Define the on, off, and active-transition index sets as
+\paragraph{Regression of one appliance.}
+Let $\Omega_i^{\mathrm{on}}=\{(n,t):z_{n,t,i}=1\}$ and $\Omega_i^{\mathrm{off}}=\{(n,t):z_{n,t,i}=0\}$. The regression target is $y_{n,t,i}$. Its squared error is averaged over all samples in the batch, and again over the on samples and the off samples:
 \begin{equation}
 \begin{aligned}
-\Omega_i^{\mathrm{on}} & =\{(b,t):z_{b,t,i}=1\},\\
-\Omega_i^{\mathrm{off}}& =\{(b,t):z_{b,t,i}=0\},\\
-\Omega_i^{\Delta} & =\{(b,t):t\geq2,\,
-\max(z_{b,t,i},z_{b,t-1,i})=1\}.
-\end{aligned}
-\label{eq:index-sets}
-\end{equation}
-For any set $\Omega$, write $|\Omega|_{+}=\max(|\Omega|,1)$. This convention
-keeps a masked average defined when a mini-batch contains no selected sample.
-
-\paragraph{Power estimation.}
-The basic regression term is the mean squared error over all windows and time
-samples. Two masked terms retain the contribution of the on and off states:
-\begin{equation}
-\begin{aligned}
-\mathrm{MSE}_{i}={}&\frac{1}{BN}\sum_{b=1}^{B}\sum_{t=1}^{N}
-(\hat{y}_{b,t,i}-y_{b,t,i})^2,\\
-\mathrm{MSE}_{i}^{\mathrm{on}}={}&
-\frac{1}{|\Omega_i^{\mathrm{on}}|_{+}}
-\sum_{(b,t)\in\Omega_i^{\mathrm{on}}}
-(\hat{y}_{b,t,i}-y_{b,t,i})^2,\\
-\mathrm{MSE}_{i}^{\mathrm{off}}={}&
-\frac{1}{|\Omega_i^{\mathrm{off}}|_{+}}
-\sum_{(b,t)\in\Omega_i^{\mathrm{off}}}
-(\hat{y}_{b,t,i}-y_{b,t,i})^2.
+\mathrm{MSE}_{i}={}&\frac{1}{BN}\sum_{n=1}^{B}\sum_{t=1}^{N}
+(\hat{y}_{n,t,i}-y_{n,t,i})^2,\\
+\mathrm{MSE}_{i}^{\mathrm{on}}={}&\frac{1}{|\Omega_i^{\mathrm{on}}|}
+\sum_{(n,t)\in\Omega_i^{\mathrm{on}}}
+(\hat{y}_{n,t,i}-y_{n,t,i})^2,\\
+\mathrm{MSE}_{i}^{\mathrm{off}}={}&\frac{1}{|\Omega_i^{\mathrm{off}}|}
+\sum_{(n,t)\in\Omega_i^{\mathrm{off}}}
+(\hat{y}_{n,t,i}-y_{n,t,i})^2.
 \end{aligned}
 \label{eq:mse}
 \end{equation}
-Temporal changes are compared only when either member of an adjacent pair is
-on. With
+The on samples of an appliance are few, so the average over the whole batch would give them little weight. The separate on average retains that error. The off average accounts for power assigned while the appliance is off.
+
+Let $\Omega_i^{\Delta}$ be the pairs of successive samples in which appliance $i$ is on at one or both times. The squared error of the change between those samples is
 \begin{equation}
-d_{b,t,i}=(\hat{y}_{b,t,i}-\hat{y}_{b,t-1,i})
--(y_{b,t,i}-y_{b,t-1,i}),
-\label{eq:power-change-error}
-\end{equation}
-the change loss is
-\begin{equation}
-\mathrm{MSE}_{i}^{\Delta}=
-\frac{1}{|\Omega_i^{\Delta}|_{+}}
-\sum_{(b,t)\in\Omega_i^{\Delta}}d_{b,t,i}^{2}.
+\begin{aligned}
+\mathrm{MSE}_{i}^{\Delta}={}&\frac{1}{|\Omega_i^{\Delta}|}
+\sum_{(n,t)\in\Omega_i^{\Delta}}
+\big(
+(\hat{y}_{n,t,i}-\hat{y}_{n,t-1,i})\\
+&\qquad-(y_{n,t,i}-y_{n,t-1,i})
+\big)^{2}.
+\end{aligned}
 \label{eq:mse-delta}
 \end{equation}
 
-A window-level term accounts for total energy. The standardized values are
-first returned to the watt domain and clipped at zero:
-\begin{equation}
-P^{+}_{b,t,i}=\max(\sigma_i y_{b,t,i}+\mu_i,0),\qquad
-\hat{P}^{+}_{b,t,i}=\max(\sigma_i\hat{y}_{b,t,i}+\mu_i,0).
-\label{eq:power-watts}
-\end{equation}
-The relative energy error is then
-\begin{equation}
-E_i=\frac{1}{B}\sum_{b=1}^{B}
-\frac{\left|\sum_{t=1}^{N}
-(\hat{P}^{+}_{b,t,i}-P^{+}_{b,t,i})\right|}
-{\sum_{t=1}^{N}P^{+}_{b,t,i}+10N}.
-\label{eq:energy}
-\end{equation}
-The common sampling interval cancels in this ratio. The denominator includes a
-10~W floor per sample, so that an all-off window remains well defined; $E_i$ is
-dimensionless. The full power loss is
+The last regression term compares the energy of a window. Standardized power is returned to watts by the training mean $\mu_i$ and standard deviation $\sigma_i$ of appliance $i$ in Section~\ref{sec:preprocess}. Writing $[u]_{+}=\max(u,0)$,
 \begin{equation}
 \begin{aligned}
-\mathcal{L}_{\mathrm{power}}=\sum_{i=1}^{M}\big(&
-\mathrm{MSE}_{i}+\mathrm{MSE}_{i}^{\mathrm{on}}
-+0.5\,\mathrm{MSE}_{i}^{\mathrm{off}}\\
-&+0.15\,\mathrm{MSE}_{i}^{\Delta}+0.25\,E_i\big).
+P^{+}_{n,t,i}&=[\sigma_i y_{n,t,i}+\mu_i]_{+},\\
+\hat{P}^{+}_{n,t,i}&=[\sigma_i\hat{y}_{n,t,i}+\mu_i]_{+}.
+\end{aligned}
+\label{eq:power-watts}
+\end{equation}
+The relative energy error of appliance $i$ is
+\begin{equation}
+E_i=\frac{1}{B}\sum_{n=1}^{B}
+\frac{\big|\sum_{t=1}^{N}(\hat{P}^{+}_{n,t,i}-P^{+}_{n,t,i})\big|}
+{\sum_{t=1}^{N}P^{+}_{n,t,i}}.
+\label{eq:energy}
+\end{equation}
+With coefficients $\lambda_{\mathrm{off}}=0.5$, $\lambda_{\Delta}=0.15$, and $\lambda_{E}=0.25$, the regression loss of appliance $i$ is
+\begin{equation}
+\begin{aligned}
+\mathcal{L}_{i}^{\mathrm{p}}={}&\mathrm{MSE}_{i}+\mathrm{MSE}_{i}^{\mathrm{on}}
++\lambda_{\mathrm{off}}\,\mathrm{MSE}_{i}^{\mathrm{off}}\\
+&+\lambda_{\Delta}\,\mathrm{MSE}_{i}^{\Delta}+\lambda_{E}\,E_{i}.
 \end{aligned}
 \label{eq:power-loss}
 \end{equation}
 
-\paragraph{State estimation.}
-Let $p_i$ be the fraction of training samples for which appliance $i$ is on,
-clipped to the interval $[10^{-4},1-10^{-4}]$ for numerical stability.
-The positive-class weight
+\paragraph{Classification of one appliance.}
+The classification target is $z_{n,t,i}$. Let $p_i$ be the fraction of training samples on which appliance $i$ is on, and set $w_{\max}=12$. An on sample receives weight
 \begin{equation}
-w_i=\min\!\left(\frac{1-p_i}{p_i},12\right)
+w_i=\min\!\left(\frac{1-p_i}{p_i},\,w_{\max}\right),
 \label{eq:positive-weight}
 \end{equation}
-assigns a larger cost to errors on rare on-state samples. The weighted binary
-cross-entropy is
+while an off sample receives weight one. The weighted cross-entropy, with $\log$ the natural logarithm, is
 \begin{equation}
 \begin{aligned}
-\mathrm{BCE}_{i}=-\frac{1}{BN}\sum_{b=1}^{B}\sum_{t=1}^{N}
-\big[&w_i z_{b,t,i}\log\hat{p}_{b,t,i}\\
-&+(1-z_{b,t,i})\log(1-\hat{p}_{b,t,i})\big].
+\mathrm{BCE}_{i}={}&-\frac{1}{BN}\sum_{n=1}^{B}\sum_{t=1}^{N}
+\big(w_i z_{n,t,i}\log\hat{p}_{n,t,i}\\
+&+(1-z_{n,t,i})\log(1-\hat{p}_{n,t,i})\big).
 \end{aligned}
 \label{eq:bce}
 \end{equation}
-False activation is further discouraged by the mean squared on probability
-during off periods:
+The classification loss adds the mean square of the predicted on probability on the off samples,
 \begin{equation}
-\mathrm{FP}_{i}=
-\frac{1}{|\Omega_i^{\mathrm{off}}|_{+}}
-\sum_{(b,t)\in\Omega_i^{\mathrm{off}}}\hat{p}_{b,t,i}^{2}.
-\label{eq:fp}
-\end{equation}
-The state loss is the sum over appliances,
-\begin{equation}
-\mathcal{L}_{\mathrm{state}}
-=\sum_{i=1}^{M}(\mathrm{BCE}_{i}+\mathrm{FP}_{i}).
+\mathcal{L}_{i}^{\mathrm{s}}=\mathrm{BCE}_{i}
++\frac{1}{|\Omega_i^{\mathrm{off}}|}
+\sum_{(n,t)\in\Omega_i^{\mathrm{off}}}\hat{p}_{n,t,i}^{2}.
 \label{eq:state-loss}
 \end{equation}
 
-\paragraph{Combination of the two tasks.}
-The power and state losses have different numerical scales. For each input
-view $v$, where $v\in\{\mathrm{real},\mathrm{swap}\}$, define
+\paragraph{Sum over appliances.}
+The regression loss $\mathcal{L}_{i}^{\mathrm{p}}$ and the classification loss $\mathcal{L}_{i}^{\mathrm{s}}$ of one appliance are not in the same units, and the ratio of the two is not the same for every appliance. Adding them with a single ratio,
 \begin{equation}
-a^{v}=\operatorname{sg}\!\left(
-\frac{\mathcal{L}_{\mathrm{power}}^{v}}
-{\max(\mathcal{L}_{\mathrm{state}}^{v},10^{-8})}
-\right).
-\label{eq:task-scale}
+r=\frac{\sum_{i=1}^{M}\mathcal{L}_{i}^{\mathrm{p}}}{\sum_{i=1}^{M}\mathcal{L}_{i}^{\mathrm{s}}},
+\label{eq:global-ratio}
 \end{equation}
-Here, $\operatorname{sg}(\cdot)$ leaves its value unchanged but treats it as a
-constant during back-propagation. The supervised loss for view $v$ is
-\begin{equation}
-\mathcal{L}_{\mathrm{sup}}^{v}
-=\mathcal{L}_{\mathrm{power}}^{v}
-+0.8\,a^{v}\mathcal{L}_{\mathrm{state}}^{v}.
-\label{eq:sup}
-\end{equation}
-Thus, when $\mathcal{L}_{\mathrm{state}}^{v}>10^{-8}$, the state term has
-forward value $0.8\mathcal{L}_{\mathrm{power}}^{v}$, while its gradient is
-still obtained from $\mathcal{L}_{\mathrm{state}}^{v}$.
+would multiply every classification loss by $r$. The appliance with the largest regression loss would then move the classification weight of the others. For a model trained with this shared ratio, $\mathcal{L}_{i}^{\mathrm{p}}/\mathcal{L}_{i}^{\mathrm{s}}$ was about 177 for the microwave and about 3.3 for the fridge, and $r$ was about 17.
 
-\paragraph{Background consistency.}
-Let $X_{b,t}^{\mathrm{real}}$ be the recorded aggregate power in watts. Its
-residual background is defined as
+The classification loss of appliance $i$ is therefore multiplied by a ratio of its own. Let $\gamma=3$. The ratio $r_i$ equals $\mathcal{L}_{i}^{\mathrm{p}}/\mathcal{L}_{i}^{\mathrm{s}}$ when that quotient lies between $r/\gamma$ and $\gamma r$, and equals the nearer of the two bounds otherwise:
 \begin{equation}
-R_{b,t}=\max\!\left(
-X_{b,t}^{\mathrm{real}}-\sum_{i=1}^{M}P_{b,t,i},0
-\right).
-\label{eq:residual-background}
+r_{i}=
+\begin{cases}
+r/\gamma, & \mathcal{L}_{i}^{\mathrm{p}}/\mathcal{L}_{i}^{\mathrm{s}}<r/\gamma,\\[2pt]
+\gamma r, & \mathcal{L}_{i}^{\mathrm{p}}/\mathcal{L}_{i}^{\mathrm{s}}>\gamma r,\\[2pt]
+\mathcal{L}_{i}^{\mathrm{p}}/\mathcal{L}_{i}^{\mathrm{s}}, & \text{otherwise.}
+\end{cases}
+\label{eq:clipped-ratio}
 \end{equation}
-For the paired view, a residual sequence $R'_{b,t}$ is sampled from another
-training window, while the appliance signals and labels are retained:
-\begin{equation}
-X_{b,t}^{\mathrm{swap}}=\sum_{i=1}^{M}P_{b,t,i}+R'_{b,t}.
-\label{eq:background-swap}
-\end{equation}
-The two inputs therefore have identical appliance targets but different
-background demand. Their state and power predictions are compared using
+In the differentiation of the objective, $r$ and $r_i$ are held constant. With $\lambda=0.8$, the loss of appliance $i$ and the training objective are
 \begin{equation}
 \begin{aligned}
-\mathcal{L}_{\mathrm{con}}={}&\frac{1}{BMN}
-\sum_{b=1}^{B}\sum_{t=1}^{N}\sum_{i=1}^{M}
-(\hat{p}_{b,t,i}^{\mathrm{real}}-\hat{p}_{b,t,i}^{\mathrm{swap}})^2\\
-&+\frac{1}{BMN}
-\sum_{b=1}^{B}\sum_{t=1}^{N}\sum_{i=1}^{M}
-\rho(\hat{y}_{b,t,i}^{\mathrm{real}}-\hat{y}_{b,t,i}^{\mathrm{swap}}),
+\mathcal{L}_{i}&=\mathcal{L}_{i}^{\mathrm{p}}+\lambda r_{i}\,\mathcal{L}_{i}^{\mathrm{s}},\\
+\mathcal{L}&=\sum_{i=1}^{M}\mathcal{L}_{i}.
 \end{aligned}
-\label{eq:con}
-\end{equation}
-where the smooth $L_1$ function is
-\begin{equation}
-\rho(u)=
-\begin{cases}
-u^2/2, & |u|<1,\\
-|u|-1/2, & |u|\geq1.
-\end{cases}
-\label{eq:smooth-l1}
-\end{equation}
-
-The complete training objective is
-\begin{equation}
-\mathcal{L}=\frac{1}{2}\left(
-\mathcal{L}_{\mathrm{sup}}^{\mathrm{real}}
-+\mathcal{L}_{\mathrm{sup}}^{\mathrm{swap}}
-\right)+0.1\,\mathcal{L}_{\mathrm{con}}.
 \label{eq:loss}
 \end{equation}
+Thus $\mathcal{L}$ is the sum, over the target appliances, of one regression loss and one scaled classification loss. The value of $r$ still depends on every $\mathcal{L}_{i}^{\mathrm{p}}$. The classification weight of appliance $i$ is $r_i$.
 
 \section{Experimental Setup}
 \label{sec:setup}
 
 \subsection{Dataset}
-Two public datasets are used: UK-DALE~\cite{kelly2015ukdale} and REFIT~\cite{murray2017refit}. UK-DALE records appliance and whole-house demand from five homes in the United Kingdom, while REFIT contains long-term measurements from UK households. The target appliances are the kettle, fridge, dishwasher, washing machine, and microwave, and all signals are resampled at 8~s. Training uses continuous 5-week blocks from UK-DALE house~1 and REFIT houses~3, 5, 9, and 11. Entire 8-week blocks from UK-DALE house~5 and REFIT house~2 are held out for validation. UK-DALE house~2 and REFIT house~20 form the final 8-week test set. Houses are disjoint across the three splits, and all normalization statistics are estimated from the training houses only.
+Two public datasets are used: UK-DALE~\cite{kelly2015ukdale} and REFIT~\cite{murray2017refit}. The target appliances are the kettle, fridge, dishwasher, washing machine, and microwave, and all signals are resampled at 8~s.
 
-Table~\ref{tab:label} lists the on-off labeling parameters. UK-DALE and REFIT use the same on threshold $\tau$. $G$ and $M$ are durations in seconds. Before they are used, $G$ and $M$ are rounded to the nearest multiple of 8~s, and a positive duration uses at least one sample. In UK-DALE house~5 the fridge uses $G=30$~s.
+The experiment uses a whole-house split. Each house belongs to only one of training, validation, and test, as listed in Table~\ref{tab:split}. Each training house contributes one continuous 5-week block. Each validation or test house contributes its complete 8-week block. Normalization statistics are estimated from the training houses only.
+\begin{table}[H]
+\caption{Whole-house split.}
+\label{tab:split}
+\centering
+\renewcommand{\arraystretch}{1.15}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}lX>{\centering\arraybackslash}c@{}}
+\hline
+Split & Houses & Block \\
+\hline
+Training & UK-DALE house 1; REFIT houses 3, 5, 9, 11 & 5 weeks \\
+Validation & UK-DALE house 5; REFIT house 2 & 8 weeks \\
+Test & UK-DALE house 2; REFIT house 20 & 8 weeks \\
+\hline
+\end{tabularx}
+\end{table}
+
+\subsection{Data Preprocessing}
+\label{sec:preprocess}
+
+Let $P_{n,t,i}$ be the measured power, in watts, of appliance $i$ at sample $t$ of window $n$, and let $z_{n,t,i}\in\{0,1\}$ be its on--off state. Power is standardized by the training-set mean $\mu_i$ and standard deviation $\sigma_i$:
+\begin{equation}
+y_{n,t,i}=\frac{P_{n,t,i}-\mu_i}{\sigma_i}.
+\label{eq:power-normalization}
+\end{equation}
+
+The label is read from the appliance power before windowing. A sample is on when its power is at least $\tau$ watts. A gap below $\tau$ that lasts no longer than $G$ seconds remains part of the same on period, and an on period shorter than $D$ seconds is discarded. UK-DALE and REFIT share $\tau$. In UK-DALE house~5 the fridge uses $G=30$~s. Table~\ref{tab:label} lists $\tau$, $G$, and $D$. Algorithm~\ref{alg:onoff} applies them. For the appliances marked in the table, an isolated spike is removed before the threshold.
 \begin{table}[!t]
 \caption{On-off labeling parameters.}
 \label{tab:label}
@@ -280,7 +289,7 @@ Table~\ref{tab:label} lists the on-off labeling parameters. UK-DALE and REFIT us
 \setlength{\tabcolsep}{3pt}
 \begin{tabularx}{\linewidth}{@{}l*{5}{>{\centering\arraybackslash}X}@{}}
 \hline
-Appliance & $\tau$ (W) & $G$ (s) & \multicolumn{2}{c}{$M$ (s)} & Spike \\
+Appliance & $\tau$ (W) & $G$ (s) & \multicolumn{2}{c}{$D$ (s)} & Spike \\
 \cline{4-5}
  & & & UK-DALE & REFIT & \\
 \hline
@@ -292,38 +301,15 @@ Microwave & 200 & 30 & 12 & 6 & No \\
 \hline
 \end{tabularx}
 \end{table}
-
-Table~\ref{tab:cost} lists the training settings. The parameter count is the number of trainable weights. The window is the number of aggregate-power samples in one input, and the stride is the number of samples between successive inputs. Epochs is the configured maximum. UNet-NILM trains for 50 epochs with early stopping disabled. MAT-Conv trains for at most 200 epochs and stops after 30 epochs without improvement. The proposed model trains for at most 150 epochs, does not stop before epoch 100, and then stops after 55 epochs without improvement. Time is the training time on one GPU. Waveform and loss plots are excluded.
-
-\subsection{Evaluation Metrics}
-\label{sec:metrics}
-
-Each appliance is evaluated separately on both power and on-off state. $t$ is the sample. $y_{t}$ is the recorded power in watts, and $\hat{y}_{t}$ is the predicted power. $T$ is the number of samples. $z_{t}=1$ when the appliance is recorded on, and $z_{t}=0$ when it is off. $\hat{z}_{t}$ is the predicted on-off label. The Average column in Table~\ref{tab:results} is the mean of the five appliance scores.
-
-\subsubsection{Power}
-The same absolute error is reported in three cases. MAE uses every sample. ON MAE uses only samples with $z_{t}=1$. OFF MAE uses only samples with $z_{t}=0$.
-\begin{equation}
-\mathrm{MAE}=\frac{1}{T}\sum_{t=1}^{T}\left|y_{t}-\hat{y}_{t}\right|.
-\label{eq:mae}
-\end{equation}
-SAE splits the record into consecutive windows of $P=1200$ samples, which is 160~minutes at 8~s. $k$ is the window index, and $K=\lfloor T/P\rfloor$ is the number of complete windows. A leftover shorter than $P$ is ignored. SAE is the mean absolute error of the average power in each window,
-\begin{equation}
-\mathrm{SAE}=\frac{1}{K}\sum_{k=1}^{K}\left|\frac{1}{P}\sum_{t=(k-1)P+1}^{kP}\left(y_{t}-\hat{y}_{t}\right)\right|.
-\label{eq:sae}
-\end{equation}
-
-\subsubsection{On-Off State}
-The recorded label $z_t$ is obtained from the appliance power by Algorithm~\ref{alg:onoff}. $\hat{z}_t$ is the on-off label predicted by the model. $u_t$ is a working copy of $y_t$ and is used only to decide $z_t$. $\tau$ is the on-power threshold in watts. $G$ is the longest below-threshold gap, in seconds, that still belongs to the same on period. $M$ is the shortest on period that is kept, in seconds. The record is sampled every 8~s, so both durations are rounded to that grid before use. The spike window is 40~s, $\beta=50$~W is the background level, and $\alpha=3$ is the spike factor. The noise floor is 0~W, so that step leaves $u_t$ unchanged. Table~\ref{tab:label} gives $\tau$, $G$, $M$, and whether spike removal is used.
 \begin{algorithm}[!t]
-\caption{On-off labeling of one appliance power record.}
+\caption{On--off state labeling from appliance power.}
 \label{alg:onoff}
 \begin{algorithmic}[1]
-\REQUIRE $y_t$ is the appliance power in watts at sample $t$, and $T$ is the number of samples
-\REQUIRE $\tau$ is the on threshold in watts. $G$ is the longest below-threshold gap in seconds. $M$ is the shortest on period kept, in seconds. The spike flag is in Table~\ref{tab:label}
-\REQUIRE $\beta=50$~W is the background level, and $\alpha=3$ is the spike factor. $z_t$ is the on-off label
-\STATE $u_t$ is a working copy of $y_t$. Set $u_t \leftarrow y_t$ for every $t$.
-\IF{spike removal is on}
-\STATE In the 40~s window centered at $t$, let the other samples be the neighbors. If at least 60\% of them are below $\beta$, and $u_t>2\beta$, and $u_t$ is greater than $\alpha$ times their median, set $u_t \leftarrow 0$.
+\REQUIRE $P_t$ is the appliance power in watts at sample $t$, and $T$ is the number of samples in the record
+\REQUIRE $\tau$, $G$, and $D$ are the on threshold, the longest gap, and the shortest on period in Table~\ref{tab:label}. $z_t\in\{0,1\}$ is the resulting label
+\STATE Copy $P_t$ to a working sequence $u_t$.
+\IF{spike removal is indicated for this appliance}
+\STATE Set each isolated spike in $u_t$ to zero.
 \ENDIF
 \FOR{$t = 1$ \TO $T$}
 \IF{$u_t \ge \tau$}
@@ -332,29 +318,64 @@ The recorded label $z_t$ is obtained from the appliance power by Algorithm~\ref{
 \STATE $z_t \leftarrow 0$
 \ENDIF
 \ENDFOR
-\STATE Round $G$ and $M$ to the nearest multiple of 8~s. A positive duration uses at least one sample.
-\IF{the rounded $G$ is positive}
-\STATE Each run of $z_t=0$ lying between two on runs, with duration at most the rounded $G$, is one continued on period: set those $z_t \leftarrow 1$.
+\STATE Interpret $G$ and $D$ on the 8~s sample grid.
+\IF{$G>0$}
+\STATE An off run lying between two on runs, and no longer than $G$, is set to on.
 \ENDIF
-\IF{the rounded $M$ is longer than 8~s}
-\STATE Each on run shorter than the rounded $M$, including neither end of the record, is removed: set those $z_t \leftarrow 0$.
+\IF{$D$ exceeds one sample}
+\STATE An on run shorter than $D$ is set to off.
 \ENDIF
 \RETURN $z_1,\ldots,z_T$
 \end{algorithmic}
 \end{algorithm}
-$\mathrm{TP}$ counts samples with $z_{t}=1$ and $\hat{z}_{t}=1$. $\mathrm{FP}$ counts samples with $z_{t}=0$ and $\hat{z}_{t}=1$. $\mathrm{FN}$ counts samples with $z_{t}=1$ and $\hat{z}_{t}=0$.
-\begin{minipage}[c]{0.48\linewidth}
+
+\subsection{Experimental Design}
+\label{sec:design}
+
+The proposed model is compared with UNet-NILM~\cite{faustine2020unet} and MAT-Conv~\cite{xiong2024matnilm}. Each baseline keeps the hyperparameters of its own paper. Table~\ref{tab:cost} lists them with those of the proposed model. All three are trained with Adam. UNet-NILM runs for the full 50 epochs. MAT-Conv stops after 30 epochs without improvement. The proposed window of 1024 samples covers about 136.5~min.
+\begin{table}[!t]
+\caption{Training hyperparameters.}
+\label{tab:cost}
+\centering
+\renewcommand{\arraystretch}{1.15}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}l*{5}{>{\centering\arraybackslash}X}@{}}
+\hline
+Model & Window & Stride & Batch & LR & Epochs \\
+\hline
+UNet-NILM~\cite{faustine2020unet} & 100 & 1 & 256 & $10^{-3}$ & 50 \\
+MAT-Conv~\cite{xiong2024matnilm} & 864 & 64 & 64 & $10^{-3}$ & 200 \\
+Proposed & 1024 & 512 & 64 & $10^{-4}$ & 150 \\
+\hline
+\end{tabularx}
+\end{table}
+
+\subsection{Evaluation Metrics}
+\label{sec:metrics}
+
+Each appliance is evaluated on power and on the on--off state. For an evaluated record of length $T$, $P_{t}$ is the recorded power in watts and $\hat{P}_{t}$ is the predicted power. The label $z_{t}$ equals 1 when the appliance is recorded on and 0 when it is off. $\hat{z}_{t}$ is the predicted label. The Average column in Table~\ref{tab:results} is the mean of the five appliance scores. Here $T$ is the length of the record, not the training window of Section~\ref{sec:problem}.
+
+\subsubsection{Power}
+The same absolute error is reported in three ways. MAE uses every sample. ON MAE uses samples with $z_{t}=1$. OFF MAE uses samples with $z_{t}=0$.
 \begin{equation}
-\mathrm{Precision}=\frac{\mathrm{TP}}{\mathrm{TP}+\mathrm{FP}},
+\mathrm{MAE}=\frac{1}{T}\sum_{t=1}^{T}\left|P_{t}-\hat{P}_{t}\right|.
+\label{eq:mae}
+\end{equation}
+SAE divides the record into consecutive blocks of $L=1200$ samples, or 160~min at 8~s. The index of a block is $k$, and $K=\lfloor T/L\rfloor$ is the number of complete blocks. A trailing block shorter than $L$ is omitted. SAE is the mean absolute error of the average power in each block,
+\begin{equation}
+\mathrm{SAE}=\frac{1}{K}\sum_{k=1}^{K}\left|\frac{1}{L}\sum_{t=(k-1)L+1}^{kL}\left(P_{t}-\hat{P}_{t}\right)\right|.
+\label{eq:sae}
+\end{equation}
+
+\subsubsection{On-Off State}
+The recorded label $z_t$ is produced by Algorithm~\ref{alg:onoff}. $\hat{z}_t$ is the on-off label predicted by the model. $\mathrm{TP}$ counts samples with $z_{t}=1$ and $\hat{z}_{t}=1$. $\mathrm{FP}$ counts samples with $z_{t}=0$ and $\hat{z}_{t}=1$. $\mathrm{FN}$ counts samples with $z_{t}=1$ and $\hat{z}_{t}=0$.
+
+\begin{equation}
+\mathrm{Precision}=\frac{\mathrm{TP}}{\mathrm{TP}+\mathrm{FP}},\qquad
+\mathrm{Recall}=\frac{\mathrm{TP}}{\mathrm{TP}+\mathrm{FN}}.
 \label{eq:precision}
 \end{equation}
-\end{minipage}\hfill
-\begin{minipage}[c]{0.48\linewidth}
-\begin{equation}
-\mathrm{Recall}=\frac{\mathrm{TP}}{\mathrm{TP}+\mathrm{FN}},
-\label{eq:recall}
-\end{equation}
-\end{minipage}
 \begin{equation}
 \mathrm{F1}=\frac{2\cdot\mathrm{Precision}\cdot\mathrm{Recall}}{\mathrm{Precision}+\mathrm{Recall}}.
 \label{eq:f1}
@@ -362,6 +383,9 @@ $\mathrm{TP}$ counts samples with $z_{t}=1$ and $\hat{z}_{t}=1$. $\mathrm{FP}$ c
 Precision is the fraction of predicted on samples that are truly on. Recall is the fraction of recorded on samples that are detected. F1 is their harmonic mean, so it is high only when both precision and recall are high.
 
 \section{Results}
+
+\subsection{Power Disaggregation and State Detection}
+\label{sec:power-state}
 
 Table~\ref{tab:results} compares each model on UK-DALE and REFIT. DW, WM, and MW are the dishwasher, washing machine, and microwave. The scores are defined in Section~\ref{sec:metrics}. Lower power error is better. Higher precision, recall, and F1 are better.
 
@@ -418,25 +442,30 @@ Table~\ref{tab:results} compares each model on UK-DALE and REFIT. DW, WM, and MW
 \end{tabularx}
 \end{table*}
 
-Table~\ref{tab:cost} reports the computational cost. The columns are defined in Section~\ref{sec:setup}.
+\subsection{Computational Cost}
+\label{sec:cost}
 
+Table~\ref{tab:time} reports the number of trainable parameters and the training time of each model on one GPU.
 \begin{table}[!t]
 \caption{Computational cost.}
-\label{tab:cost}
+\label{tab:time}
 \centering
 \renewcommand{\arraystretch}{1.15}
 \footnotesize
 \setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\linewidth}{@{}l*{6}{>{\centering\arraybackslash}X}@{}}
+\begin{tabularx}{\linewidth}{@{}l*{2}{>{\centering\arraybackslash}X}@{}}
 \hline
-Model & Params (M) & Window & Stride & Batch & Epochs & Time (s) \\
+Model & Params (M) & Time (s) \\
 \hline
-UNet-NILM~\cite{faustine2020unet} & 5.832 & 100 & 1 & 256 & 50 &  \\
-MAT-Conv~\cite{xiong2024matnilm} & 3.022 & 864 & 64 & 64 & 200 &  \\
-Proposed & 1.376 & 1024 & 512 & 64 & 150 &  \\
+UNet-NILM & 5.832 &  \\
+MAT-Conv & 3.022 &  \\
+Proposed & 1.376 &  \\
 \hline
 \end{tabularx}
 \end{table}
+
+\subsection{Ablation Study}
+\label{sec:ablation}
 
 \section{Conclusion}
 

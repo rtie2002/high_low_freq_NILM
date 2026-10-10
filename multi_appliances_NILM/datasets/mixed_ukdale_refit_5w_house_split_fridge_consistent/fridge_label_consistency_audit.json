@@ -1,0 +1,16 @@
+{
+  "selected_rows": 377651,
+  "old_on_samples": 99961,
+  "new_on_samples": 1288,
+  "newly_off_samples": 98673,
+  "newly_on_samples": 0,
+  "removed_target_watt_samples": 3434439.0833360003,
+  "threshold_watts": 50.0,
+  "min_off_samples": 2,
+  "min_on_samples": 8,
+  "source_dataset": "C:\\Users\\Raymond Tie\\Desktop\\PhD\\Code\\multi-domain NILM\\high_low_freq_NILM\\multi_appliances_NILM\\datasets\\mixed_ukdale_refit_5w_house_split",
+  "output_dataset": "C:\\Users\\Raymond Tie\\Desktop\\PhD\\Code\\multi-domain NILM\\high_low_freq_NILM\\multi_appliances_NILM\\datasets\\mixed_ukdale_refit_5w_house_split_fridge_consistent",
+  "scope": "training REFIT house 11 fridge only",
+  "aggregate_changed": false,
+  "validation_or_test_changed": false
+}
