@@ -74,6 +74,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-dir", type=Path, default=DEFAULT_RUN_DIR)
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument(
+        "--eval-splits",
+        nargs="+",
+        default=None,
+        help="Evaluation splits to run, e.g. --eval-splits validation. "
+        "Default: validation followed by every configured test scenario.",
+    )
     return parser.parse_args()
 
 
@@ -132,7 +139,8 @@ def main() -> None:
         ckpt = args.checkpoint or (run_dir / "best.pt")
         if not ckpt.exists():
             raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
-        evaluation_splits = ["validation", *resolve_test_scenarios(experiment)]
+        test_scenarios = resolve_test_scenarios(experiment)
+        evaluation_splits = args.eval_splits or ["validation", *test_scenarios]
         for split in evaluation_splits:
             label = "Validation" if split == "validation" else f"Test scenario: {split}"
             print(f"\n{label} evaluation ({ckpt.name}):", flush=True)
@@ -144,10 +152,9 @@ def main() -> None:
                 show_cost_summary=False,
             )
             print(f"Saved predictions: {pred_path}")
-        print_val_test_comparison(
-            run_dir,
-            test_scenarios=resolve_test_scenarios(experiment),
-        )
+        selected_tests = [split for split in evaluation_splits if split in test_scenarios]
+        if "validation" in evaluation_splits and selected_tests:
+            print_val_test_comparison(run_dir, test_scenarios=selected_tests)
         print_run_cost_summary(run_dir)
 
 
