@@ -736,3 +736,17 @@ event NRMSE rises from 0.579 to 0.628 and correlation falls from 0.377 to
 0.359; fridge false events rise from 228 to 233 and correlation falls from
 0.106 to 0.070. The original 0.25 dropout is retained. No test house was
 evaluated.
+
+## Seeded training-gate ablation - completed 2026-10-10
+
+Experiment: `multinilm_simplify_seeded_raw_no_train_power_gate`
+
+Removing the soft state gate from the training-time power output is rejected.
+Validation MAE changes from 14.590 to 14.666 W, macro-F1 from 0.771 to
+0.767, and AP from 0.794 to 0.772. Microwave F1 rises slightly from 0.474 to
+0.487, but its event NRMSE worsens from 0.579 to 0.649 and correlation falls
+from 0.377 to 0.353. Fridge F1 falls from 0.837 to 0.823, false events rise
+from 228 to 259, and event NRMSE worsens from 0.384 to 0.403. Direct visual
+inspection shows the difficult high-background fridge event growing from
+roughly 1.2 kW repeated false pulses to roughly 2.3 kW pulses. The soft
+training gate is therefore retained. No test house was evaluated.

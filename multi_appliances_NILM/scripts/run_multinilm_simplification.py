@@ -177,6 +177,12 @@ REPRO_VARIANTS = {
 }
 
 HYPERPARAMETER_VARIANTS = {
+    # Relation attention was useful in the earlier no-relation ablation. Test
+    # one stronger residual value without changing its parameters or topology.
+    "relation_scale_05": {
+        "experiment_id": "multinilm_simplify_seeded_raw_relation_scale_05",
+        "relation_residual_scale": 0.5,
+    },
     # The seeded histories show a widening train/validation gap after the
     # early epochs.  This is a single regularisation check, not a grid search:
     # all temporal, head, and relation dropout values still share one number.
@@ -277,7 +283,12 @@ def _hyperparameter_candidate(base: dict, name: str) -> dict:
     spec = HYPERPARAMETER_VARIANTS[name]
     candidate["experiment_id"] = spec["experiment_id"]
     architecture = copy.deepcopy(candidate.get("architecture", {}))
-    architecture["dropout"] = float(spec["dropout"])
+    if "dropout" in spec:
+        architecture["dropout"] = float(spec["dropout"])
+    if "relation_residual_scale" in spec:
+        cross = copy.deepcopy(architecture.get("cross_appliance", {}))
+        cross["residual_scale"] = float(spec["relation_residual_scale"])
+        architecture["cross_appliance"] = cross
     candidate["architecture"] = architecture
     return candidate
 

@@ -231,6 +231,24 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         self.assertEqual(cfg["architecture"]["num_blocks"], 5)
         self.assertTrue(cfg["architecture"]["cross_appliance"]["enabled"])
 
+    def test_relation_scale_candidate_preserves_relation_topology(self):
+        self.base["architecture"] = {
+            "dropout": 0.25,
+            "cross_appliance": {
+                "enabled": True,
+                "mode": "relation_attention",
+                "attention_channels": 16,
+                "residual_scale": 0.25,
+            },
+        }
+        cfg = _hyperparameter_candidate(self.base, "relation_scale_05")
+        relation = cfg["architecture"]["cross_appliance"]
+
+        self.assertEqual(relation["residual_scale"], 0.5)
+        self.assertEqual(relation["mode"], "relation_attention")
+        self.assertEqual(relation["attention_channels"], 16)
+        self.assertEqual(cfg["architecture"]["dropout"], 0.25)
+
 
 if __name__ == "__main__":
     unittest.main()
