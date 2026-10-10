@@ -172,6 +172,23 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         self.assertEqual(architecture["head_norm_type"], "batch")
         self.assertTrue(architecture["task_attention"]["enabled"])
 
+    def test_three_tcn_blocks_preserves_heads_and_attention(self):
+        self.base["architecture"] = {
+            "num_blocks": 5,
+            "max_dilation": 16,
+            "head_local_layers": 2,
+            "task_attention": {"enabled": True},
+            "cross_appliance": {"enabled": True},
+        }
+        cfg = _architecture_candidate(self.base, "three_tcn_blocks")
+        architecture = cfg["architecture"]
+
+        self.assertEqual(architecture["num_blocks"], 3)
+        self.assertEqual(architecture["max_dilation"], 4)
+        self.assertEqual(architecture["head_local_layers"], 2)
+        self.assertTrue(architecture["task_attention"]["enabled"])
+        self.assertTrue(architecture["cross_appliance"]["enabled"])
+
     def test_seeded_reference_and_raw_change_only_features(self):
         baseline = _repro_candidate(self.base, "seeded_baseline")
         raw = _repro_candidate(self.base, "seeded_raw")

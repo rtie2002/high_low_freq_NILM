@@ -688,3 +688,19 @@ The next architecture test replaces only stem IBN with ordinary BatchNorm. It
 directly tests whether the hardest-to-explain normalization is necessary while
 preserving the multiscale convolutions, TCN, appliance heads, and relation
 attention. No test house is evaluated.
+
+## Seeded stem-normalization ablation — completed 2026-10-10
+
+Experiment: `multinilm_simplify_seeded_raw_batch_stem_norm`
+
+Replacing only stem IBN with BatchNorm is decisively rejected. Overall MAE
+worsens from 14.590 to 15.894 W, macro-F1 from 0.771 to 0.758, and AP from
+0.794 to 0.753. Fridge is the main failure: MAE rises from 20.399 to 26.304 W,
+F1 falls from 0.837 to 0.780, event NRMSE worsens from 0.384 to 0.502, false
+events rise from 228 to 372, and event IoU falls from 0.786 to 0.706. IBN is
+retained as a supported cross-house normalization component.
+
+The final architecture-depth check reduces the shared TCN from five dilated
+blocks to three while keeping the stem, both attention modules, and appliance
+heads fixed. This tests a substantial shared-encoder simplification without
+confounding it with normalization. No test house is evaluated.

@@ -117,6 +117,12 @@ LOSS_VARIANTS = {
 }
 
 ARCHITECTURE_VARIANTS = {
+    # Shorter TCN with dilations 1, 2, 4 instead of 1, 2, 4, 8, 16.
+    "three_tcn_blocks": {
+        "experiment_id": "multinilm_simplify_seeded_raw_three_tcn_blocks",
+        "num_blocks": 3,
+        "max_dilation": 4,
+    },
     # Replace the mixed instance/batch normalization in the stem with ordinary
     # BatchNorm; all convolutional paths and later normalization stay fixed.
     "batch_stem_norm": {
