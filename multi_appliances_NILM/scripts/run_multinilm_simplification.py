@@ -116,6 +116,12 @@ ARCHITECTURE_VARIANTS = {
         "experiment_id": "multinilm_simplify_seeded_raw_no_task_attention",
         "task_attention": {"enabled": False},
     },
+    # Keep both attention mechanisms but reduce each appliance decoder from
+    # two residual local blocks to one.
+    "one_head_block": {
+        "experiment_id": "multinilm_simplify_seeded_raw_one_head_block",
+        "head_local_layers": 1,
+    },
     # Bottom-up relational TCN: retain the shared temporal encoder and the
     # explicit multi-appliance interaction, remove the nested refinements
     # around them. The full retained loss is used so this tests architecture.

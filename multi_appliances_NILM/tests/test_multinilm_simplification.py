@@ -137,6 +137,19 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         self.assertEqual(architecture["head_local_layers"], 2)
         self.assertTrue(architecture["cross_appliance"]["enabled"])
 
+    def test_one_head_block_preserves_attention(self):
+        self.base["architecture"] = {
+            "head_local_layers": 2,
+            "task_attention": {"enabled": True, "reduction": 4},
+            "cross_appliance": {"enabled": True, "mode": "relation_attention"},
+        }
+        cfg = _architecture_candidate(self.base, "one_head_block")
+        architecture = cfg["architecture"]
+
+        self.assertEqual(architecture["head_local_layers"], 1)
+        self.assertTrue(architecture["task_attention"]["enabled"])
+        self.assertTrue(architecture["cross_appliance"]["enabled"])
+
     def test_seeded_reference_and_raw_change_only_features(self):
         baseline = _repro_candidate(self.base, "seeded_baseline")
         raw = _repro_candidate(self.base, "seeded_raw")

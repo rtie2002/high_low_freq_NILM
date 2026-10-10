@@ -627,3 +627,26 @@ the overall calibrated metrics also decline. Therefore the existing auxiliary
 losses cannot be removed without a measurable validation and waveform cost in
 the present model. The full loss is retained, and simplification proceeds to
 the architecture. No test house was evaluated.
+
+## Seeded task-attention ablation — completed 2026-10-10
+
+Experiment: `multinilm_simplify_seeded_raw_no_task_attention`
+
+Only the channel-wise task-attention module inside each appliance head was
+disabled. Cross-appliance relation attention and every other setting remained
+unchanged. Parameter count fell from 1.373 M to 1.33 M.
+
+| Architecture | MAE (W) | macro-F1 | AP | Event-F1 | Microwave F1 |
+|---|---:|---:|---:|---:|---:|
+| task attention | 14.590 | **0.771** | **0.794** | **0.392** | **0.474** |
+| no task attention | **14.558** | 0.763 | 0.779 | 0.357 | 0.442 |
+
+The 0.032 W MAE change is negligible and does not compensate for the 0.015 AP
+loss or the state/event degradation. On matched microwave events, detection
+falls from 0.637 to 0.589, IoU from 0.460 to 0.421, median NRMSE worsens from
+0.579 to 0.776, and false events rise from 93 to 112. Kettle and dishwasher
+event quality also declines. The module is retained.
+
+The next architecture test preserves both attention mechanisms and changes
+only the number of appliance-local residual blocks from two to one. No test
+house was evaluated.
