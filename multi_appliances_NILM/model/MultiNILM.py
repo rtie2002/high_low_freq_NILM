@@ -440,8 +440,7 @@ class ApplianceHead(nn.Module):
 
     def __init__(self, hidden_channels, dropout, *, gate_mode="soft_train_hard_eval", gate_threshold=0.5,
                  off_norm=0.0, head_local_layers=2, head_kernel_size=3, head_use_residual=True,
-                 state_head_kernel_size=1, norm_type="batch", use_task_attention=False,
-                 task_attention_reduction=4):
+                 norm_type="batch", use_task_attention=False, task_attention_reduction=4):
         super().__init__()
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
@@ -474,12 +473,7 @@ class ApplianceHead(nn.Module):
         self.local_decoder = nn.Sequential(*blocks)
         self.dropout = nn.Dropout(dropout)
         self.power_head = nn.Conv1d(hidden_channels, 1, 1)
-        state_kernel = int(state_head_kernel_size)
-        if state_kernel < 1 or state_kernel % 2 == 0:
-            raise ValueError("state_head_kernel_size must be an odd positive integer")
-        self.state_head = nn.Conv1d(
-            hidden_channels, 1, state_kernel, padding=state_kernel // 2
-        )
+        self.state_head = nn.Conv1d(hidden_channels, 1, 1)
         self.feature_refine = self.local_decoder  # old checkpoint alias
 
     def encode_features(self, z):
@@ -579,7 +573,6 @@ class MultiNILM(nn.Module):
         max_dilation=128, gate_mode="soft_train_hard_eval",
         gate_threshold=0.5, appliance_off_norm=None,
         head_local_layers=2, head_kernel_size=3, head_use_residual=True,
-        state_head_kernel_size=1,
         use_multiscale_stem=False, detail_kernels=None, detail_branch_channels=12,
         stem_norm_type="batch", temporal_norm_type="batch", head_norm_type="batch",
         task_attention_enabled=False, task_attention_reduction=4,
@@ -683,7 +676,6 @@ class MultiNILM(nn.Module):
                 gate_mode=self.gate_mode, gate_threshold=self.gate_threshold,
                 off_norm=off_norms[i], head_local_layers=int(head_local_layers),
                 head_kernel_size=int(head_kernel_size), head_use_residual=bool(head_use_residual),
-                state_head_kernel_size=int(state_head_kernel_size),
                 norm_type=head_norm_type, use_task_attention=bool(task_attention_enabled),
                 task_attention_reduction=int(task_attention_reduction),
             )
@@ -841,7 +833,6 @@ class MultiNILMConfig:
     head_local_layers: int = 2
     head_kernel_size: int = 3
     head_use_residual: bool = True
-    state_head_kernel_size: int = 1
     use_multiscale_stem: bool = False
     detail_kernels: list[int] = field(default_factory=lambda: [3, 5, 9])
     detail_branch_channels: int = 12
@@ -892,7 +883,6 @@ def multinilm_config(architecture):
         head_local_layers=int(a.get("head_local_layers", 2)),
         head_kernel_size=int(a.get("head_kernel_size", 3)),
         head_use_residual=bool(a.get("head_use_residual", True)),
-        state_head_kernel_size=int(a.get("state_head_kernel_size", 1)),
         use_multiscale_stem=bool(a.get("use_multiscale_stem", False)),
         detail_kernels=[int(k) for k in a.get("detail_kernels", [3, 5, 9])],
         detail_branch_channels=int(a.get("detail_branch_channels", 12)),

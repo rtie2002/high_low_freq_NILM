@@ -835,3 +835,21 @@ events and temporal state stability. Do not continue a width sweep. The next
 candidate keeps all retained features and changes only the state output kernel
 from one to five samples, giving the classifier 40 seconds of direct local
 context without adding another feature extractor. No test house was evaluated.
+
+## Temporal state-head kernel - rejected 2026-10-10
+
+Experiment: `multinilm_seeded_raw_state_head_kernel_5`
+
+Only the final state classifier changed from a one-sample to a five-sample
+convolution. This added about 2.6 K parameters (less than 0.2%) and left the
+power head, feature extractor, loss, and data pipeline unchanged. Validation
+MAE/F1/AP changed from 14.590/0.771/0.794 to 16.980/0.754/0.798. Microwave
+F1 was effectively unchanged (0.474 to 0.473), but event NRMSE worsened from
+0.579 to 0.773. Fridge F1 fell from 0.837 to 0.825, event NRMSE worsened from
+0.384 to 0.429, and false events increased from 228 to 1,901.
+
+Conclusion: reject and remove the wider state head. A short output filter does
+not resolve appliance identity under confounding background and its gradients
+disturb the soft-gated regression. The next run changes no architecture: it
+tests stronger weight decay as a direct regularisation check. No test house was
+evaluated.

@@ -127,27 +127,6 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         self.assertEqual(architecture["num_blocks"], 5)
         self.assertTrue(architecture["cross_appliance"]["enabled"])
 
-    def test_state_head_kernel_changes_classifier_only(self):
-        self.base["architecture"] = {
-            "channel_schedule": [32, 64, 128],
-            "hidden_channels": 128,
-            "state_head_kernel_size": 1,
-            "num_blocks": 5,
-            "head_local_layers": 2,
-            "task_attention": {"enabled": True},
-            "cross_appliance": {"enabled": True},
-        }
-        cfg = _architecture_candidate(self.base, "state_head_kernel_5")
-        architecture = cfg["architecture"]
-
-        self.assertEqual(architecture["channel_schedule"], [32, 64, 128])
-        self.assertEqual(architecture["hidden_channels"], 128)
-        self.assertEqual(architecture["state_head_kernel_size"], 5)
-        self.assertEqual(architecture["num_blocks"], 5)
-        self.assertEqual(architecture["head_local_layers"], 2)
-        self.assertTrue(architecture["task_attention"]["enabled"])
-        self.assertTrue(architecture["cross_appliance"]["enabled"])
-
     def test_no_task_attention_preserves_other_architecture(self):
         self.base["architecture"] = {
             "use_multiscale_stem": True,
@@ -269,6 +248,15 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         self.assertEqual(relation["mode"], "relation_attention")
         self.assertEqual(relation["attention_channels"], 16)
         self.assertEqual(cfg["architecture"]["dropout"], 0.25)
+
+    def test_weight_decay_candidate_changes_training_only(self):
+        self.base["architecture"] = {"hidden_channels": 128}
+        self.base["training"] = {"weight_decay": 0.0001, "learning_rate": 0.0001}
+        cfg = _hyperparameter_candidate(self.base, "weight_decay_5e4")
+
+        self.assertEqual(cfg["training"]["weight_decay"], 0.0005)
+        self.assertEqual(cfg["training"]["learning_rate"], 0.0001)
+        self.assertEqual(cfg["architecture"]["hidden_channels"], 128)
 
 
 if __name__ == "__main__":
