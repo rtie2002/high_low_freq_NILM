@@ -127,6 +127,23 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         self.assertEqual(architecture["num_blocks"], 5)
         self.assertTrue(architecture["cross_appliance"]["enabled"])
 
+    def test_shared_bigru_context_preserves_existing_architecture(self):
+        self.base["architecture"] = {
+            "num_blocks": 5,
+            "head_local_layers": 2,
+            "task_attention": {"enabled": True},
+            "cross_appliance": {"enabled": True},
+        }
+        cfg = _architecture_candidate(self.base, "shared_bigru_context")
+        architecture = cfg["architecture"]
+
+        self.assertEqual(architecture["temporal_context"]["type"], "bigru")
+        self.assertEqual(architecture["temporal_context"]["hidden_channels"], 64)
+        self.assertEqual(architecture["num_blocks"], 5)
+        self.assertEqual(architecture["head_local_layers"], 2)
+        self.assertTrue(architecture["task_attention"]["enabled"])
+        self.assertTrue(architecture["cross_appliance"]["enabled"])
+
     def test_no_task_attention_preserves_other_architecture(self):
         self.base["architecture"] = {
             "use_multiscale_stem": True,

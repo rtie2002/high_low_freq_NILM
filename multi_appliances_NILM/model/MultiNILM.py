@@ -274,6 +274,37 @@ class ResidualTemporalBlock(nn.Module):
         return x + self.dropout(self.activation(self.norm(self.conv(x))))
 
 
+class ResidualBidirectionalGRU(nn.Module):
+    """Add full-window context without replacing the local TCN path."""
+
+    def __init__(self, channels, hidden_channels, dropout=0.0, residual_scale=0.1):
+        super().__init__()
+        hidden = int(hidden_channels)
+        if hidden < 1:
+            raise ValueError("temporal_context.hidden_channels must be positive")
+        self.gru = nn.GRU(
+            input_size=int(channels),
+            hidden_size=hidden,
+            num_layers=1,
+            batch_first=True,
+            bidirectional=True,
+        )
+        output_channels = 2 * hidden
+        self.projection = (
+            nn.Identity()
+            if output_channels == int(channels)
+            else nn.Linear(output_channels, int(channels))
+        )
+        self.dropout = nn.Dropout(float(dropout))
+        self.residual_scale = float(residual_scale)
+
+    def forward(self, x):
+        sequence = x.transpose(1, 2)                          # (B, T, C)
+        context, _ = self.gru(sequence)
+        context = self.dropout(self.projection(context))
+        return x + self.residual_scale * context.transpose(1, 2)
+
+
 class LocalTransientExpert(nn.Module):
     """Short-range expert over raw aggregate and the alpha=1 GL channel.
 
@@ -580,6 +611,8 @@ class MultiNILM(nn.Module):
         cross_appliance_residual_scale=0.5, cross_appliance_dropout=0.0,
         cross_appliance_mid_channels=None,
         cross_appliance_attention_channels=16,
+        temporal_context_type="none", temporal_context_hidden_channels=64,
+        temporal_context_dropout=0.0, temporal_context_residual_scale=0.1,
         dual_expert_enabled=False, dual_expert_local_channels=32,
         dual_expert_local_kernel_size=5, dual_expert_local_dilations=None,
         dual_expert_local_norm_type="group", dual_expert_dropout=0.1,
@@ -640,6 +673,21 @@ class MultiNILM(nn.Module):
             )
             for i in range(num_blocks)
         ])
+        context_type = str(temporal_context_type or "none").lower()
+        if context_type == "none":
+            self.temporal_context = nn.Identity()
+        elif context_type == "bigru":
+            self.temporal_context = ResidualBidirectionalGRU(
+                self.hidden_channels,
+                int(temporal_context_hidden_channels),
+                dropout=float(temporal_context_dropout),
+                residual_scale=float(temporal_context_residual_scale),
+            )
+        else:
+            raise ValueError(
+                "temporal_context.type must be none|bigru, "
+                f"got {temporal_context_type!r}"
+            )
         self.local_expert = None
         self.local_experts = None
         self.expert_gates = None
@@ -707,6 +755,7 @@ class MultiNILM(nn.Module):
         h = self.aggregate_feature_extractor(x)                # (B, C, T)
         for block in self.temporal_encoder:
             h = block(h)                                       # (B, C, T)
+        h = self.temporal_context(h)                            # (B, C, T)
 
         context_features = _match_time_length(h, self.output_length)  # (B, C, T_out)
         routed_features = [context_features] * self.num_appliances
@@ -847,6 +896,10 @@ class MultiNILMConfig:
     cross_appliance_dropout: float = 0.0
     cross_appliance_mid_channels: int | None = None
     cross_appliance_attention_channels: int = 16
+    temporal_context_type: str = "none"
+    temporal_context_hidden_channels: int = 64
+    temporal_context_dropout: float = 0.0
+    temporal_context_residual_scale: float = 0.1
     dual_expert_enabled: bool = False
     dual_expert_local_channels: int = 32
     dual_expert_local_kernel_size: int = 5
@@ -863,6 +916,7 @@ def multinilm_config(architecture):
     legacy_dropout = float(a.get("dropout", 0.1))
     task = a.get("task_attention") if isinstance(a.get("task_attention"), dict) else {}
     cross = a.get("cross_appliance") if isinstance(a.get("cross_appliance"), dict) else {}
+    context = a.get("temporal_context") if isinstance(a.get("temporal_context"), dict) else {}
     dual = a.get("dual_expert") if isinstance(a.get("dual_expert"), dict) else {}
     mid = cross.get("mid_channels", None)
     return MultiNILMConfig(
@@ -897,6 +951,10 @@ def multinilm_config(architecture):
         cross_appliance_dropout=float(cross.get("dropout", legacy_dropout)),
         cross_appliance_mid_channels=None if mid is None else int(mid),
         cross_appliance_attention_channels=int(cross.get("attention_channels", 16)),
+        temporal_context_type=str(context.get("type", "none")),
+        temporal_context_hidden_channels=int(context.get("hidden_channels", 64)),
+        temporal_context_dropout=float(context.get("dropout", 0.0)),
+        temporal_context_residual_scale=float(context.get("residual_scale", 0.1)),
         dual_expert_enabled=bool(dual.get("enabled", False)),
         dual_expert_local_channels=int(dual.get("local_channels", 32)),
         dual_expert_local_kernel_size=int(dual.get("local_kernel_size", 5)),
