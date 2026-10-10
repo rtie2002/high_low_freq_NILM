@@ -77,6 +77,13 @@ FEATURE_VARIANTS = {
 }
 
 LOSS_VARIANTS = {
+    # A single interpretable task-weight check on the raw-input model. This
+    # tests whether the compact input can recover state ranking without adding
+    # a component or changing the bounded per-appliance balancing rule.
+    "lambda_state_1": {
+        "experiment_id": "multinilm_simplify_seeded_raw_lambda_state_1",
+        "lambda_state": 1.0,
+    },
     # Remove the two aggregate reconstruction terms that are most directly
     # duplicated by all-sample MSE. Keep edge shape and false-positive control.
     "loss_compact": {

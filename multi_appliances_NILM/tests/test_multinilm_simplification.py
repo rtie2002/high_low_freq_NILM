@@ -88,6 +88,13 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         self.assertEqual(cfg["loss"]["power_delta_weight"], 0.15)
         self.assertEqual(cfg["loss"]["state_fp_weight"], 1.0)
 
+    def test_lambda_state_candidate_changes_one_weight(self):
+        self.base["loss"] = {"lambda_state": 0.8, "power_on_weight": 1.0}
+        cfg = _loss_candidate(self.base, "lambda_state_1", "feature_1")
+
+        self.assertEqual(cfg["loss"]["lambda_state"], 1.0)
+        self.assertEqual(cfg["loss"]["power_on_weight"], 1.0)
+
     def test_ap_monitor_changes_selection_not_loss(self):
         self.base["loss"] = {"power_on_weight": 1.0}
         self.base["training"] = {

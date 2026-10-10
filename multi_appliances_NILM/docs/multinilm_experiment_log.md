@@ -650,3 +650,25 @@ event quality also declines. The module is retained.
 The next architecture test preserves both attention mechanisms and changes
 only the number of appliance-local residual blocks from two to one. No test
 house was evaluated.
+
+## Seeded appliance-head depth ablation — completed 2026-10-10
+
+Experiment: `multinilm_simplify_seeded_raw_one_head_block`
+
+Only the number of residual local blocks in each appliance head changed from
+two to one. Parameter count fell from 1.373 M to 1.13 M.
+
+| Head depth | MAE (W) | macro-F1 | AP | Event-F1 | Microwave event NRMSE |
+|---|---:|---:|---:|---:|---:|
+| two blocks | **14.590** | **0.771** | 0.794 | **0.392** | **0.579** |
+| one block | 15.084 | 0.770 | **0.802** | 0.368 | 0.812 |
+
+The shallower decoder improves AP by 0.008 but fails the joint power/waveform
+criterion. Microwave event detection drops from 0.637 to 0.589, IoU from 0.460
+to 0.408, correlation from 0.377 to 0.350, and median NRMSE worsens to 0.812.
+Overall MAE also worsens by 0.494 W. The second local block is retained.
+
+The next run changes no component. It tests the single round state-task weight
+`lambda_state=1.0` on raw input, instead of 0.8, to determine whether the
+compact input can recover the small AP/F1 gap without adding complexity. No
+test house is evaluated.
