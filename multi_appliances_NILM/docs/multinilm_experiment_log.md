@@ -817,3 +817,21 @@ identity. The next experiment adds no component: reduce the common width from
 128 to 96 channels to test whether lower capacity improves cross-house
 generalisation while making the retained model smaller. No test house was
 evaluated.
+
+## Reduced hidden width - rejected 2026-10-10
+
+Experiment: `multinilm_seeded_raw_hidden_96`
+
+The shared representation and appliance heads were reduced from 128 to 96
+channels. This added no component and reduced trainable parameters from
+1.373 M to 0.789 M (43%). Validation MAE/F1/AP nevertheless changed from
+14.590/0.771/0.794 to 15.857/0.746/0.776. Fridge false events increased from
+228 to 2,309. Microwave detection fell from 0.637 to 0.486, event IoU from
+0.460 to 0.364, and median event NRMSE worsened from 0.579 to 1.000.
+
+Conclusion: reject. The 128-channel representation is not removable excess
+capacity under this protocol; reducing it disproportionately harms sparse
+events and temporal state stability. Do not continue a width sweep. The next
+candidate keeps all retained features and changes only the state output kernel
+from one to five samples, giving the classifier 40 seconds of direct local
+context without adding another feature extractor. No test house was evaluated.

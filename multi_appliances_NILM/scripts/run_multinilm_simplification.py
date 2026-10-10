@@ -117,12 +117,11 @@ LOSS_VARIANTS = {
 }
 
 ARCHITECTURE_VARIANTS = {
-    # Direct capacity control: remove channels without adding another module
-    # or changing the temporal receptive field.
-    "hidden_96": {
-        "experiment_id": "multinilm_seeded_raw_hidden_96",
-        "channel_schedule": [32, 64, 96],
-        "hidden_channels": 96,
+    # Let state classification use a short local sequence directly. The power
+    # head and every preceding feature remain unchanged.
+    "state_head_kernel_5": {
+        "experiment_id": "multinilm_seeded_raw_state_head_kernel_5",
+        "state_head_kernel_size": 5,
     },
     # Decouple the regression value from the state probability during
     # training. Evaluation still applies the calibrated binary state mask, so
