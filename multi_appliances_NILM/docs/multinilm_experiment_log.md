@@ -672,3 +672,19 @@ The next run changes no component. It tests the single round state-task weight
 `lambda_state=1.0` on raw input, instead of 0.8, to determine whether the
 compact input can recover the small AP/F1 gap without adding complexity. No
 test house is evaluated.
+
+## Seeded state-weight check — completed 2026-10-10
+
+Experiment: `multinilm_simplify_seeded_raw_lambda_state_1`
+
+Changing only `lambda_state` from 0.8 to 1.0 improves overall MAE from 14.590
+to 14.520 W and AP from 0.794 to 0.799, but macro-F1 falls from 0.771 to 0.768.
+The event audit rejects the apparent power improvement: microwave detection
+falls from 0.637 to 0.514, IoU from 0.460 to 0.384, median event NRMSE worsens
+from 0.579 to 0.919, and median energy error rises from 34.9% to 73.0%.
+`lambda_state=0.8` is retained; further weight tuning is stopped.
+
+The next architecture test replaces only stem IBN with ordinary BatchNorm. It
+directly tests whether the hardest-to-explain normalization is necessary while
+preserving the multiscale convolutions, TCN, appliance heads, and relation
+attention. No test house is evaluated.

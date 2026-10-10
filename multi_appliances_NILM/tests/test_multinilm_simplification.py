@@ -157,6 +157,21 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         self.assertTrue(architecture["task_attention"]["enabled"])
         self.assertTrue(architecture["cross_appliance"]["enabled"])
 
+    def test_batch_stem_norm_changes_only_stem_norm(self):
+        self.base["architecture"] = {
+            "stem_norm_type": "ibn",
+            "temporal_norm_type": "batch",
+            "head_norm_type": "batch",
+            "task_attention": {"enabled": True},
+        }
+        cfg = _architecture_candidate(self.base, "batch_stem_norm")
+        architecture = cfg["architecture"]
+
+        self.assertEqual(architecture["stem_norm_type"], "batch")
+        self.assertEqual(architecture["temporal_norm_type"], "batch")
+        self.assertEqual(architecture["head_norm_type"], "batch")
+        self.assertTrue(architecture["task_attention"]["enabled"])
+
     def test_seeded_reference_and_raw_change_only_features(self):
         baseline = _repro_candidate(self.base, "seeded_baseline")
         raw = _repro_candidate(self.base, "seeded_raw")

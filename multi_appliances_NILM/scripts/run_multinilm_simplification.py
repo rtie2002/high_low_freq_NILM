@@ -117,6 +117,12 @@ LOSS_VARIANTS = {
 }
 
 ARCHITECTURE_VARIANTS = {
+    # Replace the mixed instance/batch normalization in the stem with ordinary
+    # BatchNorm; all convolutional paths and later normalization stay fixed.
+    "batch_stem_norm": {
+        "experiment_id": "multinilm_simplify_seeded_raw_batch_stem_norm",
+        "stem_norm_type": "batch",
+    },
     # First remove the per-head channel attention. Appliance-specific heads
     # and explicit cross-appliance relation attention remain unchanged.
     "no_task_attention": {
