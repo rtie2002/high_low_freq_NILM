@@ -117,20 +117,6 @@ LOSS_VARIANTS = {
 }
 
 ARCHITECTURE_VARIANTS = {
-    # Interpolate the observed trade-off between the useful coupled gate
-    # (scale=1) and the fridge-friendly but microwave-harmful detached gate
-    # (scale=0), without an appliance-specific exception.
-    "half_gradient_train_power_gate": {
-        "experiment_id": "multinilm_simplify_seeded_raw_half_gradient_train_power_gate",
-        "gate_mode": "soft",
-        "gate_gradient_scale": 0.5,
-    },
-    # Preserve the soft probabilistic power gate in the forward pass, but stop
-    # the regression loss from updating the state classifier through it.
-    "detached_train_power_gate": {
-        "experiment_id": "multinilm_simplify_seeded_raw_detached_train_power_gate",
-        "gate_mode": "soft_detached",
-    },
     # Decouple the regression value from the state probability during
     # training. Evaluation still applies the calibrated binary state mask, so
     # this removes a duplicated gate without changing the reported ON rule.

@@ -1,7 +1,5 @@
-# Recovery baseline: restore the early relational model that was used before
-# the dual-expert, local-contrast and mixture-output experiments. The new
-# cross-house dataset split is intentionally retained.
-experiment_id: multinilm_clipped_per_appliance_balance_house_split
+# Validation-selected simple-input relational MultiNILM.
+experiment_id: multinilm_raw_relation_house_split
 model_name: multinilm_fractional
 
 data:
@@ -18,19 +16,10 @@ evaluation:
     apply_to_power: true
     postprocess:
       enabled: true
-      # Use physical seconds so validation calibration keeps the same temporal
-      # meaning if sample_seconds changes. Short-event loads stay permissive.
+      # Only microwave duration cleanup improved held-out validation F1.
       min_on_seconds:
-        kettle: 12
-        fridge: 120
-        dishwasher: 960
-        washingmachine: 960
         microwave: 32
       merge_gap_seconds:
-        kettle: 0
-        fridge: 240
-        dishwasher: 1800
-        washingmachine: 960
         microwave: 24
 
 windowing:
@@ -44,20 +33,20 @@ windowing:
   training_targets: auto
 
 fractional:
-  # Exact early feature bank: 13 channels in total.
-  k: 4
+  # The controlled sweep rejected all twelve handcrafted channels. The model
+  # now receives only the normalized aggregate power sequence.
+  alphas: []
   include_raw: true
-  include_delta: true
-  include_abs_delta: true
+  include_delta: false
+  include_abs_delta: false
   include_local_contrast: false
-  include_rolling_mean: true
-  include_rolling_std: true
-  rolling_windows: [8, 23, 45]
-  memory: 24
+  include_rolling_mean: false
+  include_rolling_std: false
+  rolling_windows: []
   channel_normalize: none
 
 architecture:
-  # 13 channels: raw, signed delta, |delta|, six rolling statistics and 4 GL.
+  # Learned features begin directly from one raw aggregate channel.
   channel_schedule: [32, 64, 128]
   hidden_channels: 128
 

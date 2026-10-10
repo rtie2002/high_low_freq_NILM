@@ -65,30 +65,14 @@ class IBN1d(nn.Module):
         return torch.cat([self.instance_norm(x_in), self.batch_norm(x_bn)], dim=1)
 
 
-def state_gate(
-    state_prob,
-    *,
-    mode="soft",
-    threshold=0.5,
-    training=False,
-    gradient_scale=1.0,
-):
+def state_gate(state_prob, *, mode="soft", threshold=0.5, training=False):
     """ON probability -> gate in [0, 1]. yaml gate_mode=soft uses the sigmoid itself."""
     gate_mode = str(mode or "soft").lower()
     hard = (state_prob >= float(threshold)).to(dtype=state_prob.dtype)
     if gate_mode in {"none", "ungated"}:
         return torch.ones_like(state_prob)
     if gate_mode in {"soft", "sigmoid", "prob", "probability"}:
-        scale = float(gradient_scale)
-        if not 0.0 <= scale <= 1.0:
-            raise ValueError("gate_gradient_scale must be between 0 and 1")
-        if training and scale < 1.0:
-            return state_prob.detach() + scale * (state_prob - state_prob.detach())
         return state_prob
-    if gate_mode in {"soft_detached", "detached_soft", "stopgrad_soft"}:
-        # Keep the same probabilistic forward gate while preventing the power
-        # regression objective from changing the state classifier through it.
-        return state_prob.detach() if training else state_prob
     if gate_mode in {"soft_train_hard_eval", "train_soft_eval_hard", "soft_hard"}:
         return state_prob if training else hard
     if gate_mode in {"hard", "binary", "threshold"}:
@@ -96,7 +80,7 @@ def state_gate(
             return hard - state_prob.detach() + state_prob
         return hard
     raise ValueError(
-        "gate_mode must be none|soft|soft_detached|hard|soft_train_hard_eval, "
+        "gate_mode must be none|soft|hard|soft_train_hard_eval, "
         f"got {mode!r}"
     )
 
@@ -455,13 +439,11 @@ class ApplianceHead(nn.Module):
     """One appliance: shared z -> local features -> gated power + state logit."""
 
     def __init__(self, hidden_channels, dropout, *, gate_mode="soft_train_hard_eval", gate_threshold=0.5,
-                 gate_gradient_scale=1.0,
                  off_norm=0.0, head_local_layers=2, head_kernel_size=3, head_use_residual=True,
                  norm_type="batch", use_task_attention=False, task_attention_reduction=4):
         super().__init__()
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
-        self.gate_gradient_scale = float(gate_gradient_scale)
         self.register_buffer("off_norm", torch.tensor(float(off_norm), dtype=torch.float32))
         if use_task_attention:
             att_ch = max(4, int(hidden_channels) // max(int(task_attention_reduction), 1))
@@ -507,8 +489,7 @@ class ApplianceHead(nn.Module):
         power = self.power_head(features)                      # (B, 1, T)
         logit = self.state_head(features)                      # (B, 1, T)
         gate = state_gate(torch.sigmoid(logit), mode=self.gate_mode,
-                          threshold=self.gate_threshold, training=self.training,
-                          gradient_scale=self.gate_gradient_scale)
+                          threshold=self.gate_threshold, training=self.training)
         # off_norm is 0 W after z-score, not the number 0.
         return gate * power + (1.0 - gate) * self.off_norm, logit
 
@@ -590,7 +571,7 @@ class MultiNILM(nn.Module):
         channel_schedule=None, stem_kernel_size=7, stage_kernel_size=5, num_blocks=5,
         kernel_size=5, temporal_dropout=0.1, head_dropout=0.1,
         max_dilation=128, gate_mode="soft_train_hard_eval",
-        gate_threshold=0.5, gate_gradient_scale=1.0, appliance_off_norm=None,
+        gate_threshold=0.5, appliance_off_norm=None,
         head_local_layers=2, head_kernel_size=3, head_use_residual=True,
         use_multiscale_stem=False, detail_kernels=None, detail_branch_channels=12,
         stem_norm_type="batch", temporal_norm_type="batch", head_norm_type="batch",
@@ -613,7 +594,6 @@ class MultiNILM(nn.Module):
         self.hidden_channels = int(hidden_channels)
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
-        self.gate_gradient_scale = float(gate_gradient_scale)
         self.dual_expert_enabled = bool(dual_expert_enabled)
         self.dual_expert_share_local = bool(dual_expert_share_local)
         self.last_expert_gates = None
@@ -694,7 +674,6 @@ class MultiNILM(nn.Module):
             ApplianceHead(
                 self.hidden_channels, float(head_dropout),
                 gate_mode=self.gate_mode, gate_threshold=self.gate_threshold,
-                gate_gradient_scale=self.gate_gradient_scale,
                 off_norm=off_norms[i], head_local_layers=int(head_local_layers),
                 head_kernel_size=int(head_kernel_size), head_use_residual=bool(head_use_residual),
                 norm_type=head_norm_type, use_task_attention=bool(task_attention_enabled),
@@ -851,7 +830,6 @@ class MultiNILMConfig:
     max_dilation: int = 128
     gate_mode: str = "soft_train_hard_eval"
     gate_threshold: float = 0.5
-    gate_gradient_scale: float = 1.0
     head_local_layers: int = 2
     head_kernel_size: int = 3
     head_use_residual: bool = True
@@ -902,7 +880,6 @@ def multinilm_config(architecture):
         max_dilation=int(a.get("max_dilation", 128)),
         gate_mode=str(a.get("gate_mode", "soft_train_hard_eval")),
         gate_threshold=float(a.get("gate_threshold", 0.5)),
-        gate_gradient_scale=float(a.get("gate_gradient_scale", 1.0)),
         head_local_layers=int(a.get("head_local_layers", 2)),
         head_kernel_size=int(a.get("head_kernel_size", 3)),
         head_use_residual=bool(a.get("head_use_residual", True)),

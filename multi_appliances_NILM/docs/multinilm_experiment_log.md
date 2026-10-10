@@ -779,3 +779,19 @@ and false events rise from 93 to 136. Overall MAE/F1/AP are 15.139/0.763/0.773,
 all below the retained raw model. A single midpoint gradient-scale experiment
 is justified by these opposing endpoint results; appliance-specific exceptions
 are not introduced. No test house was evaluated.
+
+## Seeded half-gradient soft-gate check - completed 2026-10-10
+
+Experiment: `multinilm_simplify_seeded_raw_half_gradient_train_power_gate`
+
+Scaling the power-to-state gate gradient to 0.5 is rejected after the required
+metric-plus-waveform audit. Aggregate validation metrics initially appear
+promising: MAE improves from 14.590 to 13.579 W and macro-F1 from 0.771 to
+0.776, while AP falls from 0.794 to 0.785. Microwave event detection and
+median NRMSE improve from 0.637/0.579 to 0.712/0.550. However, false events
+rise from 93 to 110. More importantly, the difficult high-background fridge
+waveform becomes physically worse: repeated false pulses grow from roughly
+1.2 kW to above 2 kW, its event NRMSE rises from 3.73 to 8.15 in the inspected
+case, and total fridge false events rise from 228 to 246. The lower average
+MAE therefore hides a severe waveform regression. Gradient scaling is not
+retained and no further interpolation grid is run. No test house was evaluated.
