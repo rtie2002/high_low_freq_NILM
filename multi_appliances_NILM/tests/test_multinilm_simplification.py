@@ -208,6 +208,20 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         self.assertTrue(cfg["architecture"]["cross_appliance"]["enabled"])
         self.assertTrue(cfg["evaluation"]["state_calibration"]["apply_to_power"])
 
+    def test_detached_train_gate_changes_only_gradient_path(self):
+        self.base["architecture"] = {
+            "gate_mode": "soft",
+            "head_local_layers": 2,
+            "task_attention": {"enabled": True},
+            "cross_appliance": {"enabled": True},
+        }
+        cfg = _architecture_candidate(self.base, "detached_train_power_gate")
+
+        self.assertEqual(cfg["architecture"]["gate_mode"], "soft_detached")
+        self.assertEqual(cfg["architecture"]["head_local_layers"], 2)
+        self.assertTrue(cfg["architecture"]["task_attention"]["enabled"])
+        self.assertTrue(cfg["architecture"]["cross_appliance"]["enabled"])
+
     def test_seeded_reference_and_raw_change_only_features(self):
         baseline = _repro_candidate(self.base, "seeded_baseline")
         raw = _repro_candidate(self.base, "seeded_raw")

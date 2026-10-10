@@ -750,3 +750,16 @@ from 228 to 259, and event NRMSE worsens from 0.384 to 0.403. Direct visual
 inspection shows the difficult high-background fridge event growing from
 roughly 1.2 kW repeated false pulses to roughly 2.3 kW pulses. The soft
 training gate is therefore retained. No test house was evaluated.
+
+## Seeded relation residual-scale check - completed 2026-10-10
+
+Experiment: `multinilm_simplify_seeded_raw_relation_scale_05`
+
+Increasing the relation-attention residual scale from 0.25 to 0.50 is
+rejected. Validation MAE worsens from 14.590 to 15.565 W, macro-F1 from
+0.771 to 0.769, and AP from 0.794 to 0.779. Microwave detection rises from
+0.637 to 0.658, but median event NRMSE worsens from 0.579 to 0.640 and false
+events rise from 93 to 97. Fridge false events also rise from 228 to 236.
+Visual inspection confirms that repeated high-background fridge pulses and
+truncated microwave plateaus remain. The 0.25 residual scale is retained and
+no fine-grained scale sweep is performed. No test house was evaluated.

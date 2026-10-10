@@ -117,6 +117,12 @@ LOSS_VARIANTS = {
 }
 
 ARCHITECTURE_VARIANTS = {
+    # Preserve the soft probabilistic power gate in the forward pass, but stop
+    # the regression loss from updating the state classifier through it.
+    "detached_train_power_gate": {
+        "experiment_id": "multinilm_simplify_seeded_raw_detached_train_power_gate",
+        "gate_mode": "soft_detached",
+    },
     # Decouple the regression value from the state probability during
     # training. Evaluation still applies the calibrated binary state mask, so
     # this removes a duplicated gate without changing the reported ON rule.

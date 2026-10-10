@@ -11,10 +11,27 @@ from model.MultiNILM import (
     MultiNILMAdapter,
     build_multinilm_fractional,
     multinilm_config,
+    state_gate,
 )
 
 
 class MultiNILMDualExpertTests(unittest.TestCase):
+    def test_detached_soft_gate_keeps_value_and_blocks_state_gradient(self) -> None:
+        state_logit = torch.tensor([0.4], requires_grad=True)
+        regression = torch.tensor([2.0], requires_grad=True)
+        probability = torch.sigmoid(state_logit)
+
+        gate = state_gate(
+            probability,
+            mode="soft_detached",
+            training=True,
+        )
+        self.assertTrue(torch.allclose(gate, probability))
+
+        (gate * regression).sum().backward()
+        self.assertIsNone(state_logit.grad)
+        self.assertIsNotNone(regression.grad)
+
     def test_early_relational_frontend_has_signed_delta_and_thirteen_channels(self) -> None:
         frontend = FractionalFrontEnd(
             alphas=[0.25, 0.5, 0.75, 1.0],

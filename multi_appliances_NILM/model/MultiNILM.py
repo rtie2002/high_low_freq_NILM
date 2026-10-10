@@ -73,13 +73,20 @@ def state_gate(state_prob, *, mode="soft", threshold=0.5, training=False):
         return torch.ones_like(state_prob)
     if gate_mode in {"soft", "sigmoid", "prob", "probability"}:
         return state_prob
+    if gate_mode in {"soft_detached", "detached_soft", "stopgrad_soft"}:
+        # Keep the same probabilistic forward gate while preventing the power
+        # regression objective from changing the state classifier through it.
+        return state_prob.detach() if training else state_prob
     if gate_mode in {"soft_train_hard_eval", "train_soft_eval_hard", "soft_hard"}:
         return state_prob if training else hard
     if gate_mode in {"hard", "binary", "threshold"}:
         if training and state_prob.requires_grad:
             return hard - state_prob.detach() + state_prob
         return hard
-    raise ValueError(f"gate_mode must be none|soft|hard|soft_train_hard_eval, got {mode!r}")
+    raise ValueError(
+        "gate_mode must be none|soft|soft_detached|hard|soft_train_hard_eval, "
+        f"got {mode!r}"
+    )
 
 
 # ===========================================================================
