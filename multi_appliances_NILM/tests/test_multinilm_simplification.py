@@ -4,6 +4,7 @@ from scripts.run_multinilm_simplification import (
     FEATURE_VARIANTS,
     _architecture_candidate,
     _feature_candidate,
+    _hyperparameter_candidate,
     _loss_candidate,
     _repro_candidate,
 )
@@ -199,6 +200,18 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
 
         ap_selected = _repro_candidate(self.base, "seeded_raw_ap_monitor")
         self.assertEqual(ap_selected["training"]["checkpoint_monitor"], "val_ap")
+
+    def test_dropout_candidate_changes_one_shared_value(self):
+        self.base["architecture"] = {
+            "dropout": 0.25,
+            "num_blocks": 5,
+            "cross_appliance": {"enabled": True},
+        }
+        cfg = _hyperparameter_candidate(self.base, "dropout_035")
+
+        self.assertEqual(cfg["architecture"]["dropout"], 0.35)
+        self.assertEqual(cfg["architecture"]["num_blocks"], 5)
+        self.assertTrue(cfg["architecture"]["cross_appliance"]["enabled"])
 
 
 if __name__ == "__main__":

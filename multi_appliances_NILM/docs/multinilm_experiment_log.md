@@ -704,3 +704,23 @@ The final architecture-depth check reduces the shared TCN from five dilated
 blocks to three while keeping the stem, both attention modules, and appliance
 heads fixed. This tests a substantial shared-encoder simplification without
 confounding it with normalization. No test house is evaluated.
+
+## Seeded shared-TCN depth ablation - completed 2026-10-10
+
+Experiment: `multinilm_simplify_seeded_raw_three_tcn_blocks`
+
+Reducing the shared TCN from five to three dilated blocks lowers the parameter
+count from 1.373 M to 1.08 M, but is decisively rejected by both aggregate and
+event-level validation results.
+
+| TCN depth | MAE (W) | macro-F1 | AP | Microwave detection | Microwave event NRMSE |
+|---|---:|---:|---:|---:|---:|
+| five blocks | **14.590** | **0.771** | **0.794** | **0.637** | **0.579** |
+| three blocks | 16.595 | 0.757 | 0.749 | 0.514 | 0.882 |
+
+The shorter encoder also lowers microwave event IoU from 0.460 to 0.373 and
+raises median absolute microwave energy error from 34.9% to 73.5%. Fridge
+event IoU falls from 0.786 to 0.766 and waveform correlation from 0.106 to
+0.055. The fifth-block receptive field and capacity therefore contribute to
+event separation rather than merely increasing model size. The five-block TCN
+is retained. No test house was evaluated.

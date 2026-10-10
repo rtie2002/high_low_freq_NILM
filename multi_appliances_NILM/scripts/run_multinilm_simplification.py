@@ -169,6 +169,16 @@ REPRO_VARIANTS = {
     },
 }
 
+HYPERPARAMETER_VARIANTS = {
+    # The seeded histories show a widening train/validation gap after the
+    # early epochs.  This is a single regularisation check, not a grid search:
+    # all temporal, head, and relation dropout values still share one number.
+    "dropout_035": {
+        "experiment_id": "multinilm_simplify_seeded_raw_dropout_035",
+        "dropout": 0.35,
+    },
+}
+
 
 def _feature_candidate(base: dict, name: str) -> dict:
     """Return one feature-only ablation while preserving every other setting."""
@@ -254,13 +264,24 @@ def _repro_candidate(base: dict, name: str) -> dict:
     return candidate
 
 
+def _hyperparameter_candidate(base: dict, name: str) -> dict:
+    """Return one scalar hyperparameter check on the seeded raw model."""
+    candidate = _feature_candidate(base, "feature_1")
+    spec = HYPERPARAMETER_VARIANTS[name]
+    candidate["experiment_id"] = spec["experiment_id"]
+    architecture = copy.deepcopy(candidate.get("architecture", {}))
+    architecture["dropout"] = float(spec["dropout"])
+    candidate["architecture"] = architecture
+    return candidate
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--experiment", type=Path, default=DEFAULT_EXPERIMENT)
     parser.add_argument("--model-config", type=Path, default=DEFAULT_MODEL_CONFIG)
     parser.add_argument(
         "--stage",
-        choices=("features", "loss", "architecture", "repro"),
+        choices=("features", "loss", "architecture", "hyperparameters", "repro"),
         default="features",
         help="Controlled simplification family to run.",
     )
@@ -288,6 +309,7 @@ def main() -> None:
         "features": FEATURE_VARIANTS,
         "loss": LOSS_VARIANTS,
         "architecture": ARCHITECTURE_VARIANTS,
+        "hyperparameters": HYPERPARAMETER_VARIANTS,
         "repro": REPRO_VARIANTS,
     }
     variants = variants_by_stage[args.stage]
@@ -303,6 +325,8 @@ def main() -> None:
             model_cfg = _loss_candidate(base_model_cfg, name, args.feature_base)
         elif args.stage == "architecture":
             model_cfg = _architecture_candidate(base_model_cfg, name)
+        elif args.stage == "hyperparameters":
+            model_cfg = _hyperparameter_candidate(base_model_cfg, name)
         else:
             model_cfg = _repro_candidate(base_model_cfg, name)
         merged = merge_configs(experiment, model_cfg)
