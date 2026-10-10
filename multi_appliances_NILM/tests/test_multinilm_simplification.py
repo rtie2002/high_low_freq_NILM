@@ -249,14 +249,6 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         self.assertEqual(relation["attention_channels"], 16)
         self.assertEqual(cfg["architecture"]["dropout"], 0.25)
 
-    def test_weight_decay_candidate_changes_training_only(self):
-        self.base["architecture"] = {"hidden_channels": 128}
-        self.base["training"] = {"weight_decay": 0.0001, "learning_rate": 0.0001}
-        cfg = _hyperparameter_candidate(self.base, "weight_decay_5e4")
-
-        self.assertEqual(cfg["training"]["weight_decay"], 0.0005)
-        self.assertEqual(cfg["training"]["learning_rate"], 0.0001)
-        self.assertEqual(cfg["architecture"]["hidden_channels"], 128)
 
 
 if __name__ == "__main__":

@@ -853,3 +853,22 @@ not resolve appliance identity under confounding background and its gradients
 disturb the soft-gated regression. The next run changes no architecture: it
 tests stronger weight decay as a direct regularisation check. No test house was
 evaluated.
+
+## Stronger weight decay - rejected 2026-10-10
+
+Experiment: `multinilm_seeded_raw_weight_decay_5e4`
+
+Only Adam's weight decay changed from 0.0001 to 0.0005; architecture, loss,
+sampling, seed, and checkpoint criterion were fixed. Validation MAE/F1/AP
+changed from 14.590/0.771/0.794 to 16.549/0.753/0.796. Fridge event NRMSE
+worsened from 0.384 to 0.404 and false events increased from 228 to 1,989.
+Microwave detection fell from 0.637 to 0.548, event IoU from 0.460 to 0.404,
+and event NRMSE worsened from 0.579 to 0.843.
+
+Conclusion: reject the stronger regularisation and retain weight decay 0.0001.
+The four completed checks in this round do not support adding a recurrent
+context layer, narrowing the network, widening the state output kernel, or
+increasing regularisation. The raw-only model remains the validation-selected
+architecture. Training-time waveform rendering is changed to end-only because
+it affects neither optimization nor checkpoint selection and removes repeated
+multi-minute CPU stalls. No test house was evaluated.

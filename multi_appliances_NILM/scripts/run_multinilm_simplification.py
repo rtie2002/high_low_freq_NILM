@@ -177,12 +177,6 @@ REPRO_VARIANTS = {
 }
 
 HYPERPARAMETER_VARIANTS = {
-    # Stronger L2 regularisation tests whether the remaining cross-house gap
-    # is caused by memorising training-house background patterns.
-    "weight_decay_5e4": {
-        "experiment_id": "multinilm_seeded_raw_weight_decay_5e4",
-        "weight_decay": 0.0005,
-    },
     # Relation attention was useful in the earlier no-relation ablation. Test
     # one stronger residual value without changing its parameters or topology.
     "relation_scale_05": {
@@ -296,10 +290,6 @@ def _hyperparameter_candidate(base: dict, name: str) -> dict:
         cross["residual_scale"] = float(spec["relation_residual_scale"])
         architecture["cross_appliance"] = cross
     candidate["architecture"] = architecture
-    if "weight_decay" in spec:
-        training = copy.deepcopy(candidate.get("training", {}))
-        training["weight_decay"] = float(spec["weight_decay"])
-        candidate["training"] = training
     return candidate
 
 
