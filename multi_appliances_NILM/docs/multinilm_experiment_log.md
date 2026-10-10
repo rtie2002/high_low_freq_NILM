@@ -724,3 +724,15 @@ event IoU falls from 0.786 to 0.766 and waveform correlation from 0.106 to
 0.055. The fifth-block receptive field and capacity therefore contribute to
 event separation rather than merely increasing model size. The five-block TCN
 is retained. No test house was evaluated.
+
+## Seeded dropout check - completed 2026-10-10
+
+Experiment: `multinilm_simplify_seeded_raw_dropout_035`
+
+Increasing the single shared dropout value from 0.25 to 0.35 is rejected.
+Validation MAE worsens from 14.590 to 15.345 W, macro-F1 from 0.771 to
+0.769, and AP from 0.794 to 0.780. The event audit agrees: microwave median
+event NRMSE rises from 0.579 to 0.628 and correlation falls from 0.377 to
+0.359; fridge false events rise from 228 to 233 and correlation falls from
+0.106 to 0.070. The original 0.25 dropout is retained. No test house was
+evaluated.

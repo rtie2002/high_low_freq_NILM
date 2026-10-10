@@ -117,6 +117,13 @@ LOSS_VARIANTS = {
 }
 
 ARCHITECTURE_VARIANTS = {
+    # Decouple the regression value from the state probability during
+    # training. Evaluation still applies the calibrated binary state mask, so
+    # this removes a duplicated gate without changing the reported ON rule.
+    "no_train_power_gate": {
+        "experiment_id": "multinilm_simplify_seeded_raw_no_train_power_gate",
+        "gate_mode": "none",
+    },
     # Shorter TCN with dilations 1, 2, 4 instead of 1, 2, 4, 8, 16.
     "three_tcn_blocks": {
         "experiment_id": "multinilm_simplify_seeded_raw_three_tcn_blocks",

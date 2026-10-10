@@ -190,6 +190,24 @@ class SimplificationFeatureConfigTests(unittest.TestCase):
         self.assertTrue(architecture["task_attention"]["enabled"])
         self.assertTrue(architecture["cross_appliance"]["enabled"])
 
+    def test_no_train_power_gate_preserves_evaluation_and_heads(self):
+        self.base["architecture"] = {
+            "gate_mode": "soft",
+            "head_local_layers": 2,
+            "task_attention": {"enabled": True},
+            "cross_appliance": {"enabled": True},
+        }
+        self.base["evaluation"] = {
+            "state_calibration": {"apply_to_power": True}
+        }
+        cfg = _architecture_candidate(self.base, "no_train_power_gate")
+
+        self.assertEqual(cfg["architecture"]["gate_mode"], "none")
+        self.assertEqual(cfg["architecture"]["head_local_layers"], 2)
+        self.assertTrue(cfg["architecture"]["task_attention"]["enabled"])
+        self.assertTrue(cfg["architecture"]["cross_appliance"]["enabled"])
+        self.assertTrue(cfg["evaluation"]["state_calibration"]["apply_to_power"])
+
     def test_seeded_reference_and_raw_change_only_features(self):
         baseline = _repro_candidate(self.base, "seeded_baseline")
         raw = _repro_candidate(self.base, "seeded_raw")
