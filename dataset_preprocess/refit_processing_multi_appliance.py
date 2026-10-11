@@ -823,6 +823,15 @@ def realign_high_confidence_events(
         result[f"{app}_power"] = np.maximum(corrected_power, 0.0)
         if state_column in frame.columns:
             result[state_column] = corrected_state.astype(np.int8)
+        energy_before = float(np.sum(original_power, dtype=np.float64))
+        energy_after = float(np.sum(result[f"{app}_power"].to_numpy(dtype=np.float64)))
+        energy_error = energy_after - energy_before
+        energy_tolerance = max(1e-6, abs(energy_before) * 1e-12)
+        if abs(energy_error) > energy_tolerance:
+            raise AssertionError(
+                f"REFIT alignment changed {app} watt-sample energy by "
+                f"{energy_error:.9g}"
+            )
         summaries.append({
             "house": int(house),
             "appliance": app,
@@ -831,6 +840,9 @@ def realign_high_confidence_events(
             "shifted_events": int(sum(
                 count for lag, count in accepted_by_lag.items() if lag != 0
             )) if apply else 0,
+            "energy_before_watt_samples": energy_before,
+            "energy_after_watt_samples": energy_after,
+            "energy_error_watt_samples": energy_error,
             **{f"accepted_lag_{lag:+d}": count for lag, count in accepted_by_lag.items()},
             **{f"rejected_{name}": count for name, count in rejected.items()},
         })
@@ -903,11 +915,10 @@ def build_one_house_lf(config: dict, args: argparse.Namespace, house: int) -> tu
 
     print(f"[2/3] Resample to {sample_seconds}s grid and label ON/OFF", flush=True)
 
-    # Aggregate: always mean-resampled (energy-conserving).
-    # Appliances: max-resampled by default so short high-power pulses (e.g.
-    # microwave bursts of 1–2 raw rows = 8–16 s) are not averaged below the
-    # ON-power threshold when they straddle a bin boundary.
-    resample_app_mode = getattr(args, "resample_app_mode", "max")
+    # Use the same mean statistic for aggregate and appliance channels. Mixing
+    # mean aggregate power with max appliance power creates an artificial edge
+    # mismatch for short events. Max modes remain explicit diagnostics only.
+    resample_app_mode = getattr(args, "resample_app_mode", "mean")
 
     def _is_fast_appliance(app_cfg: dict) -> bool:
         """Return True for appliances with a short on-cycle (< 120 s)."""
@@ -1123,8 +1134,96 @@ def per_house_output_path(output_dir: str, house: int, filename_template: str) -
     return os.path.join(output_dir, filename_template.format(house=house))
 
 
-def write_alignment_reports(df: pd.DataFrame, output_path: str) -> None:
-    """Write the accepted/rejected event audit beside a generated CSV."""
+def processed_data_quality_report(
+    df: pd.DataFrame,
+    appliances: list[str],
+    sample_seconds: int,
+) -> dict[str, object]:
+    """Return machine-checkable structural and physical diagnostics.
+
+    The report deliberately does not call every event "aligned". REFIT omits
+    the acquisition timestamp of each individual appliance meter, so ambiguous
+    events cannot be certified from the exported columns alone.
+    """
+    required = {
+        "unix_time", "house", "sequence_id", "aggregate",
+        *[f"{app}_power" for app in appliances],
+        *[f"{app}_on" for app in appliances],
+    }
+    missing = sorted(required.difference(df.columns))
+    if missing:
+        raise ValueError(f"Processed REFIT output is missing columns: {missing}")
+
+    key_columns = ["house", "unix_time"]
+    duplicate_timestamps = int(df.duplicated(key_columns).sum())
+    numeric_columns = ["aggregate", *[f"{app}_power" for app in appliances]]
+    numeric = df[numeric_columns].apply(pd.to_numeric, errors="coerce")
+    nonfinite_values = int((~np.isfinite(numeric.to_numpy(dtype=np.float64))).sum())
+    negative_values = int((numeric.to_numpy(dtype=np.float64) < 0.0).sum())
+
+    time_step_errors = 0
+    for _, group in df.groupby(["house", "sequence_id"], sort=False):
+        times = pd.to_numeric(group["unix_time"], errors="coerce").to_numpy()
+        if len(times) > 1:
+            time_step_errors += int(np.sum(np.diff(times) != sample_seconds))
+
+    invalid_state_values: dict[str, int] = {}
+    appliance_above_aggregate: dict[str, int] = {}
+    aggregate = numeric["aggregate"].to_numpy(dtype=np.float64)
+    for app in appliances:
+        state = pd.to_numeric(df[f"{app}_on"], errors="coerce").to_numpy()
+        invalid_state_values[app] = int(np.sum(~np.isin(state, (0, 1))))
+        power = numeric[f"{app}_power"].to_numpy(dtype=np.float64)
+        appliance_above_aggregate[app] = int(np.sum(power > aggregate + 5.0))
+
+    summaries = df.attrs.get("alignment_summary", [])
+    candidate_events = int(sum(int(row.get("candidate_events", 0)) for row in summaries))
+    accepted_events = int(sum(int(row.get("accepted_events", 0)) for row in summaries))
+    shifted_events = int(sum(int(row.get("shifted_events", 0)) for row in summaries))
+    unresolved_events = max(candidate_events - accepted_events, 0)
+    maximum_energy_error = max(
+        (abs(float(row.get("energy_error_watt_samples", 0.0))) for row in summaries),
+        default=0.0,
+    )
+
+    structural_ok = bool(
+        duplicate_timestamps == 0
+        and nonfinite_values == 0
+        and negative_values == 0
+        and time_step_errors == 0
+        and all(count == 0 for count in invalid_state_values.values())
+    )
+    return {
+        "rows": int(len(df)),
+        "sample_seconds": int(sample_seconds),
+        "structural_checks_passed": structural_ok,
+        "duplicate_house_timestamps": duplicate_timestamps,
+        "nonfinite_power_values": nonfinite_values,
+        "negative_power_values": negative_values,
+        "within_sequence_timestep_errors": time_step_errors,
+        "invalid_state_values": invalid_state_values,
+        "appliance_above_aggregate_by_more_than_5w": appliance_above_aggregate,
+        "alignment_candidate_events": candidate_events,
+        "alignment_accepted_events": accepted_events,
+        "alignment_shifted_events": shifted_events,
+        "alignment_unresolved_events": unresolved_events,
+        "maximum_alignment_energy_error_watt_samples": maximum_energy_error,
+        "all_events_physically_synchronised": None,
+        "timing_certification": (
+            "Only accepted isolated events are supported by matching ON and OFF "
+            "aggregate edges. Ambiguous events are unchanged; physical 100% "
+            "synchronisation is not identifiable without per-meter timestamps."
+        ),
+    }
+
+
+def write_alignment_reports(
+    df: pd.DataFrame,
+    output_path: str,
+    appliances: list[str],
+    sample_seconds: int,
+) -> None:
+    """Write alignment decisions and output-integrity checks beside a CSV."""
     stem, _ = os.path.splitext(output_path)
     summaries = df.attrs.get("alignment_summary", [])
     events = df.attrs.get("alignment_events", [])
@@ -1132,6 +1231,11 @@ def write_alignment_reports(df: pd.DataFrame, output_path: str) -> None:
         pd.DataFrame(summaries).to_csv(f"{stem}.alignment_summary.csv", index=False)
     if events:
         pd.DataFrame(events).to_csv(f"{stem}.alignment_events.csv", index=False)
+    quality = processed_data_quality_report(df, appliances, sample_seconds)
+    with open(f"{stem}.quality.json", "w", encoding="utf-8") as handle:
+        json.dump(quality, handle, indent=2)
+    if not quality["structural_checks_passed"]:
+        raise AssertionError(f"Processed REFIT data failed quality checks: {quality}")
 
 
 def main() -> None:
@@ -1155,7 +1259,8 @@ def main() -> None:
             df, appliances = build_one_house_lf(config, args, house)
             output_path = per_house_output_path(output_dir, house, args.house_filename)
             write_dataframe_csv(df, output_path)
-            write_alignment_reports(df, output_path)
+            sample_seconds = int(config["global_params"].get("sample_seconds", 8))
+            write_alignment_reports(df, output_path, appliances, sample_seconds)
             print("[3/3] Saved low-frequency multi-appliance CSV")
             print(f"output : {output_path}")
             print(f"rows   : {len(df):,}")
@@ -1170,7 +1275,8 @@ def main() -> None:
     df, appliances, houses = build_multi_appliance_lf(config, args)
     output_path = default_output_path(config, args, houses)
     write_dataframe_csv(df, output_path)
-    write_alignment_reports(df, output_path)
+    sample_seconds = int(config["global_params"].get("sample_seconds", 8))
+    write_alignment_reports(df, output_path, appliances, sample_seconds)
 
     print("[3/3] Saved low-frequency multi-appliance CSV")
     print(f"output : {output_path}")

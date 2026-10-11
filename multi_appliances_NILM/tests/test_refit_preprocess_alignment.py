@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "dataset_preprocess"))
 from refit_processing_multi_appliance import (  # noqa: E402
     apply_fixed_alignment_shifts,
     audit_alignment,
+    processed_data_quality_report,
     realign_high_confidence_events,
 )
 
@@ -115,6 +116,7 @@ def test_event_realigner_moves_target_not_aggregate_and_conserves_energy() -> No
         corrected["microwave_power"].sum(), power_before.sum(), rtol=0.0, atol=1e-8
     )
     assert summaries[0]["shifted_events"] == 4
+    assert abs(summaries[0]["energy_error_watt_samples"]) < 1e-8
     assert {event["lag_samples"] for event in events} == {1}
     np.testing.assert_array_equal(
         corrected["microwave_on"].to_numpy(),
@@ -140,6 +142,24 @@ def test_event_realigner_rejects_a_single_unsupported_boundary() -> None:
 
     np.testing.assert_array_equal(corrected["microwave_power"], power_before)
     assert summaries[0]["shifted_events"] == 0
+
+
+def test_quality_report_separates_integrity_from_unknown_physical_time() -> None:
+    frame = _regular_events(event_count=4, lag=1).reset_index()
+    frame["unix_time"] = frame["index"].astype("int64") // 10**9
+    frame["house"] = 3
+    frame.attrs["alignment_summary"] = [{
+        "candidate_events": 4,
+        "accepted_events": 3,
+        "shifted_events": 2,
+        "energy_error_watt_samples": 0.0,
+    }]
+
+    report = processed_data_quality_report(frame, ["microwave"], 8)
+
+    assert report["structural_checks_passed"] is True
+    assert report["alignment_unresolved_events"] == 1
+    assert report["all_events_physically_synchronised"] is None
 
 
 if __name__ == "__main__":
