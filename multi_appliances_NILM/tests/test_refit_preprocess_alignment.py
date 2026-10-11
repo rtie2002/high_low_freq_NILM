@@ -38,6 +38,7 @@ def _regular_events(event_count: int, lag: int) -> pd.DataFrame:
         {
             "aggregate": aggregate,
             "microwave_power": appliance,
+            "microwave_on": (appliance >= 200.0).astype(np.int8),
             "microwave_observed": np.ones(length, dtype=np.int8),
             "sequence_id": np.zeros(length, dtype=np.int64),
         },
@@ -98,6 +99,7 @@ def test_event_realigner_moves_target_not_aggregate_and_conserves_energy() -> No
     frame = _regular_events(event_count=4, lag=1)
     aggregate_before = frame["aggregate"].copy()
     power_before = frame["microwave_power"].copy()
+    state_before = frame["microwave_on"].copy()
 
     corrected, summaries, events = realign_high_confidence_events(
         frame,
@@ -114,6 +116,10 @@ def test_event_realigner_moves_target_not_aggregate_and_conserves_energy() -> No
     )
     assert summaries[0]["shifted_events"] == 4
     assert {event["lag_samples"] for event in events} == {1}
+    np.testing.assert_array_equal(
+        corrected["microwave_on"].to_numpy(),
+        state_before.shift(1, fill_value=0).to_numpy(),
+    )
 
 
 def test_event_realigner_rejects_a_single_unsupported_boundary() -> None:

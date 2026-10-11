@@ -25,10 +25,8 @@ sys.path.insert(0, str(ROOT / "dataset_preprocess"))
 sys.path.insert(0, str(PROJECT / "scripts"))
 
 from refit_processing_multi_appliance import (  # noqa: E402
-    make_labels,
     realign_high_confidence_events,
 )
-from ukdale_processing import label_power_by_segments  # noqa: E402
 from prepare_mixed_ukdale_refit_3week_split import training_normalization  # noqa: E402
 
 
@@ -54,24 +52,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _recompute_labels(frame: pd.DataFrame, config: dict, house: int) -> None:
-    algorithm = config["algorithm1"]
-    sequence_ids = frame["sequence_id"].to_numpy()
-    for app in APPLIANCES:
-        power = frame[f"{app}_power"].to_numpy(dtype=np.float32)
-        frame[f"{app}_on"] = label_power_by_segments(
-            power,
-            sequence_ids,
-            lambda segment, app=app: make_labels(
-                segment,
-                config["appliances"][app],
-                algorithm,
-                house,
-                sample_seconds=8,
-            ),
-        )
-
-
 def align_csv(
     source: Path,
     output: Path,
@@ -86,7 +66,7 @@ def align_csv(
 
     if "dataset" not in frame.columns or not frame["dataset"].eq("refit").any():
         output.parent.mkdir(parents=True, exist_ok=True)
-        frame.drop(columns="_row_order").to_csv(output, index=False, float_format="%.3f")
+        frame.drop(columns="_row_order").to_csv(output, index=False)
         return summaries, events
 
     pieces: list[pd.DataFrame] = [frame.loc[~frame["dataset"].eq("refit")].copy()]
@@ -107,7 +87,6 @@ def align_csv(
             max_lag_samples=max_lag_samples,
             apply=True,
         )
-        _recompute_labels(corrected, config, house)
         for app, old_labels in original_labels.items():
             changed = int(np.sum(corrected[f"{app}_on"].to_numpy() != old_labels))
             for summary in house_summaries:
@@ -127,7 +106,7 @@ def align_csv(
     if list(result.columns) != original_columns:
         result = result[original_columns]
     output.parent.mkdir(parents=True, exist_ok=True)
-    result.to_csv(output, index=False, float_format="%.3f")
+    result.to_csv(output, index=False)
     return summaries, events
 
 

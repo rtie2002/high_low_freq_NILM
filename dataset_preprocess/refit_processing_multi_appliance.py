@@ -698,7 +698,13 @@ def realign_high_confidence_events(
         ))
         original_power = frame[f"{app}_power"].to_numpy(dtype=np.float64)
         corrected_power = original_power.copy()
-        state = original_power >= threshold
+        state_column = f"{app}_on"
+        state = (
+            frame[state_column].to_numpy(dtype=np.int8).astype(bool)
+            if state_column in frame.columns
+            else original_power >= threshold
+        )
+        corrected_state = state.copy()
         accepted_by_lag = {lag: 0 for lag in lags}
         rejected = {
             "boundary": 0,
@@ -810,8 +816,13 @@ def realign_high_confidence_events(
                 excess = np.maximum(original_power[start:end] - standby, 0.0)
                 corrected_power[start:end] -= excess
                 corrected_power[destination_start:destination_end] += excess
+                if state_column in frame.columns:
+                    corrected_state[start:end] = False
+                    corrected_state[destination_start:destination_end] = True
 
         result[f"{app}_power"] = np.maximum(corrected_power, 0.0)
+        if state_column in frame.columns:
+            result[state_column] = corrected_state.astype(np.int8)
         summaries.append({
             "house": int(house),
             "appliance": app,
