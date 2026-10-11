@@ -872,3 +872,49 @@ increasing regularisation. The raw-only model remains the validation-selected
 architecture. Training-time waveform rendering is changed to end-only because
 it affects neither optimization nor checkpoint selection and removes repeated
 multi-minute CPU stalls. No test house was evaluated.
+## High-confidence REFIT two-edge event alignment — rejected 2026-10-11
+
+Experiment: `k4_alpha1_refit_hc_event_alignment`
+
+Goal: test whether REFIT aggregate–IAM timestamp mismatch can be corrected
+without changing the model, split, aggregate input, or training protocol.  The
+earlier aggregate-rewriting dataset was invalid because target appliance edges
+were used to alter the model input and the repeated edits caused cumulative
+aggregate drift.  It was not used for this experiment.
+
+The replacement preprocessing keeps aggregate immutable and moves an existing
+complete appliance ON interval by at most two 8-second samples only when its ON
+and OFF aggregate edges independently support the same lag, no other monitored
+appliance changes near either boundary, and the winning lag is separated from
+the alternatives by a fixed margin. Ambiguous events remain unchanged. Event
+power above local standby is subtracted and re-added, conserving appliance
+watt-samples. The controlled dataset is
+`mixed_ukdale_refit_5w_house_split_high_confidence_aligned_v2`.
+
+Integrity checks passed for every CSV: row count, timestamp, house,
+`sequence_id`, and split membership were identical to the retained baseline;
+the maximum aggregate difference was exactly 0 W; UK-DALE was unchanged. In
+REFIT20, 30/134 complete microwave events were shifted, changing 106 state
+rows. Only 2 fridge events were shifted, changing 4 state rows.
+
+The same `multinilm_k4.yaml`, seed 2026, augmentation, architecture, loss, and
+150-epoch schedule were used. Training completed successfully on the RTX 4090
+in 9m12s; the validation-selected checkpoint was epoch 147. Validation-only
+evaluation produced:
+
+- overall MAE 16.875 W, macro-F1 0.750, micro-F1 0.816, AP 0.790;
+- microwave F1 0.462, AP 0.429, event-F1 0.458;
+- fridge F1 0.831 and AP 0.906.
+
+This is worse than the retained baseline validation MAE/F1/AP of
+14.884/0.782/0.809. AP also decreased, so the result is not explained by state
+threshold calibration. Representative microwave waveforms show multiple
+submeter bursts and gaps inside one processed ON interval while the aggregate
+supports only some bursts; a whole-event temporal shift cannot remove that
+ambiguity. The method is rejected, and the test houses were not evaluated for
+model selection.
+
+Decision: retain the original house-split dataset and the existing training-only
+microwave lag augmentation. Treat REFIT's missing per-IAM acquisition times as
+label-time uncertainty; do not claim that cleaned REFIT timestamps can be
+deterministically reconstructed from aggregate edges.
