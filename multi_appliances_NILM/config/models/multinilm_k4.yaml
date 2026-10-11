@@ -174,10 +174,11 @@ training:
       # reduced the validation AP and lost part of the fridge-FPR improvement.
       prob: 1.0
       background_bins_watts: [0, 100, 200, 400, 800]
-    # Restore the strongest completed baseline exactly: half of synthetic
-    # microwave traces stay aligned; one quarter shift by +1 and +2 samples.
+    # Disabled for the REFIT preprocessing A/B test.  Both the original and
+    # corrected datasets must see exactly the recorded timing; otherwise this
+    # augmentation would confound the effect of preprocessing-time alignment.
     alignment_jitter:
-      enabled: true
+      enabled: false
       source_dataset: all
       appliance: microwave
       offsets_samples: [0, 1, 2]
