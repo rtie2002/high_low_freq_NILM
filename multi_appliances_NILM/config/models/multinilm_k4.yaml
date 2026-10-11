@@ -174,11 +174,11 @@ training:
       # reduced the validation AP and lost part of the fridge-FPR improvement.
       prob: 1.0
       background_bins_watts: [0, 100, 200, 400, 800]
-    # Disabled for the REFIT preprocessing A/B test.  Both the original and
-    # corrected datasets must see exactly the recorded timing; otherwise this
-    # augmentation would confound the effect of preprocessing-time alignment.
+    # Retained after the controlled preprocessing A/B test: deterministic
+    # high-confidence alignment helped only a small subset of REFIT events,
+    # whereas this training-only jitter improved the full validation set.
     alignment_jitter:
-      enabled: false
+      enabled: true
       source_dataset: all
       appliance: microwave
       offsets_samples: [0, 1, 2]

@@ -918,3 +918,54 @@ Decision: retain the original house-split dataset and the existing training-only
 microwave lag augmentation. Treat REFIT's missing per-IAM acquisition times as
 label-time uncertainty; do not claim that cleaned REFIT timestamps can be
 deterministically reconstructed from aggregate edges.
+
+## REFIT alignment without training jitter A/B - completed 2026-10-11
+
+This experiment removed the remaining confound from the preceding alignment
+test. The same `multinilm_k4.yaml`, seed 2026, architecture, loss, sampler,
+schedule, and checkpoint rule were used for both runs, while
+`alignment_jitter.enabled=false`. Run A used the original house-split data;
+run B used `mixed_ukdale_refit_5w_house_split_high_confidence_aligned_v2`.
+Only validation results were used for this decision.
+
+| Data, with jitter disabled | Best epoch | MAE (W) | macro-F1 | AP | Microwave F1 | Microwave AP |
+|---|---:|---:|---:|---:|---:|---:|
+| Original | 147 | 16.915 | 0.760 | **0.798** | 0.488 | **0.455** |
+| High-confidence aligned | 137 | **16.436** | 0.760 | 0.797 | **0.500** | 0.444 |
+| Retained original + training jitter | - | **14.884** | **0.782** | **0.809** | - | - |
+
+The aligned data improves overall MAE by 0.479 W but does not improve macro-F1
+and lowers AP by 0.001. Fridge MAE/F1 change from 22.165/0.832 to
+21.490/0.835. Microwave F1 improves by 0.012, but its AP decreases by 0.011,
+so the apparent thresholded gain is not a general ranking improvement.
+
+A focused audit of the validation events actually moved by the deterministic
+rule gives a more precise interpretation. On 20 shifted microwave events,
+mean local IoU improves from 0.488 to 0.560 and event detection from 0.65 to
+0.70. On 35 shifted fridge events, IoU is unchanged (0.929 to 0.928). Fridge
+FPR improves from 0.538 to 0.501 in the 400--800 W residual bin and from 0.609
+to 0.559 above 800 W. The five fixed validation waveform panels show no new
+catastrophic output, but also no systematic correction outside those few
+events.
+
+The edge audit directly rejects a claim of 100% zero jitter. For REFIT house 2
+microwave starts, the number whose strongest aggregate edge is at lag zero is
+140/298 before and 139/298 after; in REFIT house 20 it is 28/145 before and
+44/145 after. This statistic is not itself ground truth, but it demonstrates
+that the conservative rule leaves substantial unresolved timing uncertainty.
+The method cannot recover missing physical IAM acquisition timestamps.
+
+Preprocessing was hardened independently of the model result. Mean resampling
+is now the command-line and programmatic default for every power channel,
+preventing the old hidden mean-aggregate/max-appliance mismatch. Each shifted
+event has an enforced watt-sample energy-conservation assertion. Every direct
+REFIT preprocessing output also writes a `.quality.json` report covering
+timestamps, finite/non-negative power, the 8 s grid, binary labels, energy
+error, and unresolved alignment events. Six alignment tests and a real
+six-hour REFIT house 20 smoke test pass.
+
+Decision: the correction is locally useful but is rejected as a replacement
+for the established data treatment. Restore `alignment_jitter.enabled=true`
+in the retained model because disabling it causes a material validation drop.
+Do not claim complete REFIT synchronization; describe the event alignment, if
+reported, as a high-confidence diagnostic/secondary protocol.
