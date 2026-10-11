@@ -134,3 +134,10 @@ def test_event_realigner_rejects_a_single_unsupported_boundary() -> None:
 
     np.testing.assert_array_equal(corrected["microwave_power"], power_before)
     assert summaries[0]["shifted_events"] == 0
+
+
+if __name__ == "__main__":
+    tests = sorted(name for name in globals() if name.startswith("test_"))
+    for test_name in tests:
+        globals()[test_name]()
+    print(f"PASS: {len(tests)} REFIT alignment tests")
