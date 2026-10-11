@@ -969,3 +969,47 @@ for the established data treatment. Restore `alignment_jitter.enabled=true`
 in the retained model because disabling it causes a material validation drop.
 Do not claim complete REFIT synchronization; describe the event alignment, if
 reported, as a high-confidence diagnostic/secondary protocol.
+
+## Original data plus training jitter reproducibility audit - completed 2026-10-11
+
+The historical validation result of 14.884 W MAE, 0.782 macro-F1, and 0.809
+AP was rerun to determine whether it is reproducible. Two distinct model
+configurations had previously been described as "original + jitter", so both
+were evaluated on validation only with seed 2026. No test house was opened.
+
+| Configuration | Input | Best epoch | MAE (W) | macro-F1 | AP | Microwave F1 | Microwave AP |
+|---|---|---:|---:|---:|---:|---:|---:|
+| current `multinilm_k4.yaml` + original data + jitter | raw only | 147 | 16.721 | 0.751 | 0.794 | 0.465 | 0.436 |
+| historical saved config + original data + jitter | 13 channels | 133 | **14.301** | **0.771** | 0.792 | 0.460 | 0.420 |
+| historical single run (reference only) | 13 channels | 125 | 14.884 | 0.782 | **0.809** | 0.500 | 0.478 |
+
+The first run is not a strict reproduction of the 14.884 W result: the
+current YAML has since been simplified from 13 fixed input channels to raw
+aggregate only. It is nevertheless a controlled comparison with the recent
+raw-only no-jitter run (16.915 W, 0.760 macro-F1, 0.798 AP). Under the current
+model, jitter improves MAE by 0.194 W but reduces macro-F1 by 0.009 and AP by
+0.004. Training jitter therefore does not provide a reproducible
+classification improvement in this comparison.
+
+The second run used the `model` section extracted directly from the historical
+run's saved `config_merged.yaml`. It restored raw, signed and absolute delta,
+six rolling statistics, and four GL channels, as well as the saved
+postprocessing and jitter settings. Its parameter count (1,376,574) matches
+the historical run. The old point estimate was not reproduced: MAE improved
+by 0.583 W, but macro-F1 fell by 0.011 and AP by 0.017. Fridge F1/AP were
+0.810/0.859; microwave F1/AP were 0.460/0.420. Fridge false-positive rate
+still increased sharply with residual background: 0.434 at 200--400 W, 0.583
+at 400--800 W, and 0.727 above 800 W. Long-context plots show false fridge
+cycles in true-OFF regions and missed microwave bursts in dense intermittent
+events, although clean isolated microwave pulses remain well reconstructed.
+
+The saved configuration also matches the later seeded 13-channel baseline
+except for `experiment_id`, yet that earlier run reported
+15.586/0.772/0.795 and selected epoch 80. The original 14.884 run was produced
+before the seed was moved ahead of model construction; its manifest says seed
+2026, but the initial weights were not actually fixed by that seed. In
+addition, CUDA kernels are not configured for strict determinism. Therefore
+14.884/0.782/0.809 must be treated as a historical single-run observation,
+not an exact reproducible baseline. Future comparisons should use controlled
+seeded reruns and report variation across seeds rather than require equality
+to that point estimate.
