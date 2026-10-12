@@ -1,10 +1,9 @@
 #!/usr/bin/env python
-"""Build the 5-week-train, house-held-out UK-DALE/REFIT dataset.
+"""Build a duration-controlled, house-held-out UK-DALE/REFIT dataset.
 
 Protocol
 --------
-Training (best active contiguous 5-week sub-block inside each established
-8-week interval):
+Training (a contiguous block centred on the established active 5-week block):
   UK-DALE 1; REFIT 3, 5, 9, 11
 
 Validation (complete previously selected 8-week blocks):
@@ -13,13 +12,13 @@ Validation (complete previously selected 8-week blocks):
 Final test (complete previously selected 8-week blocks):
   UK-DALE 2; REFIT 20
 
-All rows are extracted again from the current corrected original 8-second
-house CSVs. The existing 8-week selection summary supplies only the
-house time bounds. Restricting the 5-week search to the established 8-week
-interval makes 5-week versus 8-week comparisons isolate duration instead of
-silently changing years. Rows or labels can still differ if the original house
-CSVs were corrected after the old mixed dataset was built. Normalization
-statistics are fitted on the five training houses only.
+The established 5-week selection is the training anchor: a longer duration
+contains those exact rows and extends it as evenly as possible on both sides
+using the current corrected original 8-second house CSVs. This keeps the
+active events and calendar period used by the baseline instead of selecting
+an unrelated season. Validation and test rows are copied exactly from the
+5-week reference dataset. Normalization statistics are fitted on the extended
+five-house training split only.
 """
 
 from __future__ import annotations
@@ -41,7 +40,6 @@ from prepare_mixed_ukdale_refit_3week_split import (
     frame_sequence_ids,
     resolve_refit,
     resolve_ukdale,
-    select_best_block,
     summarize_split,
     training_normalization,
 )
@@ -52,6 +50,8 @@ DEFAULT_OUT_DIR = ROOT / "datasets" / "mixed_ukdale_refit_5w_house_split"
 DEFAULT_EVAL_SELECTION = (
     ROOT / "datasets" / "mixed_ukdale_refit_8w" / "selection_summary.csv"
 )
+DEFAULT_TRAIN_ANCHOR = DEFAULT_OUT_DIR / "selection_summary.csv"
+DEFAULT_REFERENCE_DATASET = DEFAULT_OUT_DIR
 
 TRAIN_HOUSES = (("ukdale", 1), ("refit", 3), ("refit", 5), ("refit", 9), ("refit", 11))
 VALIDATION_HOUSES = (("ukdale", 5), ("refit", 2))
@@ -60,7 +60,7 @@ TEST_HOUSES = (("ukdale", 2), ("refit", 20))
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build a 5-week training split with whole-house validation."
+        description="Build a duration-controlled split with whole-house validation."
     )
     parser.add_argument("--ukdale-dir", type=Path, default=UKDALE_DIR)
     parser.add_argument("--refit-dir", type=Path, default=REFIT_DIR)
@@ -71,8 +71,22 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_EVAL_SELECTION,
         help="8-week selection summary whose time bounds are reused for validation/test.",
     )
+    parser.add_argument(
+        "--train-anchor-summary",
+        type=Path,
+        default=DEFAULT_TRAIN_ANCHOR,
+        help="Selection summary containing the established 5-week training blocks.",
+    )
+    parser.add_argument(
+        "--reference-dataset-dir",
+        type=Path,
+        default=DEFAULT_REFERENCE_DATASET,
+        help=(
+            "Existing 5-week dataset whose training core and held-out splits "
+            "must remain unchanged."
+        ),
+    )
     parser.add_argument("--train-weeks", type=float, default=5.0)
-    parser.add_argument("--step-days", type=float, default=2.0)
     return parser.parse_args()
 
 
@@ -112,51 +126,6 @@ def _load_slice_chunked(
         .sort_values(TIME_COL, kind="stable")
         .reset_index(drop=True)
     )
-
-
-def _load_on_timeline_slice(
-    csv_path: Path,
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-    apps: list[str],
-    *,
-    chunksize: int = 250_000,
-) -> tuple[pd.DatetimeIndex, np.ndarray, np.ndarray]:
-    """Load ON labels only inside one established interval."""
-    available = set(pd.read_csv(csv_path, nrows=0).columns)
-    time_column = "unix_time" if "unix_time" in available else TIME_COL
-    usecols = [time_column, "sequence_id", *[f"{app}_on" for app in apps]]
-    selected: list[pd.DataFrame] = []
-    for chunk in pd.read_csv(csv_path, usecols=usecols, chunksize=chunksize):
-        timestamps = (
-            pd.to_datetime(chunk["unix_time"], unit="s", errors="coerce", utc=True)
-            if time_column == "unix_time"
-            else pd.to_datetime(chunk[TIME_COL], errors="coerce", utc=True)
-        )
-        keep = timestamps.notna() & (timestamps >= start) & (timestamps <= end)
-        if not bool(keep.any()):
-            continue
-        part = chunk.loc[keep].copy()
-        part["_timestamp"] = timestamps.loc[keep]
-        selected.append(part)
-    if not selected:
-        raise RuntimeError(f"No ON timeline found in {csv_path} for {start} -> {end}")
-    frame = (
-        pd.concat(selected, ignore_index=True)
-        .sort_values("_timestamp", kind="stable")
-        .reset_index(drop=True)
-    )
-    times = pd.DatetimeIndex(frame.pop("_timestamp"))
-    on_matrix = np.column_stack(
-        [
-            pd.to_numeric(frame[f"{app}_on"], errors="coerce")
-            .fillna(0)
-            .to_numpy(np.int8)
-            for app in apps
-        ]
-    )
-    sequence_ids = frame["sequence_id"].fillna(-1).to_numpy(np.int64)
-    return times, on_matrix, sequence_ids
 
 
 def _tag_dataset(frame: pd.DataFrame, dataset: str) -> pd.DataFrame:
@@ -227,10 +196,63 @@ def _established_bounds(
     return bounds
 
 
+def _training_anchor_bounds(
+    summary_path: Path,
+) -> dict[tuple[str, int], tuple[pd.Timestamp, pd.Timestamp]]:
+    """Read the fixed active training blocks used by the 5-week baseline."""
+    summary = pd.read_csv(summary_path)
+    training = summary.loc[summary["role"].astype(str).str.lower().eq("train")]
+    bounds = {
+        (str(row.dataset).lower(), int(row.house)): (
+            pd.Timestamp(row.start),
+            pd.Timestamp(row.end),
+        )
+        for row in training.itertuples(index=False)
+    }
+    absent = set(TRAIN_HOUSES).difference(bounds)
+    if absent:
+        raise ValueError(f"Training anchor summary lacks houses: {sorted(absent)}")
+    return bounds
+
+
+def _expand_anchor(
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    *,
+    target_weeks: float,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Expand an inclusive 8-second block while preserving the full anchor."""
+    target_samples = int(round(target_weeks * 7 * 86_400 / SAMPLE_SECONDS))
+    anchor_samples = int(round((end - start).total_seconds() / SAMPLE_SECONDS)) + 1
+    if target_samples < anchor_samples:
+        raise ValueError(
+            "--train-weeks cannot be shorter than the established anchor; "
+            "use the original block-search procedure for shorter ablations"
+        )
+    extra_samples = target_samples - anchor_samples
+    before_samples = (extra_samples + 1) // 2
+    after_samples = extra_samples - before_samples
+    step = pd.Timedelta(seconds=SAMPLE_SECONDS)
+    return start - before_samples * step, end + after_samples * step
+
+
 def _write_csv(frame: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_csv(path, index=False)
     print(f"  wrote {path} ({len(frame):,} rows)", flush=True)
+
+
+def _house_frame(frame: pd.DataFrame, dataset: str, house: int) -> pd.DataFrame:
+    """Select one house without relying on house numbers being globally unique."""
+    keep = (
+        frame["dataset"].astype(str).str.lower().eq(dataset)
+        & pd.to_numeric(frame["house"], errors="coerce").eq(house)
+    )
+    selected = frame.loc[keep].copy()
+    if selected.empty:
+        raise RuntimeError(f"Reference split lacks {dataset} house {house}")
+    selected[TIME_COL] = pd.to_datetime(selected[TIME_COL], errors="coerce", utc=True)
+    return selected
 
 
 def main() -> None:
@@ -241,7 +263,7 @@ def main() -> None:
     if train_set & val_set or train_set & test_set or val_set & test_set:
         raise RuntimeError("Train, validation and test houses must be disjoint")
 
-    print("=== 5-week training / whole-house validation split ===", flush=True)
+    print("=== Duration-controlled training / whole-house validation split ===", flush=True)
     print(f"  train={TRAIN_HOUSES}", flush=True)
     print(f"  validation={VALIDATION_HOUSES}", flush=True)
     print(f"  test={TEST_HOUSES}", flush=True)
@@ -252,6 +274,16 @@ def main() -> None:
     )
 
     established_bounds = _established_bounds(args.eval_selection_summary)
+    training_anchors = _training_anchor_bounds(args.train_anchor_summary)
+    reference_train = pd.read_csv(
+        args.reference_dataset_dir / "training" / "multi_appliance_training.csv"
+    )
+    reference_validation = pd.read_csv(
+        args.reference_dataset_dir / "validating" / "multi_appliance_validating.csv"
+    )
+    reference_test = pd.read_csv(
+        args.reference_dataset_dir / "testing" / "multi_appliance_testing.csv"
+    )
     split_parts: dict[str, list[pd.DataFrame]] = {
         "train": [],
         "validation": [],
@@ -268,39 +300,39 @@ def main() -> None:
         csv_path = _source_path(dataset, house, args.ukdale_dir, args.refit_dir)
         print(f"\n[{role} | {dataset} house {house}] {csv_path}", flush=True)
         if role == "train":
-            established_start, established_end = established_bounds[(dataset, house)]
+            anchor_start, anchor_end = training_anchors[(dataset, house)]
+            start, end = _expand_anchor(
+                anchor_start,
+                anchor_end,
+                target_weeks=float(args.train_weeks),
+            )
             print(
-                "  searching inside established 8-week interval: "
-                f"{established_start} -> {established_end}",
+                "  fixed active anchor: "
+                f"{anchor_start} -> {anchor_end}",
                 flush=True,
             )
-            times, on_matrix, sequence_ids = _load_on_timeline_slice(
-                csv_path,
-                established_start,
-                established_end,
-                list(APPS_5),
+            expanded = _tag_dataset(_load_slice_chunked(csv_path, start, end), dataset)
+            anchor = _house_frame(reference_train, dataset, house)
+            outside_anchor = expanded.loc[
+                expanded[TIME_COL].lt(anchor_start) | expanded[TIME_COL].gt(anchor_end)
+            ]
+            frame = (
+                pd.concat([outside_anchor, anchor], ignore_index=True)
+                .sort_values(TIME_COL, kind="stable")
+                .reset_index(drop=True)
             )
-            block = select_best_block(
-                times,
-                on_matrix,
-                sequence_ids,
-                list(APPS_5),
-                block_weeks=float(args.train_weeks),
-                step_days=float(args.step_days),
-                require_active_val_tail=False,
-            )
-            start, end = block.start, block.end
             selection_note = (
-                f"active_maximin_{args.train_weeks:g}w_within_established_8w"
+                f"{args.train_weeks:g}w_extension_preserving_exact_5w_core"
             )
             requested_weeks = float(args.train_weeks)
         else:
             start, end = established_bounds[(dataset, house)]
-            selection_note = "reused_mixed_ukdale_refit_8w_bounds"
+            reference = reference_validation if role == "validation" else reference_test
+            frame = _house_frame(reference, dataset, house)
+            selection_note = "exact_held_out_rows_from_5w_baseline"
             requested_weeks = 8.0
 
-        print(f"  extracting original rows: {start} -> {end}", flush=True)
-        frame = _tag_dataset(_load_slice_chunked(csv_path, start, end), dataset)
+        print(f"  selected rows: {frame[TIME_COL].iloc[0]} -> {frame[TIME_COL].iloc[-1]}", flush=True)
         print(" ", summarize_split(role.upper(), frame, list(APPS_5)), flush=True)
         split_parts[role].append(frame)
         inventory.append(
@@ -340,15 +372,15 @@ def main() -> None:
     inventory_path = out_dir / "selection_summary.csv"
     pd.DataFrame(inventory).to_csv(inventory_path, index=False)
     meta = {
-        "protocol": "5-week active training blocks with whole-house validation",
+        "protocol": "duration-controlled training blocks with whole-house validation",
         "sample_seconds": SAMPLE_SECONDS,
         "train_weeks": float(args.train_weeks),
         "validation_test_weeks": 8.0,
-        "step_days": float(args.step_days),
         "train_houses": [list(item) for item in TRAIN_HOUSES],
         "validation_houses": [list(item) for item in VALIDATION_HOUSES],
         "test_houses": [list(item) for item in TEST_HOUSES],
         "established_8week_bounds_source": str(args.eval_selection_summary.resolve()),
+        "training_anchor_source": str(args.train_anchor_summary.resolve()),
         "normalization_source": "training split only",
     }
     (out_dir / "selection_meta.json").write_text(

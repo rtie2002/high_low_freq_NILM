@@ -1,0 +1,47 @@
+# Controlled duration ablation of the 5-week house-held-out protocol.
+#
+# Only the five training houses are extended from 5 to 10 contiguous weeks.
+# The complete established 5-week active block remains inside each 10-week
+# block. Validation and test houses retain exactly the same 8-week bounds.
+dataset_id: mixed_ukdale_refit_10w_house_split
+seed: 2026
+data_root: datasets/mixed_ukdale_refit_10w_house_split
+
+csv:
+  sample_seconds: 8
+  train_file: training/multi_appliance_training.csv
+  validation_file: validating/multi_appliance_validating.csv
+  test_file: testing/multi_appliance_testing.csv
+  test_scenarios:
+    refit_house20: testing/refit_house20/multi_appliance_testing.csv
+    ukdale_house2: testing/ukdale_house2/multi_appliance_testing.csv
+  mains_column: aggregate
+  appliances:
+    kettle:         {power: kettle_power,         state: kettle_on}
+    fridge:         {power: fridge_power,         state: fridge_on}
+    dishwasher:     {power: dishwasher_power,     state: dishwasher_on}
+    washingmachine: {power: washingmachine_power, state: washingmachine_on}
+    microwave:      {power: microwave_power,      state: microwave_on}
+
+# Re-fitted on the 10-week training split only.
+normalization_file: ../datasets/mixed_ukdale_refit_10w_house_split/normalization_stats.json
+
+evaluation:
+  on_thresholds_watts:
+    kettle: 40
+    fridge: 50
+    dishwasher: 30
+    washingmachine: 30
+    microwave: 100
+  max_on_power_watts:
+    kettle: 4000
+    fridge: 600
+    dishwasher: 4000
+    washingmachine: 3999
+    microwave: 4000
+  power_postprocess:
+    enabled: true
+    min_power_watts: 5
+  sae_period: 1200
+  event_tolerance_seconds: 16
+  power_unit: watts
