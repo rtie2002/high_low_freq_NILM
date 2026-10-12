@@ -1081,3 +1081,68 @@ removes two difficult-to-defend processing steps. Future component changes are
 first checkpointed on validation, then audited on both cross-house development
 houses with metrics and waveforms. A separate unseen house split is required
 for the final paper test.
+
+## Controlled 5-week versus 10-week training duration - completed 2026-10-12
+
+This experiment tested whether simply exposing the unchanged model to more
+training data improves generalisation. Commit `ca86b30` introduced a
+duration-controlled builder and the dataset config
+`experiment_mixed_ukdale_refit_10w_house_split.yaml`. The exact established
+5-week rows were retained as the centre of each training interval, and only
+the preceding/following rows were added. Validation and both cross-house
+development scenarios were copied exactly from the 5-week dataset. Thus the
+held-out houses, timestamps, labels, evaluation, seed, model, loss, sampling,
+augmentation, and checkpoint rule were unchanged. Normalisation was correctly
+re-fitted on the longer training split only.
+
+The training split grew from 1,857,045 to 3,677,016 rows (1.98 times). Fridge
+events increased from 6,062 to 11,382, and microwave events from 780 to 1,322.
+The run used `multinilm_k4.yaml`, original data, no alignment jitter, seed
+2026, 150 epochs, and finished successfully on the RTX 4090. Best epoch was
+111; total training time was 15 minutes 26 seconds. The result directory is
+`runs/k4_original_no_jitter_10w/multinilm_fractional`.
+
+| Training duration | Validation MAE/F1/AP | REFIT20 MAE/F1/AP | UK-DALE2 MAE/F1/AP |
+|---|---|---|---|
+| 5 weeks | 16.915 / **0.760** / 0.798 | **11.275** / **0.703** / **0.737** | 8.373 / 0.861 / **0.938** |
+| 10 weeks | **16.747** / 0.757 / **0.806** | 11.734 / 0.697 / 0.736 | **8.055** / **0.863** / 0.934 |
+
+The validation change is mixed rather than a clear improvement: MAE improves
+by 0.168 W and AP by 0.008, while macro-F1 falls by 0.003. The gain does not
+transfer consistently. REFIT20 becomes worse in all three overall metrics;
+UK-DALE2 gains 0.318 W MAE and 0.002 F1 but loses 0.004 AP.
+
+Critical-appliance results also remain mixed. Validation fridge improves from
+22.165 to 20.993 W MAE and from 0.832 to 0.834 F1, but its overall FPR rises
+from 0.161 to 0.176. REFIT20 fridge F1 rises from 0.689 to 0.708, whereas its
+MAE and FPR worsen. REFIT20 microwave degrades from 8.315/0.470/0.460 to
+8.875/0.450/0.421 MAE/F1/AP. UK-DALE2 microwave also falls from 0.798/0.803
+to 0.780/0.787 F1/AP.
+
+The background-conditioned audit gives the clearest rejection evidence:
+
+| Split | Fridge residual bin | 5-week FPR | 10-week FPR |
+|---|---:|---:|---:|
+| Validation | 200--400 W | 0.348 | 0.390 |
+| Validation | 400--800 W | 0.538 | 0.588 |
+| Validation | above 800 W | 0.609 | 0.742 |
+| REFIT20 | 200--400 W | 0.685 | 0.719 |
+| REFIT20 | 400--800 W | 0.830 | 0.852 |
+| REFIT20 | above 800 W | 0.482 | 0.692 |
+| UK-DALE2 | 200--400 W | 0.332 | 0.383 |
+| UK-DALE2 | 400--800 W | 0.829 | 0.946 |
+| UK-DALE2 | above 800 W | 0.251 | 0.415 |
+
+Waveforms agree with these statistics. Several true fridge cycles and
+microwave plateaus have lower amplitude error with 10 weeks, especially clean
+UK-DALE events and some medium-background REFIT microwave events. However,
+false fridge plateaus become more frequent or stronger in every high-background
+bin. REFIT microwave retains large false activations, and its lower F1/AP shows
+that improved reconstruction of selected true events does not compensate for
+the classification failures.
+
+Decision: reject 10 weeks as the default training duration. More rows alone do
+not solve the noisy-background identification problem and do not produce a
+consistent cross-house improvement. Retain the controlled 10-week dataset and
+run as negative ablation evidence, but keep the 5-week original/no-jitter split
+for subsequent model work.
