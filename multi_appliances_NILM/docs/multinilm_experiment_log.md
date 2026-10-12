@@ -1013,3 +1013,33 @@ addition, CUDA kernels are not configured for strict determinism. Therefore
 not an exact reproducible baseline. Future comparisons should use controlled
 seeded reruns and report variation across seeds rather than require equality
 to that point estimate.
+
+## Aligned data without jitter: held-out test report - completed 2026-10-12
+
+After the validation-only 2-by-2 data/jitter comparison, the selected
+high-confidence-aligned, no-jitter checkpoint (best epoch 137) was evaluated
+once on the two untouched test houses. Validation calibration thresholds were
+reused without test-time fitting. These results are for reporting only and
+were not used to change the model.
+
+| Test house | MAE (W) | macro-F1 | micro-F1 | AP |
+|---|---:|---:|---:|---:|
+| REFIT house 20 | 11.385 | 0.684 | 0.692 | 0.740 |
+| UK-DALE house 2 | **8.485** | **0.868** | **0.874** | **0.938** |
+
+| Appliance | REFIT20 MAE | REFIT20 F1 | REFIT20 AP | UK-DALE2 MAE | UK-DALE2 F1 | UK-DALE2 AP |
+|---|---:|---:|---:|---:|---:|---:|
+| kettle | 5.157 | 0.813 | 0.879 | 4.586 | 0.968 | 0.996 |
+| fridge | 34.354 | 0.691 | 0.711 | 23.042 | 0.882 | 0.954 |
+| dishwasher | 4.504 | 0.685 | 0.752 | 5.012 | 0.756 | 0.960 |
+| washing machine | 4.221 | 0.770 | 0.858 | 6.181 | 0.937 | 0.984 |
+| microwave | 8.686 | 0.459 | 0.501 | 3.606 | 0.797 | 0.798 |
+
+The cross-house gap remains large. In REFIT20, fridge FPR is 0.706 at a
+200--400 W residual and 0.832 at 400--800 W. Long-context waveforms show long
+40--100 W false fridge cycles during true-OFF periods. Isolated microwave
+events can be reconstructed accurately, but a representative 1.3 kW event is
+missed completely and pulsed high-background segments can trigger false
+microwave outputs. Alignment therefore provides a small validation benefit but
+does not solve background-dependent fridge activation or REFIT microwave
+generalisation.
