@@ -1043,3 +1043,41 @@ missed completely and pulsed high-background segments can trigger false
 microwave outputs. Alignment therefore provides a small validation benefit but
 does not solve background-dependent fridge activation or REFIT microwave
 generalisation.
+
+## Full 2-by-2 cross-house audit - completed 2026-10-12
+
+The validation result alone selected aligned data without jitter, but its
+small 0.479 W validation-MAE gain did not transfer consistently. The remaining
+three checkpoints were therefore evaluated on the same UK-DALE2 and REFIT20
+cross-house development scenarios, using only thresholds calibrated on their
+own validation predictions. All evaluations exited successfully. Because
+these houses now inform method retention, they are development/generalisation
+houses rather than an untouched final test set.
+
+| Data / augmentation | Validation MAE/F1/AP | REFIT20 MAE/F1/AP | UK-DALE2 MAE/F1/AP |
+|---|---|---|---|
+| original / no jitter | 16.915 / **0.760** / **0.798** | 11.275 / **0.703** / 0.737 | **8.373** / 0.861 / **0.938** |
+| aligned / no jitter | **16.436** / **0.760** / 0.797 | 11.385 / 0.684 / 0.740 | 8.485 / **0.868** / **0.938** |
+| original / jitter | 16.721 / 0.751 / 0.794 | 11.388 / 0.693 / 0.733 | 8.379 / 0.862 / 0.924 |
+| aligned / jitter | 16.875 / 0.750 / 0.790 | **11.121** / 0.699 / **0.746** | 8.522 / 0.858 / 0.926 |
+
+Across the two development houses, the simple unaligned/no-jitter method has
+the highest house-mean F1 (0.782) and nearly the lowest mean MAE (9.824 W;
+aligned/jitter is 9.822 W). Aligned/no-jitter has the highest mean AP by only
+0.001, but loses 0.006 mean F1. No alignment/jitter option dominates both
+houses. REFIT microwave benefits from aligned/jitter (F1/AP 0.550/0.554), but
+UK-DALE microwave falls to 0.731/0.734, compared with 0.798/0.803 for
+original/no-jitter.
+
+Waveform inspection agrees with the metrics. All four methods retain long
+false fridge plateaus under high residual background. Alignment and jitter can
+reduce timing error for selected microwave events, but also retain large false
+microwave activations in confounding background segments. They do not solve
+the underlying identification problem.
+
+Decision: restore the original house-split data and disable alignment jitter
+in the working configuration. This is the most stable cross-house option and
+removes two difficult-to-defend processing steps. Future component changes are
+first checkpointed on validation, then audited on both cross-house development
+houses with metrics and waveforms. A separate unseen house split is required
+for the final paper test.

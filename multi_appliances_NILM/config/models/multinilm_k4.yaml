@@ -174,11 +174,11 @@ training:
       # reduced the validation AP and lost part of the fridge-FPR improvement.
       prob: 1.0
       background_bins_watts: [0, 100, 200, 400, 800]
-    # Retained after the controlled preprocessing A/B test: deterministic
-    # high-confidence alignment helped only a small subset of REFIT events,
-    # whereas this training-only jitter improved the full validation set.
+    # Disabled after the full 2x2 cross-house audit. Jitter slightly changed
+    # validation MAE but reduced validation F1/AP and was not consistently
+    # better across REFIT 20 and UK-DALE 2.
     alignment_jitter:
-      enabled: true
+      enabled: false
       source_dataset: all
       appliance: microwave
       offsets_samples: [0, 1, 2]
