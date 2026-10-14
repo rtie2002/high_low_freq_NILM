@@ -86,8 +86,14 @@ def _equal_house_validation_metrics(run_dir: Path, dataset_root: Path) -> pd.Ser
     if bundle.csv_timesteps is None:
         raise ValueError(f"Missing csv_timesteps in {run_dir}")
     with (run_dir / "config_merged.yaml").open("r", encoding="utf-8") as handle:
-        cfg = yaml.safe_load(handle)
-    power_postprocess = resolve_power_postprocess(cfg, bundle.appliances, cfg)
+        saved_cfg = yaml.safe_load(handle)
+    experiment_cfg = saved_cfg.get("experiment", saved_cfg)
+    model_cfg = saved_cfg.get("model", saved_cfg)
+    power_postprocess = resolve_power_postprocess(
+        experiment_cfg,
+        bundle.appliances,
+        model_cfg,
+    )
     house_overall = []
     for house, start, stop in _validation_house_rows(dataset_root):
         mask = (bundle.csv_timesteps >= start) & (bundle.csv_timesteps < stop)
@@ -96,12 +102,12 @@ def _equal_house_validation_metrics(run_dir: Path, dataset_root: Path) -> pd.Ser
         house_bundle = _subset(bundle, mask, house)
         metrics = evaluate_bundle(
             house_bundle,
-            sae_period=int(cfg["evaluation"].get("sae_period", 1200)),
-            state_label_source=get_state_label_source(cfg),
+            sae_period=int(experiment_cfg["evaluation"].get("sae_period", 1200)),
+            state_label_source=get_state_label_source(model_cfg),
             power_postprocess=power_postprocess,
-            sample_seconds=float(cfg["csv"]["sample_seconds"]),
+            sample_seconds=float(experiment_cfg["csv"]["sample_seconds"]),
             event_tolerance_seconds=float(
-                cfg["evaluation"].get("event_tolerance_seconds", 0.0)
+                experiment_cfg["evaluation"].get("event_tolerance_seconds", 0.0)
             ),
         )
         house_overall.append(metrics.loc[metrics["appliance"].eq("overall")].iloc[0])
@@ -211,16 +217,29 @@ def main() -> None:
     )
     parser.add_argument("--output-dir", type=Path, default=ROOT / "runs" / "paper_5w" / "summaries")
     parser.add_argument("--seeds", type=int, nargs="+", default=list(SEEDS))
+    parser.add_argument(
+        "--tables",
+        nargs="+",
+        choices=("v", "vi", "vii"),
+        default=("v", "vi", "vii"),
+        help="Summaries to create; useful while later experiment families are still running.",
+    )
     args = parser.parse_args()
     seeds = tuple(args.seeds)
     if len(seeds) < 2:
         raise ValueError("At least two seeds are required for a standard deviation")
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    outputs = {
-        "table_v_mart_nilm.csv": table_v(args.run_root, seeds),
-        "table_vi_mart_nilm.csv": table_vi(args.run_root, seeds),
-        "table_vii_mart_nilm.csv": table_vii(args.run_root, args.dataset_root, seeds),
-    }
+    outputs = {}
+    if "v" in args.tables:
+        outputs["table_v_mart_nilm.csv"] = table_v(args.run_root, seeds)
+    if "vi" in args.tables:
+        outputs["table_vi_mart_nilm.csv"] = table_vi(args.run_root, seeds)
+    if "vii" in args.tables:
+        outputs["table_vii_mart_nilm.csv"] = table_vii(
+            args.run_root,
+            args.dataset_root,
+            seeds,
+        )
     for name, frame in outputs.items():
         path = args.output_dir / name
         frame.to_csv(path, index=False, float_format="%.6f")
