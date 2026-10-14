@@ -207,6 +207,57 @@ def table_vii(run_root: Path, dataset_root: Path, seeds: tuple[int, ...]) -> pd.
     )
 
 
+def table_vii_test(run_root: Path, seeds: tuple[int, ...]) -> pd.DataFrame:
+    """Summarise frozen architecture variants on each test house.
+
+    The additional ``house_macro`` rows give the equal-weight mean of UK-DALE
+    house 2 and REFIT house 20. They do not pool samples across houses.
+    """
+    rows = []
+    for variant in VARIANTS:
+        for seed in seeds:
+            run_dir = (
+                run_root / "table_v" / "mart_nilm" / f"seed_{seed}"
+                if variant == "complete"
+                else run_root / "table_vii" / variant / f"seed_{seed}"
+            )
+            house_values = []
+            for scenario in TEST_SCENARIOS:
+                metrics = pd.read_csv(run_dir / "test" / scenario / "metrics.csv")
+                overall = metrics.loc[metrics["appliance"].eq("overall")].iloc[0]
+                values = {
+                    "mae": float(overall["mae"]),
+                    "sae": float(overall["sae"]),
+                    "macro_f1": float(overall["f1"]),
+                }
+                house_values.append(values)
+                rows.append({"variant": variant, "scenario": scenario, "seed": seed, **values})
+            rows.append(
+                {
+                    "variant": variant,
+                    "scenario": "house_macro",
+                    "seed": seed,
+                    **{
+                        key: float(np.mean([item[key] for item in house_values]))
+                        for key in ("mae", "sae", "macro_f1")
+                    },
+                }
+            )
+    raw = pd.DataFrame(rows)
+    return (
+        raw.groupby(["scenario", "variant"], sort=False)
+        .agg(
+            mae_mean=("mae", "mean"),
+            mae_std=("mae", lambda x: x.std(ddof=1)),
+            sae_mean=("sae", "mean"),
+            sae_std=("sae", lambda x: x.std(ddof=1)),
+            macro_f1_mean=("macro_f1", "mean"),
+            macro_f1_std=("macro_f1", lambda x: x.std(ddof=1)),
+        )
+        .reset_index()
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-root", type=Path, default=ROOT / "runs" / "paper_5w")
@@ -220,7 +271,7 @@ def main() -> None:
     parser.add_argument(
         "--tables",
         nargs="+",
-        choices=("v", "vi", "vii"),
+        choices=("v", "vi", "vii", "vii_test"),
         default=("v", "vi", "vii"),
         help="Summaries to create; useful while later experiment families are still running.",
     )
@@ -238,6 +289,11 @@ def main() -> None:
         outputs["table_vii_mart_nilm.csv"] = table_vii(
             args.run_root,
             args.dataset_root,
+            seeds,
+        )
+    if "vii_test" in args.tables:
+        outputs["table_vii_test_mart_nilm.csv"] = table_vii_test(
+            args.run_root,
             seeds,
         )
     for name, frame in outputs.items():

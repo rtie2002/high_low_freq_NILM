@@ -143,9 +143,13 @@ def run_table_vii(
     experiment_path: Path,
     seeds: list[int],
     variants: list[str],
+    evaluate_test: bool = False,
 ) -> None:
     base_experiment = load_experiment(experiment_path)
     base_model = load_model_config(MODEL_CONFIGS["mart_nilm"])
+    splits = ["validation"]
+    if evaluate_test:
+        splits.extend(resolve_test_scenarios(base_experiment))
     for variant in variants:
         for seed in seeds:
             experiment = copy.deepcopy(base_experiment)
@@ -160,7 +164,7 @@ def run_table_vii(
                 / f"seed_{seed}"
             )
             print(f"\n=== Table VII: {variant}, seed {seed} ===", flush=True)
-            _run_one(experiment, model_cfg, run_dir, seed, ["validation"])
+            _run_one(experiment, model_cfg, run_dir, seed, splits)
 
 
 def parse_args() -> argparse.Namespace:
@@ -182,6 +186,14 @@ def parse_args() -> argparse.Namespace:
         choices=ARCHITECTURE_VARIANTS,
         default=list(ARCHITECTURE_VARIANTS),
     )
+    parser.add_argument(
+        "--vii-eval-test",
+        action="store_true",
+        help=(
+            "Evaluate the frozen Table VII checkpoints on the held-out test "
+            "houses. This must be used for reporting only, never model selection."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -192,7 +204,12 @@ def main() -> None:
     if args.table in {"v", "all"}:
         run_table_v(args.experiment, args.seeds, args.models)
     if args.table in {"vii", "all"}:
-        run_table_vii(args.experiment, args.seeds, args.variants)
+        run_table_vii(
+            args.experiment,
+            args.seeds,
+            args.variants,
+            evaluate_test=args.vii_eval_test,
+        )
 
 
 if __name__ == "__main__":
