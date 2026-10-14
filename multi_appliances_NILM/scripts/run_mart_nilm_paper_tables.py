@@ -155,8 +155,12 @@ def run_table_vii(
             experiment = copy.deepcopy(base_experiment)
             experiment["seed"] = seed
             model_cfg = _paper_architecture_variant(base_model, variant, seed)
+            # The complete row is the same frozen model reported in Table V.
+            # Reuse it instead of training an unnecessary duplicate.
             run_dir = (
-                ROOT
+                ROOT / "runs" / "paper_5w" / "table_v" / "mart_nilm" / f"seed_{seed}"
+                if variant == "complete"
+                else ROOT
                 / "runs"
                 / "paper_5w"
                 / "table_vii"
