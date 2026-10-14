@@ -498,10 +498,10 @@ MART-NILM & 1.373 & 5.335 & 485.2 \\
 \subsection{Ablation Study}
 \label{sec:ablation}
 
-Architecture and training effects are evaluated separately. Every architecture variant in Table~\ref{tab:architecture-ablation} remains one joint five-appliance network. Each row changes only the indicated component; all other settings are fixed. Scores are equal-house validation averages from \eqref{eq:house-macro}, while the test houses are reserved for the frozen model.
+Architecture and training effects are evaluated separately. Every architecture variant in Table~\ref{tab:architecture-ablation} remains one joint five-appliance network. Each row changes only the indicated component; all other settings are fixed. Checkpoints are selected on the validation houses. The table then reports frozen evaluation on UK-DALE house~2 and REFIT house~20: each metric is calculated separately for each house and the two values are averaged with equal weight using \eqref{eq:house-macro}.
 
 \begin{table}[!t]
-\caption{Architecture ablation on the two validation houses. Every row is one joint five-appliance model.}
+\caption{Architecture ablation on the two test houses (three-seed mean $\pm$ standard deviation). Every row is one joint five-appliance model.}
 \label{tab:architecture-ablation}
 \centering
 \renewcommand{\arraystretch}{1.15}
@@ -511,26 +511,24 @@ Architecture and training effects are evaluated separately. Every architecture v
 \toprule
 Variant & \shortstack{Params\\(M)} & \shortstack{Avg. MAE\\(W) $\downarrow$} & \shortstack{Avg. SAE\\(W) $\downarrow$} & \shortstack{Macro-F1\\$\uparrow$} \\
 \midrule
-MART-NILM              & 1.373 & \mstd{20.79}{0.18} & \mstd{15.02}{0.38} & \mstd{0.687}{0.003} \\
-Single-scale stem      & 1.371 & \mstd{20.65}{0.39} & \textbf{\mstd{14.44}{0.65}} & \mstd{0.686}{0.009} \\
-TCN without dilation   & 1.373 & \mstd{21.56}{0.34} & \mstd{15.43}{0.08} & \mstd{0.673}{0.015} \\
-w/o channel attention  & 1.331 & \textbf{\mstd{20.34}{0.74}} & \mstd{14.45}{0.37} & \textbf{\mstd{0.697}{0.015}} \\
-w/o local decoder      & 0.961 & \mstd{21.34}{0.28} & \mstd{15.20}{0.35} & \mstd{0.675}{0.012} \\
-w/o relation attention & 1.332 & \mstd{20.78}{0.34} & \mstd{14.75}{0.30} & \mstd{0.675}{0.009} \\
-w/o state--power gate  & 1.373 & \mstd{26.76}{0.66} & \mstd{18.84}{0.76} & \mstd{0.684}{0.012} \\
+MART-NILM              & 1.373 & \mstd{9.12}{0.14} & \mstd{5.58}{0.17} & \mstd{0.796}{0.008} \\
+Single-scale stem      & 1.371 & \mstd{9.14}{0.23} & \mstd{5.58}{0.17} & \mstd{0.789}{0.004} \\
+TCN without dilation   & 1.373 & \mstd{10.60}{0.63} & \mstd{6.93}{0.55} & \mstd{0.734}{0.010} \\
+w/o channel attention  & 1.331 & \textbf{\mstd{8.92}{0.39}} & \textbf{\mstd{5.40}{0.46}} & \textbf{\mstd{0.807}{0.012}} \\
+w/o local decoder      & 0.961 & \mstd{9.12}{0.16} & \mstd{5.63}{0.23} & \mstd{0.792}{0.006} \\
+w/o relation attention & 1.332 & \mstd{9.18}{0.09} & \mstd{5.55}{0.04} & \mstd{0.790}{0.015} \\
+w/o state--power gate  & 1.373 & \mstd{12.82}{0.43} & \mstd{8.13}{0.56} & \mstd{0.795}{0.011} \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-The state--power gate has the largest effect: removing it increases average
-MAE by 5.97~W and SAE by 3.82~W. Dilated temporal modelling, the local
-decoder, and relation attention each improve macro-F1 relative to their
-ablations. Channel attention is not supported by the aggregate scores: its
-removal gives the lowest MAE and highest macro-F1, although the difference is
-small relative to the variation across seeds. The single-scale stem similarly
-gives the lowest SAE without improving macro-F1. These two components are
-therefore treated as candidates for further simplification rather than as
-independently established sources of improvement.
+The ablation does not support every component of the complete model. Channel
+attention is the clearest counterexample: removing it gives the lowest MAE and
+SAE and the highest macro-F1. The multi-scale stem and local decoder also yield
+only marginal changes relative to seed variation. In contrast, temporal
+dilation is consistently beneficial, and the state--power gate reduces average
+MAE by 3.70~W and SAE by 2.54~W. Relation attention gives a smaller overall
+gain but improves MAE and macro-F1 on the more difficult REFIT test house.
 
 Table~\ref{tab:training-ablation} freezes the complete architecture and changes only the training method. Removing focal-event sampling retains the ordinary random mixture; removing random mixing uses recorded training windows only. Global task balance replaces the bounded appliance-wise ratios with one ratio shared by all appliances, while fixed task weight removes dynamic balancing. The core objective retains the principal power-regression and state-classification terms and removes the auxiliary regression and false-positive terms.
 

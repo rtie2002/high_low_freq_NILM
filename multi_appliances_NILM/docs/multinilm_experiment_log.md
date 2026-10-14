@@ -74,6 +74,46 @@ component is silently claimed as beneficial: channel attention and the
 multi-scale stem remain explicit simplification candidates for a controlled
 combined follow-up.
 
+### Frozen test-house audit of Table VII — 2026-10-14
+
+At the user's request, the seven already-trained architecture variants were
+evaluated on UK-DALE house 2 and REFIT house 20. No model was retrained and no
+test metric selected a checkpoint. Metrics were first calculated independently
+for each house and then averaged with equal house weight. The table below is
+therefore a report-only generalisation audit; using it to redesign MART-NILM
+would make these houses development data and require new untouched test houses.
+
+| Variant | Test-house MAE (W) | Test-house SAE (W) | Test-house macro-F1 |
+|---|---:|---:|---:|
+| MART-NILM | 9.125 +/- 0.140 | 5.584 +/- 0.174 | 0.796 +/- 0.008 |
+| Single-scale stem | 9.142 +/- 0.232 | 5.575 +/- 0.174 | 0.789 +/- 0.004 |
+| TCN without dilation | 10.597 +/- 0.632 | 6.935 +/- 0.546 | 0.734 +/- 0.010 |
+| w/o channel attention | **8.922 +/- 0.394** | **5.403 +/- 0.464** | **0.807 +/- 0.012** |
+| w/o local decoder | 9.118 +/- 0.157 | 5.633 +/- 0.226 | 0.792 +/- 0.006 |
+| w/o relation attention | 9.181 +/- 0.088 | 5.546 +/- 0.044 | 0.790 +/- 0.015 |
+| w/o state--power gate | 12.823 +/- 0.428 | 8.128 +/- 0.556 | 0.795 +/- 0.011 |
+
+Conclusions:
+
+- Remove channel attention from the claimed method. Its ablation is better on
+  all three house-macro metrics and also raises macro-F1 separately on both test
+  houses (0.882 versus 0.876 on UK-DALE; 0.732 versus 0.716 on REFIT).
+- Keep temporal dilation. Removing it damages both houses and reduces the
+  house-macro F1 from 0.796 to 0.734.
+- Keep the state--power gate. Removing it increases house-macro MAE from 9.125
+  to 12.823 W; its main contribution is physically consistent power output,
+  not classification F1.
+- The multi-scale stem is not justified by a clear gain: its removal changes
+  MAE by only +0.017 W, SAE by -0.009 W, and F1 by -0.007.
+- The local decoder is also weakly supported despite accounting for about 30%
+  of the parameters. Removing it changes house-macro MAE by -0.007 W and F1 by
+  -0.004. It should be tested jointly with channel-attention removal before it
+  is retained.
+- Relation attention has a small but domain-dependent benefit. Removing it
+  improves UK-DALE but worsens REFIT (MAE 11.205 versus 10.798 W; F1 0.699
+  versus 0.716). It remains defensible for the cross-domain story, but the
+  evidence is much weaker than for dilation and gating.
+
 ## Recovery baseline — 2026-10-08
 
 Experiment: `multinilm_early_relation_full_mix_house_split`
