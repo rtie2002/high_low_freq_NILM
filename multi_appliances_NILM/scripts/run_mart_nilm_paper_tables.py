@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""Run the controlled multi-seed experiments for paper Tables V and VII.
+"""Run the controlled multi-seed experiments for paper Tables V, VII, and VIII.
 
 Table V compares MART-NILM with UNet-NILM and MAT-Conv on the same five-week
-house split. Table VII changes one MART-NILM architecture component at a time
-and evaluates validation houses only. Test houses are never opened by the
-architecture-ablation stage.
+house split. Table VII changes one MART-NILM architecture component at a time.
+Table VIII freezes the architecture and evaluates the two proposed training
+strategies in a 2x2 design. Test houses are never opened by Table VIII.
 """
 
 from __future__ import annotations
@@ -44,6 +44,13 @@ ARCHITECTURE_VARIANTS = (
     "no_relation_attention",
 )
 
+TRAINING_VARIANTS = (
+    "standard_joint_training",
+    "focal_event_mixing",
+    "appliance_wise_balancing",
+    "complete",
+)
+
 
 def _data_root(merged: dict) -> Path:
     path = Path(merged["data_root"])
@@ -74,6 +81,23 @@ def _paper_architecture_variant(base: dict, name: str, seed: int) -> dict:
     elif name == "no_relation_attention":
         arch["cross_appliance"] = {"enabled": False}
 
+    return cfg
+
+
+def _paper_training_variant(base: dict, name: str, seed: int) -> dict:
+    """Build one cell of the 2x2 training-strategy ablation."""
+    if name not in TRAINING_VARIANTS:
+        raise ValueError(f"Unknown training variant: {name}")
+    cfg = copy.deepcopy(base)
+    cfg["experiment_id"] = f"paper5w_table_viii_{name}_seed{seed}"
+
+    use_focal_mix = name in {"focal_event_mixing", "complete"}
+    use_appliance_balance = name in {"appliance_wise_balancing", "complete"}
+    cfg["training"]["random_mix"]["enabled"] = use_focal_mix
+    cfg["training"]["random_mix"]["focal_event_sampling"]["enabled"] = use_focal_mix
+    cfg["loss"]["task_balance"] = (
+        "per_appliance_clipped" if use_appliance_balance else "none"
+    )
     return cfg
 
 
@@ -173,12 +197,39 @@ def run_table_vii(
             _run_one(experiment, model_cfg, run_dir, seed, splits)
 
 
+def run_table_viii(
+    experiment_path: Path,
+    seeds: list[int],
+    variants: list[str],
+) -> None:
+    """Run the training-strategy ablation on validation houses only."""
+    base_experiment = load_experiment(experiment_path)
+    base_model = load_model_config(MODEL_CONFIGS["mart_nilm"])
+    for variant in variants:
+        for seed in seeds:
+            experiment = copy.deepcopy(base_experiment)
+            experiment["seed"] = seed
+            model_cfg = _paper_training_variant(base_model, variant, seed)
+            run_dir = (
+                ROOT / "runs" / "paper_5w" / "table_v" / "mart_nilm" / f"seed_{seed}"
+                if variant == "complete"
+                else ROOT
+                / "runs"
+                / "paper_5w"
+                / "table_viii"
+                / variant
+                / f"seed_{seed}"
+            )
+            print(f"\n=== Table VIII: {variant}, seed {seed} ===", flush=True)
+            _run_one(experiment, model_cfg, run_dir, seed, ["validation"])
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--experiment", type=Path, default=DEFAULT_EXPERIMENT)
     parser.add_argument(
         "--table",
-        choices=("v", "vii", "all"),
+        choices=("v", "vii", "viii", "all"),
         default="all",
         help="Paper table experiment family.",
     )
@@ -191,6 +242,12 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         choices=ARCHITECTURE_VARIANTS,
         default=list(ARCHITECTURE_VARIANTS),
+    )
+    parser.add_argument(
+        "--training-variants",
+        nargs="+",
+        choices=TRAINING_VARIANTS,
+        default=list(TRAINING_VARIANTS),
     )
     parser.add_argument(
         "--vii-eval-test",
@@ -216,6 +273,8 @@ def main() -> None:
             args.variants,
             evaluate_test=args.vii_eval_test,
         )
+    if args.table in {"viii", "all"}:
+        run_table_viii(args.experiment, args.seeds, args.training_variants)
 
 
 if __name__ == "__main__":

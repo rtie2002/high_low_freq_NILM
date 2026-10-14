@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Summarise the three-seed MART-NILM results for paper Tables V--VII.
+"""Summarise the three-seed MART-NILM results for paper Tables V--VIII.
 
 Table V uses the two held-out test houses separately.  Table VII is computed
 only from the validation houses: metrics are first calculated per house and
@@ -39,6 +39,12 @@ VARIANTS = (
     "no_shared_temporal_encoder",
     "no_appliance_decoder",
     "no_relation_attention",
+)
+TRAINING_VARIANTS = (
+    "standard_joint_training",
+    "focal_event_mixing",
+    "appliance_wise_balancing",
+    "complete",
 )
 METRICS = ("mae", "sae", "on_mae", "off_mae", "precision", "recall", "f1")
 
@@ -269,6 +275,96 @@ def table_vii_test(run_root: Path, seeds: tuple[int, ...]) -> pd.DataFrame:
     )
 
 
+def _table_viii_run_dir(run_root: Path, variant: str, seed: int) -> Path:
+    if variant == "complete":
+        return run_root / "table_v" / "mart_nilm" / f"seed_{seed}"
+    return run_root / "table_viii" / variant / f"seed_{seed}"
+
+
+def table_viii(
+    run_root: Path,
+    dataset_root: Path,
+    seeds: tuple[int, ...],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return overall and per-appliance validation summaries for Table VIII."""
+    overall_rows = []
+    appliance_rows = []
+    house_ranges = _validation_house_rows(dataset_root)
+    for variant in TRAINING_VARIANTS:
+        for seed in seeds:
+            run_dir = _table_viii_run_dir(run_root, variant, seed)
+            overall = _equal_house_validation_metrics(run_dir, dataset_root)
+            overall_rows.append(
+                {
+                    "variant": variant,
+                    "seed": seed,
+                    "mae": float(overall["mae"]),
+                    "on_mae": float(overall["on_mae"]),
+                    "sae": float(overall["sae"]),
+                    "average_precision": float(overall["average_precision"]),
+                    "macro_f1": float(overall["f1"]),
+                }
+            )
+
+            bundle = PredictionBundle.load(run_dir / "validation_predictions.npz")
+            with (run_dir / "config_merged.yaml").open("r", encoding="utf-8") as handle:
+                saved_cfg = yaml.safe_load(handle)
+            experiment_cfg = saved_cfg.get("experiment", saved_cfg)
+            model_cfg = saved_cfg.get("model", saved_cfg)
+            postprocess = resolve_power_postprocess(
+                experiment_cfg, bundle.appliances, model_cfg
+            )
+            house_frames = []
+            for house, start, stop in house_ranges:
+                mask = (bundle.csv_timesteps >= start) & (bundle.csv_timesteps < stop)
+                metrics = evaluate_bundle(
+                    _subset(bundle, mask, house),
+                    sae_period=int(experiment_cfg["evaluation"].get("sae_period", 1200)),
+                    state_label_source=get_state_label_source(model_cfg),
+                    power_postprocess=postprocess,
+                    sample_seconds=float(experiment_cfg["csv"]["sample_seconds"]),
+                    event_tolerance_seconds=float(
+                        experiment_cfg["evaluation"].get("event_tolerance_seconds", 0.0)
+                    ),
+                )
+                house_frames.append(metrics.set_index("appliance"))
+            for appliance in APPLIANCES:
+                appliance_rows.append(
+                    {
+                        "variant": variant,
+                        "seed": seed,
+                        "appliance": appliance,
+                        **{
+                            metric: float(
+                                np.mean([frame.loc[appliance, metric] for frame in house_frames])
+                            )
+                            for metric in ("mae", "on_mae", "sae", "average_precision", "f1")
+                        },
+                    }
+                )
+
+    overall_raw = pd.DataFrame(overall_rows)
+    overall_agg = {}
+    for metric in ("mae", "on_mae", "sae", "average_precision", "macro_f1"):
+        overall_agg[f"{metric}_mean"] = (metric, "mean")
+        overall_agg[f"{metric}_std"] = (metric, lambda x: x.std(ddof=1))
+    overall_summary = (
+        overall_raw.groupby("variant", sort=False).agg(**overall_agg).reset_index()
+    )
+
+    appliance_raw = pd.DataFrame(appliance_rows)
+    appliance_agg = {}
+    for metric in ("mae", "on_mae", "sae", "average_precision", "f1"):
+        appliance_agg[f"{metric}_mean"] = (metric, "mean")
+        appliance_agg[f"{metric}_std"] = (metric, lambda x: x.std(ddof=1))
+    appliance_summary = (
+        appliance_raw.groupby(["variant", "appliance"], sort=False)
+        .agg(**appliance_agg)
+        .reset_index()
+    )
+    return overall_summary, appliance_summary
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-root", type=Path, default=ROOT / "runs" / "paper_5w")
@@ -282,7 +378,7 @@ def main() -> None:
     parser.add_argument(
         "--tables",
         nargs="+",
-        choices=("v", "vi", "vii", "vii_test"),
+        choices=("v", "vi", "vii", "vii_test", "viii"),
         default=("v", "vi", "vii"),
         help="Summaries to create; useful while later experiment families are still running.",
     )
@@ -307,6 +403,10 @@ def main() -> None:
             args.run_root,
             seeds,
         )
+    if "viii" in args.tables:
+        overall, appliances = table_viii(args.run_root, args.dataset_root, seeds)
+        outputs["table_viii_mart_nilm.csv"] = overall
+        outputs["table_viii_per_appliance_mart_nilm.csv"] = appliances
     for name, frame in outputs.items():
         path = args.output_dir / name
         frame.to_csv(path, index=False, float_format="%.6f")
