@@ -505,30 +505,32 @@ Architecture and training effects are evaluated separately. Every architecture v
 \label{tab:architecture-ablation}
 \centering
 \renewcommand{\arraystretch}{1.15}
-\footnotesize
-\setlength{\tabcolsep}{2.5pt}
-\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}Xrrrr@{}}
+\scriptsize
+\setlength{\tabcolsep}{1.5pt}
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}Xrrrrr@{}}
 \toprule
-Variant & \shortstack{Params\\(M)} & \shortstack{Avg. MAE\\(W) $\downarrow$} & \shortstack{Avg. SAE\\(W) $\downarrow$} & \shortstack{Macro-F1\\$\uparrow$} \\
+Variant & \shortstack{Params\\(M)} & \shortstack{MAE\\(W) $\downarrow$} & \shortstack{ON MAE\\(W) $\downarrow$} & \shortstack{SAE\\(W) $\downarrow$} & \shortstack{Macro-F1\\$\uparrow$} \\
 \midrule
-MART-NILM              & 1.373 & \mstd{9.12}{0.14} & \mstd{5.58}{0.17} & \mstd{0.796}{0.008} \\
-Single-scale stem      & 1.371 & \mstd{9.14}{0.23} & \mstd{5.58}{0.17} & \mstd{0.789}{0.004} \\
-TCN without dilation   & 1.373 & \mstd{10.60}{0.63} & \mstd{6.93}{0.55} & \mstd{0.734}{0.010} \\
-w/o channel attention  & 1.331 & \textbf{\mstd{8.92}{0.39}} & \textbf{\mstd{5.40}{0.46}} & \textbf{\mstd{0.807}{0.012}} \\
-w/o local decoder      & 0.961 & \mstd{9.12}{0.16} & \mstd{5.63}{0.23} & \mstd{0.792}{0.006} \\
-w/o relation attention & 1.332 & \mstd{9.18}{0.09} & \mstd{5.55}{0.04} & \mstd{0.790}{0.015} \\
-w/o state--power gate  & 1.373 & \mstd{12.82}{0.43} & \mstd{8.13}{0.56} & \mstd{0.795}{0.011} \\
+MART-NILM              & 1.373 & \mstd{9.12}{0.14} & \mstd{242.94}{5.35} & \mstd{5.58}{0.17} & \mstd{0.796}{0.008} \\
+Single-scale stem      & 1.371 & \mstd{9.14}{0.23} & \mstd{266.11}{29.49} & \mstd{5.58}{0.17} & \mstd{0.789}{0.004} \\
+TCN without dilation   & 1.373 & \mstd{10.60}{0.63} & \mstd{264.66}{17.18} & \mstd{6.93}{0.55} & \mstd{0.734}{0.010} \\
+w/o channel gate       & 1.331 & \textbf{\mstd{8.92}{0.39}} & \mstd{264.55}{9.89} & \textbf{\mstd{5.40}{0.46}} & \textbf{\mstd{0.807}{0.012}} \\
+w/o local decoder      & 0.961 & \mstd{9.12}{0.16} & \mstd{256.07}{14.51} & \mstd{5.63}{0.23} & \mstd{0.792}{0.006} \\
+w/o relation attention & 1.332 & \mstd{9.18}{0.09} & \mstd{230.84}{14.69} & \mstd{5.55}{0.04} & \mstd{0.790}{0.015} \\
+w/o state--power gate  & 1.373 & \mstd{12.82}{0.43} & \textbf{\mstd{214.02}{5.69}} & \mstd{8.13}{0.56} & \mstd{0.795}{0.011} \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-The ablation does not support every component of the complete model. Channel
-attention is the clearest counterexample: removing it gives the lowest MAE and
-SAE and the highest macro-F1. The multi-scale stem and local decoder also yield
-only marginal changes relative to seed variation. In contrast, temporal
-dilation is consistently beneficial, and the state--power gate reduces average
-MAE by 3.70~W and SAE by 2.54~W. Relation attention gives a smaller overall
-gain but improves MAE and macro-F1 on the more difficult REFIT test house.
+ON-state error changes the interpretation of the ablation. Removing the
+channel gate improves MAE, SAE, and macro-F1, but increases ON MAE by
+21.62~W; it is therefore a trade-off rather than a uniformly redundant
+component. The multi-scale stem and local decoder reduce ON MAE by 23.17~W
+and 13.13~W, respectively, despite small changes in aggregate metrics.
+Temporal dilation remains beneficial across all four measures. Removing the
+state--power gate gives the lowest ON MAE, but doubles OFF MAE from 5.97 to
+10.80~W and consequently increases overall MAE by 3.70~W. The gate is thus
+needed to suppress physically implausible power during predicted OFF periods.
 
 Table~\ref{tab:training-ablation} freezes the complete architecture and changes only the training method. Removing focal-event sampling retains the ordinary random mixture; removing random mixing uses recorded training windows only. Global task balance replaces the bounded appliance-wise ratios with one ratio shared by all appliances, while fixed task weight removes dynamic balancing. The core objective retains the principal power-regression and state-classification terms and removes the auxiliary regression and false-positive terms.
 

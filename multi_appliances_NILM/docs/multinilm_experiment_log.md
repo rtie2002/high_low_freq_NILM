@@ -53,26 +53,23 @@ not used to select the model.
 Results are equal-house averages over UK-DALE 5 and REFIT 2. Each value is the
 mean +/- sample standard deviation over seeds 2026, 2027, and 2028.
 
-| Variant | Params (M) | MAE (W) | SAE (W) | Macro-F1 |
-|---|---:|---:|---:|---:|
-| MART-NILM | 1.373 | 20.791 +/- 0.175 | 15.016 +/- 0.385 | 0.687 +/- 0.003 |
-| Single-scale stem | 1.371 | 20.647 +/- 0.388 | **14.442 +/- 0.646** | 0.686 +/- 0.009 |
-| TCN without dilation | 1.373 | 21.563 +/- 0.344 | 15.433 +/- 0.079 | 0.673 +/- 0.015 |
-| w/o channel attention | 1.331 | **20.343 +/- 0.739** | 14.448 +/- 0.366 | **0.697 +/- 0.015** |
-| w/o local decoder | 0.961 | 21.344 +/- 0.279 | 15.202 +/- 0.352 | 0.675 +/- 0.012 |
-| w/o relation attention | 1.332 | 20.780 +/- 0.339 | 14.748 +/- 0.304 | 0.675 +/- 0.009 |
-| w/o state--power gate | 1.373 | 26.764 +/- 0.657 | 18.839 +/- 0.762 | 0.684 +/- 0.012 |
+| Variant | Params (M) | MAE (W) | ON MAE (W) | OFF MAE (W) | SAE (W) | Macro-F1 |
+|---|---:|---:|---:|---:|---:|---:|
+| MART-NILM | 1.373 | 20.791 +/- 0.175 | 315.408 +/- 10.405 | 13.666 +/- 0.182 | 15.016 +/- 0.385 | 0.687 +/- 0.003 |
+| Single-scale stem | 1.371 | 20.647 +/- 0.388 | 341.673 +/- 19.265 | 13.453 +/- 0.730 | **14.442 +/- 0.646** | 0.686 +/- 0.009 |
+| TCN without dilation | 1.373 | 21.563 +/- 0.344 | 327.525 +/- 7.113 | 14.261 +/- 0.370 | 15.433 +/- 0.079 | 0.673 +/- 0.015 |
+| w/o channel gate | 1.331 | **20.343 +/- 0.739** | 345.352 +/- 8.210 | **13.302 +/- 0.528** | 14.448 +/- 0.366 | **0.697 +/- 0.015** |
+| w/o local decoder | 0.961 | 21.344 +/- 0.279 | 340.848 +/- 21.447 | 14.082 +/- 0.224 | 15.202 +/- 0.352 | 0.675 +/- 0.012 |
+| w/o relation attention | 1.332 | 20.780 +/- 0.339 | 304.224 +/- 14.495 | 13.966 +/- 0.266 | 14.748 +/- 0.304 | 0.675 +/- 0.009 |
+| w/o state--power gate | 1.373 | 26.764 +/- 0.657 | **254.833 +/- 1.473** | 21.526 +/- 1.334 | 18.839 +/- 0.762 | 0.684 +/- 0.012 |
 
-The state--power gate is indispensable for power accuracy. Dilation, the local
-decoder, and relation attention are supported by macro-F1. The current evidence
-does not justify channel attention as a performance-improving component, and a
-single-scale stem matches the complete model within seed variation. A visual
-audit of matched fridge and microwave segments found that both simplified
-variants produce more fragmented fridge state intervals than the complete
-model, while the microwave example is nearly unchanged. Consequently, neither
-component is silently claimed as beneficial: channel attention and the
-multi-scale stem remain explicit simplification candidates for a controlled
-combined follow-up.
+ON MAE reveals a different trade-off from overall MAE. The multi-scale stem,
+channel gate, and local decoder reduce ON MAE by 26.27, 29.94, and 25.44 W,
+respectively, on the validation houses. Their apparent redundancy under overall
+MAE was caused by the much larger number of OFF samples. The state--power gate
+also trades higher ON MAE for much lower OFF error. Consequently, no component
+is removed using the aggregate metrics alone; waveform quality and both state-
+conditioned errors must be considered together.
 
 ### Frozen test-house audit of Table VII — 2026-10-14
 
@@ -83,36 +80,38 @@ for each house and then averaged with equal house weight. The table below is
 therefore a report-only generalisation audit; using it to redesign MART-NILM
 would make these houses development data and require new untouched test houses.
 
-| Variant | Test-house MAE (W) | Test-house SAE (W) | Test-house macro-F1 |
-|---|---:|---:|---:|
-| MART-NILM | 9.125 +/- 0.140 | 5.584 +/- 0.174 | 0.796 +/- 0.008 |
-| Single-scale stem | 9.142 +/- 0.232 | 5.575 +/- 0.174 | 0.789 +/- 0.004 |
-| TCN without dilation | 10.597 +/- 0.632 | 6.935 +/- 0.546 | 0.734 +/- 0.010 |
-| w/o channel attention | **8.922 +/- 0.394** | **5.403 +/- 0.464** | **0.807 +/- 0.012** |
-| w/o local decoder | 9.118 +/- 0.157 | 5.633 +/- 0.226 | 0.792 +/- 0.006 |
-| w/o relation attention | 9.181 +/- 0.088 | 5.546 +/- 0.044 | 0.790 +/- 0.015 |
-| w/o state--power gate | 12.823 +/- 0.428 | 8.128 +/- 0.556 | 0.795 +/- 0.011 |
+| Variant | MAE (W) | ON MAE (W) | OFF MAE (W) | SAE (W) | Macro-F1 |
+|---|---:|---:|---:|---:|---:|
+| MART-NILM | 9.125 +/- 0.140 | 242.938 +/- 5.348 | 5.971 +/- 0.168 | 5.584 +/- 0.174 | 0.796 +/- 0.008 |
+| Single-scale stem | 9.142 +/- 0.232 | 266.108 +/- 29.491 | 5.817 +/- 0.450 | 5.575 +/- 0.174 | 0.789 +/- 0.004 |
+| TCN without dilation | 10.597 +/- 0.632 | 264.661 +/- 17.181 | 7.236 +/- 0.646 | 6.935 +/- 0.546 | 0.734 +/- 0.010 |
+| w/o channel gate | **8.922 +/- 0.394** | 264.554 +/- 9.890 | **5.582 +/- 0.179** | **5.403 +/- 0.464** | **0.807 +/- 0.012** |
+| w/o local decoder | 9.118 +/- 0.157 | 256.070 +/- 14.515 | 5.789 +/- 0.087 | 5.633 +/- 0.226 | 0.792 +/- 0.006 |
+| w/o relation attention | 9.181 +/- 0.088 | 230.841 +/- 14.692 | 6.200 +/- 0.185 | 5.546 +/- 0.044 | 0.790 +/- 0.015 |
+| w/o state--power gate | 12.823 +/- 0.428 | **214.022 +/- 5.690** | 10.795 +/- 0.536 | 8.128 +/- 0.556 | 0.795 +/- 0.011 |
 
 Conclusions:
 
-- Remove channel attention from the claimed method. Its ablation is better on
-  all three house-macro metrics and also raises macro-F1 separately on both test
-  houses (0.882 versus 0.876 on UK-DALE; 0.732 versus 0.716 on REFIT).
+- The channel gate is a Pareto trade-off, not a useless component. Removing it
+  improves MAE, SAE, OFF MAE, and macro-F1, but worsens ON MAE from 242.938 to
+  264.554 W. It must not be removed solely from the OFF-dominated metrics.
 - Keep temporal dilation. Removing it damages both houses and reduces the
   house-macro F1 from 0.796 to 0.734.
 - Keep the state--power gate. Removing it increases house-macro MAE from 9.125
   to 12.823 W; its main contribution is physically consistent power output,
   not classification F1.
-- The multi-scale stem is not justified by a clear gain: its removal changes
-  MAE by only +0.017 W, SAE by -0.009 W, and F1 by -0.007.
-- The local decoder is also weakly supported despite accounting for about 30%
-  of the parameters. Removing it changes house-macro MAE by -0.007 W and F1 by
-  -0.004. It should be tested jointly with channel-attention removal before it
-  is retained.
+- The multi-scale stem reduces ON MAE by 23.170 W and slightly improves F1,
+  although its effect on overall MAE and SAE is negligible.
+- The local decoder reduces ON MAE by 13.132 W and slightly improves F1, but
+  adds about 0.412 M parameters. This is a real accuracy--complexity trade-off,
+  not evidence that the decoder is useless.
 - Relation attention has a small but domain-dependent benefit. Removing it
   improves UK-DALE but worsens REFIT (MAE 11.205 versus 10.798 W; F1 0.699
   versus 0.716). It remains defensible for the cross-domain story, but the
   evidence is much weaker than for dilation and gating.
+- Removing the state--power gate lowers ON MAE to 214.022 W, but raises OFF MAE
+  from 5.971 to 10.795 W and overall MAE from 9.125 to 12.823 W. The lower ON
+  error does not compensate for physically implausible power during OFF periods.
 
 ## Recovery baseline — 2026-10-08
 
