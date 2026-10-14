@@ -37,12 +37,11 @@ SEEDS = (2026, 2027, 2028)
 
 ARCHITECTURE_VARIANTS = (
     "complete",
-    "single_scale_stem",
-    "tcn_without_dilation",
-    "no_channel_attention",
-    "no_local_decoder",
+    "single_scale_cnn",
+    "no_feature_encoder",
+    "no_shared_temporal_encoder",
+    "no_appliance_decoder",
     "no_relation_attention",
-    "no_state_power_gate",
 )
 
 
@@ -58,19 +57,22 @@ def _paper_architecture_variant(base: dict, name: str, seed: int) -> dict:
     cfg["experiment_id"] = f"paper5w_table_vii_{name}_seed{seed}"
     arch = cfg["architecture"]
 
-    if name == "single_scale_stem":
-        arch["use_multiscale_stem"] = False
-    elif name == "tcn_without_dilation":
-        arch["max_dilation"] = 1
-    elif name == "no_channel_attention":
-        arch["task_attention"] = {"enabled": False}
-    elif name == "no_local_decoder":
-        arch["head_local_layers"] = 0
+    if name == "single_scale_cnn":
+        # Retain the stem topology, skip path, width and normalization; only
+        # collapse the parallel temporal scales to the central k=5 branch.
+        arch["detail_kernels"] = [5]
+    elif name == "no_feature_encoder":
+        # The implementation keeps a 1x1 32->128 adapter solely to satisfy the
+        # unchanged downstream interface. It adds no temporal context.
+        arch["feature_encoder_enabled"] = False
+    elif name == "no_shared_temporal_encoder":
+        arch["temporal_encoder_enabled"] = False
+    elif name == "no_appliance_decoder":
+        # Five independent power/state readouts remain; only the appliance-
+        # specific attention and local residual decoder are removed.
+        arch["appliance_decoder_enabled"] = False
     elif name == "no_relation_attention":
         arch["cross_appliance"] = {"enabled": False}
-    elif name == "no_state_power_gate":
-        arch["gate_mode"] = "none"
-        cfg["evaluation"]["state_calibration"]["apply_to_power"] = False
 
     return cfg
 

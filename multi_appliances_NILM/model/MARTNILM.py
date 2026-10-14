@@ -440,12 +440,14 @@ class ApplianceHead(nn.Module):
 
     def __init__(self, hidden_channels, dropout, *, gate_mode="soft_train_hard_eval", gate_threshold=0.5,
                  off_norm=0.0, head_local_layers=2, head_kernel_size=3, head_use_residual=True,
-                 norm_type="batch", use_task_attention=False, task_attention_reduction=4):
+                 norm_type="batch", use_task_attention=False, task_attention_reduction=4,
+                 decoder_enabled=True):
         super().__init__()
+        self.decoder_enabled = bool(decoder_enabled)
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
         self.register_buffer("off_norm", torch.tensor(float(off_norm), dtype=torch.float32))
-        if use_task_attention:
+        if self.decoder_enabled and use_task_attention:
             att_ch = max(4, int(hidden_channels) // max(int(task_attention_reduction), 1))
             self.task_attention = nn.Sequential(
                 nn.Conv1d(hidden_channels, att_ch, 1), nn.ReLU(inplace=True),
@@ -457,20 +459,24 @@ class ApplianceHead(nn.Module):
             self.task_attention = None
         n_local = int(head_local_layers)
         self.head_use_residual = bool(head_use_residual) and n_local > 0
-        if n_local <= 0:
+        if not self.decoder_enabled:
+            self.local_decoder = nn.Identity()
+            self.head_use_residual = False
+        elif n_local <= 0:
             k, n_local = 1, 1
         else:
             k = int(head_kernel_size)
             if k < 1 or k % 2 == 0:
                 raise ValueError(f"head_kernel_size must be odd positive, got {k}")
-        blocks = []
-        for _ in range(n_local):
-            blocks += [
-                nn.Conv1d(hidden_channels, hidden_channels, k, padding=k // 2),
-                make_norm_1d(hidden_channels, norm_type),
-                nn.ReLU(inplace=True),
-            ]
-        self.local_decoder = nn.Sequential(*blocks)
+        if self.decoder_enabled:
+            blocks = []
+            for _ in range(n_local):
+                blocks += [
+                    nn.Conv1d(hidden_channels, hidden_channels, k, padding=k // 2),
+                    make_norm_1d(hidden_channels, norm_type),
+                    nn.ReLU(inplace=True),
+                ]
+            self.local_decoder = nn.Sequential(*blocks)
         self.dropout = nn.Dropout(dropout)
         self.power_head = nn.Conv1d(hidden_channels, 1, 1)
         self.state_head = nn.Conv1d(hidden_channels, 1, 1)
@@ -478,6 +484,8 @@ class ApplianceHead(nn.Module):
 
     def encode_features(self, z):
         # z, f: (B, C, T)
+        if not self.decoder_enabled:
+            return z
         if self.task_attention is not None:
             z = z * self.task_attention(z)
         f = self.local_decoder(z)
@@ -574,6 +582,8 @@ class MARTNILMBackbone(nn.Module):
         gate_threshold=0.5, appliance_off_norm=None,
         head_local_layers=2, head_kernel_size=3, head_use_residual=True,
         use_multiscale_stem=False, detail_kernels=None, detail_branch_channels=12,
+        feature_encoder_enabled=True, temporal_encoder_enabled=True,
+        appliance_decoder_enabled=True,
         stem_norm_type="batch", temporal_norm_type="batch", head_norm_type="batch",
         task_attention_enabled=False, task_attention_reduction=4,
         cross_appliance_enabled=False, cross_appliance_mode="bottleneck",
@@ -594,6 +604,9 @@ class MARTNILMBackbone(nn.Module):
         self.hidden_channels = int(hidden_channels)
         self.gate_mode = str(gate_mode or "soft").lower()
         self.gate_threshold = float(gate_threshold)
+        self.feature_encoder_enabled = bool(feature_encoder_enabled)
+        self.temporal_encoder_enabled = bool(temporal_encoder_enabled)
+        self.appliance_decoder_enabled = bool(appliance_decoder_enabled)
         self.dual_expert_enabled = bool(dual_expert_enabled)
         self.dual_expert_share_local = bool(dual_expert_share_local)
         self.last_expert_gates = None
@@ -614,9 +627,20 @@ class MARTNILMBackbone(nn.Module):
             if use_multiscale_stem:
                 parts = [MultiScaleWaveformStem(self.input_channels, schedule[0], **ms)]
                 if schedule[1:]:
-                    parts.append(StagedFeatureExtractor(
-                        schedule[0], schedule[1:], int(stage_kernel_size), int(stage_kernel_size), stem_norm_type
-                    ))
+                    if self.feature_encoder_enabled:
+                        parts.append(StagedFeatureExtractor(
+                            schedule[0], schedule[1:], int(stage_kernel_size), int(stage_kernel_size), stem_norm_type
+                        ))
+                    else:
+                        # Keep only the pointwise channel adapter required by
+                        # the 128-channel downstream interface. It adds no
+                        # temporal context, so the feature encoder itself is
+                        # absent in the module-level ablation.
+                        parts.append(nn.Sequential(
+                            nn.Conv1d(schedule[0], self.hidden_channels, 1),
+                            make_norm_1d(self.hidden_channels, stem_norm_type),
+                            nn.ReLU(inplace=True),
+                        ))
                 self.aggregate_feature_extractor = nn.Sequential(*parts)
             else:
                 self.aggregate_feature_extractor = StagedFeatureExtractor(
@@ -633,13 +657,16 @@ class MARTNILMBackbone(nn.Module):
             )
 
         cycle = max(1, int(max_dilation)).bit_length()
-        self.temporal_encoder = nn.Sequential(*[
-            ResidualTemporalBlock(
-                self.hidden_channels, kernel_size, 2 ** (i % cycle),
-                float(temporal_dropout), temporal_norm_type,
-            )
-            for i in range(num_blocks)
-        ])
+        self.temporal_encoder = nn.Sequential(*(
+            [
+                ResidualTemporalBlock(
+                    self.hidden_channels, kernel_size, 2 ** (i % cycle),
+                    float(temporal_dropout), temporal_norm_type,
+                )
+                for i in range(num_blocks)
+            ]
+            if self.temporal_encoder_enabled else []
+        ))
         self.local_expert = None
         self.local_experts = None
         self.expert_gates = None
@@ -678,6 +705,7 @@ class MARTNILMBackbone(nn.Module):
                 head_kernel_size=int(head_kernel_size), head_use_residual=bool(head_use_residual),
                 norm_type=head_norm_type, use_task_attention=bool(task_attention_enabled),
                 task_attention_reduction=int(task_attention_reduction),
+                decoder_enabled=self.appliance_decoder_enabled,
             )
             for i in range(self.num_appliances)
         ])
@@ -836,6 +864,9 @@ class MARTNILMConfig:
     use_multiscale_stem: bool = False
     detail_kernels: list[int] = field(default_factory=lambda: [3, 5, 9])
     detail_branch_channels: int = 12
+    feature_encoder_enabled: bool = True
+    temporal_encoder_enabled: bool = True
+    appliance_decoder_enabled: bool = True
     stem_norm_type: str = "batch"
     temporal_norm_type: str = "batch"
     head_norm_type: str = "batch"
@@ -886,6 +917,9 @@ def mart_nilm_config(architecture):
         use_multiscale_stem=bool(a.get("use_multiscale_stem", False)),
         detail_kernels=[int(k) for k in a.get("detail_kernels", [3, 5, 9])],
         detail_branch_channels=int(a.get("detail_branch_channels", 12)),
+        feature_encoder_enabled=bool(a.get("feature_encoder_enabled", True)),
+        temporal_encoder_enabled=bool(a.get("temporal_encoder_enabled", True)),
+        appliance_decoder_enabled=bool(a.get("appliance_decoder_enabled", True)),
         stem_norm_type=str(a.get("stem_norm_type", "batch")),
         temporal_norm_type=str(a.get("temporal_norm_type", "batch")),
         head_norm_type=str(a.get("head_norm_type", "batch")),

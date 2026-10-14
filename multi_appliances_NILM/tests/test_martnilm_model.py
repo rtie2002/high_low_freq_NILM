@@ -247,6 +247,51 @@ class MARTNILMBackboneDualExpertTests(unittest.TestCase):
         self.assertEqual(tuple(logits.shape), (2, 24, 2))
         self.assertIsNone(model.last_expert_gates)
 
+    def test_top_level_ablation_replacements_keep_joint_outputs(self) -> None:
+        common = dict(
+            input_channels=1,
+            num_appliances=5,
+            output_length=32,
+            hidden_channels=16,
+            channel_schedule=[8, 16],
+            use_multiscale_stem=True,
+            detail_kernels=[3, 5, 9],
+            detail_branch_channels=4,
+            num_blocks=2,
+            kernel_size=3,
+            temporal_dropout=0.0,
+            head_dropout=0.0,
+            task_attention_enabled=True,
+            cross_appliance_enabled=True,
+            cross_appliance_mode="relation_attention",
+            cross_appliance_attention_channels=4,
+        )
+        variants = (
+            {"feature_encoder_enabled": False},
+            {"temporal_encoder_enabled": False},
+            {"appliance_decoder_enabled": False},
+            {"cross_appliance_enabled": False},
+        )
+        x = torch.randn(2, 32)
+
+        for change in variants:
+            with self.subTest(change=change):
+                model = MARTNILMBackbone(**(common | change))
+                power, logits = model(x)
+                self.assertEqual(tuple(power.shape), (2, 32, 5))
+                self.assertEqual(tuple(logits.shape), (2, 32, 5))
+
+        no_features = MARTNILMBackbone(**(common | {"feature_encoder_enabled": False}))
+        projection = no_features.aggregate_feature_extractor[1][0]
+        self.assertEqual(projection.kernel_size, (1,))
+
+        no_temporal = MARTNILMBackbone(**(common | {"temporal_encoder_enabled": False}))
+        self.assertEqual(len(no_temporal.temporal_encoder), 0)
+
+        no_decoder = MARTNILMBackbone(**(common | {"appliance_decoder_enabled": False}))
+        self.assertFalse(no_decoder.appliance_heads[0].decoder_enabled)
+        self.assertIsNone(no_decoder.appliance_heads[0].task_attention)
+
     def test_adapter_logs_local_gate_for_on_and_off_samples(self) -> None:
         adapter = object.__new__(MARTNILMBaseAdapter)
         adapter.cfg = {"appliances": ["first", "second"]}

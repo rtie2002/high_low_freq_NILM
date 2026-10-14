@@ -34,12 +34,11 @@ APPLIANCES = ("kettle", "fridge", "dishwasher", "washingmachine", "microwave")
 TEST_SCENARIOS = ("ukdale_house2", "refit_house20")
 VARIANTS = (
     "complete",
-    "single_scale_stem",
-    "tcn_without_dilation",
-    "no_channel_attention",
-    "no_local_decoder",
+    "single_scale_cnn",
+    "no_feature_encoder",
+    "no_shared_temporal_encoder",
+    "no_appliance_decoder",
     "no_relation_attention",
-    "no_state_power_gate",
 )
 METRICS = ("mae", "sae", "on_mae", "off_mae", "precision", "recall", "f1")
 

@@ -57,6 +57,7 @@ architecture:
   detail_branch_channels: 16
   stem_kernel_size: 7
   stage_kernel_size: 5
+  feature_encoder_enabled: true
 
   # IBN in the early feature extractor improves cross-house robustness while
   # retaining amplitude-sensitive BatchNorm channels for appliance identity.
@@ -70,11 +71,13 @@ architecture:
   kernel_size: 9
   max_dilation: 16
   dropout: 0.25
+  temporal_encoder_enabled: true
 
   # Two local blocks preserve the multi-stage washing-machine waveform better.
   head_local_layers: 2
   head_kernel_size: 3
   head_use_residual: true
+  appliance_decoder_enabled: true
   task_attention:
     enabled: true
     reduction: 4
