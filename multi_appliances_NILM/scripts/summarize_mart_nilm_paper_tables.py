@@ -1,0 +1,231 @@
+#!/usr/bin/env python
+"""Summarise the three-seed MART-NILM results for paper Tables V--VII.
+
+Table V uses the two held-out test houses separately.  Table VII is computed
+only from the validation houses: metrics are first calculated per house and
+then averaged with equal house weight.  Table VI reads training time, parameter
+count, and the actual ``best.pt`` checkpoint size recorded for each seed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from dataclasses import replace
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from data.common import PredictionBundle
+from data.dataloader import get_state_label_source
+from evaluation.metrics import evaluate_bundle, resolve_power_postprocess
+
+
+SEEDS = (2026, 2027, 2028)
+APPLIANCES = ("kettle", "fridge", "dishwasher", "washingmachine", "microwave")
+TEST_SCENARIOS = ("ukdale_house2", "refit_house20")
+VARIANTS = (
+    "complete",
+    "single_scale_stem",
+    "tcn_without_dilation",
+    "no_channel_attention",
+    "no_local_decoder",
+    "no_relation_attention",
+    "no_state_power_gate",
+)
+METRICS = ("mae", "sae", "on_mae", "off_mae", "precision", "recall", "f1")
+
+
+def _mean_sd(values: list[float]) -> tuple[float, float]:
+    array = np.asarray(values, dtype=np.float64)
+    return float(array.mean()), float(array.std(ddof=1))
+
+
+def _subset(bundle: PredictionBundle, mask: np.ndarray, split: str) -> PredictionBundle:
+    def take(value):
+        return None if value is None else np.asarray(value)[mask]
+
+    return replace(
+        bundle,
+        split=split,
+        sample_index=np.arange(int(mask.sum()), dtype=np.int32),
+        y_true_watts=take(bundle.y_true_watts),
+        y_pred_watts=take(bundle.y_pred_watts),
+        y_true_on=take(bundle.y_true_on),
+        y_pred_on=take(bundle.y_pred_on),
+        y_pred_state_prob=take(bundle.y_pred_state_prob),
+        csv_timesteps=take(bundle.csv_timesteps),
+        segment_ids=take(bundle.segment_ids),
+    )
+
+
+def _validation_house_rows(dataset_root: Path) -> list[tuple[str, int, int]]:
+    summary = pd.read_csv(dataset_root / "selection_summary.csv")
+    rows = summary.loc[summary["role"].eq("validation")]
+    result: list[tuple[str, int, int]] = []
+    start = 0
+    for row in rows.itertuples(index=False):
+        stop = start + int(row.n_rows)
+        result.append((f"{row.dataset}_house{row.house}", start, stop))
+        start = stop
+    if len(result) != 2:
+        raise ValueError(f"Expected two validation houses, found {len(result)}")
+    return result
+
+
+def _equal_house_validation_metrics(run_dir: Path, dataset_root: Path) -> pd.Series:
+    bundle = PredictionBundle.load(run_dir / "validation_predictions.npz")
+    if bundle.csv_timesteps is None:
+        raise ValueError(f"Missing csv_timesteps in {run_dir}")
+    with (run_dir / "config_merged.yaml").open("r", encoding="utf-8") as handle:
+        cfg = yaml.safe_load(handle)
+    power_postprocess = resolve_power_postprocess(cfg, bundle.appliances, cfg)
+    house_overall = []
+    for house, start, stop in _validation_house_rows(dataset_root):
+        mask = (bundle.csv_timesteps >= start) & (bundle.csv_timesteps < stop)
+        if not np.any(mask):
+            raise ValueError(f"No reconstructed validation samples for {house}")
+        house_bundle = _subset(bundle, mask, house)
+        metrics = evaluate_bundle(
+            house_bundle,
+            sae_period=int(cfg["evaluation"].get("sae_period", 1200)),
+            state_label_source=get_state_label_source(cfg),
+            power_postprocess=power_postprocess,
+            sample_seconds=float(cfg["csv"]["sample_seconds"]),
+            event_tolerance_seconds=float(
+                cfg["evaluation"].get("event_tolerance_seconds", 0.0)
+            ),
+        )
+        house_overall.append(metrics.loc[metrics["appliance"].eq("overall")].iloc[0])
+    return pd.DataFrame(house_overall).mean(numeric_only=True)
+
+
+def table_v(run_root: Path, seeds: tuple[int, ...]) -> pd.DataFrame:
+    records = []
+    for scenario in TEST_SCENARIOS:
+        for seed in seeds:
+            path = run_root / "table_v" / "mart_nilm" / f"seed_{seed}" / "test" / scenario / "metrics.csv"
+            frame = pd.read_csv(path).set_index("appliance")
+            for metric in METRICS:
+                for appliance in (*APPLIANCES, "overall"):
+                    records.append(
+                        {
+                            "scenario": scenario,
+                            "seed": seed,
+                            "metric": metric,
+                            "appliance": appliance,
+                            "value": float(frame.loc[appliance, metric]),
+                        }
+                    )
+    raw = pd.DataFrame(records)
+    return (
+        raw.groupby(["scenario", "metric", "appliance"], sort=False)["value"]
+        .agg(mean="mean", std=lambda x: x.std(ddof=1))
+        .reset_index()
+    )
+
+
+def table_vi(run_root: Path, seeds: tuple[int, ...]) -> pd.DataFrame:
+    rows = []
+    for seed in seeds:
+        run_dir = run_root / "table_v" / "mart_nilm" / f"seed_{seed}"
+        with (run_dir / "training_time.json").open("r", encoding="utf-8") as handle:
+            timing = json.load(handle)
+        rows.append(
+            {
+                "seed": seed,
+                "parameters_m": float(timing["parameters_trainable_millions"]),
+                "model_size_mb": (run_dir / "best.pt").stat().st_size / (1024.0**2),
+                "training_seconds": float(timing["total_seconds"]),
+                "epochs_completed": int(timing["epochs_completed"]),
+                "best_epoch": int(timing["best_epoch"]),
+            }
+        )
+    raw = pd.DataFrame(rows)
+    return pd.DataFrame(
+        [{
+            "model": "MART-NILM",
+            "parameters_m": raw["parameters_m"].mean(),
+            "model_size_mb_mean": raw["model_size_mb"].mean(),
+            "model_size_mb_std": raw["model_size_mb"].std(ddof=1),
+            "training_seconds_mean": raw["training_seconds"].mean(),
+            "training_seconds_std": raw["training_seconds"].std(ddof=1),
+            "epochs_completed_mean": raw["epochs_completed"].mean(),
+            "best_epoch_mean": raw["best_epoch"].mean(),
+        }]
+    )
+
+
+def table_vii(run_root: Path, dataset_root: Path, seeds: tuple[int, ...]) -> pd.DataFrame:
+    rows = []
+    for variant in VARIANTS:
+        for seed in seeds:
+            if variant == "complete":
+                run_dir = run_root / "table_v" / "mart_nilm" / f"seed_{seed}"
+            else:
+                run_dir = run_root / "table_vii" / variant / f"seed_{seed}"
+            metric = _equal_house_validation_metrics(run_dir, dataset_root)
+            with (run_dir / "training_time.json").open("r", encoding="utf-8") as handle:
+                timing = json.load(handle)
+            rows.append(
+                {
+                    "variant": variant,
+                    "seed": seed,
+                    "parameters_m": float(timing["parameters_trainable_millions"]),
+                    "mae": float(metric["mae"]),
+                    "sae": float(metric["sae"]),
+                    "macro_f1": float(metric["f1"]),
+                }
+            )
+    raw = pd.DataFrame(rows)
+    return (
+        raw.groupby("variant", sort=False)
+        .agg(
+            parameters_m=("parameters_m", "mean"),
+            mae_mean=("mae", "mean"),
+            mae_std=("mae", lambda x: x.std(ddof=1)),
+            sae_mean=("sae", "mean"),
+            sae_std=("sae", lambda x: x.std(ddof=1)),
+            macro_f1_mean=("macro_f1", "mean"),
+            macro_f1_std=("macro_f1", lambda x: x.std(ddof=1)),
+        )
+        .reset_index()
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-root", type=Path, default=ROOT / "runs" / "paper_5w")
+    parser.add_argument(
+        "--dataset-root",
+        type=Path,
+        default=ROOT / "datasets" / "mixed_ukdale_refit_5w_all_house_split",
+    )
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "runs" / "paper_5w" / "summaries")
+    parser.add_argument("--seeds", type=int, nargs="+", default=list(SEEDS))
+    args = parser.parse_args()
+    seeds = tuple(args.seeds)
+    if len(seeds) < 2:
+        raise ValueError("At least two seeds are required for a standard deviation")
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    outputs = {
+        "table_v_mart_nilm.csv": table_v(args.run_root, seeds),
+        "table_vi_mart_nilm.csv": table_vi(args.run_root, seeds),
+        "table_vii_mart_nilm.csv": table_vii(args.run_root, args.dataset_root, seeds),
+    }
+    for name, frame in outputs.items():
+        path = args.output_dir / name
+        frame.to_csv(path, index=False, float_format="%.6f")
+        print(f"Saved {path}")
+
+
+if __name__ == "__main__":
+    main()
