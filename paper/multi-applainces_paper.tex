@@ -131,15 +131,15 @@ Hence the network must distinguish appliance activity from both other targets an
 
 \begin{figure*}[!t]
     \centering
-    \includegraphics[width=\textwidth]{figures/multinilm_architecture.pdf}
+    \includegraphics[width=\textwidth]{figures/martnilm_architecture.pdf}
     \caption{Architecture of MART-NILM. The aggregate input is processed by a multi-scale convolutional stem and a shared temporal encoder. Appliance-specific decoders form five feature streams, cross-appliance attention exchanges information among them, and separate power and state heads jointly produce gated power estimates and on--off probabilities.}
-    \label{fig:multinilm-architecture}
+    \label{fig:martnilm-architecture}
 \end{figure*}
 
-MART-NILM follows the shared--private design in Fig.~\ref{fig:multinilm-architecture}. A shared encoder extracts evidence once from the aggregate; appliance-specific decoders then separate this evidence into five streams; finally, relation attention allows the streams to exchange information before joint power and state prediction. Temporal resolution is preserved throughout.
+MART-NILM follows the shared--private design in Fig.~\ref{fig:martnilm-architecture}. A shared encoder extracts evidence once from the aggregate; appliance-specific decoders then separate this evidence into five streams; finally, relation attention allows the streams to exchange information before joint power and state prediction. Temporal resolution is preserved throughout.
 
 \textit{Shared aggregate encoder:}
-The encoder combines a multi-branch convolutional stem~\cite{szegedy2015inception} with residual temporal convolution. Parallel kernels capture switching patterns at complementary local scales. In the shallow encoder, instance--batch normalization divides the channels between instance and batch normalization~\cite{pan2018ibn}, reducing house-specific variation while retaining amplitude information. The resulting sequence is processed by five dilated temporal blocks~\cite{lea2017tcn}. Writing $\mathcal{T}_{\ell}$ for the normalized, activated convolution in block $\ell$,
+The encoder combines a multi-branch convolutional neural network (CNN) stem~\cite{szegedy2015inception} with residual temporal convolution. Parallel kernels capture switching patterns at complementary local scales. To prevent the multi-scale CNN from overfitting to domain-specific baselines, instance--batch normalization (IBN)~\cite{pan2018ibn} divides shallow channels equally between instance normalization (IN) and batch normalization (BN). This allows the convolutional kernels to extract house-invariant switching transients via instance normalization, while preserving the physical wattage scale through batch normalization for cross-house generalization. The resulting sequence is processed by five dilated temporal convolutional network (TCN) blocks~\cite{lea2017tcn}. Writing $\mathcal{T}_{\ell}$ for the 1D convolution, batch normalization, ReLU activation, and dropout in block $\ell$,
 \begin{equation}
 \mathbf{H}^{(\ell+1)}
 =\mathbf{H}^{(\ell)}+\mathcal{T}_{\ell}
@@ -150,7 +150,7 @@ The encoder combines a multi-branch convolutional stem~\cite{szegedy2015inceptio
 This produces the shared representation $\mathbf{H}$ without temporal downsampling, preserving the alignment between input transitions and appliance outputs.
 
 \textit{Appliance decoding and relation modelling:}
-Each decoder applies channel recalibration~\cite{hu2018senet} and a local residual transformation to obtain an appliance-specific representation $\mathbf{F}_i$. These private streams prevent all appliances from being forced into the same representation. To model simultaneous operation, scaled dot-product attention~\cite{vaswani2017attention} is evaluated across appliances at each time $t$, rather than across time:
+Each decoder applies a channel gate~\cite{hu2018senet} and a local residual transformation to obtain an appliance-specific representation $\mathbf{F}_i$. These private streams prevent all appliances from being forced into the same representation. To model simultaneous operation, scaled dot-product attention~\cite{vaswani2017attention} is evaluated across appliances at each time $t$, rather than across time:
 \begin{equation}
 \mathbf{A}_t=\operatorname{softmax}\!\left(
 \frac{\mathbf{Q}_t\mathbf{K}_t^{\mathsf T}}{\sqrt{d}}
@@ -161,7 +161,7 @@ Each decoder applies channel recalibration~\cite{hu2018senet} and a local residu
 Here $\mathbf{Q}_t$, $\mathbf{K}_t$, and $\mathbf{V}_t$ are learned projections of the stacked appliance representations, and $d$ is their projection width. A gated residual connection adds the relation message $\mathbf{M}_t$ to each private stream, so cross-appliance context supplements rather than replaces appliance-specific evidence.
 
 \textit{Joint power and state prediction:}
-For each appliance, two time-shared linear heads produce a raw standardized power $\hat y_i^{\mathrm{raw}}(t)$ and a state logit $a_i(t)$. The on-state probability $\hat p_i(t)=\sigma(a_i(t))$ is both the state prediction and a differentiable gate on the power branch~\cite{shin2019sgn,xiong2024matnilm}:
+For each appliance, two time-shared fully connected (FC) heads produce a raw standardized power $\hat y_i^{\mathrm{raw}}(t)$ and a state logit $a_i(t)$. The on-state probability $\hat p_i(t)=\sigma(a_i(t))$ is both the state prediction and a differentiable gate on the power branch~\cite{shin2019sgn,xiong2024matnilm}:
 \begin{equation}
 \hat y_i(t)=\hat p_i(t)\hat y_i^{\mathrm{raw}}(t)
 +[1-\hat p_i(t)]y_i^{\mathrm{off}},
@@ -192,10 +192,10 @@ For appliance $i$, let $e_{b,t,i}=\hat y_{b,t,i}-y_{b,t,i}$, $N_i^{\mathrm{on}}=
 \begin{align}
 \mathrm{MSE}_i&=\frac{1}{BT}\sum_{b,t}e_{b,t,i}^{2},\nonumber\\
 \mathrm{MSE}_i^{\mathrm{on}}&=
-\frac{\sum_{b,t}z_{b,t,i}e_{b,t,i}^{2}}
+\tfrac{\sum_{b,t}z_{b,t,i}e_{b,t,i}^{2}}
 {\max(N_i^{\mathrm{on}},1)},\nonumber\\
 \mathrm{MSE}_i^{\mathrm{off}}&=
-\frac{\sum_{b,t}(1-z_{b,t,i})e_{b,t,i}^{2}}
+\tfrac{\sum_{b,t}(1-z_{b,t,i})e_{b,t,i}^{2}}
 {\max(N_i^{\mathrm{off}},1)}.
 \label{eq:power-mse}
 \end{align}
@@ -204,17 +204,17 @@ The conditional terms keep errors during the sparse on state visible instead of 
 To preserve switching behaviour, define $\Delta y_{b,t,i}=y_{b,t,i}-y_{b,t-1,i}$ and $m_{b,t,i}=\max(z_{b,t,i},z_{b,t-1,i})$. With $N_i^{\Delta}=\sum_{b,t=2}^{T}m_{b,t,i}$,
 \begin{equation}
 \mathrm{MSE}_i^{\Delta}=
-\frac{\sum_{b,t=2}^{T}m_{b,t,i}
-(\Delta\hat y_{b,t,i}-\Delta y_{b,t,i})^2}
+\frac{\displaystyle\sum_{b,\,t=2}^{T}m_{b,t,i}
+(\Delta\hat{y}_{b,t,i}-\Delta y_{b,t,i})^{2}}
 {\max(N_i^{\Delta},1)}.
 \label{eq:transition-loss}
 \end{equation}
 Window-level energy is measured in watts using $P_{b,t,i}=[\sigma_i y_{b,t,i}+\mu_i]_+$ and $\hat P_{b,t,i}=[\sigma_i\hat y_{b,t,i}+\mu_i]_+$:
 \begin{equation}
 \mathrm{RE}_i=\frac{1}{B}\sum_{b=1}^{B}
-\frac{\left|\sum_{t=1}^{T}(\hat P_{b,t,i}-P_{b,t,i})\right|}
+\frac{\bigl|\sum_{t=1}^{T}(\hat{P}_{b,t,i}-P_{b,t,i})\bigr|}
 {\sum_{t=1}^{T}P_{b,t,i}+TP_0},
-\qquad P_0=10~\mathrm{W}.
+\quad P_0=10~\mathrm{W}.
 \label{eq:energy-loss}
 \end{equation}
 The per-appliance power loss is therefore
@@ -386,7 +386,7 @@ For an appliance-level score $q_{h,i}$ of appliance $i$ in house $h$, we first f
 \bar q_{\mathcal H}=\frac{1}{|\mathcal H|}\sum_{h\in\mathcal H}\bar q_h.
 \label{eq:house-macro}
 \end{equation}
-For F1, $\bar q_h$ is the macro-F1 over the five appliances. The ablation tables use $\mathcal H=\{\text{UK-DALE~5},\text{REFIT~2}\}$, the two validation houses. This separation prevents repeated design choices from biasing the final evaluation~\cite{cawley2010overfitting}. UK-DALE~2 and REFIT~20 are excluded from model selection and are reported separately as cross-house test cases; their equal-house mean is included only as a summary and never replaces the two house-specific results.
+For F1, $\bar q_h$ is the macro-F1 over the five appliances. Model and checkpoint selection use $\mathcal H=\{\text{UK-DALE~5},\text{REFIT~2}\}$, the two validation houses. This separation prevents repeated design choices from biasing the final evaluation~\cite{cawley2010overfitting}. UK-DALE~2 and REFIT~20 are excluded from selection and are reported separately as cross-house test cases. Their equal-house mean is used in the architecture-ablation summary only after every checkpoint has been frozen; it never replaces the two house-specific results in Table~\ref{tab:results}.
 
 \subsubsection{Power}
 The same absolute error is reported in three ways. MAE uses every sample. ON MAE uses samples with $z_{t}=1$. OFF MAE uses samples with $z_{t}=0$.
@@ -498,27 +498,27 @@ MART-NILM & 1.373 & 5.335 & 485.2 \\
 \subsection{Ablation Study}
 \label{sec:ablation}
 
-Architecture and training effects are evaluated separately. Every architecture variant in Table~\ref{tab:architecture-ablation} remains one joint five-appliance network and retains five power and five state outputs. A removed module is replaced only by an identity mapping or the pointwise projection required to preserve tensor dimensions. Each row therefore removes one complete block shown in Fig.~\ref{fig:architecture}, while all other settings remain fixed. Checkpoints are selected on the validation houses. The table then reports frozen evaluation on UK-DALE house~2 and REFIT house~20: each metric is calculated separately for each house and the two values are averaged with equal weight using \eqref{eq:house-macro}.
+Architecture and training effects are evaluated separately. Every architecture variant in Table~\ref{tab:architecture-ablation} remains one joint five-appliance network and retains five power and five state outputs. A removed module is replaced only by an identity mapping or the pointwise projection required to preserve tensor dimensions. Each row therefore removes one complete block shown in Fig.~\ref{fig:martnilm-architecture}, while all other settings remain fixed. Checkpoints are selected on the validation houses. The table then reports frozen evaluation on UK-DALE house~2 and REFIT house~20: each metric is calculated separately for each house and the two values are averaged with equal weight using \eqref{eq:house-macro}.
 
 \begin{table}[!t]
 \caption{Architecture ablation on the two test houses (three-seed mean $\pm$ standard deviation). Every row is one joint five-appliance model.}
 \label{tab:architecture-ablation}
 \centering
 \renewcommand{\arraystretch}{1.15}
-\scriptsize
-\setlength{\tabcolsep}{1.5pt}
-\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}Xrrrrr@{}}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}>{ \raggedright\arraybackslash}lrrrrr@{}}
 \toprule
 Variant & \shortstack{Params\\(M)} & \shortstack{MAE\\(W) $\downarrow$} & \shortstack{ON MAE\\(W) $\downarrow$} & \shortstack{SAE\\(W) $\downarrow$} & \shortstack{Macro-F1\\$\uparrow$} \\
 \midrule
-MART-NILM              & 1.373 & \mstd{9.12}{0.14} & \mstd{242.94}{5.35} & \mstd{5.58}{0.17} & \mstd{0.796}{0.008} \\
-w/o multi-scale CNN    &       &                   &                     &                   &                     \\
-w/o feature encoder    &       &                   &                     &                   &                     \\
-w/o temporal encoder   &       &                   &                     &                   &                     \\
-w/o appliance decoders &       &                   &                     &                   &                     \\
-w/o relation attention &       &                   &                     &                   &                     \\
+MART-NILM              & 1.373 & \textbf{\mstd{9.12}{0.14}} & \mstd{242.94}{5.35} & \mstd{5.58}{0.17} & \textbf{\mstd{0.796}{0.008}} \\
+w/o multi-scale CNN    & 1.372 & \mstd{9.22}{0.18} & \mstd{241.75}{8.76} & \mstd{5.66}{0.17} & \mstd{0.795}{0.001} \\
+w/o feature encoder    & 1.326 & \mstd{9.16}{0.06} & \mstd{252.01}{2.21} & \mstd{5.59}{0.07} & \mstd{0.790}{0.006} \\
+w/o temporal encoder   & 0.634 & \mstd{10.56}{0.33} & \mstd{288.07}{10.25} & \mstd{6.56}{0.16} & \mstd{0.710}{0.013} \\
+w/o appliance decoders & 0.836 & \mstd{9.22}{0.66} & \mstd{265.84}{4.30} & \mstd{5.63}{0.63} & \mstd{0.783}{0.015} \\
+w/o relation attention & 1.332 & \mstd{9.18}{0.09} & \textbf{\mstd{230.84}{14.69}} & \textbf{\mstd{5.55}{0.04}} & \mstd{0.790}{0.015} \\
 \bottomrule
-\end{tabularx}
+\end{tabular}
 \end{table}
 
 The multi-scale CNN is reduced to its central kernel while preserving its
@@ -529,6 +529,22 @@ representation directly to five independent power/state readouts.  The final
 variant retains these appliance-specific readouts but removes information
 exchange between them.  These replacements preserve the joint prediction
 task and isolate the contribution of each top-level module.
+
+The shared temporal encoder gives the largest contribution: its removal
+increases MAE by 1.44~W and ON MAE by 45.13~W, while macro-F1 falls from
+0.796 to 0.710.  Removing the appliance-specific decoders increases ON MAE
+by 22.90~W and reduces macro-F1 by 0.013.  The feature encoder provides a
+smaller but consistent benefit to ON-state reconstruction and detection.
+The multi-scale CNN has little effect on the aggregate averages, but its
+benefit is concentrated on the sparse microwave task: on validation
+UK-DALE~5 its removal increases microwave ON MAE from 589.49 to 696.45~W,
+and on REFIT~20 microwave F1 falls from 0.549 to 0.512.  Relation attention
+also exhibits a task trade-off.  Removing it lowers average ON MAE, but
+reduces macro-F1 and lowers REFIT~20 microwave F1 from 0.549 to 0.496.
+Waveform inspection agrees with the numerical results: removing temporal
+encoding produces prolonged false fridge activations and poorly aligned
+microwave plateaus, while removing the appliance decoders increases
+fragmentation and amplitude error.
 
 Table~\ref{tab:training-ablation} freezes the complete architecture and changes only the training method. Removing focal-event sampling retains the ordinary random mixture; removing random mixing uses recorded training windows only. Global task balance replaces the bounded appliance-wise ratios with one ratio shared by all appliances, while fixed task weight removes dynamic balancing. The core objective retains the principal power-regression and state-classification terms and removes the auxiliary regression and false-positive terms.
 

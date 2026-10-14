@@ -1255,3 +1255,79 @@ not solve the noisy-background identification problem and do not produce a
 consistent cross-house improvement. Retain the controlled 10-week dataset and
 run as negative ablation evidence, but keep the 5-week original/no-jitter split
 for subsequent model work.
+
+## Top-level MART-NILM module ablation — completed 2026-10-14
+
+The earlier paper ablation mixed top-level architecture blocks with internal
+choices such as dilation, channel attention, and decoder depth. It was replaced
+with a module-level design that follows the architecture figure. Every variant
+remains one joint five-appliance model and retains power and state outputs of
+shape `(B, T, 5)`. Removed modules use only an identity mapping or the
+pointwise channel projection needed to preserve the downstream interface.
+
+The controlled variants were:
+
+- multi-scale CNN reduced from kernels `[3, 5, 9]` to the central `[5]`
+  branch, retaining the residual path, width, normalization, and feature
+  encoder;
+- feature encoder removed and replaced by a temporal-context-free `1x1`
+  projection from 32 to 128 channels;
+- shared temporal encoder replaced by identity;
+- all five appliance decoders removed together, retaining only five independent
+  `1x1` power/state readouts;
+- cross-appliance relation attention replaced by identity.
+
+This also corrected the semantics of the old decoder ablation:
+`head_local_layers=0` still constructed a learnable `1x1` decoder block, so it
+did not remove the decoder. The new `appliance_decoder_enabled=false` path
+uses identity and disables both decoder channel attention and local residual
+convolutions.
+
+All experiments used the original mean-resampled 5-week all-house split,
+`alignment_jitter.enabled=false`, seeds 2026/2027/2028, the same loss and
+training protocol, and validation-selected checkpoints. The test houses were
+evaluated only after each checkpoint was frozen. The remote Scheduled Task
+`MARTNILM_Module_Ablation_20261014` completed with exit code 0. Runs are under
+`runs/paper_5w/table_vii`; the complete row reuses
+`runs/paper_5w/table_v/mart_nilm`.
+
+Validation-house equal-weight results:
+
+| Variant | Params (M) | MAE (W) | ON MAE (W) | SAE (W) | Macro-F1 |
+|---|---:|---:|---:|---:|---:|
+| Complete | 1.373 | 20.791 +/- 0.175 | 315.408 +/- 10.405 | 15.016 +/- 0.385 | 0.687 +/- 0.003 |
+| w/o multi-scale CNN | 1.372 | 20.273 +/- 0.447 | 317.615 +/- 14.001 | 14.485 +/- 0.442 | 0.693 +/- 0.010 |
+| w/o feature encoder | 1.326 | 20.247 +/- 0.199 | 337.029 +/- 15.645 | 14.354 +/- 0.311 | 0.682 +/- 0.002 |
+| w/o temporal encoder | 0.634 | 22.118 +/- 0.645 | 373.535 +/- 12.810 | 15.748 +/- 0.401 | 0.638 +/- 0.006 |
+| w/o appliance decoders | 0.836 | 21.149 +/- 0.610 | 348.586 +/- 8.891 | 14.510 +/- 0.535 | 0.673 +/- 0.012 |
+| w/o relation attention | 1.332 | 20.780 +/- 0.339 | 304.224 +/- 14.495 | 14.748 +/- 0.304 | 0.675 +/- 0.009 |
+
+Frozen two-test-house equal-weight results:
+
+| Variant | Params (M) | MAE (W) | ON MAE (W) | SAE (W) | Macro-F1 |
+|---|---:|---:|---:|---:|---:|
+| Complete | 1.373 | 9.125 +/- 0.140 | 242.938 +/- 5.348 | 5.584 +/- 0.174 | 0.796 +/- 0.008 |
+| w/o multi-scale CNN | 1.372 | 9.222 +/- 0.180 | 241.755 +/- 8.760 | 5.660 +/- 0.173 | 0.795 +/- 0.001 |
+| w/o feature encoder | 1.326 | 9.157 +/- 0.057 | 252.014 +/- 2.211 | 5.588 +/- 0.069 | 0.790 +/- 0.006 |
+| w/o temporal encoder | 0.634 | 10.565 +/- 0.333 | 288.068 +/- 10.253 | 6.558 +/- 0.156 | 0.710 +/- 0.013 |
+| w/o appliance decoders | 0.836 | 9.221 +/- 0.662 | 265.839 +/- 4.296 | 5.633 +/- 0.633 | 0.783 +/- 0.015 |
+| w/o relation attention | 1.332 | 9.181 +/- 0.088 | 230.841 +/- 14.692 | 5.546 +/- 0.044 | 0.790 +/- 0.015 |
+
+Interpretation: the temporal encoder is indispensable, and the complete
+appliance decoders provide a clear ON-state and classification benefit. The
+feature encoder has a smaller but repeatable ON-state benefit. Relation
+attention trades a lower ON-MAE for higher macro-F1 when retained; critically,
+REFIT20 microwave F1 is 0.549 with it and 0.496 without it. The multi-scale CNN
+is nearly neutral in the aggregate summary, but its value is concentrated on
+microwave generalisation: removing it increases UK-DALE5 validation microwave
+ON-MAE from 589.491 to 696.445 W and decreases REFIT20 microwave F1 from 0.549
+to 0.512.
+
+Waveform audit: the full and single-scale models retain the known noisy-REFIT
+fridge false plateaus, so multi-scale processing does not solve that failure.
+However, removing the temporal encoder produces more prolonged false fridge
+cycles and substantially delayed or missed microwave plateaus. Removing the
+appliance decoders increases fridge fragmentation and microwave amplitude
+error. The module evidence therefore supports retaining the five displayed
+blocks, while describing the multi-scale and relational gains as
+appliance-specific rather than universal.
