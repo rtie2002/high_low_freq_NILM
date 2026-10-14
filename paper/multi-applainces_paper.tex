@@ -546,28 +546,37 @@ encoding produces prolonged false fridge activations and poorly aligned
 microwave plateaus, while removing the appliance decoders increases
 fragmentation and amplitude error.
 
-Table~\ref{tab:training-ablation} freezes the complete architecture and changes only the training method. Removing focal-event sampling retains the ordinary random mixture; removing random mixing uses recorded training windows only. Global task balance replaces the bounded appliance-wise ratios with one ratio shared by all appliances, while fixed task weight removes dynamic balancing. The core objective retains the principal power-regression and state-classification terms and removes the auxiliary regression and false-positive terms.
+Table~\ref{tab:training-ablation} freezes the complete architecture and
+examines the two proposed training strategies.  Standard joint training uses
+recorded windows and a fixed power--state weight.  The next two rows add
+focal-event mixing and appliance-wise balancing independently, and complete
+MART-NILM combines both strategies.
 
-\begin{table*}[!t]
-\caption{Training-method ablation on the two validation houses. The complete joint architecture is fixed for every row.}
+\begin{table}[!t]
+\caption{Training-strategy ablation on the validation houses (three-seed
+mean $\pm$ standard deviation). $\dagger$ denotes a strategy proposed in this
+work.}
 \label{tab:training-ablation}
 \centering
-\renewcommand{\arraystretch}{1.15}
-\footnotesize
-\setlength{\tabcolsep}{5pt}
-\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}Xcc>{\centering\arraybackslash}p{2.5cm}>{\centering\arraybackslash}p{2.0cm}rrr@{}}
+\renewcommand{\arraystretch}{1.12}
+\scriptsize
+\setlength{\tabcolsep}{2pt}
+\begin{tabularx}{\columnwidth}{@{}Xccccc@{}}
 \toprule
-Variant & \shortstack{Random\\mixing} & \shortstack{Focal-event\\sampling} & Balancing rule & Objective & \shortstack{Avg. MAE\\(W) $\downarrow$} & \shortstack{Avg. SAE\\(W) $\downarrow$} & \shortstack{Macro-F1\\$\uparrow$} \\
+Training strategy
+& \shortstack{MAE\\(W) $\downarrow$}
+& \shortstack{ON MAE\\(W) $\downarrow$}
+& \shortstack{SAE\\(W) $\downarrow$}
+& \shortstack{AP\\$\uparrow$}
+& \shortstack{Macro-F1\\$\uparrow$} \\
 \midrule
-Complete training       & $\checkmark$ & $\checkmark$ & Clipped per-appliance & Full &  &  &  \\
-w/o random mixing       & --           & --           & Clipped per-appliance & Full &  &  &  \\
-Ordinary random mixing  & $\checkmark$ & --           & Clipped per-appliance & Full &  &  &  \\
-Global task balance     & $\checkmark$ & $\checkmark$ & Global ratio          & Full &  &  &  \\
-Fixed task weight       & $\checkmark$ & $\checkmark$ & Fixed                 & Full &  &  &  \\
-Core objective          & $\checkmark$ & $\checkmark$ & Clipped per-appliance & Core &  &  &  \\
+Standard joint training & & & & & \\
++ Focal-event mixing$^\dagger$ & & & & & \\
++ Appliance-wise balancing$^\dagger$ & & & & & \\
+\textbf{Complete MART-NILM}$^\dagger$ & & & & & \\
 \bottomrule
 \end{tabularx}
-\end{table*}
+\end{table}
 
 \section{Conclusion}
 
