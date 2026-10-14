@@ -133,7 +133,7 @@ def plot_per_appliance_before_after(summary_path: Path, output_dir: Path) -> Non
 
     fig, axes = plt.subplots(2, 1, figsize=(7.2, 7.2), sharex=True, constrained_layout=True)
     panels = (
-        ("f1", "Macro-F1", "(a) State detection", True),
+        ("f1", "F1", "(a) State detection", True),
         ("on_mae", "ON MAE (W)", "(b) ON-state power estimation", False),
     )
     for ax, (metric, ylabel, title, bounded) in zip(axes, panels):

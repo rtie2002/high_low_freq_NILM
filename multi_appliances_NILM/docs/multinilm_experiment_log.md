@@ -1331,3 +1331,51 @@ appliance decoders increases fridge fragmentation and microwave amplitude
 error. The module evidence therefore supports retaining the five displayed
 blocks, while describing the multi-scale and relational gains as
 appliance-specific rather than universal.
+
+## Training-strategy factorial ablation — completed 2026-10-15
+
+The two proposed training strategies were tested in a controlled $2\times2$
+factorial experiment while keeping the complete MART-NILM architecture, data
+split, loss terms, optimizer, and checkpoint rule fixed. The four conditions
+were standard recorded-window training with a fixed power--state weight,
+focal-event mixing alone, appliance-wise balancing alone, and both strategies
+together. Seeds 2026/2027/2028 were selected on the validation houses only.
+The complete row reuses `runs/paper_5w/table_v/mart_nilm`; the nine new runs
+are stored under `runs/paper_5w/table_viii`. The Scheduled Task
+`MARTNILM_TableVIII_20261014` finished with exit code 0.
+
+Validation-house equal-weight results:
+
+| Training strategy | MAE (W) | ON MAE (W) | SAE (W) | AP | Macro-F1 |
+|---|---:|---:|---:|---:|---:|
+| Standard joint training | 21.164 +/- 0.394 | 357.808 +/- 19.280 | 15.938 +/- 0.348 | 0.655 +/- 0.016 | 0.605 +/- 0.012 |
+| Focal-event mixing only | 21.679 +/- 0.144 | **301.623 +/- 16.196** | 15.601 +/- 0.365 | 0.714 +/- 0.015 | 0.649 +/- 0.016 |
+| Appliance-wise balancing only | 20.929 +/- 0.065 | 334.862 +/- 10.888 | 15.175 +/- 0.322 | 0.729 +/- 0.018 | 0.661 +/- 0.014 |
+| Complete MART-NILM | **20.791 +/- 0.175** | 315.408 +/- 10.405 | **15.016 +/- 0.385** | **0.766 +/- 0.008** | **0.687 +/- 0.003** |
+
+Focal-event mixing is not supported as a generic anti-overfitting mechanism.
+Its validation curve shows a persistent improvement in macro-AP but also a
+persistent increase in normalized MAE; neither curve exhibits a distinct
+late-epoch reversal. It is therefore described as a coverage intervention.
+Compared with standard training, it improves AP by 0.060, macro-F1 by 0.044,
+and ON MAE by 56.19 W, but worsens MAE by 0.52 W.
+
+Appliance-wise balancing improves all five aggregate metrics when used alone.
+The complete strategy obtains four of five best metrics and improves AP by
+0.111 and macro-F1 by 0.082 over standard training. At appliance level it
+improves F1 for kettle, fridge, dishwasher, and washing machine and lowers ON
+MAE for every appliance. Microwave F1 changes only from 0.352 +/- 0.026 to
+0.348 +/- 0.027, so no microwave detection improvement is claimed.
+
+Evidence artifacts:
+
+- `runs/paper_5w/summaries/table_viii_mart_nilm.csv`
+- `runs/paper_5w/summaries/table_viii_per_appliance_mart_nilm.csv`
+- `runs/paper_5w/table_viii/figures/focal_event_validation_curves.*`
+- `runs/paper_5w/table_viii/figures/training_strategy_per_appliance.*`
+- `runs/paper_5w/table_viii/figures/event_background_coverage.*`
+- `runs/paper_5w/table_viii/figures/appliance_weight_trajectories.*`
+
+Decision: retain both strategies and Table VIII. The paper must describe the
+classification--regression trade-off and the unchanged microwave F1 rather
+than presenting focal-event mixing as a universal regularizer.

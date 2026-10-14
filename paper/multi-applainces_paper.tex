@@ -560,8 +560,8 @@ work.}
 \centering
 \renewcommand{\arraystretch}{1.12}
 \scriptsize
-\setlength{\tabcolsep}{2pt}
-\begin{tabularx}{\columnwidth}{@{}Xccccc@{}}
+\setlength{\tabcolsep}{1.5pt}
+\begin{tabularx}{\columnwidth}{@{}>{\raggedright\arraybackslash}p{1.55cm}*{5}{>{\centering\arraybackslash}X}@{}}
 \toprule
 Training strategy
 & \shortstack{MAE\\(W) $\downarrow$}
@@ -570,15 +570,95 @@ Training strategy
 & \shortstack{AP\\$\uparrow$}
 & \shortstack{Macro-F1\\$\uparrow$} \\
 \midrule
-Standard joint training & & & & & \\
-+ Focal-event mixing$^\dagger$ & & & & & \\
-+ Appliance-wise balancing$^\dagger$ & & & & & \\
-\textbf{Complete MART-NILM}$^\dagger$ & & & & & \\
+Standard joint training
+& \shortstack{$21.164$\\$\pm0.394$} & \shortstack{$357.808$\\$\pm19.280$}
+& \shortstack{$15.938$\\$\pm0.348$} & \shortstack{$0.655$\\$\pm0.016$} & \shortstack{$0.605$\\$\pm0.012$} \\
++ Focal-event mixing$^\dagger$
+& \shortstack{$21.679$\\$\pm0.144$} & \shortstack{$\mathbf{301.623}$\\$\mathbf{\pm16.196}$}
+& \shortstack{$15.601$\\$\pm0.365$} & \shortstack{$0.714$\\$\pm0.015$} & \shortstack{$0.649$\\$\pm0.016$} \\
++ Appliance-wise balancing$^\dagger$
+& \shortstack{$20.929$\\$\pm0.065$} & \shortstack{$334.862$\\$\pm10.888$}
+& \shortstack{$15.175$\\$\pm0.322$} & \shortstack{$0.729$\\$\pm0.018$} & \shortstack{$0.661$\\$\pm0.014$} \\
+\textbf{Complete MART-NILM}$^\dagger$
+& \shortstack{$\mathbf{20.791}$\\$\mathbf{\pm0.175}$} & \shortstack{$315.408$\\$\pm10.405$}
+& \shortstack{$\mathbf{15.016}$\\$\mathbf{\pm0.385}$} & \shortstack{$\mathbf{0.766}$\\$\mathbf{\pm0.008}$}
+& \shortstack{$\mathbf{0.687}$\\$\mathbf{\pm0.003}$} \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
+Table~\ref{tab:training-ablation} supports both strategies, but also exposes
+their different effects.  Focal-event mixing improves AP by 0.060, macro-F1
+by 0.044, and ON MAE by 56.19~W relative to standard training, while its
+aggregate MAE is 0.52~W higher.  It should therefore be interpreted as a
+coverage intervention rather than a generic regularizer.  Appliance-wise
+balancing improves all five aggregate measures when used alone.  Their
+combination gives the best MAE, SAE, AP, and macro-F1, raising AP by 0.111 and
+macro-F1 by 0.082 over standard joint training.
+
+\begin{figure*}[!t]
+\centering
+\begin{minipage}[t]{0.49\textwidth}
+\centering
+\includegraphics[width=\linewidth]{figures/event_background_coverage.pdf}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\textwidth}
+\centering
+\includegraphics[width=\linewidth]{figures/appliance_weight_trajectories.pdf}
+\end{minipage}
+\caption{Mechanisms of the two training strategies.  Left: the empirical
+distribution of recorded on-event windows is uneven across residual-background
+intervals, whereas focal-event sampling targets equal probability for each
+non-empty interval.  Right: the normalized state-loss coefficients learned
+from the three complete-model runs; the dashed line denotes the global ratio
+and the dotted lines denote the clipping bounds.}
+\label{fig:training-mechanisms}
+\end{figure*}
+
+\begin{figure*}[!t]
+\centering
+\begin{minipage}[t]{0.49\textwidth}
+\centering
+\includegraphics[width=\linewidth]{figures/focal_event_validation_curves.pdf}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\textwidth}
+\centering
+\includegraphics[width=\linewidth]{figures/training_strategy_per_appliance.pdf}
+\end{minipage}
+\caption{Validation evidence for the training strategies (three-seed mean
+$\pm$ standard deviation).  Left: focal-event mixing improves state ranking
+throughout training, but retains a higher power-estimation error.  Right:
+complete MART-NILM improves F1 for four of five appliances and reduces ON MAE
+for all five.  Microwave F1 remains statistically unchanged, indicating that
+background diversification alone does not resolve its temporal ambiguity.}
+\label{fig:training-results}
+\end{figure*}
+
+Figure~\ref{fig:training-mechanisms} explains how the interventions act.  The
+recorded event distribution is strongly appliance dependent, while focal-event
+mixing makes the intended residual-background exposure uniform.  The bounded
+loss coefficients separate appliances with state-dominated errors from those
+with power-dominated errors without allowing unbounded weights.  The validation
+curves in Fig.~\ref{fig:training-results} do not show conventional late-epoch
+overfitting; instead, focal-event mixing yields a persistent ranking gain and a
+persistent regression trade-off.  At appliance level, the complete strategy
+raises F1 for the kettle, fridge, dishwasher, and washing machine, and lowers
+ON MAE for every appliance.  Microwave F1 changes from
+$0.352\pm0.026$ to $0.348\pm0.027$, so no microwave detection improvement is
+claimed.
+
+\clearpage
 \section{Conclusion}
+
+This work presented MART-NILM, a joint power-and-state model evaluated under
+whole-house transfer across UK-DALE and REFIT.  The ablations show that its
+shared temporal encoder and appliance-specific decoders provide the principal
+architectural gains.  Focal-event mixing broadens residual-background
+coverage, while bounded appliance-wise balancing improves the joint objective;
+together they increase validation AP and macro-F1 without increasing model
+size.  Microwave detection and fridge operation under high residual load
+remain the principal failure cases, motivating future work on timing-robust
+event representations and uncertainty-aware separation.
 
 \input{appendix}
 
