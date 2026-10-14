@@ -2,7 +2,7 @@
 
 Ported from NILM_model/baseline/transfer_learning_multi-appliance/model.py.
 
-Power head uses OFF-norm blending for z-score targets (see docs/multinilm_off_norm_gate.md).
+Power head uses OFF-norm blending for z-score targets (see docs/martnilm_off_norm_gate.md).
 Author code: power = linear(tanh(x)) * sigmoid(state). Ours when OFF: blend to -mean/std.
 """
 
@@ -345,7 +345,7 @@ class TransferNILMLoss(nn.Module):
 
 from data.common import BaseNILMAdapter, StepOutput, center_output_slice
 from config import appliance_off_norm_normalized
-from model.MultiNILM import _pred_on_from_config, _to_numpy
+from model.MARTNILM import _pred_on_from_config, _to_numpy
 import numpy as np
 from torch.utils.data import DataLoader
 

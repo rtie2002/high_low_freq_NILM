@@ -386,7 +386,7 @@ class BaseNILMAdapter(AdapterDataMixin):
         else:
             y_pred = power_windows.reshape(-1, len(appliances))
             y_true = true_power_windows.reshape(-1, len(appliances))
-            # State windows may be probabilities (MultiNILM/MATUDA) or already binary.
+            # State windows may be probabilities (MART-NILM/MATUDA) or already binary.
             # Casting floats in (0,1) to int32 truncates to 0 and destroys F1 — threshold first.
             z_pred_raw = state_windows.reshape(-1, len(appliances))
             state_prob = z_pred_raw.astype(np.float64)

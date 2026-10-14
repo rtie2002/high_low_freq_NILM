@@ -5,16 +5,16 @@ from types import SimpleNamespace
 
 import torch
 
-from model.MultiNILM import (
+from model.MARTNILM import (
     FractionalFrontEnd,
-    MultiNILM,
-    MultiNILMAdapter,
-    build_multinilm_fractional,
-    multinilm_config,
+    MARTNILMBackbone,
+    MARTNILMBaseAdapter,
+    build_mart_nilm,
+    mart_nilm_config,
 )
 
 
-class MultiNILMDualExpertTests(unittest.TestCase):
+class MARTNILMBackboneDualExpertTests(unittest.TestCase):
     def test_early_relational_frontend_has_signed_delta_and_thirteen_channels(self) -> None:
         frontend = FractionalFrontEnd(
             alphas=[0.25, 0.5, 0.75, 1.0],
@@ -58,7 +58,7 @@ class MultiNILMDualExpertTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(features).all())
 
     def test_dual_expert_shapes_gate_initialization_and_relation(self) -> None:
-        model = MultiNILM(
+        model = MARTNILMBackbone(
             input_channels=4,
             num_appliances=3,
             output_length=64,
@@ -149,7 +149,7 @@ class MultiNILMDualExpertTests(unittest.TestCase):
                 "dropout": 0.0,
             },
         }
-        model = build_multinilm_fractional(
+        model = build_mart_nilm(
             architecture,
             num_appliances=2,
             output_length=32,
@@ -176,7 +176,7 @@ class MultiNILMDualExpertTests(unittest.TestCase):
         torch.testing.assert_close(captured["alpha_one"], expected_alpha_one, atol=1e-6, rtol=1e-6)
 
     def test_private_local_experts_are_distinct_and_all_receive_gradients(self) -> None:
-        model = MultiNILM(
+        model = MARTNILMBackbone(
             input_channels=4,
             num_appliances=3,
             output_length=32,
@@ -213,11 +213,11 @@ class MultiNILMDualExpertTests(unittest.TestCase):
             self.assertGreater(float(weight.grad.abs().sum()), 0.0)
 
     def test_private_local_expert_config_is_opt_in(self) -> None:
-        shared = multinilm_config({
+        shared = mart_nilm_config({
             "hidden_channels": 8,
             "dual_expert": {"enabled": True},
         })
-        private = multinilm_config({
+        private = mart_nilm_config({
             "hidden_channels": 8,
             "dual_expert": {
                 "enabled": True,
@@ -228,10 +228,10 @@ class MultiNILMDualExpertTests(unittest.TestCase):
         self.assertFalse(private.dual_expert_share_local)
 
     def test_old_configuration_keeps_single_context_path(self) -> None:
-        cfg = multinilm_config({"hidden_channels": 8})
+        cfg = mart_nilm_config({"hidden_channels": 8})
         self.assertFalse(cfg.dual_expert_enabled)
 
-        model = MultiNILM(
+        model = MARTNILMBackbone(
             input_channels=1,
             num_appliances=2,
             output_length=24,
@@ -248,10 +248,10 @@ class MultiNILMDualExpertTests(unittest.TestCase):
         self.assertIsNone(model.last_expert_gates)
 
     def test_adapter_logs_local_gate_for_on_and_off_samples(self) -> None:
-        adapter = object.__new__(MultiNILMAdapter)
+        adapter = object.__new__(MARTNILMBaseAdapter)
         adapter.cfg = {"appliances": ["first", "second"]}
         adapter.model_cfg = {"evaluation": {"pred_on_source": "state_head"}}
-        model = build_multinilm_fractional(
+        model = build_mart_nilm(
             {
                 "hidden_channels": 8,
                 "num_blocks": 1,
@@ -297,7 +297,7 @@ class MultiNILMDualExpertTests(unittest.TestCase):
             self.assertIn(f"gate_local_off_{appliance}", output.logs)
 
     def test_adapter_adds_paired_background_consistency(self) -> None:
-        adapter = object.__new__(MultiNILMAdapter)
+        adapter = object.__new__(MARTNILMBaseAdapter)
         adapter.cfg = {"appliances": ["first", "second"]}
         adapter.model_cfg = {
             "evaluation": {"pred_on_source": "state_head"},
@@ -305,7 +305,7 @@ class MultiNILMDualExpertTests(unittest.TestCase):
                 "background_consistency": {"enabled": True, "weight": 0.1}
             },
         }
-        model = MultiNILM(
+        model = MARTNILMBackbone(
             input_channels=1,
             num_appliances=2,
             output_length=24,

@@ -1,6 +1,6 @@
-# Validation-selected simple-input relational MultiNILM.
-experiment_id: stable 
-model_name: multinilm_fractional
+# Validation-selected MART-NILM architecture.
+experiment_id: mart_nilm_paper
+model_name: mart_nilm
 
 data:
   state_label_source: csv

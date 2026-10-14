@@ -1,4 +1,4 @@
-"""MultiNILM loss. Shapes: power/state (B, T, A).
+"""MARTNILMBackbone loss. Shapes: power/state (B, T, A).
 
     L_NILM  = L_power + state_term
     L_state = Σ_i (BCE_i + w_fp FP_i)
@@ -20,7 +20,7 @@ import torch.nn.functional as F
 
 
 @dataclass
-class MultiNILMLossOutput:
+class MARTNILMLossOutput:
     """Scalars / vectors returned for backprop and logging."""
 
     loss: torch.Tensor                 # L (scalar, has grad)
@@ -33,7 +33,7 @@ class MultiNILMLossOutput:
     loss_state_per_appliance: torch.Tensor
 
 
-class MultiNILMLoss(nn.Module):
+class MARTNILMLoss(nn.Module):
     """Supervised multi-appliance power and state objective."""
 
     def __init__(
@@ -248,7 +248,7 @@ class MultiNILMLoss(nn.Module):
         state_logits: torch.Tensor,
         power_true: torch.Tensor,
         state_true: torch.Tensor,
-    ) -> MultiNILMLossOutput:
+    ) -> MARTNILMLossOutput:
         """One supervised batch.
 
         Math
@@ -291,7 +291,7 @@ class MultiNILMLoss(nn.Module):
         else:
             mae = torch.mean(torch.abs((power_pred - power_true) * scale))
 
-        return MultiNILMLossOutput(
+        return MARTNILMLossOutput(
             loss=loss,
             loss_power=loss_power,
             loss_state=loss_state,

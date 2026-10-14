@@ -9,7 +9,7 @@ neighbourhood.
 Example
 -------
 python scripts/audit_transition_support.py ^
-  --run-dir runs/multinilm_clipped_per_appliance_balance_house_split/multinilm_fractional ^
+  --run-dir runs/mart_nilm_paper/mart_nilm ^
   --dataset-root datasets/mixed_ukdale_refit_5w_house_split
 """
 

@@ -1,6 +1,6 @@
 import unittest
 
-from scripts.run_multinilm_simplification import (
+from scripts.run_martnilm_simplification import (
     FEATURE_VARIANTS,
     _architecture_candidate,
     _feature_candidate,

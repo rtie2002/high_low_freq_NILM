@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""Run controlled MultiNILM simplification candidates on validation only.
+"""Run controlled MARTNILMBackbone simplification candidates on validation only.
 
-The script deliberately starts from ``config/models/multinilm_k4.yaml`` and
+The script deliberately starts from ``config/models/mart_nilm.yaml`` and
 changes one experiment family at a time.  Each run stores its fully merged
 configuration in the normal run directory, so temporary candidate YAML files
 are unnecessary.
@@ -39,29 +39,29 @@ from runner import evaluate_model, train_model
 
 
 DEFAULT_EXPERIMENT = ROOT / "config" / "experiment_mixed_ukdale_refit_5w_house_split.yaml"
-DEFAULT_MODEL_CONFIG = ROOT / "config" / "models" / "multinilm_k4.yaml"
+DEFAULT_MODEL_CONFIG = ROOT / "config" / "models" / "mart_nilm.yaml"
 
 FEATURE_VARIANTS = {
     "feature_1": {
-        "experiment_id": "multinilm_simplify_feature_1_raw",
+        "experiment_id": "martnilm_simplify_feature_1_raw",
         "include_delta": False,
         "include_rolling_mean": False,
         "include_rolling_std": False,
     },
     "feature_2": {
-        "experiment_id": "multinilm_simplify_feature_2_raw_delta",
+        "experiment_id": "martnilm_simplify_feature_2_raw_delta",
         "include_delta": True,
         "include_rolling_mean": False,
         "include_rolling_std": False,
     },
     "feature_3": {
-        "experiment_id": "multinilm_simplify_feature_3_raw_delta_mean",
+        "experiment_id": "martnilm_simplify_feature_3_raw_delta_mean",
         "include_delta": True,
         "include_rolling_mean": True,
         "include_rolling_std": False,
     },
     "feature_4": {
-        "experiment_id": "multinilm_simplify_feature_4_raw_delta_mean_std",
+        "experiment_id": "martnilm_simplify_feature_4_raw_delta_mean_std",
         "include_delta": True,
         "include_rolling_mean": True,
         "include_rolling_std": True,
@@ -69,7 +69,7 @@ FEATURE_VARIANTS = {
     # Replacement candidate used only if signed delta proves unhelpful. It
     # keeps one directly interpretable slow-background channel beside raw.
     "feature_2_mean": {
-        "experiment_id": "multinilm_simplify_feature_2_raw_mean",
+        "experiment_id": "martnilm_simplify_feature_2_raw_mean",
         "include_delta": False,
         "include_rolling_mean": True,
         "include_rolling_std": False,
@@ -81,13 +81,13 @@ LOSS_VARIANTS = {
     # tests whether the compact input can recover state ranking without adding
     # a component or changing the bounded per-appliance balancing rule.
     "lambda_state_1": {
-        "experiment_id": "multinilm_simplify_seeded_raw_lambda_state_1",
+        "experiment_id": "martnilm_simplify_seeded_raw_lambda_state_1",
         "lambda_state": 1.0,
     },
     # Remove the two aggregate reconstruction terms that are most directly
     # duplicated by all-sample MSE. Keep edge shape and false-positive control.
     "loss_compact": {
-        "experiment_id": "multinilm_simplify_seeded_loss_compact_raw",
+        "experiment_id": "martnilm_simplify_seeded_loss_compact_raw",
         "power_off_weight": 0.0,
         "power_energy_relative_weight": 0.0,
     },
@@ -98,7 +98,7 @@ LOSS_VARIANTS = {
     "loss_core": {
         # The earlier folder used this loss before model initialization was
         # seeded.  Keep the corrected controlled run under an unambiguous ID.
-        "experiment_id": "multinilm_simplify_seeded_loss_core_raw",
+        "experiment_id": "martnilm_simplify_seeded_loss_core_raw",
         "power_off_weight": 0.0,
         "power_delta_weight": 0.0,
         "power_energy_relative_weight": 0.0,
@@ -107,7 +107,7 @@ LOSS_VARIANTS = {
     # Same training objective, but select the checkpoint by the standard,
     # threshold-independent validation AP instead of a bespoke composite.
     "loss_core_ap_monitor": {
-        "experiment_id": "multinilm_simplify_loss_core_ap_monitor_raw",
+        "experiment_id": "martnilm_simplify_loss_core_ap_monitor_raw",
         "power_off_weight": 0.0,
         "power_delta_weight": 0.0,
         "power_energy_relative_weight": 0.0,
@@ -121,38 +121,38 @@ ARCHITECTURE_VARIANTS = {
     # training. Evaluation still applies the calibrated binary state mask, so
     # this removes a duplicated gate without changing the reported ON rule.
     "no_train_power_gate": {
-        "experiment_id": "multinilm_simplify_seeded_raw_no_train_power_gate",
+        "experiment_id": "martnilm_simplify_seeded_raw_no_train_power_gate",
         "gate_mode": "none",
     },
     # Shorter TCN with dilations 1, 2, 4 instead of 1, 2, 4, 8, 16.
     "three_tcn_blocks": {
-        "experiment_id": "multinilm_simplify_seeded_raw_three_tcn_blocks",
+        "experiment_id": "martnilm_simplify_seeded_raw_three_tcn_blocks",
         "num_blocks": 3,
         "max_dilation": 4,
     },
     # Replace the mixed instance/batch normalization in the stem with ordinary
     # BatchNorm; all convolutional paths and later normalization stay fixed.
     "batch_stem_norm": {
-        "experiment_id": "multinilm_simplify_seeded_raw_batch_stem_norm",
+        "experiment_id": "martnilm_simplify_seeded_raw_batch_stem_norm",
         "stem_norm_type": "batch",
     },
     # First remove the per-head channel attention. Appliance-specific heads
     # and explicit cross-appliance relation attention remain unchanged.
     "no_task_attention": {
-        "experiment_id": "multinilm_simplify_seeded_raw_no_task_attention",
+        "experiment_id": "martnilm_simplify_seeded_raw_no_task_attention",
         "task_attention": {"enabled": False},
     },
     # Keep both attention mechanisms but reduce each appliance decoder from
     # two residual local blocks to one.
     "one_head_block": {
-        "experiment_id": "multinilm_simplify_seeded_raw_one_head_block",
+        "experiment_id": "martnilm_simplify_seeded_raw_one_head_block",
         "head_local_layers": 1,
     },
     # Bottom-up relational TCN: retain the shared temporal encoder and the
     # explicit multi-appliance interaction, remove the nested refinements
     # around them. The full retained loss is used so this tests architecture.
     "plain_relation": {
-        "experiment_id": "multinilm_simplify_seeded_plain_relation_raw",
+        "experiment_id": "martnilm_simplify_seeded_plain_relation_raw",
         "use_multiscale_stem": False,
         "stem_norm_type": "batch",
         "head_local_layers": 1,
@@ -162,15 +162,15 @@ ARCHITECTURE_VARIANTS = {
 
 REPRO_VARIANTS = {
     "seeded_baseline": {
-        "experiment_id": "multinilm_simplify_seeded_baseline",
+        "experiment_id": "martnilm_simplify_seeded_baseline",
         "feature_base": None,
     },
     "seeded_raw": {
-        "experiment_id": "multinilm_simplify_seeded_raw",
+        "experiment_id": "martnilm_simplify_seeded_raw",
         "feature_base": "feature_1",
     },
     "seeded_raw_ap_monitor": {
-        "experiment_id": "multinilm_simplify_seeded_raw_ap_monitor",
+        "experiment_id": "martnilm_simplify_seeded_raw_ap_monitor",
         "feature_base": "feature_1",
         "checkpoint_monitor": "val_ap",
     },
@@ -180,14 +180,14 @@ HYPERPARAMETER_VARIANTS = {
     # Relation attention was useful in the earlier no-relation ablation. Test
     # one stronger residual value without changing its parameters or topology.
     "relation_scale_05": {
-        "experiment_id": "multinilm_simplify_seeded_raw_relation_scale_05",
+        "experiment_id": "martnilm_simplify_seeded_raw_relation_scale_05",
         "relation_residual_scale": 0.5,
     },
     # The seeded histories show a widening train/validation gap after the
     # early epochs.  This is a single regularisation check, not a grid search:
     # all temporal, head, and relation dropout values still share one number.
     "dropout_035": {
-        "experiment_id": "multinilm_simplify_seeded_raw_dropout_035",
+        "experiment_id": "martnilm_simplify_seeded_raw_dropout_035",
         "dropout": 0.35,
     },
 }

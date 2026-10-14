@@ -13,14 +13,19 @@ data:
 
 evaluation:
   pred_on_source: state_head
-  # The paper uses two-class softmax/argmax without threshold calibration and
-  # does not gate its median power prediction with the predicted state.
+  # The architecture follows the paper; the final benchmark applies the same
+  # validation-only state decoding to every compared model.
   gate_power_by_state: false
-  # The author code only clips negative predictions to 0 W. Disable our
-  # benchmark's additional 5 W cutoff and appliance caps for this model.
-  power_postprocess: false
+  power_postprocess: true
   state_calibration:
-    enabled: false
+    enabled: true
+    split: validation
+    threshold_grid: [0.05, 0.98, 0.01]
+    apply_to_power: true
+    postprocess:
+      enabled: true
+      min_on_seconds: {microwave: 32}
+      merge_gap_seconds: {microwave: 24}
 
 windowing:
   # Section 2.3: the preceding 100 aggregate samples predict the final point.
@@ -74,14 +79,15 @@ training:
   cudnn_benchmark: false
   torch_compile: false
 
-  # The original implementation selects checkpoints and schedules LR by F1.
-  checkpoint_monitor: val_f1
+  # Common validation-only selection rule used by all Table V models.
+  checkpoint_monitor: val_mae_plus_one_minus_ap
+  checkpoint_mae_space: normalized
   # Early stopping is present but commented out in the author experiment.
   early_stop_patience: 0
   scheduler: reduce_on_plateau
   lr_scheduler:
     type: reduce_on_plateau
-    monitor: val_f1
+    monitor: val_mae_plus_one_minus_ap
     patience: 5
     factor: 0.1
     min_lr: 0.000001

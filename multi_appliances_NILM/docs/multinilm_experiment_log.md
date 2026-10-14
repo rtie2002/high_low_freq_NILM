@@ -1,8 +1,28 @@
-# MultiNILM experiment log
+# MART-NILM experiment log
 
 This file records one controlled change per experiment. Validation results are
 used for model selection; UK-DALE house 2 and REFIT house 20 remain report-only
 test houses.
+
+## Paper Tables V--VII all-5-week protocol — launched 2026-10-14
+
+The final paper protocol uses one continuous five-week block for every house.
+The training rows and training-only normalisation are bitwise identical to the
+established five-week baseline. Validation and test are deterministic centred
+five-week crops of their former eight-week intervals; neither event counts nor
+model performance determine the crop boundaries.
+
+Table V trains MART-NILM, UNet-NILM, and MAT-Conv with seeds 2026, 2027, and
+2028. All models use the same CSV state ground truth, validation-only threshold
+calibration, microwave duration rule, hard state mask for evaluated power, and
+validation MAE-plus-AP checkpoint score. Model architectures, losses, windows,
+optimisers, and paper training hyperparameters otherwise remain model-specific.
+
+Table VII trains seven joint five-appliance MART-NILM variants with the same
+three seeds. Each row removes only one architecture component, and only the two
+validation houses are evaluated. Test houses are not used for architecture
+selection. Results will be appended after every scheduled run reaches a
+terminal state.
 
 ## Recovery baseline — 2026-10-08
 

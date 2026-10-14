@@ -176,7 +176,7 @@ def write_scoreboard(rows: list[dict]) -> None:
     if egc.get("f1") is not None and so.get("f1") is not None:
         delta = float(egc["f1"]) - float(so["f1"])
         if delta >= 0.05:
-            lines.append(f"**Decision:** KEEP EGC (ΔF1={delta:+.3f}). Next: multi-seed + MultiNILM DA baseline.")
+            lines.append(f"**Decision:** KEEP EGC (ΔF1={delta:+.3f}). Next: multi-seed + MART-NILM DA baseline.")
         else:
             lines.append(
                 f"**Decision:** NEED_REDESIGN (ΔF1={delta:+.3f} < 0.05). "

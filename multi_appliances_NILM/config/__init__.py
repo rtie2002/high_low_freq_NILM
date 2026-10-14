@@ -205,9 +205,9 @@ def resolve_experiment_id(experiment: dict[str, Any], model_cfg: dict[str, Any])
 
         # experiment_ukdale.yaml
         dataset_id: ukdale
-        # multinilm_fractional.yaml
+        # mart_nilm.yaml
         experiment_id: ukdale(20wk source, no DA)
-        # -> runs/ukdale(20wk source, no DA)/multinilm_fractional/
+        # -> runs/ukdale(20wk source, no DA)/mart_nilm/
 
     Fallbacks (legacy / quick runs):
       1. model ``experiment_id`` (preferred)

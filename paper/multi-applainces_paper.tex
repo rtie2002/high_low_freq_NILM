@@ -9,10 +9,11 @@
 \usepackage{xcolor}
 \usepackage{multirow}
 \usepackage{tabularx}
+\usepackage{booktabs}
 
 \begin{document}
 
-\title{Non-Intrusive Load Monitoring of Multiple Household Appliances}
+\title{MART-NILM: A Multi-Appliance Relational Temporal Network for Joint Power and State Estimation in Non-Intrusive Load Monitoring}
 
 \author{\IEEEauthorblockN{Raymond Tie Siou Hin}
 \IEEEauthorblockA{\textit{Department of Electrical and Robotics} \\
@@ -51,21 +52,31 @@ Kirkuk, Iraq}
 \end{abstract}
 
 \begin{IEEEkeywords}
-non-intrusive load monitoring, energy disaggregation, household appliances
+non-intrusive load monitoring, energy disaggregation, multi-task learning, power and state prediction, household appliances
 \end{IEEEkeywords}
 
 \section{Introduction}
 
-Non-intrusive load monitoring estimates the power and the on--off state of household appliances from one aggregate meter, without a sensor on each appliance. A recent systematic review groups more than thirty years of work into deterministic low-frequency methods, probabilistic and optimization models, and deep networks, and finds that reported accuracy depends as much on the sensing setup and the evaluation protocol as on the model~\cite{dasilva2026nilm}. In homes, deep learning is now the usual approach, while data requirements, real-time use, and interpretability remain open~\cite{rafiq2024nilm}.
+Reducing residential carbon footprints and curbing greenhouse gas emissions depend on actionable, fine-grained visibility into household electricity consumption~\cite{wang2026smartmeter}. Although direct sub-metering can provide itemized feedback to guide conservation, installing dedicated hardware sensors on every appliance is intrusive, expensive, and difficult to scale~\cite{luo2025scaling}. Non-intrusive load monitoring (NILM) addresses this bottleneck by estimating the power and the on--off state of individual appliances from a single aggregate meter, without a sensor on each appliance. A recent systematic review groups more than thirty years of work into deterministic low-frequency methods, probabilistic and optimization models, and deep networks, and finds that reported accuracy depends as much on the sensing setup and the evaluation protocol as on the model~\cite{dasilva2026nilm}. In homes, deep learning is now the usual approach, while data requirements, real-time use, and interpretability remain open~\cite{rafiq2024nilm}.
 
 A common design trains a separate network for each appliance. Separate networks repeat the extraction of features from the same aggregate, increase the number of stored models, and leave appliances that operate together unrepresented~\cite{alami2023convnilm,xiong2024matnilm,virtsionis2023multitarget}. One network can instead map one aggregate window to several appliances~\cite{faustine2020unet,li2023onemany}. The useful form of that sharing is an explicit relation among appliances, rather than a feature extractor that happens to have several output heads.
 
-A joint network is not, by itself, evidence about an unseen home. Table~\ref{tab:protocol} lists recent multi-appliance models by whether the test leaves the training house, by how training, validation, and test are divided, by the network, and by the claim each paper makes. The measured aggregate is
+A joint network is not, by itself, evidence about an unseen home. The measured aggregate is
 \begin{equation}
 x_{t}=\sum_{i=1}^{M}P_{t,i}+b_{t}+\epsilon_{t},
 \label{eq:aggregate}
 \end{equation}
 where $t$ is time, $i=1,\ldots,M$ indexes the target appliances, $M$ is their number, $P_{t,i}$ is the power of appliance $i$, $b_{t}$ is the unmonitored background, and $\epsilon_{t}$ collects measurement error and timing inconsistency. The background includes every load outside the target set. A model can treat patterns in $b_{t}$ as evidence for a target that merely co-occurs with them~\cite{liu2026recomposition}. This term is not a small disturbance: it can be far larger than the roughly 80~W demand of a fridge.
+Two problems follow. A rare on event may be seen only against the backgrounds of the training houses, so the network can treat that background as evidence for the appliance. Joint training creates a second problem. For one appliance, power is a regression loss and the on--off state is a classification loss. The two losses do not share a scale, and the scale is different for each appliance. One ratio taken over all appliances would multiply every classification loss by the same number, so a large regression error on the microwave would change the weight of the fridge's classification error.
+
+We propose MART-NILM, a multi-appliance relational temporal network that reads the aggregate and estimates the five appliances together. During training, a real on event is placed against different levels of the remaining household load. The recorded meter is left unchanged at test time. For each appliance, the regression loss and the classification loss are placed on one scale and added. The training objective is the sum of these appliance losses. Training, validation, and test use different houses.
+
+The contributions are threefold. First, training, validation, and test use different houses, the test meter keeps its recorded residual, and five appliances are scored together on UK-DALE and REFIT. Second, training shows rare on events against a range of the remaining household load, and this step adds nothing at test time. Third, the objective is the sum over appliances of a regression loss and a classification loss. The classification loss of each appliance is scaled by that appliance's own ratio of the two losses.
+
+\section{Related Work}
+
+Multi-appliance NILM replaces a collection of appliance-specific models with one network that estimates several loads jointly. UNet-NILM, for example, estimates the on--off state and power of several appliances with a single model~\cite{faustine2020unet}. Table~\ref{tab:protocol} compares recent multi-appliance methods by evaluation scenario, data split, architecture, and principal contribution.
+
 \begin{table*}[!t]
 \caption{Multi-appliance studies. The split column states how training, validation, and test are divided. An entry $a{\to}b$ means training on houses $a$ and testing on houses $b$. ``Val.\ in train'' means validation uses part of a training house.}
 \label{tab:protocol}
@@ -86,21 +97,12 @@ Tanoni et al.~\cite{tanoni2023weak} & Cross-house & Val.\ in train. Test: UK-DAL
 MATNilm~\cite{xiong2024matnilm} & Cross-house & S1: REDD $2$--$6{\to}1$, val.\ in 2, 3. S2: 1-day train and val., unseen test. S3: S2 plus profiles & Convolutional encoder and attention & Joint state and power from little labeled data \\
 Dash and Sahoo~\cite{dash2024jestie} & Inside and cross-house & Train REFIT 2. Three 1-week tests: house 2, 9, and 20 & Dilated causal convolution and attention & One model detects several appliance states \\
 Liu and Fan~\cite{liu2026recomposition} & Cross-house & Separate datasets. Val.\ is the tail of each train house. Test: REDD 1, UK-DALE 2, REFIT 2 & Two-stage mixture of experts & Estimates that stay stable when the unmonitored load changes \\
-Proposed & Cross-house & One mixed set. Disjoint houses: train UK-DALE 1, REFIT 3, 5, 9, 11; val.\ UK-DALE 5, REFIT 2; test UK-DALE 2, REFIT 20 & Multiscale stem, temporal convolution, and cross-appliance attention & Joint power and state on houses held out of training and validation \\
+MART-NILM & Cross-house & One mixed set. Disjoint houses: train UK-DALE 1, REFIT 3, 5, 9, 11; val.\ UK-DALE 5, REFIT 2; test UK-DALE 2, REFIT 20 & Multiscale stem, temporal convolution, and cross-appliance attention & Joint power and state on houses held out of training and validation \\
 \hline
 \end{tabularx}
 \end{table*}
-Cross-house evaluation is already present in several of these studies. The distinction in the last row is that the validation houses are held out as well, and the test uses the recorded meter on two datasets.
 
-Two problems follow. A rare on event may be seen only against the backgrounds of the training houses, so the network can treat that background as evidence for the appliance. Joint training creates a second problem. For one appliance, power is a regression loss and the on--off state is a classification loss. The two losses do not share a scale, and the scale is different for each appliance. One ratio taken over all appliances would multiply every classification loss by the same number, so a large regression error on the microwave would change the weight of the fridge's classification error.
-
-One network reads the aggregate and estimates the five appliances together. During training, a real on event is placed against different levels of the remaining household load. The recorded meter is left unchanged at test time. For each appliance, the regression loss and the classification loss are placed on one scale and added. The training objective is the sum of these appliance losses. Training, validation, and test use different houses.
-
-The contributions are threefold. First, training, validation, and test use different houses, the test meter keeps its recorded residual, and five appliances are scored together on UK-DALE and REFIT. Second, training shows rare on events against a range of the remaining household load, and this step adds nothing at test time. Third, the objective is the sum over appliances of a regression loss and a classification loss. The classification loss of each appliance is scaled by that appliance's own ratio of the two losses.
-
-\section{Related Work}
-
-UNet-NILM estimates the on-off state and the power of several appliances with one network~\cite{faustine2020unet}.
+Cross-house evaluation is present in several studies. MART-NILM differs in that the validation houses are also held out and the test retains the recorded aggregate, including unmonitored loads, in two datasets.
 
 \section{Methodology}
 \label{sec:method}
@@ -108,142 +110,178 @@ UNet-NILM estimates the on-off state and the power of several appliances with on
 \subsection{Problem Formulation}
 \label{sec:problem}
 
-Let $x_{t}$ be the aggregate power in watts and $P_{t,i}$ the power of target appliance $i$, as in \eqref{eq:aggregate}. One input is a window $\mathbf{x}\in\mathbb{R}^{T}$ of $T$ consecutive samples. The window is standardized by the mean and standard deviation of the aggregate on the training houses. In this work $M=5$. The network returns a standardized power sequence and an on-state probability,
+Let $x_t$ denote aggregate power and $P_{t,i}$ the power of target appliance $i$, as in \eqref{eq:aggregate}. From a standardized aggregate window $\mathbf{x}\in\mathbb{R}^{T}$, the model jointly estimates the standardized power and on-state probability of $M=5$ appliances,
 \begin{equation}
 \hat{\mathbf{Y}}\in\mathbb{R}^{T\times M},
 \qquad
-\hat{\mathbf{P}}\in[0,1]^{T\times M}.
+\hat{\mathbf{Z}}\in[0,1]^{T\times M}.
 \label{eq:outputs}
 \end{equation}
-The entries $\hat{y}_{t,i}$ and $\hat{p}_{t,i}$ are the standardized power and the on-state probability of appliance $i$ at sample $t$. The standardized power passed forward is their product,
-\begin{equation}
-\tilde{y}_{t,i}=\hat{y}_{t,i}\hat{p}_{t,i}.
-\label{eq:gated-power}
-\end{equation}
-The meter residual and the two terms in \eqref{eq:aggregate} are the same quantity,
+The input contains no appliance measurements or hand-crafted channels. The unobserved remainder is
 \begin{equation}
 x_{t}-\sum_{i=1}^{M}P_{t,i}=b_{t}+\epsilon_{t}.
 \label{eq:residual}
 \end{equation}
-
-\subsection{Input Representation}
-\label{sec:input}
-
-The aggregate is described by three kinds of information from the same series: the power at the current sample, the change from the previous sample, and the level over a longer recent interval. The longer view places a short edge, such as a microwave, against the slower loads around it.
+Hence the network must distinguish appliance activity from both other targets and unmonitored household demand.
 
 \subsection{Model Architecture}
 \label{sec:architecture}
 
+\begin{figure*}[!t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/multinilm_architecture.pdf}
+    \caption{Architecture of MART-NILM. The aggregate input is processed by a multi-scale convolutional stem and a shared temporal encoder. Appliance-specific decoders form five feature streams, cross-appliance attention exchanges information among them, and separate power and state heads jointly produce gated power estimates and on--off probabilities.}
+    \label{fig:multinilm-architecture}
+\end{figure*}
+
+MART-NILM follows the shared--private design in Fig.~\ref{fig:multinilm-architecture}. A shared encoder extracts evidence once from the aggregate; appliance-specific decoders then separate this evidence into five streams; finally, relation attention allows the streams to exchange information before joint power and state prediction. Temporal resolution is preserved throughout.
+
+\textit{Shared aggregate encoder:}
+The encoder combines a multi-branch convolutional stem~\cite{szegedy2015inception} with residual temporal convolution. Parallel kernels capture switching patterns at complementary local scales. In the shallow encoder, instance--batch normalization divides the channels between instance and batch normalization~\cite{pan2018ibn}, reducing house-specific variation while retaining amplitude information. The resulting sequence is processed by five dilated temporal blocks~\cite{lea2017tcn}. Writing $\mathcal{T}_{\ell}$ for the normalized, activated convolution in block $\ell$,
+\begin{equation}
+\mathbf{H}^{(\ell+1)}
+=\mathbf{H}^{(\ell)}+\mathcal{T}_{\ell}
+\!\left(\mathbf{H}^{(\ell)};d_{\ell}\right),
+\qquad d_{\ell}\in\{1,2,4,8,16\}.
+\label{eq:temporal-block}
+\end{equation}
+This produces the shared representation $\mathbf{H}$ without temporal downsampling, preserving the alignment between input transitions and appliance outputs.
+
+\textit{Appliance decoding and relation modelling:}
+Each decoder applies channel recalibration~\cite{hu2018senet} and a local residual transformation to obtain an appliance-specific representation $\mathbf{F}_i$. These private streams prevent all appliances from being forced into the same representation. To model simultaneous operation, scaled dot-product attention~\cite{vaswani2017attention} is evaluated across appliances at each time $t$, rather than across time:
+\begin{equation}
+\mathbf{A}_t=\operatorname{softmax}\!\left(
+\frac{\mathbf{Q}_t\mathbf{K}_t^{\mathsf T}}{\sqrt{d}}
+\right),\qquad
+\mathbf{M}_t=\mathbf{A}_t\mathbf{V}_t.
+\label{eq:relation-attention}
+\end{equation}
+Here $\mathbf{Q}_t$, $\mathbf{K}_t$, and $\mathbf{V}_t$ are learned projections of the stacked appliance representations, and $d$ is their projection width. A gated residual connection adds the relation message $\mathbf{M}_t$ to each private stream, so cross-appliance context supplements rather than replaces appliance-specific evidence.
+
+\textit{Joint power and state prediction:}
+For each appliance, two time-shared linear heads produce a raw standardized power $\hat y_i^{\mathrm{raw}}(t)$ and a state logit $a_i(t)$. The on-state probability $\hat p_i(t)=\sigma(a_i(t))$ is both the state prediction and a differentiable gate on the power branch~\cite{shin2019sgn,xiong2024matnilm}:
+\begin{equation}
+\hat y_i(t)=\hat p_i(t)\hat y_i^{\mathrm{raw}}(t)
++[1-\hat p_i(t)]y_i^{\mathrm{off}},
+\label{eq:soft-power-gate}
+\end{equation}
+where $y_i^{\mathrm{off}}=-\mu_i/\sigma_i$ is zero watts on the standardized scale. Thus an on probability near one preserves the regressed waveform, whereas a probability near zero moves the estimate towards zero watts. The final prediction in physical units is
+\begin{equation}
+\hat P_i(t)=\left[\sigma_i\hat y_i(t)+\mu_i\right]_+,
+\qquad [u]_+=\max(u,0).
+\label{eq:power-in-watts}
+\end{equation}
+The state head therefore provides an explicit operating-state prior while the power head retains the appliance waveform.
+
 \subsection{Loss Function}
 \label{sec:loss}
 
-The objective is assembled in two steps, as in joint state-and-power estimation for a single appliance~\cite{faustine2020unet}. For appliance $i$, a regression loss is computed from the power and a classification loss from the on--off state. The two losses are placed on one scale and added, giving the loss of that appliance. The training objective is the sum of these losses over $i=1,\ldots,M$. A mini-batch contains $B$ windows of length $N$, indexed by $n=1,\ldots,B$. The measured power $P_{n,t,i}$, the standardized target $y_{n,t,i}$, and the label $z_{n,t,i}\in\{0,1\}$ are defined in Section~\ref{sec:preprocess}. The network outputs are $\hat{y}_{n,t,i}$ and $\hat{p}_{n,t,i}$.
+The model is trained jointly over all appliances, as in multi-task NILM~\cite{faustine2020unet,xiong2024matnilm,virtsionis2023multitarget}. Let $b=1,\ldots,B$ index windows in a mini-batch, $t=1,\ldots,T$ index samples, and $i=1,\ldots,M$ index appliances. The standardized target and predicted powers are $y_{b,t,i}$ and $\hat y_{b,t,i}$; $z_{b,t,i}\in\{0,1\}$ is the on--off label; and $\hat p_{b,t,i}\in(0,1)$ is the predicted on probability. The objective separates power regression from state classification:
+\begin{equation}
+\mathcal{L}=\underbrace{\sum_{i=1}^{M}\mathcal{L}_{\mathrm{power},i}}_{\mathcal{L}_{\mathrm{power}}}
++\lambda\underbrace{\sum_{i=1}^{M}r_i\mathcal{L}_{\mathrm{state},i}}_{\mathcal{L}_{\mathrm{state}}},
+\qquad \lambda=0.8.
+\label{eq:loss}
+\end{equation}
+Hence every appliance contributes one power loss and one state loss, and the five appliance losses are summed to train a single network.
 
-\paragraph{Regression of one appliance.}
-Let $\Omega_i^{\mathrm{on}}=\{(n,t):z_{n,t,i}=1\}$ and $\Omega_i^{\mathrm{off}}=\{(n,t):z_{n,t,i}=0\}$. The regression target is $y_{n,t,i}$. Its squared error is averaged over all samples in the batch, and again over the on samples and the off samples:
-\begin{equation}
-\begin{aligned}
-\mathrm{MSE}_{i}={}&\frac{1}{BN}\sum_{n=1}^{B}\sum_{t=1}^{N}
-(\hat{y}_{n,t,i}-y_{n,t,i})^2,\\
-\mathrm{MSE}_{i}^{\mathrm{on}}={}&\frac{1}{|\Omega_i^{\mathrm{on}}|}
-\sum_{(n,t)\in\Omega_i^{\mathrm{on}}}
-(\hat{y}_{n,t,i}-y_{n,t,i})^2,\\
-\mathrm{MSE}_{i}^{\mathrm{off}}={}&\frac{1}{|\Omega_i^{\mathrm{off}}|}
-\sum_{(n,t)\in\Omega_i^{\mathrm{off}}}
-(\hat{y}_{n,t,i}-y_{n,t,i})^2.
-\end{aligned}
-\label{eq:mse}
-\end{equation}
-The on samples of an appliance are few, so the average over the whole batch would give them little weight. The separate on average retains that error. The off average accounts for power assigned while the appliance is off.
+\textit{Power loss:}
+For appliance $i$, let $e_{b,t,i}=\hat y_{b,t,i}-y_{b,t,i}$, $N_i^{\mathrm{on}}=\sum_{b,t}z_{b,t,i}$, and $N_i^{\mathrm{off}}=BT-N_i^{\mathrm{on}}$. The overall, on-state, and off-state mean squared errors are
+\begin{align}
+\mathrm{MSE}_i&=\frac{1}{BT}\sum_{b,t}e_{b,t,i}^{2},\nonumber\\
+\mathrm{MSE}_i^{\mathrm{on}}&=
+\frac{\sum_{b,t}z_{b,t,i}e_{b,t,i}^{2}}
+{\max(N_i^{\mathrm{on}},1)},\nonumber\\
+\mathrm{MSE}_i^{\mathrm{off}}&=
+\frac{\sum_{b,t}(1-z_{b,t,i})e_{b,t,i}^{2}}
+{\max(N_i^{\mathrm{off}},1)}.
+\label{eq:power-mse}
+\end{align}
+The conditional terms keep errors during the sparse on state visible instead of allowing the many off samples to dominate the regression objective.
 
-Let $\Omega_i^{\Delta}$ be the pairs of successive samples in which appliance $i$ is on at one or both times. The squared error of the change between those samples is
+To preserve switching behaviour, define $\Delta y_{b,t,i}=y_{b,t,i}-y_{b,t-1,i}$ and $m_{b,t,i}=\max(z_{b,t,i},z_{b,t-1,i})$. With $N_i^{\Delta}=\sum_{b,t=2}^{T}m_{b,t,i}$,
+\begin{equation}
+\mathrm{MSE}_i^{\Delta}=
+\frac{\sum_{b,t=2}^{T}m_{b,t,i}
+(\Delta\hat y_{b,t,i}-\Delta y_{b,t,i})^2}
+{\max(N_i^{\Delta},1)}.
+\label{eq:transition-loss}
+\end{equation}
+Window-level energy is measured in watts using $P_{b,t,i}=[\sigma_i y_{b,t,i}+\mu_i]_+$ and $\hat P_{b,t,i}=[\sigma_i\hat y_{b,t,i}+\mu_i]_+$:
+\begin{equation}
+\mathrm{RE}_i=\frac{1}{B}\sum_{b=1}^{B}
+\frac{\left|\sum_{t=1}^{T}(\hat P_{b,t,i}-P_{b,t,i})\right|}
+{\sum_{t=1}^{T}P_{b,t,i}+TP_0},
+\qquad P_0=10~\mathrm{W}.
+\label{eq:energy-loss}
+\end{equation}
+The per-appliance power loss is therefore
 \begin{equation}
 \begin{aligned}
-\mathrm{MSE}_{i}^{\Delta}={}&\frac{1}{|\Omega_i^{\Delta}|}
-\sum_{(n,t)\in\Omega_i^{\Delta}}
-\big(
-(\hat{y}_{n,t,i}-\hat{y}_{n,t-1,i})\\
-&\qquad-(y_{n,t,i}-y_{n,t-1,i})
-\big)^{2}.
-\end{aligned}
-\label{eq:mse-delta}
-\end{equation}
-
-The last regression term compares the energy of a window. Standardized power is returned to watts by the training mean $\mu_i$ and standard deviation $\sigma_i$ of appliance $i$ in Section~\ref{sec:preprocess}. Writing $[u]_{+}=\max(u,0)$,
-\begin{equation}
-\begin{aligned}
-P^{+}_{n,t,i}&=[\sigma_i y_{n,t,i}+\mu_i]_{+},\\
-\hat{P}^{+}_{n,t,i}&=[\sigma_i\hat{y}_{n,t,i}+\mu_i]_{+}.
-\end{aligned}
-\label{eq:power-watts}
-\end{equation}
-The relative energy error of appliance $i$ is
-\begin{equation}
-E_i=\frac{1}{B}\sum_{n=1}^{B}
-\frac{\big|\sum_{t=1}^{N}(\hat{P}^{+}_{n,t,i}-P^{+}_{n,t,i})\big|}
-{\sum_{t=1}^{N}P^{+}_{n,t,i}}.
-\label{eq:energy}
-\end{equation}
-With coefficients $\lambda_{\mathrm{off}}=0.5$, $\lambda_{\Delta}=0.15$, and $\lambda_{E}=0.25$, the regression loss of appliance $i$ is
-\begin{equation}
-\begin{aligned}
-\mathcal{L}_{i}^{\mathrm{p}}={}&\mathrm{MSE}_{i}+\mathrm{MSE}_{i}^{\mathrm{on}}
-+\lambda_{\mathrm{off}}\,\mathrm{MSE}_{i}^{\mathrm{off}}\\
-&+\lambda_{\Delta}\,\mathrm{MSE}_{i}^{\Delta}+\lambda_{E}\,E_{i}.
+\mathcal{L}_{\mathrm{power},i}={}&
+\mathrm{MSE}_i+\mathrm{MSE}_i^{\mathrm{on}}
++0.5\,\mathrm{MSE}_i^{\mathrm{off}}\\
+&+0.15\,\mathrm{MSE}_i^{\Delta}+0.25\,\mathrm{RE}_i.
 \end{aligned}
 \label{eq:power-loss}
 \end{equation}
 
-\paragraph{Classification of one appliance.}
-The classification target is $z_{n,t,i}$. Let $p_i$ be the fraction of training samples on which appliance $i$ is on, and set $w_{\max}=12$. An on sample receives weight
-\begin{equation}
-w_i=\min\!\left(\frac{1-p_i}{p_i},\,w_{\max}\right),
-\label{eq:positive-weight}
-\end{equation}
-while an off sample receives weight one. The weighted cross-entropy, with $\log$ the natural logarithm, is
+\textit{State loss:}
+Let $\pi_i$ denote the proportion of on samples for appliance $i$ in the training set. Its positive-class weight is $w_i=\min\{(1-\pi_i)/\pi_i,12\}$. The weighted binary cross-entropy is
 \begin{equation}
 \begin{aligned}
-\mathrm{BCE}_{i}={}&-\frac{1}{BN}\sum_{n=1}^{B}\sum_{t=1}^{N}
-\big(w_i z_{n,t,i}\log\hat{p}_{n,t,i}\\
-&+(1-z_{n,t,i})\log(1-\hat{p}_{n,t,i})\big).
+\mathrm{BCE}_i=-\frac{1}{BT}\sum_{b,t}\bigl[&
+w_i z_{b,t,i}\log\hat p_{b,t,i}\\
+&+(1-z_{b,t,i})\log(1-\hat p_{b,t,i})\bigr].
 \end{aligned}
-\label{eq:bce}
+\label{eq:weighted-bce}
 \end{equation}
-The classification loss adds the mean square of the predicted on probability on the off samples,
+An additional false-positive term penalizes high on probabilities when the appliance is off:
 \begin{equation}
-\mathcal{L}_{i}^{\mathrm{s}}=\mathrm{BCE}_{i}
-+\frac{1}{|\Omega_i^{\mathrm{off}}|}
-\sum_{(n,t)\in\Omega_i^{\mathrm{off}}}\hat{p}_{n,t,i}^{2}.
+\mathcal{L}_{\mathrm{fp},i}=
+\frac{\sum_{b,t}(1-z_{b,t,i})\hat p_{b,t,i}^{2}}
+{\max(N_i^{\mathrm{off}},1)},
+\qquad
+\mathcal{L}_{\mathrm{state},i}=\mathrm{BCE}_i+
+\mathcal{L}_{\mathrm{fp},i}.
 \label{eq:state-loss}
 \end{equation}
 
-\paragraph{Sum over appliances.}
-The regression loss $\mathcal{L}_{i}^{\mathrm{p}}$ and the classification loss $\mathcal{L}_{i}^{\mathrm{s}}$ of one appliance are not in the same units, and the ratio of the two is not the same for every appliance. Adding them with a single ratio,
-\begin{equation}
-r=\frac{\sum_{i=1}^{M}\mathcal{L}_{i}^{\mathrm{p}}}{\sum_{i=1}^{M}\mathcal{L}_{i}^{\mathrm{s}}},
-\label{eq:global-ratio}
-\end{equation}
-would multiply every classification loss by $r$. The appliance with the largest regression loss would then move the classification weight of the others. For a model trained with this shared ratio, $\mathcal{L}_{i}^{\mathrm{p}}/\mathcal{L}_{i}^{\mathrm{s}}$ was about 177 for the microwave and about 3.3 for the fridge, and $r$ was about 17.
-
-The classification loss of appliance $i$ is therefore multiplied by a ratio of its own. Let $\gamma=3$. The ratio $r_i$ equals $\mathcal{L}_{i}^{\mathrm{p}}/\mathcal{L}_{i}^{\mathrm{s}}$ when that quotient lies between $r/\gamma$ and $\gamma r$, and equals the nearer of the two bounds otherwise:
-\begin{equation}
-r_{i}=
-\begin{cases}
-r/\gamma, & \mathcal{L}_{i}^{\mathrm{p}}/\mathcal{L}_{i}^{\mathrm{s}}<r/\gamma,\\[2pt]
-\gamma r, & \mathcal{L}_{i}^{\mathrm{p}}/\mathcal{L}_{i}^{\mathrm{s}}>\gamma r,\\[2pt]
-\mathcal{L}_{i}^{\mathrm{p}}/\mathcal{L}_{i}^{\mathrm{s}}, & \text{otherwise.}
-\end{cases}
-\label{eq:clipped-ratio}
-\end{equation}
-In the differentiation of the objective, $r$ and $r_i$ are held constant. With $\lambda=0.8$, the loss of appliance $i$ and the training objective are
+\textit{Appliance-wise task balance:}
+Because MSE and BCE have different numerical scales, the state loss of each appliance is matched to its own power loss. Let
 \begin{equation}
 \begin{aligned}
-\mathcal{L}_{i}&=\mathcal{L}_{i}^{\mathrm{p}}+\lambda r_{i}\,\mathcal{L}_{i}^{\mathrm{s}},\\
-\mathcal{L}&=\sum_{i=1}^{M}\mathcal{L}_{i}.
+r&=\operatorname{sg}\!\left(
+\frac{\mathcal{L}_{\mathrm{power}}}
+{\sum_j\mathcal{L}_{\mathrm{state},j}+\varepsilon}\right),\\
+q_i&=\frac{\mathcal{L}_{\mathrm{power},i}}
+{\mathcal{L}_{\mathrm{state},i}+\varepsilon},\qquad
+r_i=\operatorname{sg}\!\left[
+\operatorname{clip}\!\left(q_i,\frac{r}{3},3r\right)\right].
 \end{aligned}
-\label{eq:loss}
+\label{eq:balanced-ratio}
 \end{equation}
-Thus $\mathcal{L}$ is the sum, over the target appliances, of one regression loss and one scaled classification loss. The value of $r$ still depends on every $\mathcal{L}_{i}^{\mathrm{p}}$. The classification weight of appliance $i$ is $r_i$.
+Here $\operatorname{sg}$ stops gradients through the weights and $\varepsilon=10^{-8}$ prevents division by zero. Substitution of $r_i$ into Eq.~\eqref{eq:loss} yields the complete multi-appliance objective while preventing one appliance from setting the classification scale of all others.
+
+\subsection{Training Strategy}
+\label{sec:training-strategy}
+
+Training alternates between recorded and recomposed aggregate windows with equal probability. The recorded windows retain the natural joint distribution of household loads. The recomposed windows reduce dependence on appliance combinations and residual backgrounds observed in a particular house, following the use of synthetic aggregates in NILM~\cite{kelly2015neural,liu2026recomposition}. From each recorded training sequence, the non-target residual is
+\begin{equation}
+R_t=\left[x_t-\sum_{i=1}^{M}P_{t,i}\right]_+.
+\label{eq:training-residual}
+\end{equation}
+For a recomposed window, each appliance trace and the residual are drawn from independently selected training windows:
+\begin{equation}
+\tilde{x}_t=R_t^{(k_0)}+\sum_{i=1}^{M}P_{t,i}^{(k_i)},
+\qquad
+\tilde{P}_{t,i}=P_{t,i}^{(k_i)},\quad
+\tilde{z}_{t,i}=z_{t,i}^{(k_i)},
+\label{eq:training-recomposition}
+\end{equation}
+where $k_0,k_1,\ldots,k_M$ denote independent window indices. The additive construction therefore preserves the power and state labels of every selected appliance.
+
+To prevent sparse events from disappearing from the recomposed set, one focal appliance $i^\star$ is selected uniformly for each synthetic window and its trace is drawn from windows containing at least one on sample. The residual window is selected by first sampling uniformly from the non-empty median-power intervals $[0,100)$, $[100,200)$, $[200,400)$, $[400,800)$, and $[800,\infty)$~W, and then sampling a window within that interval. The remaining appliance traces are sampled without this constraint. Recomposition is used only for training; validation and test retain the recorded aggregate and its aligned labels.
 
 \section{Experimental Setup}
 \label{sec:setup}
@@ -251,7 +289,7 @@ Thus $\mathcal{L}$ is the sum, over the target appliances, of one regression los
 \subsection{Dataset}
 Two public datasets are used: UK-DALE~\cite{kelly2015ukdale} and REFIT~\cite{murray2017refit}. The target appliances are the kettle, fridge, dishwasher, washing machine, and microwave, and all signals are resampled at 8~s.
 
-The experiment uses a whole-house split. Each house belongs to only one of training, validation, and test, as listed in Table~\ref{tab:split}. Each training house contributes one continuous 5-week block. Each validation or test house contributes its complete 8-week block. Normalization statistics are estimated from the training houses only.
+The experiment uses a whole-house split. Each house belongs to only one of training, validation, and test, as listed in Table~\ref{tab:split}. Every house contributes one continuous 5-week block. The held-out blocks are centred within the previously established eight-week recording intervals and are selected without reference to appliance events or model performance. Normalization statistics are estimated from the training houses only.
 \begin{table}[H]
 \caption{Whole-house split.}
 \label{tab:split}
@@ -264,8 +302,8 @@ The experiment uses a whole-house split. Each house belongs to only one of train
 Split & Houses & Block \\
 \hline
 Training & UK-DALE house 1; REFIT houses 3, 5, 9, 11 & 5 weeks \\
-Validation & UK-DALE house 5; REFIT house 2 & 8 weeks \\
-Test & UK-DALE house 2; REFIT house 20 & 8 weeks \\
+Validation & UK-DALE house 5; REFIT house 2 & 5 weeks \\
+Test & UK-DALE house 2; REFIT house 20 & 5 weeks \\
 \hline
 \end{tabularx}
 \end{table}
@@ -273,13 +311,17 @@ Test & UK-DALE house 2; REFIT house 20 & 8 weeks \\
 \subsection{Data Preprocessing}
 \label{sec:preprocess}
 
-Let $P_{n,t,i}$ be the measured power, in watts, of appliance $i$ at sample $t$ of window $n$, and let $z_{n,t,i}\in\{0,1\}$ be its on--off state. Power is standardized by the training-set mean $\mu_i$ and standard deviation $\sigma_i$:
+Aggregate and appliance channels are independently mean-resampled onto an 8~s grid. The primary experiments retain the recorded timing; Appendix~\ref{sec:appendix-alignment} reports a separate timing-sensitivity audit that was not used for model selection.
+
+Let $\mu_x,\sigma_x$ and $\mu_i,\sigma_i$ be the aggregate and appliance statistics estimated from the training houses. The input and target powers are standardized as
 \begin{equation}
+\bar x_{n,t}=\frac{x_{n,t}-\mu_x}{\sigma_x},
+\qquad
 y_{n,t,i}=\frac{P_{n,t,i}-\mu_i}{\sigma_i}.
 \label{eq:power-normalization}
 \end{equation}
 
-The label is read from the appliance power before windowing. A sample is on when its power is at least $\tau$ watts. A gap below $\tau$ that lasts no longer than $G$ seconds remains part of the same on period, and an on period shorter than $D$ seconds is discarded. UK-DALE and REFIT share $\tau$. In UK-DALE house~5 the fridge uses $G=30$~s. Table~\ref{tab:label} lists $\tau$, $G$, and $D$. Algorithm~\ref{alg:onoff} applies them. For the appliances marked in the table, an isolated spike is removed before the threshold.
+State labels are obtained before windowing from $z_{t,i}=\mathbb{I}[P_{t,i}\geq\tau_i]$. Off gaps no longer than $G_i$ are joined to the surrounding on period, and on periods shorter than $D_i$ are discarded. Table~\ref{tab:label} gives the corresponding values for each dataset, with a 30~s fridge gap used in UK-DALE house~5. Isolated spikes are removed only for the appliances marked in the table.
 \begin{table}[!t]
 \caption{On-off labeling parameters.}
 \label{tab:label}
@@ -301,38 +343,10 @@ Microwave & 200 & 30 & 12 & 6 & No \\
 \hline
 \end{tabularx}
 \end{table}
-\begin{algorithm}[!t]
-\caption{On--off state labeling from appliance power.}
-\label{alg:onoff}
-\begin{algorithmic}[1]
-\REQUIRE $P_t$ is the appliance power in watts at sample $t$, and $T$ is the number of samples in the record
-\REQUIRE $\tau$, $G$, and $D$ are the on threshold, the longest gap, and the shortest on period in Table~\ref{tab:label}. $z_t\in\{0,1\}$ is the resulting label
-\STATE Copy $P_t$ to a working sequence $u_t$.
-\IF{spike removal is indicated for this appliance}
-\STATE Set each isolated spike in $u_t$ to zero.
-\ENDIF
-\FOR{$t = 1$ \TO $T$}
-\IF{$u_t \ge \tau$}
-\STATE $z_t \leftarrow 1$
-\ELSE
-\STATE $z_t \leftarrow 0$
-\ENDIF
-\ENDFOR
-\STATE Interpret $G$ and $D$ on the 8~s sample grid.
-\IF{$G>0$}
-\STATE An off run lying between two on runs, and no longer than $G$, is set to on.
-\ENDIF
-\IF{$D$ exceeds one sample}
-\STATE An on run shorter than $D$ is set to off.
-\ENDIF
-\RETURN $z_1,\ldots,z_T$
-\end{algorithmic}
-\end{algorithm}
-
 \subsection{Experimental Design}
 \label{sec:design}
 
-The proposed model is compared with UNet-NILM~\cite{faustine2020unet} and MAT-Conv~\cite{xiong2024matnilm}. Each baseline keeps the hyperparameters of its own paper. Table~\ref{tab:cost} lists them with those of the proposed model. All three are trained with Adam. UNet-NILM runs for the full 50 epochs. MAT-Conv stops after 30 epochs without improvement. The proposed window of 1024 samples covers about 136.5~min.
+MART-NILM is compared with UNet-NILM~\cite{faustine2020unet} and MAT-Conv~\cite{xiong2024matnilm}. Each baseline keeps the hyperparameters of its own paper. Table~\ref{tab:cost} lists their settings. All three are trained with Adam. UNet-NILM runs for the full 50 epochs. MAT-Conv stops after 30 epochs without improvement. MART-NILM uses weight decay $10^{-4}$ and unit-norm gradient clipping. Its learning rate is reduced by a factor of 0.5 after 12 epochs without validation improvement, to a minimum of $10^{-5}$. Training is limited to 150 epochs; early stopping is disabled before epoch 100 and thereafter uses a patience of 55 epochs. A 1024-sample window covers about 136.5~min.
 \begin{table}[!t]
 \caption{Training hyperparameters.}
 \label{tab:cost}
@@ -346,15 +360,31 @@ Model & Window & Stride & Batch & LR & Epochs \\
 \hline
 UNet-NILM~\cite{faustine2020unet} & 100 & 1 & 256 & $10^{-3}$ & 50 \\
 MAT-Conv~\cite{xiong2024matnilm} & 864 & 64 & 64 & $10^{-3}$ & 200 \\
-Proposed & 1024 & 512 & 64 & $10^{-4}$ & 150 \\
+MART-NILM & 1024 & 512 & 64 & $10^{-4}$ & 150 \\
 \hline
 \end{tabularx}
 \end{table}
+
+Model selection and state calibration use only the validation houses. The retained checkpoint minimizes
+\begin{equation}
+S_{\mathrm{val}}=\mathrm{MAE}^{\mathrm{norm}}_{\mathrm{val}}
++1-\mathrm{AP}^{\mathrm{macro}}_{\mathrm{val}},
+\label{eq:checkpoint-score}
+\end{equation}
+where AP is computed from the continuous state probabilities. After checkpoint selection, an appliance-specific threshold is chosen from $\{0.05,0.06,\ldots,0.98\}$ to maximize validation F1. For the microwave, predicted on periods shorter than 32~s are removed and off gaps no longer than 24~s are joined. The resulting binary state $\hat z_{t,i}$ is also applied to the power output, $\hat P^{\mathrm{eval}}_{t,i}=\hat z_{t,i}\hat P_{t,i}$. The fitted thresholds and temporal rules are then frozen and applied unchanged to both test houses.
 
 \subsection{Evaluation Metrics}
 \label{sec:metrics}
 
 Each appliance is evaluated on power and on the on--off state. For an evaluated record of length $T$, $P_{t}$ is the recorded power in watts and $\hat{P}_{t}$ is the predicted power. The label $z_{t}$ equals 1 when the appliance is recorded on and 0 when it is off. $\hat{z}_{t}$ is the predicted label. The Average column in Table~\ref{tab:results} is the mean of the five appliance scores. Here $T$ is the length of the record, not the training window of Section~\ref{sec:problem}.
+
+For an appliance-level score $q_{h,i}$ of appliance $i$ in house $h$, we first form the appliance average within that house and then give every house equal weight,
+\begin{equation}
+\bar q_h=\frac{1}{M}\sum_{i=1}^{M}q_{h,i},\qquad
+\bar q_{\mathcal H}=\frac{1}{|\mathcal H|}\sum_{h\in\mathcal H}\bar q_h.
+\label{eq:house-macro}
+\end{equation}
+For F1, $\bar q_h$ is the macro-F1 over the five appliances. The ablation tables use $\mathcal H=\{\text{UK-DALE~5},\text{REFIT~2}\}$, the two validation houses. This separation prevents repeated design choices from biasing the final evaluation~\cite{cawley2010overfitting}. UK-DALE~2 and REFIT~20 are excluded from model selection and are reported separately as cross-house test cases; their equal-house mean is included only as a summary and never replaces the two house-specific results.
 
 \subsubsection{Power}
 The same absolute error is reported in three ways. MAE uses every sample. ON MAE uses samples with $z_{t}=1$. OFF MAE uses samples with $z_{t}=0$.
@@ -369,7 +399,7 @@ SAE divides the record into consecutive blocks of $L=1200$ samples, or 160~min a
 \end{equation}
 
 \subsubsection{On-Off State}
-The recorded label $z_t$ is produced by Algorithm~\ref{alg:onoff}. $\hat{z}_t$ is the on-off label predicted by the model. $\mathrm{TP}$ counts samples with $z_{t}=1$ and $\hat{z}_{t}=1$. $\mathrm{FP}$ counts samples with $z_{t}=0$ and $\hat{z}_{t}=1$. $\mathrm{FN}$ counts samples with $z_{t}=1$ and $\hat{z}_{t}=0$.
+The recorded label $z_t$ follows the rules in Table~\ref{tab:label}, and $\hat{z}_t$ is the predicted label. $\mathrm{TP}$, $\mathrm{FP}$, and $\mathrm{FN}$ have their standard binary-classification meanings.
 
 \begin{equation}
 \mathrm{Precision}=\frac{\mathrm{TP}}{\mathrm{TP}+\mathrm{FP}},\qquad
@@ -407,37 +437,37 @@ Table~\ref{tab:results} compares each model on UK-DALE and REFIT. DW, WM, and MW
 \multirow{3}{*}{MAE (W)}
  & UNet-NILM~\cite{faustine2020unet} &  &  &  &  &  &  &  &  &  &  &  &  \\
  & MAT-Conv~\cite{xiong2024matnilm} &  &  &  &  &  &  &  &  &  &  &  &  \\
- & Proposed &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & MART-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
 \hline
 \multirow{3}{*}{SAE (W)}
  & UNet-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
  & MAT-Conv &  &  &  &  &  &  &  &  &  &  &  &  \\
- & Proposed &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & MART-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
 \hline
 \multirow{3}{*}{ON MAE (W)}
  & UNet-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
  & MAT-Conv &  &  &  &  &  &  &  &  &  &  &  &  \\
- & Proposed &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & MART-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
 \hline
 \multirow{3}{*}{OFF MAE (W)}
  & UNet-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
  & MAT-Conv &  &  &  &  &  &  &  &  &  &  &  &  \\
- & Proposed &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & MART-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
 \hline
 \multirow{3}{*}{Precision}
  & UNet-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
  & MAT-Conv &  &  &  &  &  &  &  &  &  &  &  &  \\
- & Proposed &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & MART-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
 \hline
 \multirow{3}{*}{Recall}
  & UNet-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
  & MAT-Conv &  &  &  &  &  &  &  &  &  &  &  &  \\
- & Proposed &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & MART-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
 \hline
 \multirow{3}{*}{F1}
  & UNet-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
  & MAT-Conv &  &  &  &  &  &  &  &  &  &  &  &  \\
- & Proposed &  &  &  &  &  &  &  &  &  &  &  &  \\
+ & MART-NILM &  &  &  &  &  &  &  &  &  &  &  &  \\
 \hline
 \end{tabularx}
 \end{table*}
@@ -459,7 +489,7 @@ Model & Params (M) & Time (s) \\
 \hline
 UNet-NILM & 5.832 &  \\
 MAT-Conv & 3.022 &  \\
-Proposed & 1.376 &  \\
+MART-NILM & 1.376 &  \\
 \hline
 \end{tabularx}
 \end{table}
@@ -467,7 +497,111 @@ Proposed & 1.376 &  \\
 \subsection{Ablation Study}
 \label{sec:ablation}
 
+Architecture and training effects are evaluated separately. Every architecture variant in Table~\ref{tab:architecture-ablation} remains one joint five-appliance network. Each row changes only the indicated component; all other settings are fixed. Scores are equal-house validation averages from \eqref{eq:house-macro}, while the test houses are reserved for the frozen model.
+
+\begin{table*}[!t]
+\caption{Architecture ablation on the two validation houses. Every row is one joint five-appliance model. C-Attn., L-Dec., and R-Attn. denote channel attention, the local residual decoder, and cross-appliance relation attention, respectively.}
+\label{tab:architecture-ablation}
+\centering
+\renewcommand{\arraystretch}{1.15}
+\footnotesize
+\setlength{\tabcolsep}{3.4pt}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}Xccccccrrrr@{}}
+\toprule
+Variant & \shortstack{Multi-scale\\stem} & \shortstack{Dilated\\TCN} & C-Attn. & L-Dec. & R-Attn. & \shortstack{State--power\\gate} & \shortstack{Params.\\(M)} & \shortstack{Avg. MAE\\(W) $\downarrow$} & \shortstack{Avg. SAE\\(W) $\downarrow$} & \shortstack{Macro-F1\\$\uparrow$} \\
+\midrule
+MART-NILM              & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ &  &  &  &  \\
+Single-scale stem       & --           & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ &  &  &  &  \\
+TCN without dilation    & $\checkmark$ & --           & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ &  &  &  &  \\
+w/o channel attention   & $\checkmark$ & $\checkmark$ & --           & $\checkmark$ & $\checkmark$ & $\checkmark$ &  &  &  &  \\
+w/o local decoder       & $\checkmark$ & $\checkmark$ & $\checkmark$ & --           & $\checkmark$ & $\checkmark$ &  &  &  &  \\
+w/o relation attention  & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & --           & $\checkmark$ &  &  &  &  \\
+w/o state--power gate   & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & --           &  &  &  &  \\
+\bottomrule
+\end{tabularx}
+\end{table*}
+
+Table~\ref{tab:training-ablation} freezes the complete architecture and changes only the training method. Removing focal-event sampling retains the ordinary random mixture; removing random mixing uses recorded training windows only. Global task balance replaces the bounded appliance-wise ratios with one ratio shared by all appliances, while fixed task weight removes dynamic balancing. The core objective retains the principal power-regression and state-classification terms and removes the auxiliary regression and false-positive terms.
+
+\begin{table*}[!t]
+\caption{Training-method ablation on the two validation houses. The complete joint architecture is fixed for every row.}
+\label{tab:training-ablation}
+\centering
+\renewcommand{\arraystretch}{1.15}
+\footnotesize
+\setlength{\tabcolsep}{5pt}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}Xcc>{\centering\arraybackslash}p{2.5cm}>{\centering\arraybackslash}p{2.0cm}rrr@{}}
+\toprule
+Variant & \shortstack{Random\\mixing} & \shortstack{Focal-event\\sampling} & Balancing rule & Objective & \shortstack{Avg. MAE\\(W) $\downarrow$} & \shortstack{Avg. SAE\\(W) $\downarrow$} & \shortstack{Macro-F1\\$\uparrow$} \\
+\midrule
+Complete training       & $\checkmark$ & $\checkmark$ & Clipped per-appliance & Full &  &  &  \\
+w/o random mixing       & --           & --           & Clipped per-appliance & Full &  &  &  \\
+Ordinary random mixing  & $\checkmark$ & --           & Clipped per-appliance & Full &  &  &  \\
+Global task balance     & $\checkmark$ & $\checkmark$ & Global ratio          & Full &  &  &  \\
+Fixed task weight       & $\checkmark$ & $\checkmark$ & Fixed                 & Full &  &  &  \\
+Core objective          & $\checkmark$ & $\checkmark$ & Clipped per-appliance & Core &  &  &  \\
+\bottomrule
+\end{tabularx}
+\end{table*}
+
 \section{Conclusion}
+
+\appendices
+
+\section{Conservative Event-Level Timing Audit}
+\label{sec:appendix-alignment}
+
+Each logged REFIT row provides a common timestamp but not the physical acquisition time of every individual meter reading.  Consequently, the recorded data cannot identify an exact, universal IAM--aggregate delay.  A single nearby aggregate step is also insufficient evidence for a shift, since an unmonitored load can produce that step.  We therefore use a deliberately conservative event-level audit rather than claim physical synchronization.
+
+Let $x_t$ and $P_{t,i}$ denote the recorded aggregate and appliance powers, respectively, and define $\Delta x_t=x_t-x_{t-1}$.  Consider a complete on period $[s,e)$ of appliance $i$, with a rising edge $a_i^{\uparrow}=P_{s,i}-P_{s-1,i}$ and a falling edge $a_i^{\downarrow}=P_{e-1,i}-P_{e,i}$.  Only events whose two appliance edges are at least $\max(40,0.3\tau_i)$~W are considered, where $\tau_i$ is the appliance on threshold.  We examine lags $\ell\in\{-2,-1,0,1,2\}$, corresponding to at most $\pm16$~s.  A lag is admissible only if both aggregate edges have the expected direction and sufficient magnitude:
+\begin{equation}
+\begin{aligned}
+\Delta x_{s+\ell}&\geq\max(20,0.25a_i^{\uparrow}),\\
+-\Delta x_{e+\ell}&\geq\max(20,0.25a_i^{\downarrow}).
+\end{aligned}
+\label{eq:alignment-gate}
+\end{equation}
+For every admissible lag, the two-edge discrepancy is
+\begin{equation}
+C_i(\ell)=\frac{1}{2}\left(
+\frac{|\Delta x_{s+\ell}-a_i^{\uparrow}|}{\max(a_i^{\uparrow},40)}+
+\frac{|{-\Delta x_{e+\ell}}-a_i^{\downarrow}|}{\max(a_i^{\downarrow},40)}
+\right).
+\label{eq:alignment-score}
+\end{equation}
+The selected lag is $\ell^*=\arg\min_{\ell}C_i(\ell)$, with zero lag preferred only when scores are tied.  We accept it only when $C_i(\ell^*)\leq0.75$, its margin over the next-best admissible lag is at least $0.20$, neither event boundary lies near a $\geq40$~W transition of another monitored target, and the shifted event would not overlap an existing on period.  Events failing any condition are left unchanged.
+
+For an accepted non-zero lag, the aggregate is immutable.  Let $b_i$ be the median measured power in the nearby off samples and let $q_{t,i}=\max(P_{t,i}-b_i,0)$ within $[s,e)$.  The procedure moves the excess event profile as a whole:
+\begin{equation}
+\widetilde{P}_{t,i}=P_{t,i}-q_{t,i}\mathbf{1}_{[s,e)}(t)
++q_{t-\ell^*,i}\mathbf{1}_{[s+\ell^*,e+\ell^*)}(t),
+\qquad \widetilde{x}_t=x_t.
+\label{eq:event-shift}
+\end{equation}
+Thus $\sum_t\widetilde{P}_{t,i}=\sum_tP_{t,i}$ for every shifted event.  The associated binary on period is shifted by the same lag.  This preserves the recorded input and the appliance watt-sample energy; it does \emph{not} impose $x_t\geq\sum_iP_{t,i}$, because the measured target set is incomplete and the recorded aggregate must not be reconstructed using its labels.
+
+The audit is a sensitivity analysis, not part of the retained training pipeline.  In our cross-house ablation it slightly changed local timing errors but did not consistently improve F1 or AP across the two held-out datasets.  The primary results therefore use the unshifted, mean-resampled recordings.  This distinction avoids treating a plausible timing hypothesis as ground truth.
+
+\begin{algorithm}[!t]
+\caption{Conservative two-edge event timing audit.}
+\label{alg:alignment}
+\begin{algorithmic}[1]
+\REQUIRE 8-s aggregate $x_t$, appliance powers $P_{t,i}$, states $z_{t,i}$, thresholds $\tau_i$, and $L=2$ samples.
+\ENSURE Audited appliance series $\widetilde{P}_{t,i}$ and states $\widetilde{z}_{t,i}$; aggregate $x_t$ is unchanged.
+\STATE Set $\widetilde{P}_{t,i}\leftarrow P_{t,i}$ and $\widetilde{z}_{t,i}\leftarrow z_{t,i}$.
+\FOR{each target appliance $i \in \{1,\ldots,M\}$}
+    \FOR{each complete on period $[s,e)$ in $z_{t,i}$}
+        \STATE Reject the event if an edge is weak, an endpoint is unavailable, or another target changes within $L$ samples of either boundary.
+        \STATE Form the admissible lag set using \eqref{eq:alignment-gate} and discard lags whose two relative edge errors exceed one.
+        \IF{the best lag satisfies the score, margin, and non-overlap tests}
+            \STATE Move the excess profile and the complete state interval by $\ell^*$ using \eqref{eq:event-shift}.
+        \ENDIF
+    \ENDFOR
+\ENDFOR
+\STATE Verify $\sum_t\widetilde{P}_{t,i}=\sum_tP_{t,i}$ for every appliance and $x_t$ is bitwise unchanged.
+\RETURN $x_t$, $\widetilde{P}_{t,i}$, and $\widetilde{z}_{t,i}$.
+\end{algorithmic}
+\end{algorithm}
 
 \bibliographystyle{IEEEtran}
 \bibliography{references/references}

@@ -854,7 +854,7 @@ def _resolve_domain_adaptation(adapter) -> tuple[bool, str]:
     if adapter.name != "matuda":
         if bool(da_cfg.get("enabled", False)) or lambda_domain != 0.0:
             raise ValueError(
-                "Generic MultiNILM domain adaptation was removed; use --model matuda"
+                "Generic MART-NILM domain adaptation was removed; use --model matuda"
             )
         return False, "test"
 
@@ -1293,7 +1293,7 @@ def train_model(
     """Train one model using the shared pipeline and return best.pt.
 
     This function is model-agnostic. It does not know the details of MATNILM,
-    MultiNILM, or any future model. The adapter supplies model-specific pieces:
+    MART-NILM, or any future model. The adapter supplies model-specific pieces:
 
         adapter.build_model(...)
         adapter.build_loss()

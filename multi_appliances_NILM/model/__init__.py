@@ -1,13 +1,14 @@
 from model.MATNILM import MATconv, MATNILMLoss
-from model.MultiNILM import MultiNILM
-from model.MultiNILM_loss import MultiNILMLoss
+from model.MARTNILM import MARTNILM, MARTNILMBackbone
+from model.MARTNILM_loss import MARTNILMLoss
 from model.TransferNILM import TransferMultiApplianceModel, TransferNILMLoss
 
 __all__ = [
     "MATconv",
     "MATNILMLoss",
-    "MultiNILM",
-    "MultiNILMLoss",
+    "MARTNILMBackbone",
+    "MARTNILM",
+    "MARTNILMLoss",
     "TransferMultiApplianceModel",
     "TransferNILMLoss",
 ]

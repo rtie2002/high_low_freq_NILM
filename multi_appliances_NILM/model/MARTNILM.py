@@ -1,4 +1,4 @@
-"""Beginner path: read MultiNILMFractional.forward, then MultiNILM.forward.
+"""Beginner path: read MARTNILM.forward, then MARTNILMBackbone.forward.
 
 Every Conv1d tensor is (B, C, T) = batch, channels, time.
 Relational multi-appliance example: B=64, C_in=13, C=128, T=1024,
@@ -12,7 +12,7 @@ A=5 appliances.
     -> power, state      (B, T, 5)
 
 Stop at "YAML / training" unless you are changing configs.
-Checkpoint names stay frontend.* / backbone.*. Loss is MultiNILM_loss.py.
+Checkpoint names stay frontend.* / backbone.*. Loss is MARTNILM_loss.py.
 """
 
 from __future__ import annotations
@@ -564,7 +564,7 @@ class CrossApplianceRelationAttention(nn.Module):
 # The model. Read these two forwards. That is the whole graph.
 # ===========================================================================
 
-class MultiNILM(nn.Module):
+class MARTNILMBackbone(nn.Module):
     def __init__(
         self,
         input_channels=1, num_appliances=5, output_length=64, hidden_channels=64,
@@ -775,10 +775,10 @@ class MultiNILM(nn.Module):
         return power, logits
 
 
-class MultiNILMFractional(nn.Module):
+class MARTNILM(nn.Module):
     """Start here. frontend then backbone. Checkpoint prefixes: frontend.* / backbone.*."""
 
-    def __init__(self, *, backbone: MultiNILM, frontend: FractionalFrontEnd):
+    def __init__(self, *, backbone: MARTNILMBackbone, frontend: FractionalFrontEnd):
         super().__init__()
         if int(backbone.input_channels) != int(frontend.out_channels):
             raise ValueError(
@@ -815,7 +815,7 @@ class MultiNILMFractional(nn.Module):
 # ===========================================================================
 
 @dataclass
-class MultiNILMConfig:
+class MARTNILMConfig:
     input_channels: int = 1
     num_appliances: int = 5
     output_length: int = 64
@@ -858,14 +858,14 @@ class MultiNILMConfig:
     dual_expert_share_local: bool = True
 
 
-def multinilm_config(architecture):
+def mart_nilm_config(architecture):
     a = architecture
     legacy_dropout = float(a.get("dropout", 0.1))
     task = a.get("task_attention") if isinstance(a.get("task_attention"), dict) else {}
     cross = a.get("cross_appliance") if isinstance(a.get("cross_appliance"), dict) else {}
     dual = a.get("dual_expert") if isinstance(a.get("dual_expert"), dict) else {}
     mid = cross.get("mid_channels", None)
-    return MultiNILMConfig(
+    return MARTNILMConfig(
         input_channels=int(a.get("input_channels", a.get("input_size", 1))),
         num_appliances=int(a.get("num_appliances", 5)),
         output_length=int(a.get("output_length", 64)),
@@ -909,7 +909,7 @@ def multinilm_config(architecture):
     )
 
 
-def build_multinilm(
+def build_mart_nilm_backbone(
     cfg, *, num_appliances, output_length, appliance_off_norm=None,
     input_channels=None,
 ):
@@ -918,10 +918,10 @@ def build_multinilm(
                   appliance_off_norm=appliance_off_norm)
     if input_channels is not None:
         kwargs["input_channels"] = int(input_channels)
-    return MultiNILM(**kwargs)
+    return MARTNILMBackbone(**kwargs)
 
 
-def build_multinilm_fractional(
+def build_mart_nilm(
     architecture, *, num_appliances, output_length, appliance_off_norm=None,
 ):
     block = architecture.get("fractional") if isinstance(architecture.get("fractional"), dict) else {}
@@ -952,11 +952,11 @@ def build_multinilm_fractional(
     )
     arch = dict(architecture)
     arch["input_channels"] = int(frontend.out_channels)
-    backbone = build_multinilm(
-        multinilm_config(arch), num_appliances=num_appliances, output_length=output_length,
+    backbone = build_mart_nilm_backbone(
+        mart_nilm_config(arch), num_appliances=num_appliances, output_length=output_length,
         appliance_off_norm=appliance_off_norm, input_channels=int(frontend.out_channels),
     )
-    return MultiNILMFractional(backbone=backbone, frontend=frontend)
+    return MARTNILM(backbone=backbone, frontend=frontend)
 
 
 def _to_numpy(t):
@@ -989,23 +989,25 @@ def _pred_on_from_config(adapter, power_norm, state_prob):
     raise ValueError("evaluation.pred_on_source must be state_head, power_threshold, or combined")
 
 
-class MultiNILMAdapter(BaseNILMAdapter):
-    name = "multinilm"
+class MARTNILMBaseAdapter(BaseNILMAdapter):
+    """Shared implementation behind the public MART-NILM adapter."""
+
+    name = "mart_nilm_base"
 
     def build_model(self, device):
         apps = self.cfg["appliances"]
-        return build_multinilm(
-            multinilm_config(self.model_cfg["architecture"]),
+        return build_mart_nilm_backbone(
+            mart_nilm_config(self.model_cfg["architecture"]),
             num_appliances=len(apps),
             output_length=int(self.model_cfg["windowing"].get("output_window_length", 1)),
             appliance_off_norm=appliance_off_norm_normalized(self.experiment, apps),
         ).to(device)
 
     def build_loss(self):
-        from model.MultiNILM_loss import MultiNILMLoss
+        from model.MARTNILM_loss import MARTNILMLoss
         cfg = self.model_cfg.get("loss", {})
         loader = self._data_loader()
-        return MultiNILMLoss(
+        return MARTNILMLoss(
             lambda_state=float(cfg.get("lambda_state", 0.1)),
             task_balance=str(cfg.get("task_balance", "none")),
             task_balance_ratio_limit=float(cfg.get("task_balance_ratio_limit", 3.0)),
@@ -1172,8 +1174,8 @@ class MultiNILMAdapter(BaseNILMAdapter):
         )
 
 
-class MultiNILMFractionalAdapter(MultiNILMAdapter):
-    name = "multinilm_fractional"
+class MARTNILMAdapter(MARTNILMBaseAdapter):
+    name = "mart_nilm"
 
     def build_model(self, device):
         arch = dict(self.model_cfg["architecture"])
@@ -1181,7 +1183,7 @@ class MultiNILMFractionalAdapter(MultiNILMAdapter):
         if isinstance(frac, dict):
             arch["fractional"] = frac
         apps = self.cfg["appliances"]
-        return build_multinilm_fractional(
+        return build_mart_nilm(
             arch,
             num_appliances=len(apps),
             output_length=int(self.model_cfg["windowing"].get("output_window_length", 1)),

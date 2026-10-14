@@ -1,25 +1,25 @@
 #!/usr/bin/env python
-"""Bayesian-style hyperparameter tuning for supervised MultiNILM (Optuna TPE).
+"""Bayesian-style hyperparameter tuning for supervised MARTNILMBackbone (Optuna TPE).
 
 Tunes windowing, architecture, and training knobs from
 ``config/models/multinilm.yaml``.
 
 Run from repo root or multi_appliances_NILM:
 
-    python scripts/multinilm_hyperparameter_tuning.py
-    python scripts/multinilm_hyperparameter_tuning.py --n-trials 30 --fast
+    python scripts/martnilm_hyperparameter_tuning.py
+    python scripts/martnilm_hyperparameter_tuning.py --n-trials 30 --fast
     # Optional: override fixed epoch count (default 150; epochs are never tuned)
-    python scripts/multinilm_hyperparameter_tuning.py --epochs 150
+    python scripts/martnilm_hyperparameter_tuning.py --epochs 150
 
     # Subset of knobs (others stay at values from --model-config)
-    python scripts/multinilm_hyperparameter_tuning.py --tune learning_rate,num_blocks,dropout
+    python scripts/martnilm_hyperparameter_tuning.py --tune learning_rate,num_blocks,dropout
 
     # List available names for --tune
-    python scripts/multinilm_hyperparameter_tuning.py --list-tune-params
+    python scripts/martnilm_hyperparameter_tuning.py --list-tune-params
 
-Each trial trains MultiNILM and minimizes the same checkpoint score used during
+Each trial trains MARTNILMBackbone and minimizes the same checkpoint score used during
 normal training (``val_mae_minus_f1`` by default). Results are saved under
-``results/multinilm_hyperparameter_tuning_<experiment_id>/``.
+``results/martnilm_hyperparameter_tuning_<experiment_id>/``.
 
 **Objective:** minimize ``normalized_val_MAE - macro_val_F1`` on validation
 (H1+H5). Test (H2) is not used for tuning.
@@ -54,7 +54,7 @@ from config import (
     resolve_experiment_id,
     resolve_training_targets,
 )
-from model.MultiNILM import MultiNILMAdapter
+from model.MARTNILM import MARTNILMBaseAdapter
 from runner import train_model
 
 
@@ -198,7 +198,7 @@ except ImportError:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Optuna/TPE hyperparameter tuning for MultiNILM.",
+        description="Optuna/TPE hyperparameter tuning for MARTNILMBackbone.",
     )
     parser.add_argument("--experiment", type=Path, default=DEFAULT_EXPERIMENT)
     parser.add_argument("--model-config", type=Path, default=DEFAULT_MODEL_CONFIG)
@@ -219,7 +219,7 @@ def parse_args() -> argparse.Namespace:
         "--results-dir",
         type=Path,
         default=None,
-        help="Output folder (default: results/multinilm_hyperparameter_tuning_<experiment_id>)",
+        help="Output folder (default: results/martnilm_hyperparameter_tuning_<experiment_id>)",
     )
     parser.add_argument(
         "--data-path",
@@ -375,7 +375,7 @@ def _apply_tuning_overrides(model_cfg: dict, trial_params: dict, *, epochs: int)
     """Mutate model_cfg in place for one supervised Optuna trial."""
     arch_cfg = model_cfg.setdefault("architecture", {})
     schedule = [int(v) for v in trial_params["channel_schedule"]]
-    # MultiNILM requires hidden_channels == channel_schedule[-1].
+    # MARTNILMBackbone requires hidden_channels == channel_schedule[-1].
     hidden = int(schedule[-1])
     trial_params["hidden_channels"] = hidden
     num_blocks = int(trial_params["num_blocks"])
@@ -677,7 +677,7 @@ def _suggest_trial_params(
         else:
             params["weight_decay"] = 0.0
 
-    # MultiNILM constraint: hidden_channels must equal channel_schedule[-1].
+    # MARTNILMBackbone constraint: hidden_channels must equal channel_schedule[-1].
     params["hidden_channels"] = int(params["channel_schedule"][-1])
     _normalize_window_params(params, require_equal_windows=require_equal_windows)
     return params
@@ -874,7 +874,7 @@ def _save_tuning_plots(
         markersize=4,
         label="Best score so far",
     )
-    ax.set_title("MultiNILM Optuna/TPE Optimization History", fontsize=14, weight="bold")
+    ax.set_title("MARTNILMBackbone Optuna/TPE Optimization History", fontsize=14, weight="bold")
     ax.set_xlabel("Trial Number")
     ax.set_ylabel("Validation checkpoint score (lower is better)")
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
@@ -1146,7 +1146,7 @@ def main() -> None:
     fixed_params["epochs"] = fixed_epochs
 
     results_dir = args.results_dir or (
-        ROOT / "results" / f"multinilm_hyperparameter_tuning_{experiment_id}"
+        ROOT / "results" / f"martnilm_hyperparameter_tuning_{experiment_id}"
     )
     trials_root = results_dir / "trials"
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -1221,7 +1221,7 @@ def main() -> None:
     }
     study_config_path.write_text(json.dumps(study_config, indent=2), encoding="utf-8")
 
-    print("MultiNILM surrogate hyperparameter tuning")
+    print("MARTNILMBackbone surrogate hyperparameter tuning")
     print(f"Experiment: {args.experiment}")
     print(f"Model config: {args.model_config}")
     print(f"Trials: {args.n_trials} | Epochs/trial: {fixed_epochs} (fixed) | Fast space: {fast_search}")
@@ -1269,7 +1269,7 @@ def main() -> None:
         print(f"Parameters: {trial_params}", flush=True)
         print(f"Run dir: {trial_dir}", flush=True)
 
-        adapter = MultiNILMAdapter(merged, data_root=str(data_root) if data_root else None)
+        adapter = MARTNILMBaseAdapter(merged, data_root=str(data_root) if data_root else None)
         try:
             train_model(adapter, trial_dir, epochs=trial_epochs, seed=args.seed)
             metrics = _read_trial_metrics(trial_dir)
@@ -1321,7 +1321,7 @@ def main() -> None:
     study = optuna.create_study(
         direction="minimize",
         sampler=optuna.samplers.TPESampler(seed=int(args.seed)),
-        study_name=f"multinilm_{experiment_id}",
+        study_name=f"martnilm_{experiment_id}",
     )
     study.optimize(objective, n_trials=int(args.n_trials), show_progress_bar=True)
 
@@ -1442,7 +1442,7 @@ def main() -> None:
 
     elapsed = perf_counter() - start_time
     print()
-    print("MultiNILM hyperparameter tuning completed.")
+    print("MARTNILMBackbone hyperparameter tuning completed.")
     print(f"Trials: {args.n_trials}")
     print(f"Best validation checkpoint score: {study.best_value:.4f}")
     print(f"Best parameters: {best_params}")

@@ -6,18 +6,19 @@ Protocol
 Training (a contiguous block centred on the established active 5-week block):
   UK-DALE 1; REFIT 3, 5, 9, 11
 
-Validation (complete previously selected 8-week blocks):
+Validation (centred, contiguous blocks from the established intervals):
   UK-DALE 5; REFIT 2
 
-Final test (complete previously selected 8-week blocks):
+Final test (centred, contiguous blocks from the established intervals):
   UK-DALE 2; REFIT 20
 
 The established 5-week selection is the training anchor: a longer duration
 contains those exact rows and extends it as evenly as possible on both sides
 using the current corrected original 8-second house CSVs. This keeps the
 active events and calendar period used by the baseline instead of selecting
-an unrelated season. Validation and test rows are copied exactly from the
-5-week reference dataset. Normalization statistics are fitted on the extended
+an unrelated season. Validation and test are cropped symmetrically in calendar
+time from their established eight-week intervals; they are never selected by
+event count or model performance. Normalization statistics are fitted on the
 five-house training split only.
 """
 
@@ -46,12 +47,13 @@ from prepare_mixed_ukdale_refit_3week_split import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUT_DIR = ROOT / "datasets" / "mixed_ukdale_refit_5w_house_split"
+BASELINE_DATASET = ROOT / "datasets" / "mixed_ukdale_refit_5w_house_split"
+DEFAULT_OUT_DIR = ROOT / "datasets" / "mixed_ukdale_refit_5w_all_house_split"
 DEFAULT_EVAL_SELECTION = (
     ROOT / "datasets" / "mixed_ukdale_refit_8w" / "selection_summary.csv"
 )
-DEFAULT_TRAIN_ANCHOR = DEFAULT_OUT_DIR / "selection_summary.csv"
-DEFAULT_REFERENCE_DATASET = DEFAULT_OUT_DIR
+DEFAULT_TRAIN_ANCHOR = BASELINE_DATASET / "selection_summary.csv"
+DEFAULT_REFERENCE_DATASET = BASELINE_DATASET
 
 TRAIN_HOUSES = (("ukdale", 1), ("refit", 3), ("refit", 5), ("refit", 9), ("refit", 11))
 VALIDATION_HOUSES = (("ukdale", 5), ("refit", 2))
@@ -87,6 +89,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--train-weeks", type=float, default=5.0)
+    parser.add_argument(
+        "--eval-weeks",
+        type=float,
+        default=5.0,
+        help=(
+            "Calendar duration retained for every validation and test house. "
+            "The interval is centred inside the established eight-week block."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -255,6 +266,29 @@ def _house_frame(frame: pd.DataFrame, dataset: str, house: int) -> pd.DataFrame:
     return selected
 
 
+def _centred_calendar_crop(frame: pd.DataFrame, weeks: float) -> pd.DataFrame:
+    """Take a deterministic centred calendar interval without event selection."""
+    if weeks <= 0:
+        raise ValueError("--eval-weeks must be positive")
+    start = pd.Timestamp(frame[TIME_COL].iloc[0])
+    end = pd.Timestamp(frame[TIME_COL].iloc[-1])
+    requested = pd.Timedelta(weeks=float(weeks))
+    available = end - start + pd.Timedelta(seconds=SAMPLE_SECONDS)
+    if requested > available + pd.Timedelta(seconds=SAMPLE_SECONDS):
+        raise ValueError(
+            f"Requested {weeks:g} weeks from a block containing only {available}"
+        )
+    midpoint = start + (end - start) / 2
+    crop_start = midpoint - requested / 2
+    crop_end = crop_start + requested - pd.Timedelta(seconds=SAMPLE_SECONDS)
+    cropped = frame.loc[
+        frame[TIME_COL].ge(crop_start) & frame[TIME_COL].le(crop_end)
+    ].copy()
+    if cropped.empty:
+        raise RuntimeError(f"Centred crop is empty: {crop_start} -> {crop_end}")
+    return cropped.reset_index(drop=True)
+
+
 def main() -> None:
     args = parse_args()
     train_set = set(TRAIN_HOUSES)
@@ -269,7 +303,7 @@ def main() -> None:
     print(f"  test={TEST_HOUSES}", flush=True)
     print(
         f"  training blocks={args.train_weeks:g} weeks; "
-        "validation/test reuse established 8-week bounds",
+        f"validation/test centred blocks={args.eval_weeks:g} weeks",
         flush=True,
     )
 
@@ -311,16 +345,22 @@ def main() -> None:
                 f"{anchor_start} -> {anchor_end}",
                 flush=True,
             )
-            expanded = _tag_dataset(_load_slice_chunked(csv_path, start, end), dataset)
             anchor = _house_frame(reference_train, dataset, house)
-            outside_anchor = expanded.loc[
-                expanded[TIME_COL].lt(anchor_start) | expanded[TIME_COL].gt(anchor_end)
-            ]
-            frame = (
-                pd.concat([outside_anchor, anchor], ignore_index=True)
-                .sort_values(TIME_COL, kind="stable")
-                .reset_index(drop=True)
-            )
+            if start == anchor_start and end == anchor_end:
+                frame = anchor.reset_index(drop=True)
+            else:
+                expanded = _tag_dataset(
+                    _load_slice_chunked(csv_path, start, end), dataset
+                )
+                outside_anchor = expanded.loc[
+                    expanded[TIME_COL].lt(anchor_start)
+                    | expanded[TIME_COL].gt(anchor_end)
+                ]
+                frame = (
+                    pd.concat([outside_anchor, anchor], ignore_index=True)
+                    .sort_values(TIME_COL, kind="stable")
+                    .reset_index(drop=True)
+                )
             selection_note = (
                 f"{args.train_weeks:g}w_extension_preserving_exact_5w_core"
             )
@@ -328,9 +368,12 @@ def main() -> None:
         else:
             start, end = established_bounds[(dataset, house)]
             reference = reference_validation if role == "validation" else reference_test
-            frame = _house_frame(reference, dataset, house)
-            selection_note = "exact_held_out_rows_from_5w_baseline"
-            requested_weeks = 8.0
+            established = _house_frame(reference, dataset, house)
+            frame = _centred_calendar_crop(established, float(args.eval_weeks))
+            selection_note = (
+                f"centred_{args.eval_weeks:g}w_crop_of_established_8w_block"
+            )
+            requested_weeks = float(args.eval_weeks)
 
         print(f"  selected rows: {frame[TIME_COL].iloc[0]} -> {frame[TIME_COL].iloc[-1]}", flush=True)
         print(" ", summarize_split(role.upper(), frame, list(APPS_5)), flush=True)
@@ -375,7 +418,7 @@ def main() -> None:
         "protocol": "duration-controlled training blocks with whole-house validation",
         "sample_seconds": SAMPLE_SECONDS,
         "train_weeks": float(args.train_weeks),
-        "validation_test_weeks": 8.0,
+        "validation_test_weeks": float(args.eval_weeks),
         "train_houses": [list(item) for item in TRAIN_HOUSES],
         "validation_houses": [list(item) for item in VALIDATION_HOUSES],
         "test_houses": [list(item) for item in TEST_HOUSES],
