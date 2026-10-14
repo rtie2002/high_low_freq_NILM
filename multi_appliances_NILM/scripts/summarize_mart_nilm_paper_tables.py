@@ -187,6 +187,8 @@ def table_vii(run_root: Path, dataset_root: Path, seeds: tuple[int, ...]) -> pd.
                     "seed": seed,
                     "parameters_m": float(timing["parameters_trainable_millions"]),
                     "mae": float(metric["mae"]),
+                    "on_mae": float(metric["on_mae"]),
+                    "off_mae": float(metric["off_mae"]),
                     "sae": float(metric["sae"]),
                     "macro_f1": float(metric["f1"]),
                 }
@@ -198,6 +200,10 @@ def table_vii(run_root: Path, dataset_root: Path, seeds: tuple[int, ...]) -> pd.
             parameters_m=("parameters_m", "mean"),
             mae_mean=("mae", "mean"),
             mae_std=("mae", lambda x: x.std(ddof=1)),
+            on_mae_mean=("on_mae", "mean"),
+            on_mae_std=("on_mae", lambda x: x.std(ddof=1)),
+            off_mae_mean=("off_mae", "mean"),
+            off_mae_std=("off_mae", lambda x: x.std(ddof=1)),
             sae_mean=("sae", "mean"),
             sae_std=("sae", lambda x: x.std(ddof=1)),
             macro_f1_mean=("macro_f1", "mean"),
@@ -227,6 +233,8 @@ def table_vii_test(run_root: Path, seeds: tuple[int, ...]) -> pd.DataFrame:
                 overall = metrics.loc[metrics["appliance"].eq("overall")].iloc[0]
                 values = {
                     "mae": float(overall["mae"]),
+                    "on_mae": float(overall["on_mae"]),
+                    "off_mae": float(overall["off_mae"]),
                     "sae": float(overall["sae"]),
                     "macro_f1": float(overall["f1"]),
                 }
@@ -239,7 +247,7 @@ def table_vii_test(run_root: Path, seeds: tuple[int, ...]) -> pd.DataFrame:
                     "seed": seed,
                     **{
                         key: float(np.mean([item[key] for item in house_values]))
-                        for key in ("mae", "sae", "macro_f1")
+                        for key in ("mae", "on_mae", "off_mae", "sae", "macro_f1")
                     },
                 }
             )
@@ -249,6 +257,10 @@ def table_vii_test(run_root: Path, seeds: tuple[int, ...]) -> pd.DataFrame:
         .agg(
             mae_mean=("mae", "mean"),
             mae_std=("mae", lambda x: x.std(ddof=1)),
+            on_mae_mean=("on_mae", "mean"),
+            on_mae_std=("on_mae", lambda x: x.std(ddof=1)),
+            off_mae_mean=("off_mae", "mean"),
+            off_mae_std=("off_mae", lambda x: x.std(ddof=1)),
             sae_mean=("sae", "mean"),
             sae_std=("sae", lambda x: x.std(ddof=1)),
             macro_f1_mean=("macro_f1", "mean"),
