@@ -12,17 +12,67 @@ established five-week baseline. Validation and test are deterministic centred
 five-week crops of their former eight-week intervals; neither event counts nor
 model performance determine the crop boundaries.
 
-Table V trains MART-NILM, UNet-NILM, and MAT-Conv with seeds 2026, 2027, and
-2028. All models use the same CSV state ground truth, validation-only threshold
-calibration, microwave duration rule, hard state mask for evaluated power, and
-validation MAE-plus-AP checkpoint score. Model architectures, losses, windows,
-optimisers, and paper training hyperparameters otherwise remain model-specific.
+The first batch trains MART-NILM only with seeds 2026, 2027, and 2028. Its
+three complete runs provide the MART-NILM row of Table V, the complete-model
+row of Table VII, and the parameter count, checkpoint size, and training time
+for Table VI. UNet-NILM and MAT-Conv are intentionally deferred to a later
+batch. Checkpoint size is the actual `best.pt` file size in MiB
+(`bytes / 1024^2`).
 
-Table VII trains seven joint five-appliance MART-NILM variants with the same
-three seeds. Each row removes only one architecture component, and only the two
-validation houses are evaluated. Test houses are not used for architecture
-selection. Results will be appended after every scheduled run reaches a
-terminal state.
+Table VII evaluates the complete model plus six joint five-appliance
+MART-NILM ablations with the same three seeds. The complete row reuses the
+three Table V runs, avoiding duplicate training; the other six rows require 18
+additional runs. Each row removes only one architecture component, and only
+the two validation houses are evaluated. Metrics are computed per validation
+house and then averaged with equal house weight. Test houses are not used for
+architecture selection. The persistent remote task was
+`MARTNILM_Paper5W_3Seed_20261014`. All 21 runs completed successfully with
+exit code 0.
+
+### Table V: MART-NILM test results
+
+Three-seed means and sample standard deviations are reported below. These test
+results were generated only after the configuration had been frozen; they were
+not used to select the model.
+
+| Test house | MAE (W) | SAE (W) | ON MAE (W) | OFF MAE (W) | Precision | Recall | Macro-F1 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| UK-DALE 2 | 7.451 +/- 0.091 | 5.275 +/- 0.100 | 176.669 +/- 7.675 | 4.726 +/- 0.105 | 0.815 +/- 0.011 | 0.960 +/- 0.004 | 0.876 +/- 0.010 |
+| REFIT 20 | 10.798 +/- 0.355 | 5.893 +/- 0.390 | 309.207 +/- 4.577 | 7.216 +/- 0.430 | 0.661 +/- 0.009 | 0.797 +/- 0.029 | 0.716 +/- 0.016 |
+
+### Table VI: computational cost
+
+- Trainable parameters: 1.373 M.
+- Checkpoint size: 5.335 MiB (the three checkpoint files have the same size to
+  the reported precision).
+- Training time: 485.209 +/- 0.183 s.
+- Mean selected epoch: 128.33; every run completed 150 epochs.
+
+### Table VII: architecture ablation
+
+Results are equal-house averages over UK-DALE 5 and REFIT 2. Each value is the
+mean +/- sample standard deviation over seeds 2026, 2027, and 2028.
+
+| Variant | Params (M) | MAE (W) | SAE (W) | Macro-F1 |
+|---|---:|---:|---:|---:|
+| MART-NILM | 1.373 | 20.791 +/- 0.175 | 15.016 +/- 0.385 | 0.687 +/- 0.003 |
+| Single-scale stem | 1.371 | 20.647 +/- 0.388 | **14.442 +/- 0.646** | 0.686 +/- 0.009 |
+| TCN without dilation | 1.373 | 21.563 +/- 0.344 | 15.433 +/- 0.079 | 0.673 +/- 0.015 |
+| w/o channel attention | 1.331 | **20.343 +/- 0.739** | 14.448 +/- 0.366 | **0.697 +/- 0.015** |
+| w/o local decoder | 0.961 | 21.344 +/- 0.279 | 15.202 +/- 0.352 | 0.675 +/- 0.012 |
+| w/o relation attention | 1.332 | 20.780 +/- 0.339 | 14.748 +/- 0.304 | 0.675 +/- 0.009 |
+| w/o state--power gate | 1.373 | 26.764 +/- 0.657 | 18.839 +/- 0.762 | 0.684 +/- 0.012 |
+
+The state--power gate is indispensable for power accuracy. Dilation, the local
+decoder, and relation attention are supported by macro-F1. The current evidence
+does not justify channel attention as a performance-improving component, and a
+single-scale stem matches the complete model within seed variation. A visual
+audit of matched fridge and microwave segments found that both simplified
+variants produce more fragmented fridge state intervals than the complete
+model, while the microwave example is nearly unchanged. Consequently, neither
+component is silently claimed as beneficial: channel attention and the
+multi-scale stem remain explicit simplification candidates for a controlled
+combined follow-up.
 
 ## Recovery baseline — 2026-10-08
 
