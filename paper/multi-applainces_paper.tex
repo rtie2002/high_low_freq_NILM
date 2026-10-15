@@ -605,29 +605,41 @@ over standard joint training.
 
 \begin{figure*}[!t]
 \centering
-\includegraphics[width=0.485\textwidth]{figures/event_background_coverage.pdf}
-\caption{Residual-background coverage of recorded on-event windows and the
-uniform target distribution used by focal-event sampling.}
-\label{fig:event-background-coverage}
+\includegraphics[width=0.98\textwidth]{figures/training_strategy_mechanisms.pdf}
+\caption{Mechanistic evidence for the proposed training strategies on the
+validation houses.  Panels (a) and (b) report paired three-seed differences
+between focal-event mixing and standard training within residual-background
+intervals; positive values denote higher recall and lower ON MAE, respectively.
+Panel (c) reports the median effective state-term--to--power-loss ratio after
+epoch 20, with interquartile ranges.  The dashed line denotes equal numerical
+magnitude.}
+\label{fig:training-mechanisms}
 \end{figure*}
 
 \begin{figure*}[!t]
 \centering
 \includegraphics[width=0.485\textwidth]{figures/training_strategy_per_appliance.pdf}
-\caption{Validation evidence for the training strategies (three-seed mean
-$\pm$ standard deviation). Complete MART-NILM improves F1 for four appliances
-and reduces ON MAE for all five; microwave F1 is statistically unchanged.}
+\caption{Per-appliance validation effect of the complete training strategy
+(three-seed mean $\pm$ standard deviation).  The strategy improves F1 for four
+appliances and reduces ON MAE for all five; microwave F1 is statistically
+unchanged.}
 \label{fig:training-results}
 \end{figure*}
 
-Figure~\ref{fig:event-background-coverage} shows that the recorded event
-distribution is strongly appliance dependent, whereas focal-event mixing makes
-the intended residual-background exposure uniform.  At appliance level,
-Fig.~\ref{fig:training-results} shows that the complete strategy
-raises F1 for the kettle, fridge, dishwasher, and washing machine, and lowers
-ON MAE for every appliance.  Microwave F1 changes from
-$0.352\pm0.026$ to $0.348\pm0.027$, so no microwave detection improvement is
-claimed.
+Figure~\ref{fig:training-mechanisms} explains the two effects behind
+Table~\ref{tab:training-ablation}.  Focal-event mixing yields its largest recall
+gains for washing-machine and microwave events above 200~W residual background,
+while substantially reducing their ON MAE.  It does not improve every regime:
+microwave recall falls by 7.9 percentage points below 100~W, consistent with the
+unchanged overall microwave F1.  With a fixed task weight, the median effective
+state term is only 2.0\% and 0.8\% of the corresponding power loss for kettle
+and microwave.  Appliance-wise balancing raises these ratios to 28.5\% and
+15.1\%, respectively, while bringing dishwasher and washing-machine state terms
+close to the power-loss scale.  Thus the two strategies address complementary
+limitations: event coverage and task-scale mismatch.  Their combined
+per-appliance outcome is shown in Fig.~\ref{fig:training-results}; microwave F1
+changes from $0.352\pm0.026$ to $0.348\pm0.027$, so no microwave detection
+improvement is claimed.
 
 \FloatBarrier
 \section{Conclusion}

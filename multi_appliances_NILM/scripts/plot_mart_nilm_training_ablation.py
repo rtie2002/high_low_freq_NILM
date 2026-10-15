@@ -7,6 +7,7 @@ import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import TwoSlopeNorm
 import numpy as np
 import pandas as pd
 
@@ -15,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SEEDS = (2026, 2027, 2028)
 APPLIANCES = ("kettle", "fridge", "dishwasher", "washingmachine", "microwave")
 DISPLAY_NAMES = ("Kettle", "Fridge", "Dishwasher", "Washing\nmachine", "Microwave")
+BACKGROUND_EDGES = np.asarray([0.0, 100.0, 200.0, 400.0, 800.0, np.inf])
+BACKGROUND_LABELS = ("0--100", "100--200", "200--400", "400--800", r"$\geq$800")
 
 
 def _paper_style() -> None:
@@ -41,85 +44,240 @@ def _run_dir(run_root: Path, variant: str, seed: int) -> Path:
     return run_root / "table_viii" / variant / f"seed_{seed}"
 
 
-def _history_summary(
+def _focal_background_effect(
     run_root: Path,
-    variants: tuple[str, ...],
+    validation_csv: Path,
     seeds: tuple[int, ...],
 ) -> pd.DataFrame:
-    rows = []
-    for variant in variants:
+    """Paired validation effect of focal mixing within residual-background bins."""
+    aggregate = pd.read_csv(validation_csv, usecols=["aggregate"])["aggregate"].to_numpy(
+        dtype=float
+    )
+    by_variant: dict[str, dict[int, dict[tuple[str, str], tuple[float, float, int]]]] = {}
+    for variant in ("standard_joint_training", "focal_event_mixing"):
+        by_seed = {}
         for seed in seeds:
-            history = pd.read_csv(_run_dir(run_root, variant, seed) / "history.csv")
-            for row in history.itertuples(index=False):
+            data = np.load(_run_dir(run_root, variant, seed) / "validation_predictions.npz")
+            names = tuple(str(name) for name in data["appliances"])
+            if names != APPLIANCES:
+                raise ValueError(f"Unexpected appliance order: {names}")
+            timesteps = data["csv_timesteps"].astype(np.int64)
+            y_true = data["y_true_watts"].astype(float)
+            y_pred = data["y_pred_watts"].astype(float)
+            true_on = data["y_true_on"].astype(bool)
+            pred_on = data["y_pred_on"].astype(bool)
+            background = np.maximum(aggregate[timesteps] - y_true.sum(axis=1), 0.0)
+            cells = {}
+            for app_i, appliance in enumerate(APPLIANCES):
+                for bin_i, (low, high) in enumerate(
+                    zip(BACKGROUND_EDGES[:-1], BACKGROUND_EDGES[1:])
+                ):
+                    mask = true_on[:, app_i] & (background >= low) & (background < high)
+                    count = int(mask.sum())
+                    recall = float(pred_on[mask, app_i].mean()) if count else np.nan
+                    on_mae = (
+                        float(np.abs(y_pred[mask, app_i] - y_true[mask, app_i]).mean())
+                        if count
+                        else np.nan
+                    )
+                    cells[(appliance, BACKGROUND_LABELS[bin_i])] = (recall, on_mae, count)
+            by_seed[seed] = cells
+        by_variant[variant] = by_seed
+
+    rows = []
+    for seed in seeds:
+        standard = by_variant["standard_joint_training"][seed]
+        focal = by_variant["focal_event_mixing"][seed]
+        for appliance in APPLIANCES:
+            for background_bin in BACKGROUND_LABELS:
+                std_recall, std_on_mae, count = standard[(appliance, background_bin)]
+                focal_recall, focal_on_mae, _ = focal[(appliance, background_bin)]
                 rows.append(
                     {
-                        "variant": variant,
                         "seed": seed,
-                        "epoch": int(row.epoch),
-                        "val_ap": float(row.val_ap),
-                        "val_mae_norm": float(row.val_mae_norm),
+                        "appliance": appliance,
+                        "background_bin_w": background_bin,
+                        "on_samples": count,
+                        "recall_change_pp": 100.0 * (focal_recall - std_recall),
+                        "on_mae_reduction_w": std_on_mae - focal_on_mae,
                     }
                 )
-    raw = pd.DataFrame(rows)
-    summary = (
-        raw.groupby(["variant", "epoch"], sort=False)
-        .agg(
-            n_seeds=("seed", "nunique"),
-            val_ap_mean=("val_ap", "mean"),
-            val_ap_std=("val_ap", lambda values: values.std(ddof=1)),
-            val_mae_norm_mean=("val_mae_norm", "mean"),
-            val_mae_norm_std=("val_mae_norm", lambda values: values.std(ddof=1)),
-        )
-        .reset_index()
-    )
-    return summary.loc[summary["n_seeds"].eq(len(seeds))].copy()
+    return pd.DataFrame(rows)
 
 
-def plot_focal_generalization(
+def _balance_effect(
     run_root: Path,
+    seeds: tuple[int, ...],
+    lambda_state: float,
+    balance_limit: float,
+    warmup_epochs: int,
+) -> pd.DataFrame:
+    """Effective state-term/power-loss ratio under fixed and balanced weighting."""
+    rows = []
+    for variant in ("standard_joint_training", "appliance_wise_balancing"):
+        for seed in seeds:
+            frame = pd.read_csv(_run_dir(run_root, variant, seed) / "loss_detail.csv")
+            frame = frame.loc[frame["epoch"].ge(warmup_epochs)]
+            power = frame[[f"train_loss_power_{app}" for app in APPLIANCES]].to_numpy(float)
+            state = frame[[f"train_loss_state_{app}" for app in APPLIANCES]].to_numpy(float)
+            if variant == "standard_joint_training":
+                effective_state = lambda_state * state
+            else:
+                global_scale = power.sum(axis=1) / np.maximum(state.sum(axis=1), 1e-8)
+                local_scale = power / np.maximum(state, 1e-8)
+                scale = np.clip(
+                    local_scale,
+                    global_scale[:, None] / balance_limit,
+                    global_scale[:, None] * balance_limit,
+                )
+                effective_state = lambda_state * state * scale
+            ratio = effective_state / np.maximum(power, 1e-8)
+            for epoch_i, epoch in enumerate(frame["epoch"].astype(int)):
+                for app_i, appliance in enumerate(APPLIANCES):
+                    rows.append(
+                        {
+                            "variant": variant,
+                            "seed": seed,
+                            "epoch": epoch,
+                            "appliance": appliance,
+                            "state_to_power_ratio": ratio[epoch_i, app_i],
+                        }
+                    )
+    return pd.DataFrame(rows)
+
+
+def _annotated_heatmap(
+    ax: plt.Axes,
+    values: np.ndarray,
+    title: str,
+    colorbar_label: str,
+    value_format: str,
+) -> None:
+    finite = np.abs(values[np.isfinite(values)])
+    span = max(float(finite.max(initial=1.0)), 1.0)
+    image = ax.imshow(
+        values,
+        cmap="RdBu",
+        norm=TwoSlopeNorm(vmin=-span, vcenter=0.0, vmax=span),
+        aspect="auto",
+    )
+    ax.set_xticks(range(len(BACKGROUND_LABELS)), BACKGROUND_LABELS, rotation=35, ha="right")
+    ax.set_yticks(range(len(APPLIANCES)), DISPLAY_NAMES)
+    ax.set_xlabel("Residual background (W)")
+    ax.set_title(title, loc="left", fontweight="bold")
+    for row in range(values.shape[0]):
+        for col in range(values.shape[1]):
+            value = values[row, col]
+            if np.isfinite(value):
+                color = "white" if abs(value) > 0.55 * span else "black"
+                ax.text(col, row, value_format.format(value), ha="center", va="center", color=color, fontsize=7)
+    colorbar = ax.figure.colorbar(image, ax=ax, fraction=0.046, pad=0.03)
+    colorbar.set_label(colorbar_label, fontsize=8)
+    colorbar.ax.tick_params(labelsize=7)
+
+
+def plot_training_mechanisms(
+    run_root: Path,
+    validation_csv: Path,
     output_dir: Path,
     seeds: tuple[int, ...],
+    lambda_state: float,
+    balance_limit: float,
 ) -> None:
-    variants = ("standard_joint_training", "focal_event_mixing")
-    summary = _history_summary(run_root, variants, seeds)
-    summary.to_csv(
-        output_dir / "focal_event_validation_curves.csv",
-        index=False,
-        float_format="%.6f",
+    focal = _focal_background_effect(run_root, validation_csv, seeds)
+    focal.to_csv(
+        output_dir / "focal_background_effect.csv", index=False, float_format="%.6f"
+    )
+    focal_mean = focal.groupby(["appliance", "background_bin_w"], sort=False).mean(
+        numeric_only=True
+    )
+    recall = np.asarray(
+        [
+            [focal_mean.loc[(app, bin_name), "recall_change_pp"] for bin_name in BACKGROUND_LABELS]
+            for app in APPLIANCES
+        ]
+    )
+    on_mae = np.asarray(
+        [
+            [focal_mean.loc[(app, bin_name), "on_mae_reduction_w"] for bin_name in BACKGROUND_LABELS]
+            for app in APPLIANCES
+        ]
     )
 
-    styles = {
-        "standard_joint_training": ("Standard joint training", "#666666"),
-        "focal_event_mixing": ("+ Focal-event mixing", "#0072B2"),
-    }
-    panels = (
-        ("val_ap_mean", "val_ap_std", "Validation macro-AP", "(a) State ranking"),
-        (
-            "val_mae_norm_mean",
-            "val_mae_norm_std",
-            "Normalized validation MAE",
-            "(b) Power estimation",
-        ),
+    balance = _balance_effect(
+        run_root,
+        seeds,
+        lambda_state=lambda_state,
+        balance_limit=balance_limit,
+        warmup_epochs=20,
     )
-    fig, axes = plt.subplots(2, 1, figsize=(7.2, 7.2), sharex=True, constrained_layout=True)
-    for ax, (mean_col, std_col, ylabel, title) in zip(axes, panels):
-        for variant in variants:
-            values = summary.loc[summary["variant"].eq(variant)].sort_values("epoch")
-            epoch = values["epoch"].to_numpy(dtype=float)
-            mean = values[mean_col].to_numpy(dtype=float)
-            std = values[std_col].fillna(0.0).to_numpy(dtype=float)
-            label, color = styles[variant]
-            ax.plot(epoch, mean, color=color, linewidth=2.0, label=label)
-            ax.fill_between(epoch, mean - std, mean + std, color=color, alpha=0.15, linewidth=0)
-        ax.set_title(title, loc="left", fontweight="bold")
-        ax.set_ylabel(ylabel)
-        ax.grid(axis="y", color="#DDDDDD", linewidth=0.7)
-        ax.spines[["top", "right"]].set_visible(False)
-    axes[0].legend(frameon=False, loc="lower right")
-    axes[-1].set_xlabel("Epoch")
-    fig.suptitle("Validation dynamics of focal-event mixing", fontweight="bold", fontsize=12)
-    fig.savefig(output_dir / "focal_event_validation_curves.png", dpi=600)
-    fig.savefig(output_dir / "focal_event_validation_curves.pdf")
+    balance.to_csv(
+        output_dir / "appliance_balance_effect.csv", index=False, float_format="%.6f"
+    )
+
+    fig, axes = plt.subplots(
+        1,
+        3,
+        figsize=(11.0, 3.55),
+        gridspec_kw={"width_ratios": (1.05, 1.05, 1.20)},
+        constrained_layout=True,
+    )
+    _annotated_heatmap(
+        axes[0],
+        recall,
+        "(a) Recall change from focal mixing",
+        "Focal minus standard (percentage points)",
+        "{:+.1f}",
+    )
+    _annotated_heatmap(
+        axes[1],
+        on_mae,
+        "(b) ON-MAE reduction from focal mixing",
+        "Standard minus focal (W)",
+        "{:+.0f}",
+    )
+
+    x = np.arange(len(APPLIANCES), dtype=float)
+    for offset, variant, label, color in (
+        (-0.18, "standard_joint_training", "Fixed task weight", "#666666"),
+        (0.18, "appliance_wise_balancing", "Appliance-wise balance", "#0072B2"),
+    ):
+        values = balance.loc[balance["variant"].eq(variant)]
+        grouped = values.groupby("appliance")["state_to_power_ratio"]
+        median = grouped.median().reindex(APPLIANCES).to_numpy(float)
+        q25 = grouped.quantile(0.25).reindex(APPLIANCES).to_numpy(float)
+        q75 = grouped.quantile(0.75).reindex(APPLIANCES).to_numpy(float)
+        axes[2].bar(
+            x + offset,
+            median,
+            width=0.32,
+            yerr=np.vstack((median - q25, q75 - median)),
+            capsize=2,
+            color=color,
+            label=label,
+        )
+    axes[2].axhline(
+        1.0, color="black", linewidth=0.9, linestyle="--", label="Equal magnitude"
+    )
+    axes[2].set_yscale("log")
+    axes[2].set_ylim(0.005, 2.5)
+    axes[2].set_xticks(x, DISPLAY_NAMES, rotation=25, ha="right")
+    axes[2].set_ylabel("Effective state term / power loss")
+    axes[2].set_title("(c) Power--state scale alignment", loc="left", fontweight="bold")
+    axes[2].grid(axis="y", color="#DDDDDD", linewidth=0.7, which="major")
+    axes[2].spines[["top", "right"]].set_visible(False)
+    axes[2].legend(
+        frameon=False,
+        fontsize=6,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.31),
+        ncol=3,
+        columnspacing=0.7,
+        handlelength=1.5,
+    )
+
+    fig.savefig(output_dir / "training_strategy_mechanisms.png", dpi=600)
+    fig.savefig(output_dir / "training_strategy_mechanisms.pdf")
     plt.close(fig)
 
 
@@ -189,10 +347,30 @@ def main() -> None:
         default=ROOT / "runs" / "paper_5w" / "table_viii" / "figures",
     )
     parser.add_argument("--seeds", type=int, nargs="+", default=list(SEEDS))
+    parser.add_argument(
+        "--validation-csv",
+        type=Path,
+        default=(
+            ROOT
+            / "datasets"
+            / "mixed_ukdale_refit_5w_all_house_split"
+            / "validating"
+            / "multi_appliance_validating.csv"
+        ),
+    )
+    parser.add_argument("--lambda-state", type=float, default=0.8)
+    parser.add_argument("--balance-limit", type=float, default=3.0)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     _paper_style()
-    plot_focal_generalization(args.run_root, args.output_dir, tuple(args.seeds))
+    plot_training_mechanisms(
+        args.run_root,
+        args.validation_csv,
+        args.output_dir,
+        tuple(args.seeds),
+        args.lambda_state,
+        args.balance_limit,
+    )
     plot_per_appliance_before_after(args.summary_path, args.output_dir)
     print(f"Saved Table VIII figures and source CSV to {args.output_dir}")
 
