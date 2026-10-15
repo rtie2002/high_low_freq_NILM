@@ -600,14 +600,9 @@ macro-F1 by 0.082 over standard joint training.
 \begin{figure*}[!t]
 \centering
 \includegraphics[width=0.485\textwidth]{figures/event_background_coverage.pdf}
-\hfill
-\includegraphics[width=0.485\textwidth]{figures/appliance_weight_trajectories.pdf}
-\caption{Mechanisms of the proposed training strategies.  Left:
-residual-background coverage of recorded on-event windows and the uniform
-target used by focal-event sampling.  Right: normalized appliance-wise
-state-loss coefficients; the dashed line denotes the global ratio and the
-dotted lines denote the clipping bounds.}
-\label{fig:training-mechanisms}
+\caption{Residual-background coverage of recorded on-event windows and the
+uniform target distribution used by focal-event sampling.}
+\label{fig:event-background-coverage}
 \end{figure*}
 
 \begin{figure*}[!t]
@@ -623,12 +618,10 @@ is statistically unchanged.}
 \label{fig:training-results}
 \end{figure*}
 
-Figure~\ref{fig:training-mechanisms} explains how the interventions act.  The
-recorded event distribution is strongly appliance dependent, while focal-event
-mixing makes the intended residual-background exposure uniform.  The bounded
-loss coefficients separate appliances with state-dominated errors from those
-with power-dominated errors without allowing unbounded weights.  The validation
-curves in Fig.~\ref{fig:training-results} do not show conventional late-epoch
+Figure~\ref{fig:event-background-coverage} shows that the recorded event
+distribution is strongly appliance dependent, whereas focal-event mixing makes
+the intended residual-background exposure uniform.  The validation curves in
+Fig.~\ref{fig:training-results} do not show conventional late-epoch
 overfitting; instead, focal-event mixing yields a persistent ranking gain and a
 persistent regression trade-off.  At appliance level, the complete strategy
 raises F1 for the kettle, fridge, dishwasher, and washing machine, and lowers
