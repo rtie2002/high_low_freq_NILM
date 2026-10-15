@@ -57,42 +57,52 @@ def _shared_encoder_parameters(model: torch.nn.Module) -> list[torch.nn.Paramete
     return params
 
 
-def _gradient_statistics(
-    loss: torch.Tensor,
+def _per_appliance_gradients(
+    losses: torch.Tensor,
     parameters: list[torch.nn.Parameter],
     *,
     retain_graph: bool,
-) -> tuple[list[torch.Tensor | None], float]:
+) -> tuple[list[torch.Tensor | None], torch.Tensor]:
+    """Return one shared-encoder gradient per appliance in two VJP calls.
+
+    ``is_grads_batched`` uses the five rows of an identity matrix as five
+    vector-Jacobian products.  It is mathematically identical to calling
+    ``autograd.grad(losses[i], ...)`` five times, but avoids redundant backward
+    passes through the 1024-sample temporal network.
+    """
+    num_appliances = int(losses.numel())
     gradients = torch.autograd.grad(
-        loss,
+        losses,
         parameters,
+        grad_outputs=torch.eye(num_appliances, device=losses.device),
         retain_graph=retain_graph,
         allow_unused=True,
+        is_grads_batched=True,
     )
-    norm_sq = sum(
-        (gradient.detach().double().square().sum() for gradient in gradients if gradient is not None),
-        start=torch.zeros((), device=loss.device, dtype=torch.float64),
-    )
-    return list(gradients), float(torch.sqrt(norm_sq).cpu())
+    norm_sq = torch.zeros(num_appliances, device=losses.device, dtype=torch.float64)
+    for gradient in gradients:
+        if gradient is not None:
+            norm_sq += gradient.detach().double().reshape(num_appliances, -1).square().sum(dim=1)
+    return list(gradients), torch.sqrt(norm_sq)
 
 
-def _cosine(
+def _cosines(
     left: list[torch.Tensor | None],
     right: list[torch.Tensor | None],
-    left_norm: float,
-    right_norm: float,
-) -> float:
-    if left_norm <= 0.0 or right_norm <= 0.0:
-        return float("nan")
-    dot = sum(
-        (
-            grad_left.detach().double().mul(grad_right.detach().double()).sum()
-            for grad_left, grad_right in zip(left, right)
-            if grad_left is not None and grad_right is not None
-        ),
-        start=torch.zeros((), device=next(g.device for g in left if g is not None), dtype=torch.float64),
-    )
-    return float((dot / (left_norm * right_norm)).cpu())
+    left_norm: torch.Tensor,
+    right_norm: torch.Tensor,
+) -> torch.Tensor:
+    dot = torch.zeros_like(left_norm, dtype=torch.float64)
+    for grad_left, grad_right in zip(left, right):
+        if grad_left is not None and grad_right is not None:
+            dot += (
+                grad_left.detach()
+                .double()
+                .mul(grad_right.detach().double())
+                .reshape(len(left_norm), -1)
+                .sum(dim=1)
+            )
+    return dot / (left_norm * right_norm).clamp_min(1e-12)
 
 
 def audit_seed(
@@ -155,14 +165,18 @@ def audit_seed(
             max=global_scale * limit,
         )
 
+        power_grads, power_norms = _per_appliance_gradients(
+            power_losses, shared_parameters, retain_graph=True
+        )
+        state_grads, raw_state_norms = _per_appliance_gradients(
+            state_losses, shared_parameters, retain_graph=False
+        )
+        cosines = _cosines(power_grads, state_grads, power_norms, raw_state_norms)
+
         for appliance_index, appliance in enumerate(APPLIANCES):
-            power_grad, power_norm = _gradient_statistics(
-                power_losses[appliance_index], shared_parameters, retain_graph=True
-            )
-            state_grad, raw_state_norm = _gradient_statistics(
-                state_losses[appliance_index], shared_parameters, retain_graph=True
-            )
-            cosine = _cosine(power_grad, state_grad, power_norm, raw_state_norm)
+            power_norm = float(power_norms[appliance_index].cpu())
+            raw_state_norm = float(raw_state_norms[appliance_index].cpu())
+            cosine = float(cosines[appliance_index].cpu())
             for rule, coefficient in (
                 ("Fixed task weight", lambda_state),
                 (
