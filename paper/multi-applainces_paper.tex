@@ -10,6 +10,7 @@
 \usepackage{multirow}
 \usepackage{tabularx}
 \usepackage{booktabs}
+\usepackage{placeins}
 
 % Mean and standard deviation stacked in two rows with matching font size.
 \newcommand{\mstd}[2]{\shortstack{#1\\[-2pt]{$\pm$#2}}}
@@ -598,39 +599,27 @@ macro-F1 by 0.082 over standard joint training.
 
 \begin{figure*}[!t]
 \centering
-\begin{minipage}[t]{0.49\textwidth}
-\centering
-\includegraphics[width=\linewidth]{figures/event_background_coverage.pdf}
-\end{minipage}\hfill
-\begin{minipage}[t]{0.49\textwidth}
-\centering
-\includegraphics[width=\linewidth]{figures/appliance_weight_trajectories.pdf}
-\end{minipage}
-\caption{Mechanisms of the two training strategies.  Left: the empirical
-distribution of recorded on-event windows is uneven across residual-background
-intervals, whereas focal-event sampling targets equal probability for each
-non-empty interval.  Right: the normalized state-loss coefficients learned
-from the three complete-model runs; the dashed line denotes the global ratio
-and the dotted lines denote the clipping bounds.}
+\includegraphics[width=0.485\textwidth]{figures/event_background_coverage.pdf}
+\hfill
+\includegraphics[width=0.485\textwidth]{figures/appliance_weight_trajectories.pdf}
+\caption{Mechanisms of the proposed training strategies.  Left:
+residual-background coverage of recorded on-event windows and the uniform
+target used by focal-event sampling.  Right: normalized appliance-wise
+state-loss coefficients; the dashed line denotes the global ratio and the
+dotted lines denote the clipping bounds.}
 \label{fig:training-mechanisms}
 \end{figure*}
 
 \begin{figure*}[!t]
 \centering
-\begin{minipage}[t]{0.49\textwidth}
-\centering
-\includegraphics[width=\linewidth]{figures/focal_event_validation_curves.pdf}
-\end{minipage}\hfill
-\begin{minipage}[t]{0.49\textwidth}
-\centering
-\includegraphics[width=\linewidth]{figures/training_strategy_per_appliance.pdf}
-\end{minipage}
+\includegraphics[width=0.485\textwidth]{figures/focal_event_validation_curves.pdf}
+\hfill
+\includegraphics[width=0.485\textwidth]{figures/training_strategy_per_appliance.pdf}
 \caption{Validation evidence for the training strategies (three-seed mean
 $\pm$ standard deviation).  Left: focal-event mixing improves state ranking
-throughout training, but retains a higher power-estimation error.  Right:
-complete MART-NILM improves F1 for four of five appliances and reduces ON MAE
-for all five.  Microwave F1 remains statistically unchanged, indicating that
-background diversification alone does not resolve its temporal ambiguity.}
+but retains a higher power-estimation error.  Right: complete MART-NILM
+improves F1 for four appliances and reduces ON MAE for all five; microwave F1
+is statistically unchanged.}
 \label{fig:training-results}
 \end{figure*}
 
@@ -647,7 +636,7 @@ ON MAE for every appliance.  Microwave F1 changes from
 $0.352\pm0.026$ to $0.348\pm0.027$, so no microwave detection improvement is
 claimed.
 
-\clearpage
+\FloatBarrier
 \section{Conclusion}
 
 This work presented MART-NILM, a joint power-and-state model evaluated under
