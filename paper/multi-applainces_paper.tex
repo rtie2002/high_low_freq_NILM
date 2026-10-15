@@ -374,7 +374,14 @@ S_{\mathrm{val}}=\mathrm{MAE}^{\mathrm{norm}}_{\mathrm{val}}
 +1-\mathrm{AP}^{\mathrm{macro}}_{\mathrm{val}},
 \label{eq:checkpoint-score}
 \end{equation}
-where AP is computed from the continuous state probabilities. After checkpoint selection, an appliance-specific threshold is chosen from $\{0.05,0.06,\ldots,0.98\}$ to maximize validation F1. For the microwave, predicted on periods shorter than 32~s are removed and off gaps no longer than 24~s are joined. The resulting binary state $\hat z_{t,i}$ is also applied to the power output, $\hat P^{\mathrm{eval}}_{t,i}=\hat z_{t,i}\hat P_{t,i}$. The fitted thresholds and temporal rules are then frozen and applied unchanged to both test houses.
+where average precision (AP) is the area under the precision--recall curve
+computed from the continuous state probabilities. After checkpoint selection,
+an appliance-specific threshold is chosen from $\{0.05,0.06,\ldots,0.98\}$ to
+maximize validation F1. For the microwave, predicted on periods shorter than
+32~s are removed and off gaps no longer than 24~s are joined. The resulting
+binary state $\hat z_{t,i}$ is also applied to the power output,
+$\hat P^{\mathrm{eval}}_{t,i}=\hat z_{t,i}\hat P_{t,i}$. The fitted thresholds
+and temporal rules are then frozen and applied unchanged to both test houses.
 
 \subsection{Evaluation Metrics}
 \label{sec:metrics}
@@ -561,41 +568,40 @@ work.}
 \centering
 \renewcommand{\arraystretch}{1.12}
 \scriptsize
-\setlength{\tabcolsep}{1.5pt}
-\begin{tabularx}{\columnwidth}{@{}>{\raggedright\arraybackslash}p{1.55cm}*{5}{>{\centering\arraybackslash}X}@{}}
+\setlength{\tabcolsep}{2pt}
+\begin{tabularx}{\columnwidth}{@{}>{\raggedright\arraybackslash}p{2.15cm}*{4}{>{\centering\arraybackslash}X}@{}}
 \toprule
 Training strategy
 & \shortstack{MAE\\(W) $\downarrow$}
 & \shortstack{ON MAE\\(W) $\downarrow$}
 & \shortstack{SAE\\(W) $\downarrow$}
-& \shortstack{AP\\$\uparrow$}
 & \shortstack{Macro-F1\\$\uparrow$} \\
 \midrule
 Standard joint training
 & \shortstack{$21.164$\\$\pm0.394$} & \shortstack{$357.808$\\$\pm19.280$}
-& \shortstack{$15.938$\\$\pm0.348$} & \shortstack{$0.655$\\$\pm0.016$} & \shortstack{$0.605$\\$\pm0.012$} \\
+& \shortstack{$15.938$\\$\pm0.348$} & \shortstack{$0.605$\\$\pm0.012$} \\
 + Focal-event mixing$^\dagger$
 & \shortstack{$21.679$\\$\pm0.144$} & \shortstack{$\mathbf{301.623}$\\$\mathbf{\pm16.196}$}
-& \shortstack{$15.601$\\$\pm0.365$} & \shortstack{$0.714$\\$\pm0.015$} & \shortstack{$0.649$\\$\pm0.016$} \\
+& \shortstack{$15.601$\\$\pm0.365$} & \shortstack{$0.649$\\$\pm0.016$} \\
 + Appliance-wise balancing$^\dagger$
 & \shortstack{$20.929$\\$\pm0.065$} & \shortstack{$334.862$\\$\pm10.888$}
-& \shortstack{$15.175$\\$\pm0.322$} & \shortstack{$0.729$\\$\pm0.018$} & \shortstack{$0.661$\\$\pm0.014$} \\
+& \shortstack{$15.175$\\$\pm0.322$} & \shortstack{$0.661$\\$\pm0.014$} \\
 \textbf{Complete MART-NILM}$^\dagger$
 & \shortstack{$\mathbf{20.791}$\\$\mathbf{\pm0.175}$} & \shortstack{$315.408$\\$\pm10.405$}
-& \shortstack{$\mathbf{15.016}$\\$\mathbf{\pm0.385}$} & \shortstack{$\mathbf{0.766}$\\$\mathbf{\pm0.008}$}
+& \shortstack{$\mathbf{15.016}$\\$\mathbf{\pm0.385}$}
 & \shortstack{$\mathbf{0.687}$\\$\mathbf{\pm0.003}$} \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
 Table~\ref{tab:training-ablation} supports both strategies, but also exposes
-their different effects.  Focal-event mixing improves AP by 0.060, macro-F1
-by 0.044, and ON MAE by 56.19~W relative to standard training, while its
+their different effects.  Focal-event mixing improves macro-F1 by 0.044 and
+ON MAE by 56.19~W relative to standard training, while its
 aggregate MAE is 0.52~W higher.  It should therefore be interpreted as a
 coverage intervention rather than a generic regularizer.  Appliance-wise
-balancing improves all five aggregate measures when used alone.  Their
-combination gives the best MAE, SAE, AP, and macro-F1, raising AP by 0.111 and
-macro-F1 by 0.082 over standard joint training.
+balancing improves all four reported measures when used alone.  Their
+combination gives the best MAE, SAE, and macro-F1, raising macro-F1 by 0.082
+over standard joint training.
 
 \begin{figure*}[!t]
 \centering
@@ -607,23 +613,17 @@ uniform target distribution used by focal-event sampling.}
 
 \begin{figure*}[!t]
 \centering
-\includegraphics[width=0.485\textwidth]{figures/focal_event_validation_curves.pdf}
-\hfill
 \includegraphics[width=0.485\textwidth]{figures/training_strategy_per_appliance.pdf}
 \caption{Validation evidence for the training strategies (three-seed mean
-$\pm$ standard deviation).  Left: focal-event mixing improves state ranking
-but retains a higher power-estimation error.  Right: complete MART-NILM
-improves F1 for four appliances and reduces ON MAE for all five; microwave F1
-is statistically unchanged.}
+$\pm$ standard deviation). Complete MART-NILM improves F1 for four appliances
+and reduces ON MAE for all five; microwave F1 is statistically unchanged.}
 \label{fig:training-results}
 \end{figure*}
 
 Figure~\ref{fig:event-background-coverage} shows that the recorded event
 distribution is strongly appliance dependent, whereas focal-event mixing makes
-the intended residual-background exposure uniform.  The validation curves in
-Fig.~\ref{fig:training-results} do not show conventional late-epoch
-overfitting; instead, focal-event mixing yields a persistent ranking gain and a
-persistent regression trade-off.  At appliance level, the complete strategy
+the intended residual-background exposure uniform.  At appliance level,
+Fig.~\ref{fig:training-results} shows that the complete strategy
 raises F1 for the kettle, fridge, dishwasher, and washing machine, and lowers
 ON MAE for every appliance.  Microwave F1 changes from
 $0.352\pm0.026$ to $0.348\pm0.027$, so no microwave detection improvement is
@@ -637,7 +637,7 @@ whole-house transfer across UK-DALE and REFIT.  The ablations show that its
 shared temporal encoder and appliance-specific decoders provide the principal
 architectural gains.  Focal-event mixing broadens residual-background
 coverage, while bounded appliance-wise balancing improves the joint objective;
-together they increase validation AP and macro-F1 without increasing model
+together they increase validation macro-F1 without increasing model
 size.  Microwave detection and fridge operation under high residual load
 remain the principal failure cases, motivating future work on timing-robust
 event representations and uncertainty-aware separation.
