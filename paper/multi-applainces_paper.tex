@@ -603,41 +603,69 @@ balancing improves all four reported measures when used alone.  Their
 combination gives the best MAE, SAE, and macro-F1, raising macro-F1 by 0.082
 over standard joint training.
 
-\begin{figure*}[!t]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.98\textwidth]{figures/training_strategy_mechanisms.pdf}
-\caption{Mechanistic evidence for the proposed training strategies on the
-validation houses.  Panels (a) and (b) report paired three-seed differences
-between focal-event mixing and standard training within residual-background
-intervals; positive values denote higher recall and lower ON MAE, respectively.
-Panel (c) reports the median effective state-term--to--power-loss ratio after
-epoch 20, with interquartile ranges.  The dashed line denotes equal numerical
-magnitude.}
-\label{fig:training-mechanisms}
-\end{figure*}
+\includegraphics[width=\columnwidth]{figures/focal_recall_by_background.pdf}
+\caption{Background-conditioned validation recall change produced by
+focal-event mixing (paired three-seed mean).  Each entry is focal-event mixing
+minus standard training in percentage points; positive values denote improved
+recall.}
+\label{fig:focal-recall}
+\end{figure}
 
-\begin{figure*}[!t]
+Figure~\ref{fig:focal-recall} shows that focal-event mixing primarily improves
+event detection under non-trivial residual load.  The largest gains occur for
+washing-machine and microwave events above 200~W.  The effect is not universal:
+microwave recall decreases by 7.9 percentage points below 100~W, consistent
+with the unchanged overall microwave F1.
+
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.485\textwidth]{figures/training_strategy_per_appliance.pdf}
+\includegraphics[width=\columnwidth]{figures/focal_on_mae_by_background.pdf}
+\caption{Background-conditioned validation ON-MAE reduction produced by
+focal-event mixing (paired three-seed mean).  Each entry is standard training
+minus focal-event mixing in watts; positive values denote lower ON MAE.}
+\label{fig:focal-on-mae}
+\end{figure}
+
+Figure~\ref{fig:focal-on-mae} separates this detection effect from power
+estimation.  Focal-event mixing substantially reduces ON MAE for kettle and
+microwave across several background intervals, and also improves the
+high-background estimates of dishwasher and washing machine.  This explains
+why Table~\ref{tab:training-ablation} records better ON MAE despite a modest
+increase in aggregate MAE.
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\columnwidth]{figures/appliance_balance_scale.pdf}
+\caption{Power--state scale alignment produced by appliance-wise balancing.
+Bars report the median effective state-term--to--power-loss ratio after epoch
+20; error bars show interquartile ranges.  The dashed line denotes equal
+numerical magnitude.}
+\label{fig:balance-scale}
+\end{figure}
+
+Figure~\ref{fig:balance-scale} shows the distinct role of appliance-wise
+balancing.  With a fixed task weight, the median effective state term is only
+2.0\% and 0.8\% of the corresponding power loss for kettle and microwave.
+Balancing raises these ratios to 28.5\% and 15.1\%, respectively, while moving
+dishwasher and washing-machine state terms toward the power-loss scale.  It
+therefore corrects an appliance-dependent task-scale mismatch rather than
+changing the event distribution.
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\columnwidth]{figures/training_strategy_per_appliance.pdf}
 \caption{Per-appliance validation effect of the complete training strategy
 (three-seed mean $\pm$ standard deviation).  The strategy improves F1 for four
 appliances and reduces ON MAE for all five; microwave F1 is statistically
 unchanged.}
 \label{fig:training-results}
-\end{figure*}
+\end{figure}
 
-Figure~\ref{fig:training-mechanisms} explains the two effects behind
-Table~\ref{tab:training-ablation}.  Focal-event mixing yields its largest recall
-gains for washing-machine and microwave events above 200~W residual background,
-while substantially reducing their ON MAE.  It does not improve every regime:
-microwave recall falls by 7.9 percentage points below 100~W, consistent with the
-unchanged overall microwave F1.  With a fixed task weight, the median effective
-state term is only 2.0\% and 0.8\% of the corresponding power loss for kettle
-and microwave.  Appliance-wise balancing raises these ratios to 28.5\% and
-15.1\%, respectively, while bringing dishwasher and washing-machine state terms
-close to the power-loss scale.  Thus the two strategies address complementary
-limitations: event coverage and task-scale mismatch.  Their combined
-per-appliance outcome is shown in Fig.~\ref{fig:training-results}; microwave F1
+The two strategies therefore address complementary limitations: event coverage
+and task-scale mismatch.  Their combined per-appliance outcome is shown in
+Fig.~\ref{fig:training-results}; microwave F1
 changes from $0.352\pm0.026$ to $0.348\pm0.027$, so no microwave detection
 improvement is claimed.
 

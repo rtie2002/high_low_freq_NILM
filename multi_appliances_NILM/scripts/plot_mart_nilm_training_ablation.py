@@ -161,17 +161,25 @@ def _annotated_heatmap(
         norm=TwoSlopeNorm(vmin=-span, vcenter=0.0, vmax=span),
         aspect="auto",
     )
-    ax.set_xticks(range(len(BACKGROUND_LABELS)), BACKGROUND_LABELS, rotation=35, ha="right")
+    ax.set_xticks(range(len(BACKGROUND_LABELS)), BACKGROUND_LABELS, rotation=28, ha="right")
     ax.set_yticks(range(len(APPLIANCES)), DISPLAY_NAMES)
     ax.set_xlabel("Residual background (W)")
-    ax.set_title(title, loc="left", fontweight="bold")
+    ax.set_title(title, fontweight="bold", pad=7)
     for row in range(values.shape[0]):
         for col in range(values.shape[1]):
             value = values[row, col]
             if np.isfinite(value):
                 color = "white" if abs(value) > 0.55 * span else "black"
-                ax.text(col, row, value_format.format(value), ha="center", va="center", color=color, fontsize=7)
-    colorbar = ax.figure.colorbar(image, ax=ax, fraction=0.046, pad=0.03)
+                ax.text(
+                    col,
+                    row,
+                    value_format.format(value),
+                    ha="center",
+                    va="center",
+                    color=color,
+                    fontsize=8,
+                )
+    colorbar = ax.figure.colorbar(image, ax=ax, fraction=0.05, pad=0.035)
     colorbar.set_label(colorbar_label, fontsize=8)
     colorbar.ax.tick_params(labelsize=7)
 
@@ -203,6 +211,7 @@ def plot_training_mechanisms(
             for app in APPLIANCES
         ]
     )
+    on_mae[np.abs(on_mae) < 0.5] = 0.0
 
     balance = _balance_effect(
         run_root,
@@ -215,28 +224,34 @@ def plot_training_mechanisms(
         output_dir / "appliance_balance_effect.csv", index=False, float_format="%.6f"
     )
 
-    fig, axes = plt.subplots(
-        1,
-        3,
-        figsize=(11.0, 3.55),
-        gridspec_kw={"width_ratios": (1.05, 1.05, 1.20)},
-        constrained_layout=True,
-    )
+    # Each mechanism is saved as an independent IEEE single-column figure.
+    # Keeping the figures separate makes the cell values legible at print size
+    # and lets the paper explain each empirical effect immediately below it.
+    fig, ax = plt.subplots(figsize=(3.55, 3.25), constrained_layout=True)
     _annotated_heatmap(
-        axes[0],
+        ax,
         recall,
-        "(a) Recall change from focal mixing",
+        "Recall change from focal-event mixing",
         "Focal minus standard (percentage points)",
         "{:+.1f}",
     )
+    fig.savefig(output_dir / "focal_recall_by_background.png", dpi=600)
+    fig.savefig(output_dir / "focal_recall_by_background.pdf")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(3.55, 3.25), constrained_layout=True)
     _annotated_heatmap(
-        axes[1],
+        ax,
         on_mae,
-        "(b) ON-MAE reduction from focal mixing",
+        "ON-MAE reduction from focal-event mixing",
         "Standard minus focal (W)",
         "{:+.0f}",
     )
+    fig.savefig(output_dir / "focal_on_mae_by_background.png", dpi=600)
+    fig.savefig(output_dir / "focal_on_mae_by_background.pdf")
+    plt.close(fig)
 
+    fig, ax = plt.subplots(figsize=(3.55, 3.15), constrained_layout=True)
     x = np.arange(len(APPLIANCES), dtype=float)
     for offset, variant, label, color in (
         (-0.18, "standard_joint_training", "Fixed task weight", "#666666"),
@@ -247,7 +262,7 @@ def plot_training_mechanisms(
         median = grouped.median().reindex(APPLIANCES).to_numpy(float)
         q25 = grouped.quantile(0.25).reindex(APPLIANCES).to_numpy(float)
         q75 = grouped.quantile(0.75).reindex(APPLIANCES).to_numpy(float)
-        axes[2].bar(
+        ax.bar(
             x + offset,
             median,
             width=0.32,
@@ -256,28 +271,27 @@ def plot_training_mechanisms(
             color=color,
             label=label,
         )
-    axes[2].axhline(
+    ax.axhline(
         1.0, color="black", linewidth=0.9, linestyle="--", label="Equal magnitude"
     )
-    axes[2].set_yscale("log")
-    axes[2].set_ylim(0.005, 2.5)
-    axes[2].set_xticks(x, DISPLAY_NAMES, rotation=25, ha="right")
-    axes[2].set_ylabel("Effective state term / power loss")
-    axes[2].set_title("(c) Power--state scale alignment", loc="left", fontweight="bold")
-    axes[2].grid(axis="y", color="#DDDDDD", linewidth=0.7, which="major")
-    axes[2].spines[["top", "right"]].set_visible(False)
-    axes[2].legend(
+    ax.set_yscale("log")
+    ax.set_ylim(0.005, 2.5)
+    ax.set_xticks(x, DISPLAY_NAMES, rotation=22, ha="right")
+    ax.set_ylabel("Effective state term / power loss")
+    ax.grid(axis="y", color="#DDDDDD", linewidth=0.7, which="major")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.legend(
         frameon=False,
-        fontsize=6,
-        loc="upper center",
-        bbox_to_anchor=(0.5, -0.31),
-        ncol=3,
-        columnspacing=0.7,
-        handlelength=1.5,
+        fontsize=6.3,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.0),
+        ncol=2,
+        labelspacing=0.25,
+        handlelength=1.4,
     )
 
-    fig.savefig(output_dir / "training_strategy_mechanisms.png", dpi=600)
-    fig.savefig(output_dir / "training_strategy_mechanisms.pdf")
+    fig.savefig(output_dir / "appliance_balance_scale.png", dpi=600)
+    fig.savefig(output_dir / "appliance_balance_scale.pdf")
     plt.close(fig)
 
 
