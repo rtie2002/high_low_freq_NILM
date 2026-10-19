@@ -1,0 +1,51 @@
+{
+  "protocol": "5-week active training blocks with whole-house validation",
+  "sample_seconds": 8.0,
+  "train_weeks": 5.0,
+  "validation_test_weeks": 8.0,
+  "step_days": 2.0,
+  "train_houses": [
+    [
+      "ukdale",
+      1
+    ],
+    [
+      "refit",
+      3
+    ],
+    [
+      "refit",
+      5
+    ],
+    [
+      "refit",
+      9
+    ],
+    [
+      "refit",
+      11
+    ]
+  ],
+  "validation_houses": [
+    [
+      "ukdale",
+      5
+    ],
+    [
+      "refit",
+      2
+    ]
+  ],
+  "test_houses": [
+    [
+      "ukdale",
+      2
+    ],
+    [
+      "refit",
+      20
+    ]
+  ],
+  "established_8week_bounds_source": "C:\\Users\\Raymond Tie\\Desktop\\PhD\\Code\\multi-domain NILM\\high_low_freq_NILM\\multi_appliances_NILM\\datasets\\mixed_ukdale_refit_8w\\selection_summary.csv",
+  "normalization_source": "training split only"
+}

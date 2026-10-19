@@ -12,8 +12,9 @@ experiment_id: comparison_8w_matnilm_paper
 model_name: mat_nilm
 
 data:
-  # Use the same precomputed ground-truth states as every Table V model.
-  state_label_source: csv
+  # utils.SubSet: ON if raw power > 15 W. Labels are rebuilt from watts in
+  # the adapter, because the experiment yaml uses other thresholds.
+  state_label_source: threshold
   # utils.SubSet and evaluateResult: every channel is divided by 612.
   power_scale: 612
 
@@ -23,16 +24,9 @@ evaluation:
   # evaluator does not apply a second hard gate.
   gate_power_by_state: false
   # evaluateResult only clips negative predictions to 0 W.
-  power_postprocess: true
+  power_postprocess: false
   state_calibration:
-    enabled: true
-    split: validation
-    threshold_grid: [0.05, 0.98, 0.01]
-    apply_to_power: true
-    postprocess:
-      enabled: true
-      min_on_seconds: {microwave: 32}
-      merge_gap_seconds: {microwave: 24}
+    enabled: false
 
 windowing:
   # Paper Section IV-C, REDD: input 864, output 64, so w = (864-64)/2 = 400.
@@ -80,9 +74,9 @@ training:
   prefetch_factor: 2
   persistent_workers: false
   use_amp: false
-  # Common validation-only selection rule used by all Table V models.
-  checkpoint_monitor: val_mae_plus_one_minus_ap
-  checkpoint_mae_space: normalized
+  # Epoch validation MAE in watts. The adapter does not log a batch MAE.
+  checkpoint_monitor: val_mae
+  checkpoint_mae_space: watts
   early_stop_patience: 30
   scheduler: none
 

@@ -1,0 +1,9 @@
+{
+  "source_output_csv": "C:\\Users\\Raymond Tie\\Desktop\\PhD\\Code\\multi-domain NILM\\high_low_freq_NILM\\multi_appliances_NILM\\datasets\\_alignment_smoke\\refit_house20.csv",
+  "alignment_mode": "audit",
+  "max_lag_samples": 2,
+  "interpretation": "Observed aggregate/IAM edge offset; physical acquisition timestamps are unavailable in REFIT.",
+  "correction_rule": "Only a stable whole-channel lag supported independently by ON and OFF edges may be applied; individual events are never moved.",
+  "summary_csv": "C:\\Users\\Raymond Tie\\Desktop\\PhD\\Code\\multi-domain NILM\\high_low_freq_NILM\\multi_appliances_NILM\\datasets\\_alignment_smoke\\reports\\refit_house20_alignment_summary.csv",
+  "events_csv": "C:\\Users\\Raymond Tie\\Desktop\\PhD\\Code\\multi-domain NILM\\high_low_freq_NILM\\multi_appliances_NILM\\datasets\\_alignment_smoke\\reports\\refit_house20_alignment_events.csv"
+}

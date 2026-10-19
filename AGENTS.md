@@ -27,3 +27,13 @@ unrelated local and remote changes and untracked files.
 For training that must survive SSH disconnection, use a Windows Scheduled Task
 as described in `training_device.md`; an ordinary remote `Start-Process` job may
 terminate when the SSH session closes.
+
+## Academic abbreviations
+
+For manuscripts, define every abbreviation at its first occurrence as
+`full term (ABBREVIATION)`. After that definition, use only the abbreviation
+throughout the same scope; do not alternate between the full term and its
+abbreviation. Treat the abstract and the main text as independent scopes, so an
+abbreviation used in both must be defined once in each. Apply the rule in
+reading order across prose, tables, figure captions, and algorithms. Preserve
+the official expansion of a named model when its full name is introduced.

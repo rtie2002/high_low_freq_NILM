@@ -1,0 +1,191 @@
+===== A non-intrusive load monitoring system using multi-label classification approach.pdf | 10 pages =====
+tion compared to the information from traditional monthly bills (Carrie
+state-of-the-art HMM based approach. These works, however, focused
+The focus and the contributions of this work are to develop the
+such that the aggregate electric consumption data is contributed by
+2.2. Building multi-label dataset
+‘OFF’). We constructed the dataset by considering the current value (I)
+observation. A construction of the multi-label dataset is exempliﬁed in
+
+===== Attention-Based_Deep_Learning_Approach_for_Nonintrusive_and_Simultaneous_State_Detection_of_Multiple_Appliances_in_Smart_Buildings.pdf | 11 pages =====
+Abstract—Nonintrusive appliance state detection techniques es-
+ious state-of-the-art multilabel classiﬁcation techniques. Further,
+state or energy of an appliance. A few state-of-the-art DL models
+pared with other state-of-the-art models, ranging from
+Using the publicly available REFIT [27] dataset, the perfor-
+scenarios. The following summarizes the key contributions of
+In summary, the TCN contributes to improve the performance
+
+===== Conv-NILM-Net, a causal and multi-appliance model for energy source seperation.pdf | 16 pages =====
+Abstract. Non-Intrusive Load Monitoring (NILM) seeks to save energy
+aration. Our model is tested on two real datasets REDD and UK-DALE
+We propose Conv-NILM-net, a fully convolutional and causal neural network
+tiple appliances at once. We evaluate it on REDD and UK-DALE datasets,
+compared to recent models and achieves state of the art performance. Figure 1
+
+===== MATNilm_Multi-appliance-task Non-intrusive Load Monitoring with Limited Labeled Data.pdf | 10 pages =====
+Abstract—Non-intrusive load monitoring (NILM) identifies the
+hard to collect. In this paper, we propose a multi-appliance-
+with the full dataset. Finally, simulation results show that our
+over many baseline models. The relative errors can be reduced by
+appliance profiles, which are very limited compared with the
+dataset for each aggregate and appliance pair, which acts as
+methods are still trained by a full dataset, which may not fit
+house data in the REDD dataset. In [20], the author shows
+D. Contribution
+main novelty and contributions of our work are summarized
+our proposed approach when it is compared with state-
+of-the-art models trained on the full datasets.
+Compared with existing data augmentation in NILM, our
+• To enhance the performance of NILM, we propose
+used to construct the training dataset
+up privacy concerns. In addition, the collected dataset may
+most of the time, the dataset can be highly imbalanced.
+enough compared with a variety of appliance models and
+To address the aforementioned challenges, we propose a
+by existing datasets, appliance companies, or smart plugs; and
+
+===== Multi-Appliance Non-Intrusive Load Monitoring via Label Preserving Aggregated Recomposition and Predict Consistnecy.pdf | 9 pages =====
+Abstract—Non-intrusive load monitoring (NILM) estimates
+specific mixture-of-experts routing. On REDD, UK-DALE, and
+REFIT, the proposed method lowers appliance-averaged mean
+this contribution can vary across households [8], [9].
+C. Contributions of the Present Work
+To address this gap, we propose a method that combines
+the proposed method. The key contributions of this work are
+evaluated on unseen households that contribute no training
+
+===== Multi-Label Learning for Appliance Recognition in NILM Using Fryze-Current Decomposition and COnvolutional Neural Network.pdf | 17 pages =====
+Abstract: The advance in energy-sensing and smart-meter technologies have motivated the use of
+To improve the discriminating power of our method, we apply the Fryze power theory,
+The proposed approach is evaluated against the PLAID dataset [30], which consists of aggregated
+The main contribution of this paper is a multi-label learning strategy for appliance recognition
+signal. Overall, this contribution folds into four sub-contributions
+feature offers improved performance compared to the regularly used V-I binary image feature.
+Third, we propose a CNN multi-label classiﬁer that uses softmax activation to capture the relations
+public dataset and compare the general and per-appliance performances. We also provide an
+summarises the contributions of this paper and suggests future research direction.
+Even though multi-label learning was found to be competitive with state-of-the-arts NILM
+
+===== Multi-Target Energy Disaggregation using Convolutional Neural Networks.pdf | 10 pages =====
+Abstract—Non-Intrusive Load Monitoring (NILM) has be-
+and compared using ﬁve different metrics on two benchmarking
+datasets (ENERTALK and REDD). The experimental results
+ENERTALK dataset, the highest individual F1-score is 95.37%
+obtained for the multi-target setting of the other dataset with
+data, and testing for a different appliance, house and dataset. The
+ing; ENERTALK dataset; multi-target disaggregation; multi-target
+especially for recent datasets such as ENERTALK. It is also
+paper has the following contributions. Energy disaggregation
+tively for ENERTALK dataset. For REDD dataset, the highest
+especially for ENERTALK dataset which is a relatively recent
+dataset with large number of houses.
+ENERTALK and REDD. Finally, the paper summary and
+on REDD dataset. In [31], a causal 1-D convolutional neural
+proposed and the model was tested on AMPds2 dataset. It is
+points (steps). The training dataset is deﬁned as,
+
+===== Multilabel_Appliance_Classification_With_Weakly_Labeled_Data_for_Non-Intrusive_Load_Monitoring.pdf | 13 pages =====
+Abstract—Non-Intrusive Load Monitoring consists in estimat-
+point. State-of-the-art approaches are based on deep neural
+cally less costly to obtain compared to strong labels. An extensive
+experimental evaluation has been conducted on the UK-DALE
+and REFIT datasets comparing the proposed approach to three
+of strongly and weakly labeled data and mixing UK-DALE and
+REFIT conﬁrm the effectiveness of weak labels compared to fully
+nowadays they represent the state-of-the-art. However, high
+NILM methods and describe the contribution of this paper.
+A. Related Works and Contribution
+to achieve state-of-the-art performance [25], [26]. Yang and
+(LDS), and superior performance was obtained compared to
+ing where labels are provided at a coarser level compared to
+effort is signiﬁcantly reduced compared to strongly super-
+can improve the performance compared to semi-supervised
+the performance compared to semi-supervised approaches.
+ing with false activations. The UK-DALE [39] and REFIT [40]
+datasets have been used for performance evaluation, and the
+compared to a strongly supervised strategy while reducing the
+strongly and weakly labeled data of the two datasets pro-
+improve the performance on both UK-DALE and REFIT test
+In summary, the contributions of this work are the following:
+• We propose a weakly supervised approach to multi-label
+obtain superior performance compared to supervised and
+• We demonstrate that our method is able to reduce the
+
+===== On time series representations for multi-label NILM.pdf | 16 pages =====
+
+
+===== SAMNet_Toward_Latency-Free_Non-Intrusive_Load_Monitoring_via_Multi-Task_Deep_Learning.pdf | 13 pages =====
+Abstract—Non-intrusive load monitoring (NILM), including
+experimental results with the public datasets demonstrate the
+dataset transferability. By multiplying the outputs of the state
+(SGN) for NILM [18]. To develop the SGN for across-dataset
+To address these issues, we propose a Scale- and Attention-
+The main contributions of this paper are in three aspects.
+ferent lengths with different dilation factor rd. Compared with
+
+===== Simultaneous_Detection_of_Multiple_Appliances_From_Smart-Meter_Measurements_via_Multi-Label_Consistent_Deep_Dictionary_Learning_and_Deep_Transform_Learning.pdf | 10 pages =====
+Abstract—Currently there are several well-known approaches
+we propose a deep learning-based technique. There are hardly
+damental contributions of this paper. These are deep dictionary
+results on benchmark datasets show marked improvement over
+In this work, we propose two new deep learning techniques
+ing deep learning frameworks, we propose to build two new
+two benchmark NILM datasets. The results show signiﬁcant
+
+===== Transfer Learning for Multi-Objective Non-Intrusive Load Monitoring in Smart Building.pdf | 11 pages =====
+fewer measurements and only one model. Three public data sets, REFIT, REDD, and UK-DALE, are used
+building to validate the proposed method. The results demonstrate the accuracy and practicality compared
+of the same appliances among different datasets). The second challenge
+sets (REFIT [25], REDD [26], and UK-DALE [27]). In particular, the
+isons with the state-of-the-art transfer learning model [28] are further
+trained with REFIT data, and then retrained and fine-tuned with the
+The key contributions of this paper are three-fold:
+up with a detailed experimental design, experimental dataset, metrics,
+classification algorithms. Overall, the state-of-the-art multi-object clas-
+NILM. Cross-domain transfer learning was applied to REFIT, UK-DALE,
+and REDD datasets. Across all three datasets, both networks predict
+training and testing datasets are different. Another transfer learning
+Fig. 1. Compared to intrusive load monitoring, the electricity meters between the
+the NILM method [39]. Compared with the former method, NILM’s
+reasonable assumption if training and test datasets are generated from
+
+===== Transfer_Learning_for_Multiappliance-Task_Nonintrusive_Load_Monitoring.pdf | 12 pages =====
+Abstract— An accurate identification of the electricity con-
+increases the F1 score by 200% compared with other transfer
+when compared with other mainstream models. The attention
+rable with those trained on large datasets. As an emerging
+datasets. Zhou et al. [22] proposed a transfer learning method
+superior transfer performance compared with single-appliance
+disaggregation speeds. The contributions of the work are
+typically transfer a single objective. Our method adopts
+
+===== UNet-NILM_A Deep Neural Network for Multi-tasks Appliances State Detection and Power Estimation in NILM.pdf | 5 pages =====
+ABSTRACT
+this work, we propose UNet-NILM for multi-task appliances’ state
+DALE dataset suggests promising performance against traditional
+must be honored. Abstracting with credit is permitted. To copy otherwise, or republish,
+Thus in this work, we propose UNet-NILM, a one-dimensional
+where 𝜖𝑡represents the contributions from appliances not ac-
+tions. Given 𝐷= {x(𝑡), s(𝑡)|𝑡= 1, . . . ,𝑇} datasets, the goal is
+be beneficial compared to modeling each appliance independently
+[26]. Therefore, in this work we propose multi-target quantile re-
+In contrast, we propose DNN multi-label learning that uses soft-
+To evaluate our method, we first implement a baseline model (1D-
+Dataset and Performance Metrics
+The proposed method is evaluated on a UKDALE [12] dataset. The
+UKDALE dataset contains aggregate power consumption readings
+
+===== Variational Regression for Multi-Target Energy Disaggregation.pdf | 22 pages =====
+Abstract: Non-intrusive load monitoring systems that are based on deep learning methods produce
+a comparative analysis against other multi- and single-target state-of-the-art models.
+disaggregation research ﬁeld, producing state-of-the-art solutions [22]. Kelly and Knot-
+these studies claim to have achieved state-of-the-art performance [24,27,31,33]. A popular
+comparison of algorithmsalong with a set of baseline models. In an effort to standardize
+The present article contributes to energy disaggregation research in the following ways.
+in [47]. The proposed network is compared with a variation of the UNet-NILM multi-target
+model [31] and a baseline model. Additional experiments with known single-target models
+algorithm heavily depends on the datasets used in its design and the evaluation. NILM
+hand, neural networks can achieve state-of-the-art performance in situations where the
+competitive with known state-of-the-art models that use the one vs. one (or single-target)
+increase its disaggregation capability compared to simpler implementations, whereas a

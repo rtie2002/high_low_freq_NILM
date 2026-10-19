@@ -1,0 +1,71 @@
+\documentclass[conference]{IEEEtran}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+
+\title{Appendix: Conservative Event-Level Timing Audit}
+\author{}
+
+\begin{document}
+\maketitle
+
+\appendices
+
+\section{Conservative Event-Level Timing Audit}
+\label{sec:appendix-alignment}
+
+Each logged REFIT row provides a common timestamp but not the physical acquisition time of every individual meter reading.  Consequently, the recorded data cannot identify an exact, universal IAM--aggregate delay.  A single nearby aggregate step is also insufficient evidence for a shift, since an unmonitored load can produce that step.  We therefore describe the following procedure only as a conservative, diagnostic event-level audit; it is not part of the primary training or evaluation pipeline and does not claim physical synchronization.
+
+Let $x_t$ and $P_{t,i}$ denote the recorded aggregate and appliance powers, respectively, and define $\Delta x_t=x_t-x_{t-1}$.  Consider a complete on period $[s,e)$ of appliance $i$, with a rising edge $a_i^{\uparrow}=P_{s,i}-P_{s-1,i}$ and a falling edge $a_i^{\downarrow}=P_{e-1,i}-P_{e,i}$.  Only events whose two appliance edges are at least $\max(40,0.3\tau_i)$~W are considered, where $\tau_i$ is the appliance on threshold.  We examine lags $\ell\in\{-2,-1,0,1,2\}$, corresponding to at most $\pm16$~s.  A lag is admissible only if both aggregate edges have the expected direction and sufficient magnitude:
+\begin{equation}
+\begin{aligned}
+\Delta x_{s+\ell}&\geq\max(20,0.25a_i^{\uparrow}),\\
+-\Delta x_{e+\ell}&\geq\max(20,0.25a_i^{\downarrow}).
+\end{aligned}
+\label{eq:alignment-gate}
+\end{equation}
+For every admissible lag, the two-edge discrepancy is
+\begin{equation}
+C_i(\ell)=\frac{1}{2}\left(
+\frac{|\Delta x_{s+\ell}-a_i^{\uparrow}|}{\max(a_i^{\uparrow},40)}+
+\frac{|{-\Delta x_{e+\ell}}-a_i^{\downarrow}|}{\max(a_i^{\downarrow},40)}
+\right).
+\label{eq:alignment-score}
+\end{equation}
+The selected lag is $\ell^*=\arg\min_{\ell}C_i(\ell)$, with zero lag preferred only when scores are tied.  We accept it only when $C_i(\ell^*)\leq0.75$, its margin over the next-best admissible lag is at least $0.20$, neither event boundary lies near a $\geq40$~W transition of another monitored target, and the shifted event would not overlap an existing on period.  Events failing any condition are left unchanged.
+
+For an accepted non-zero lag, the aggregate is immutable.  Let $b_i$ be the median measured power in the nearby off samples and let $q_{t,i}=\max(P_{t,i}-b_i,0)$ within $[s,e)$.  The procedure moves the excess event profile as a whole:
+\begin{equation}
+\widetilde{P}_{t,i}=P_{t,i}-q_{t,i}\mathbf{1}_{[s,e)}(t)
++q_{t-\ell^*,i}\mathbf{1}_{[s+\ell^*,e+\ell^*)}(t),
+\qquad \widetilde{x}_t=x_t.
+\label{eq:event-shift}
+\end{equation}
+Thus $\sum_t\widetilde{P}_{t,i}=\sum_tP_{t,i}$ for every shifted event.  The associated binary on period is shifted by the same lag.  This preserves the recorded input and the appliance watt-sample energy; it does \emph{not} impose $x_t\geq\sum_iP_{t,i}$, because the measured target set is incomplete and the recorded aggregate must not be reconstructed using its labels.
+
+The audit is a sensitivity analysis, not part of the retained training pipeline.  In our cross-house ablation it slightly changed local timing errors but did not consistently improve F1 or AP across the two held-out datasets.  The primary results therefore use the unshifted, mean-resampled recordings.  This distinction avoids treating a plausible timing hypothesis as ground truth.
+
+\begin{algorithm}[!t]
+\caption{Conservative two-edge event timing audit.}
+\label{alg:alignment}
+\begin{algorithmic}[1]
+\REQUIRE 8-s aggregate $x_t$, appliance powers $P_{t,i}$, states $z_{t,i}$, thresholds $\tau_i$, and $L=2$ samples.
+\ENSURE Audited appliance series $\widetilde{P}_{t,i}$ and states $\widetilde{z}_{t,i}$; aggregate $x_t$ is unchanged.
+\STATE Set $\widetilde{P}_{t,i}\leftarrow P_{t,i}$ and $\widetilde{z}_{t,i}\leftarrow z_{t,i}$.
+\FOR{each target appliance $i \in \{1,\ldots,M\}$}
+    \FOR{each complete on period $[s,e)$ in $z_{t,i}$}
+        \STATE Reject the event if an endpoint is unavailable, either appliance edge is below $\max(40,0.3\tau_i)$, or another monitored target has a transition of at least 40~W within $L$ samples of either boundary.
+        \STATE Form the admissible lag set using \eqref{eq:alignment-gate}; discard candidates whose two relative edge errors exceed one.
+        \IF{$C_i(\ell^*)\leq0.75$, the score margin is at least $0.20$, and the shifted interval does not overlap another ON interval}
+            \STATE Move the excess profile and the complete state interval by $\ell^*$ using \eqref{eq:event-shift}.
+        \ENDIF
+    \ENDFOR
+\ENDFOR
+\STATE Verify $\sum_t\widetilde{P}_{t,i}=\sum_tP_{t,i}$ for every appliance and $x_t$ is bitwise unchanged.
+\RETURN $x_t$, $\widetilde{P}_{t,i}$, and $\widetilde{z}_{t,i}$.
+\end{algorithmic}
+\end{algorithm}
+
+\end{document}

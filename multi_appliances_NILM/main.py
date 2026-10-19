@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
 from config import load_experiment, load_model_config, merge_configs, model_name_from_config
 from data.dataloader import resolve_test_scenarios
 from model.MATNILM import MATNILMAdapter
-from model.MARTNILM import MARTNILMAdapter
+from model.MultiNILM import MultiNILMAdapter, MultiNILMFractionalAdapter
 from model.TransferNILM import TransferMultiApplianceAdapter
 from model.UNETNILM import UNetNILMAdapter
 from evaluation.run_summary import compare_experiment, print_run_cost_summary, print_val_test_comparison
@@ -23,7 +23,8 @@ from runner import evaluate_model, train_model
 # Register new models here: name -> adapter class
 MODELS = {
     "mat_nilm": MATNILMAdapter,
-    "mart_nilm": MARTNILMAdapter,
+    "multinilm": MultiNILMAdapter,
+    "multinilm_fractional": MultiNILMFractionalAdapter,
     "transfer_multi_appliance": TransferMultiApplianceAdapter,
     "unetnilm": UNetNILMAdapter,
 }
@@ -31,9 +32,9 @@ MODELS = {
 # Default run settings for "click Run on main.py".
 # Edit these once, then run this file directly without command-line arguments.
 DEFAULT_MODE = "train_evaluate"
-DEFAULT_MODEL = "mart_nilm"
-DEFAULT_EXPERIMENT = ROOT / "config" / "experiment_mixed_ukdale_refit_5w_all_house_split.yaml"
-DEFAULT_MODEL_CONFIG: Path | None = ROOT / "config" / "models" / "mart_nilm.yaml"
+DEFAULT_MODEL = "multinilm_fractional"
+DEFAULT_EXPERIMENT = ROOT / "config" / "experiment_mixed_ukdale_refit_8w.yaml"
+DEFAULT_MODEL_CONFIG: Path | None = ROOT / "config" / "models" / "multinilm_fractional_relational.yaml"
 DEFAULT_DATA_PATH: Path | None = None
 DEFAULT_CHECKPOINT: Path | None = None
 DEFAULT_INIT_CHECKPOINT: Path | None = None

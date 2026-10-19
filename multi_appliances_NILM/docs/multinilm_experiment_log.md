@@ -1364,8 +1364,11 @@ Appliance-wise balancing improves all five aggregate metrics when used alone.
 The complete strategy obtains four of five best metrics and improves AP by
 0.111 and macro-F1 by 0.082 over standard training. At appliance level it
 improves F1 for kettle, fridge, dishwasher, and washing machine and lowers ON
-MAE for every appliance. Microwave F1 changes only from 0.352 +/- 0.026 to
-0.348 +/- 0.027, so no microwave detection improvement is claimed.
+MAE on average for every appliance. Microwave F1 decreases from 0.352 +/- 0.026
+to 0.307 +/- 0.016 under focal-event mixing alone, so that strategy does not
+improve overall microwave detection. With both strategies, microwave F1 is
+0.348 +/- 0.027; this is not a meaningful gain over the standard 0.352 +/-
+0.026.
 
 Evidence artifacts:
 
@@ -1377,5 +1380,36 @@ Evidence artifacts:
 - `runs/paper_5w/table_viii/figures/appliance_weight_trajectories.*`
 
 Decision: retain both strategies and Table VIII. The paper must describe the
-classification--regression trade-off and the unchanged microwave F1 rather
-than presenting focal-event mixing as a universal regularizer.
+classification--regression trade-off and must not claim a microwave detection
+gain. Focal-event mixing's high-background recall gains coexist with a lower
+overall microwave F1.
+
+### Figure VIII source audit — corrected 2026-10-15
+
+The first per-appliance comparison plot was generated from a stale
+`complete_strategy_paired_changes.csv`, whose F1 changes did not agree with
+the Table VIII per-appliance summaries. Do not use that version. The plotting
+script now recomputes each seed's metrics from saved validation predictions,
+evaluates UK-DALE 5 and REFIT 2 separately (including the configured power
+clipping rule), and averages the two houses with equal weight before forming
+paired changes. It rewrites the audited seed-level CSV and regenerates both
+PNG and PDF.
+
+For complete MART-NILM versus standard training, paired mean F1 changes
+(mean +/- sample SD over three seeds) are kettle +0.049 +/- 0.036, fridge
++0.021 +/- 0.003, dishwasher +0.128 +/- 0.033, washing machine
++0.215 +/- 0.030, and microwave -0.005 +/- 0.036. Mean ON-MAE reductions
+are 119.5 +/- 109.0 W, 0.9 +/- 1.8 W, 29.6 +/- 35.9 W, 6.6 +/- 16.4 W,
+and 55.5 +/- 47.8 W, respectively. These are paired, equal-house validation
+changes, not independent-house significance tests; with only three seeds,
+uncertainty is descriptive. The corrected graph supports mean F1 gains for
+four appliances, but no microwave F1 gain.
+
+The loss-balancing mechanism figure is a separate, direct audit of the
+per-appliance state and power gradient norms at the shared encoder, not a plot
+of loss magnitudes or the balancing coefficients. The validation-batch audit
+reports fixed-to-balanced ratios of kettle 0.027 to 0.464, fridge
+0.271 to 1.311, dishwasher 0.804 to 3.183, washing machine 1.091 to 7.805,
+and microwave 0.026 to 0.641 (three-seed means). The balancing rule therefore
+raises the relative state-gradient scale but does not make all task gradients
+equal. The paper now makes this distinction explicit when citing GradNorm.
