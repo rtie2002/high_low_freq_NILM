@@ -1,4 +1,7 @@
-$ErrorActionPreference = "Stop"
+# Windows PowerShell wraps native stderr (including harmless Python warnings)
+# as NativeCommandError. The three explicit LASTEXITCODE checks below are the
+# authoritative failure signal for Python jobs.
+$ErrorActionPreference = "Continue"
 
 $projectRoot = "D:\Raymond\high_low_freq_NILM\multi_appliances_NILM"
 $pythonExe = "C:\Users\PC\anaconda3\envs\nilm\python.exe"
