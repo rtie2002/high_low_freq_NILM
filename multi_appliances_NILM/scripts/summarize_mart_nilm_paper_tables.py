@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""Summarise the three-seed MART-NILM results for paper Tables V--VIII.
+"""Summarise the three-seed paper experiments for Tables V--VIII.
 
-Table V uses the two held-out test houses separately.  Table VII is computed
-only from the validation houses: metrics are first calculated per house and
-then averaged with equal house weight.  Table VI reads training time, parameter
-count, and the actual ``best.pt`` checkpoint size recorded for each seed.
+Table V uses the two held-out test houses separately. Table VI compares cost
+under one inference batch size and hardware, without reporting selected epoch.
+Table VII is computed only from the validation houses: metrics are first
+calculated per house and then averaged with equal house weight.
 """
 
 from __future__ import annotations
@@ -30,6 +30,11 @@ from evaluation.metrics import evaluate_bundle, resolve_power_postprocess
 
 
 SEEDS = (2026, 2027, 2028)
+MODEL_LABELS = {
+    "unetnilm": "UNet-NILM",
+    "mat_nilm": "MAT-Conv",
+    "mart_nilm": "MART-NILM",
+}
 APPLIANCES = ("kettle", "fridge", "dishwasher", "washingmachine", "microwave")
 TEST_SCENARIOS = ("ukdale_house2", "refit_house20")
 VARIANTS = (
@@ -119,60 +124,92 @@ def _equal_house_validation_metrics(run_dir: Path, dataset_root: Path) -> pd.Ser
     return pd.DataFrame(house_overall).mean(numeric_only=True)
 
 
-def table_v(run_root: Path, seeds: tuple[int, ...]) -> pd.DataFrame:
+def table_v(
+    run_root: Path,
+    seeds: tuple[int, ...],
+    models: tuple[str, ...],
+) -> pd.DataFrame:
     records = []
-    for scenario in TEST_SCENARIOS:
-        for seed in seeds:
-            path = run_root / "table_v" / "mart_nilm" / f"seed_{seed}" / "test" / scenario / "metrics.csv"
-            frame = pd.read_csv(path).set_index("appliance")
-            for metric in METRICS:
-                for appliance in (*APPLIANCES, "overall"):
-                    records.append(
-                        {
-                            "scenario": scenario,
-                            "seed": seed,
-                            "metric": metric,
-                            "appliance": appliance,
-                            "value": float(frame.loc[appliance, metric]),
-                        }
-                    )
+    for model in models:
+        for scenario in TEST_SCENARIOS:
+            for seed in seeds:
+                path = (
+                    run_root
+                    / "table_v"
+                    / model
+                    / f"seed_{seed}"
+                    / "test"
+                    / scenario
+                    / "metrics.csv"
+                )
+                frame = pd.read_csv(path).set_index("appliance")
+                for metric in METRICS:
+                    for appliance in (*APPLIANCES, "overall"):
+                        records.append(
+                            {
+                                "model": MODEL_LABELS[model],
+                                "scenario": scenario,
+                                "seed": seed,
+                                "metric": metric,
+                                "appliance": appliance,
+                                "value": float(frame.loc[appliance, metric]),
+                            }
+                        )
     raw = pd.DataFrame(records)
     return (
-        raw.groupby(["scenario", "metric", "appliance"], sort=False)["value"]
+        raw.groupby(["model", "scenario", "metric", "appliance"], sort=False)["value"]
         .agg(mean="mean", std=lambda x: x.std(ddof=1))
         .reset_index()
     )
 
 
-def table_vi(run_root: Path, seeds: tuple[int, ...]) -> pd.DataFrame:
+def table_vi(
+    run_root: Path,
+    seeds: tuple[int, ...],
+    models: tuple[str, ...],
+) -> pd.DataFrame:
     rows = []
-    for seed in seeds:
-        run_dir = run_root / "table_v" / "mart_nilm" / f"seed_{seed}"
-        with (run_dir / "training_time.json").open("r", encoding="utf-8") as handle:
-            timing = json.load(handle)
-        rows.append(
-            {
+    for model in models:
+        for seed in seeds:
+            run_dir = run_root / "table_v" / model / f"seed_{seed}"
+            with (run_dir / "training_time.json").open("r", encoding="utf-8") as handle:
+                timing = json.load(handle)
+            with (run_dir / "inference_benchmark.json").open("r", encoding="utf-8") as handle:
+                benchmark = json.load(handle)
+            split_rows = {row["split"]: row for row in benchmark["splits"]}
+            row = {
+                "model": MODEL_LABELS[model],
                 "seed": seed,
-                "parameters_m": float(timing["parameters_trainable_millions"]),
-                "model_size_mb": (run_dir / "best.pt").stat().st_size / (1024.0**2),
+                "parameters_m": float(benchmark["parameters_trainable_millions"]),
+                "model_size_mib": float(benchmark["checkpoint_size_mib"]),
                 "training_seconds": float(timing["total_seconds"]),
-                "epochs_completed": int(timing["epochs_completed"]),
-                "best_epoch": int(timing["best_epoch"]),
             }
-        )
+            for scenario in TEST_SCENARIOS:
+                result = split_rows[scenario]
+                row[f"{scenario}_inference_seconds"] = float(result["seconds"])
+                row[f"{scenario}_timesteps_per_second"] = float(
+                    result["timesteps_per_second"]
+                )
+                row[f"{scenario}_peak_gpu_mib"] = float(result["peak_gpu_memory_mib"])
+            rows.append(row)
     raw = pd.DataFrame(rows)
-    return pd.DataFrame(
-        [{
-            "model": "MART-NILM",
-            "parameters_m": raw["parameters_m"].mean(),
-            "model_size_mb_mean": raw["model_size_mb"].mean(),
-            "model_size_mb_std": raw["model_size_mb"].std(ddof=1),
-            "training_seconds_mean": raw["training_seconds"].mean(),
-            "training_seconds_std": raw["training_seconds"].std(ddof=1),
-            "epochs_completed_mean": raw["epochs_completed"].mean(),
-            "best_epoch_mean": raw["best_epoch"].mean(),
-        }]
-    )
+    aggregations = {
+        "parameters_m": ("parameters_m", "mean"),
+        "model_size_mib_mean": ("model_size_mib", "mean"),
+        "model_size_mib_std": ("model_size_mib", lambda x: x.std(ddof=1)),
+        "training_seconds_mean": ("training_seconds", "mean"),
+        "training_seconds_std": ("training_seconds", lambda x: x.std(ddof=1)),
+    }
+    for scenario in TEST_SCENARIOS:
+        for metric in (
+            "inference_seconds",
+            "timesteps_per_second",
+            "peak_gpu_mib",
+        ):
+            column = f"{scenario}_{metric}"
+            aggregations[f"{column}_mean"] = (column, "mean")
+            aggregations[f"{column}_std"] = (column, lambda x: x.std(ddof=1))
+    return raw.groupby("model", sort=False).agg(**aggregations).reset_index()
 
 
 def table_vii(run_root: Path, dataset_root: Path, seeds: tuple[int, ...]) -> pd.DataFrame:
@@ -376,6 +413,13 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=ROOT / "runs" / "paper_5w" / "summaries")
     parser.add_argument("--seeds", type=int, nargs="+", default=list(SEEDS))
     parser.add_argument(
+        "--models",
+        nargs="+",
+        choices=tuple(MODEL_LABELS),
+        default=["mart_nilm"],
+        help="Table V/VI models whose completed runs should be summarised.",
+    )
+    parser.add_argument(
         "--tables",
         nargs="+",
         choices=("v", "vi", "vii", "vii_test", "viii"),
@@ -384,14 +428,15 @@ def main() -> None:
     )
     args = parser.parse_args()
     seeds = tuple(args.seeds)
+    models = tuple(args.models)
     if len(seeds) < 2:
         raise ValueError("At least two seeds are required for a standard deviation")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     outputs = {}
     if "v" in args.tables:
-        outputs["table_v_mart_nilm.csv"] = table_v(args.run_root, seeds)
+        outputs["table_v_models.csv"] = table_v(args.run_root, seeds, models)
     if "vi" in args.tables:
-        outputs["table_vi_mart_nilm.csv"] = table_vi(args.run_root, seeds)
+        outputs["table_vi_models.csv"] = table_vi(args.run_root, seeds, models)
     if "vii" in args.tables:
         outputs["table_vii_mart_nilm.csv"] = table_vii(
             args.run_root,
