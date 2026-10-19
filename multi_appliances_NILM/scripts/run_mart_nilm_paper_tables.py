@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """Run the controlled multi-seed experiments for paper Tables V, VII, and VIII.
 
-Table V compares MART-NILM with UNet-NILM and MAT-Conv on the same five-week
-house split. Table VII changes one MART-NILM architecture component at a time.
-Table VIII freezes the architecture and evaluates the two proposed training
-strategies in a 2x2 design. Test houses are never opened by Table VIII.
+Table V compares MART-NILM with paper baselines on the same five-week house
+split. Table VII changes one MART-NILM architecture component at a time. Table
+VIII freezes the architecture and evaluates the two proposed training strategies
+in a 2x2 design. Test houses are never opened by Table VIII.
 """
 
 from __future__ import annotations
@@ -31,6 +31,9 @@ DEFAULT_EXPERIMENT = (
 MODEL_CONFIGS = {
     "unetnilm": ROOT / "config" / "models" / "unetnilm.yaml",
     "mat_nilm": ROOT / "config" / "models" / "mat_nilm.yaml",
+    "transfer_multi_appliance": (
+        ROOT / "config" / "models" / "transfer_multi_appliance.yaml"
+    ),
     "mart_nilm": ROOT / "config" / "models" / "mart_nilm.yaml",
 }
 SEEDS = (2026, 2027, 2028)

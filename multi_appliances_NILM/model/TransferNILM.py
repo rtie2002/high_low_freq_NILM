@@ -1,9 +1,13 @@
-"""BERT4NILM transfer-learning baseline — shared encoder + per-appliance CNN heads.
+"""TransferNILM: the multiappliance-task network of Sun et al. (2025).
 
-Ported from NILM_model/baseline/transfer_learning_multi-appliance/model.py.
+The implementation follows the paper and its public PyTorch repository:
 
-Power head uses OFF-norm blending for z-score targets (see docs/martnilm_off_norm_gate.md).
-Author code: power = linear(tanh(x)) * sigmoid(state). Ours when OFF: blend to -mean/std.
+* one convolution-pooling-Transformer shared encoder;
+* one convolution-Transformer appliance-specific decoder per appliance;
+* a sigmoid state head and a state-gated power head per decoder.
+
+Paper: https://doi.org/10.1109/TIM.2025.3541652
+Code: https://github.com/Franky-Feng/transfer_learning_multi-appliance
 """
 
 from __future__ import annotations
@@ -12,9 +16,15 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.utils.data import DataLoader
+
+from data.common import BaseNILMAdapter, StepOutput, center_output_slice
+from model.MARTNILM import _pred_on_from_config, _to_numpy
+from model.TransferNILM_loss import TransferNILMLoss
 
 
 @dataclass
@@ -24,6 +34,7 @@ class TransferNILMConfig:
     attn_heads: int = 2
     encoder_layers: int = 2
     head_transformer_layers: int = 1
+    conv_kernel_size: int = 5
     dropout: float = 0.1
 
 
@@ -34,6 +45,7 @@ def transfer_nilm_config(architecture: dict[str, Any], windowing: dict[str, Any]
         attn_heads=int(architecture.get("attn_heads", 2)),
         encoder_layers=int(architecture.get("encoder_layers", 2)),
         head_transformer_layers=int(architecture.get("head_transformer_layers", 1)),
+        conv_kernel_size=int(architecture.get("conv_kernel_size", 5)),
         dropout=float(architecture.get("dropout", architecture.get("drop_out", 0.1))),
     )
 
@@ -181,9 +193,9 @@ class BERT4NILM(nn.Module):
         self.conv = nn.Conv1d(
             in_channels=1,
             out_channels=self.hidden,
-            kernel_size=5,
+            kernel_size=cfg.conv_kernel_size,
             stride=1,
-            padding=2,
+            padding=cfg.conv_kernel_size // 2,
             padding_mode="replicate",
         )
         self.pool = nn.LPPool1d(norm_type=2, kernel_size=2, stride=2)
@@ -218,12 +230,11 @@ class BERT4NILM(nn.Module):
 
 
 class CNNApplianceHead(nn.Module):
-    """Per-appliance head: state-gated power with OFF-norm blend under z-score targets."""
+    """Paper appliance-specific layer with state-gated power regression."""
 
-    def __init__(self, cfg: TransferNILMConfig, *, off_norm: float = 0.0):
+    def __init__(self, cfg: TransferNILMConfig):
         super().__init__()
         self.cfg = cfg
-        self.register_buffer("off_norm", torch.tensor(float(off_norm), dtype=torch.float32))
         self.dropout_rate = cfg.dropout
         self.hidden = cfg.hidden
         self.heads = cfg.attn_heads
@@ -231,9 +242,9 @@ class CNNApplianceHead(nn.Module):
         self.conv = nn.Conv1d(
             in_channels=self.hidden,
             out_channels=self.hidden,
-            kernel_size=5,
+            kernel_size=cfg.conv_kernel_size,
             stride=1,
-            padding=2,
+            padding=cfg.conv_kernel_size // 2,
             padding_mode="replicate",
         )
         self.layer_norm = LayerNorm(self.hidden)
@@ -266,8 +277,7 @@ class CNNApplianceHead(nn.Module):
 
         state = torch.sigmoid(self.fc(x))
         power_raw = self.linear2(torch.tanh(self.linear1(x)))
-        power = state * power_raw + (1.0 - state) * self.off_norm
-        return power, state
+        return power_raw * state, state
 
 
 class TransferMultiApplianceModel(nn.Module):
@@ -277,23 +287,14 @@ class TransferMultiApplianceModel(nn.Module):
         self,
         cfg: TransferNILMConfig,
         num_appliances: int,
-        *,
-        appliance_off_norm: list[float] | None = None,
     ):
         super().__init__()
         if num_appliances < 1:
             raise ValueError("num_appliances must be >= 1")
         self.cfg = cfg
         self.num_appliances = num_appliances
-        off_norms = list(appliance_off_norm or [0.0] * num_appliances)
-        if len(off_norms) != num_appliances:
-            raise ValueError(
-                f"appliance_off_norm length {len(off_norms)} != num_appliances {num_appliances}"
-            )
         self.encoder = BERT4NILM(cfg)
-        self.heads = nn.ModuleList(
-            CNNApplianceHead(cfg, off_norm=off_norms[i]) for i in range(num_appliances)
-        )
+        self.heads = nn.ModuleList(CNNApplianceHead(cfg) for _ in range(num_appliances))
 
     def freeze_encoder(self) -> None:
         for param in self.encoder.parameters():
@@ -317,39 +318,6 @@ class TransferMultiApplianceModel(nn.Module):
         return torch.cat(powers, dim=2), torch.cat(states, dim=2)
 
 
-@dataclass
-class TransferNILMLossOutput:
-    loss: torch.Tensor
-    loss_power: torch.Tensor
-    loss_state: torch.Tensor
-    mae: torch.Tensor
-
-
-class TransferNILMLoss(nn.Module):
-    def __init__(self, power_scale: float | list[float] | torch.Tensor = 1.0):
-        super().__init__()
-        self.register_buffer("power_scale", torch.as_tensor(power_scale, dtype=torch.float32))
-        self.mse = nn.MSELoss()
-        self.bce = nn.BCELoss()
-
-    def forward(self, power_pred, state_prob, power_true, state_true) -> TransferNILMLossOutput:
-        power_true = power_true.to(dtype=power_pred.dtype)
-        state_true = state_true.to(dtype=state_prob.dtype)
-        with torch.amp.autocast(device_type=power_pred.device.type, enabled=False):
-            loss_power = self.mse(power_pred, power_true)
-            loss_state = self.bce(state_prob, state_true)
-        scale = self.power_scale.to(device=power_pred.device, dtype=power_pred.dtype)
-        mae = torch.mean(torch.abs((power_pred - power_true) * scale))
-        return TransferNILMLossOutput(loss=loss_power + loss_state, loss_power=loss_power, loss_state=loss_state, mae=mae)
-
-
-from data.common import BaseNILMAdapter, StepOutput, center_output_slice
-from config import appliance_off_norm_normalized
-from model.MARTNILM import _pred_on_from_config, _to_numpy
-import numpy as np
-from torch.utils.data import DataLoader
-
-
 class TransferMultiApplianceAdapter(BaseNILMAdapter):
     name = "transfer_multi_appliance"
 
@@ -361,14 +329,17 @@ class TransferMultiApplianceAdapter(BaseNILMAdapter):
         model = TransferMultiApplianceModel(
             cfg=cfg,
             num_appliances=len(appliances),
-            appliance_off_norm=appliance_off_norm_normalized(self.experiment, appliances),
         )
         if bool(self.model_cfg.get("transfer", {}).get("freeze_encoder", False)):
             model.freeze_encoder()
         return model.to(device)
 
     def build_loss(self) -> TransferNILMLoss:
-        return TransferNILMLoss(power_scale=self._data_loader().loss_scale)
+        loss_cfg = self.model_cfg.get("loss", {})
+        return TransferNILMLoss(
+            lambda_state=float(loss_cfg.get("lambda_state", 1.0)),
+            power_scale=self._data_loader().loss_scale,
+        )
 
     def _align_loss_tensors(self, power_pred, state_prob, y, z):
         w = self.model_cfg["windowing"]

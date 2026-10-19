@@ -1,0 +1,98 @@
+# Transfer Learning for Multiappliance-Task NILM (Sun et al., IEEE TIM 2025).
+# Architecture, objective, and training hyperparameters follow the paper and
+# its official implementation:
+# https://doi.org/10.1109/TIM.2025.3541652
+# https://github.com/Franky-Feng/transfer_learning_multi-appliance
+#
+# The train/validation/test houses and reported metrics remain the common
+# five-week benchmark so the comparison with MART-NILM is protocol-matched.
+experiment_id: comparison_5w_transfer_multi_appliance_paper
+model_name: transfer_multi_appliance
+
+data:
+  # Preserve the common benchmark ground truth. The authors derive the same
+  # binary task from appliance power with dataset-specific thresholds.
+  state_label_source: csv
+
+evaluation:
+  pred_on_source: state_head
+  gate_power_by_state: false
+  # The released evaluator clips predictions below 5 W and above the
+  # appliance maximum after converting them back to watts.
+  power_postprocess: true
+  state_calibration:
+    enabled: false
+
+windowing:
+  # Paper Table IV and the official dataset builders use 480 samples. The
+  # builders advance by 240 samples, producing 50% overlap.
+  input_window_length: 480
+  output_window_length: 480
+  output_alignment: center
+  input_stride: 240
+  eval_stride: 240
+  eval_reconstruction: overlap_mean
+  training_targets: full_input
+
+architecture:
+  # Paper Table IV and official model.py.
+  hidden: 256
+  attn_heads: 2
+  encoder_layers: 2
+  head_transformer_layers: 1
+  conv_kernel_size: 5
+  dropout: 0.1
+  gate_threshold: 0.5
+
+loss:
+  # Eq. (16); the released trainer uses MSE + BCE, hence lambda = 1.
+  lambda_state: 1.0
+
+transfer:
+  # Source-domain pretraining learns the full network. A later target-domain
+  # transfer run sets this to true and loads the source checkpoint.
+  freeze_encoder: false
+
+training:
+  # Paper Table IV and official Arguments.py / trainer.py.
+  epochs: 100
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.0
+  seed: 155
+  tensor_dtype: float64
+  # Official .npy windows are shuffled once before splitting; its DataLoader
+  # then uses shuffle=False.
+  train_shuffle: false
+  num_workers: 1
+  prefetch_factor: 2
+  persistent_workers: false
+  use_amp: false
+  tf32: false
+  cudnn_benchmark: false
+  torch_compile: false
+  gradient_clip: 0.0
+
+  # The released trainer selects normalized validation MAE - macro-F1 and
+  # stops after 60 epochs without improvement.
+  checkpoint_monitor: val_mae_minus_f1
+  checkpoint_mae_space: normalized
+  early_stop_patience: 60
+  scheduler: none
+
+  random_mix:
+    enabled: false
+    prob: 0.0
+
+  plots:
+    plot_mode: interval
+    plot_interval: 10
+    plot_on_periods: 5
+    plot_max_batches: 16
+    waveform_figsize: 5.5
+    waveform_dpi: 300
+    waveform_dynamic_figsize: true
+    on_period_margin_min: 40
+    on_period_margin_frac: 0.08
+    waveform_context_scale: 10
+    comparison_dpi: 600
