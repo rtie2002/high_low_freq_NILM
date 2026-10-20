@@ -12,7 +12,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 
@@ -36,6 +35,10 @@ class TransferNILMLoss(nn.Module):
     ) -> None:
         super().__init__()
         self.lambda_state = float(lambda_state)
+        # Keep the same explicit loss modules as the released trainer.  The
+        # adapter also reuses them for per-appliance diagnostic logging.
+        self.mse = nn.MSELoss()
+        self.bce = nn.BCELoss()
         self.register_buffer(
             "power_scale", torch.as_tensor(power_scale, dtype=torch.float32)
         )
@@ -51,8 +54,8 @@ class TransferNILMLoss(nn.Module):
         state_true = state_true.to(dtype=state_prob.dtype)
 
         # The public implementation optimizes nn.MSELoss() + nn.BCELoss().
-        loss_power = F.mse_loss(power_pred, power_true)
-        loss_state = F.binary_cross_entropy(state_prob, state_true)
+        loss_power = self.mse(power_pred, power_true)
+        loss_state = self.bce(state_prob, state_true)
         loss = loss_power + self.lambda_state * loss_state
 
         scale = self.power_scale.to(device=power_pred.device, dtype=power_pred.dtype)

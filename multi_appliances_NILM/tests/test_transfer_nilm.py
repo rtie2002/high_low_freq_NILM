@@ -45,6 +45,14 @@ def test_transfer_nilm_loss_matches_official_mse_plus_bce() -> None:
     assert torch.allclose(output.loss_state, expected_state)
     assert torch.allclose(output.loss, expected_power + expected_state)
     assert torch.allclose(output.mae, torch.tensor(1.5))
+    assert torch.allclose(
+        loss_fn.mse(power_pred[..., 0], power_true[..., 0]),
+        torch.tensor(0.25),
+    )
+    assert torch.allclose(
+        loss_fn.bce(state_prob[..., 0], state_true[..., 0]),
+        -torch.log(torch.tensor(0.8)),
+    )
 
 
 def test_transfer_nilm_checkpoint_matches_official_mae_minus_f1() -> None:
