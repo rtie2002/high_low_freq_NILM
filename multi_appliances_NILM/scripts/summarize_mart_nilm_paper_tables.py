@@ -33,6 +33,7 @@ SEEDS = (2026, 2027, 2028)
 MODEL_LABELS = {
     "unetnilm": "UNet-NILM",
     "mat_nilm": "MAT-Conv",
+    "transfer_multi_appliance": "TransferNILM",
     "mart_nilm": "MART-NILM",
 }
 APPLIANCES = ("kettle", "fridge", "dishwasher", "washingmachine", "microwave")
@@ -51,7 +52,15 @@ TRAINING_VARIANTS = (
     "appliance_wise_balancing",
     "complete",
 )
-METRICS = ("mae", "sae", "on_mae", "off_mae", "precision", "recall", "f1")
+METRICS = (
+    "mae",
+    "sae",
+    "on_mae",
+    "average_precision",
+    "precision",
+    "recall",
+    "f1",
+)
 
 
 def _mean_sd(values: list[float]) -> tuple[float, float]:

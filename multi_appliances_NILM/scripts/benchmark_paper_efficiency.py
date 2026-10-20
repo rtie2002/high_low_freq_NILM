@@ -30,6 +30,7 @@ from main import get_adapter
 MODEL_LABELS = {
     "unetnilm": "UNet-NILM",
     "mat_nilm": "MAT-Conv",
+    "transfer_multi_appliance": "TransferNILM",
     "mart_nilm": "MART-NILM",
 }
 DEFAULT_MODELS = ("mart_nilm", "unetnilm")
