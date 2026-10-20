@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import torch
 
+from config import load_model_config
 from model.TransferNILM import TransferMultiApplianceModel, TransferNILMConfig
 from model.TransferNILM_loss import TransferNILMLoss
+from runner import _epoch_score, _resolve_checkpoint_monitor
 
 
 def test_transfer_nilm_returns_one_power_and_state_sequence_per_appliance() -> None:
@@ -42,3 +45,19 @@ def test_transfer_nilm_loss_matches_official_mse_plus_bce() -> None:
     assert torch.allclose(output.loss_state, expected_state)
     assert torch.allclose(output.loss, expected_power + expected_state)
     assert torch.allclose(output.mae, torch.tensor(1.5))
+
+
+def test_transfer_nilm_checkpoint_matches_official_mae_minus_f1() -> None:
+    model_cfg = load_model_config("config/models/transfer_multi_appliance.yaml")
+    training_cfg = model_cfg["training"]
+
+    monitor, mode, _ = _resolve_checkpoint_monitor(training_cfg)
+    score = _epoch_score(
+        monitor,
+        {"mae_norm": 0.2, "val_f1": 0.7},
+        training_cfg,
+    )
+
+    assert monitor == "val_mae_minus_f1"
+    assert mode == "min"
+    assert math.isclose(score, -0.5)

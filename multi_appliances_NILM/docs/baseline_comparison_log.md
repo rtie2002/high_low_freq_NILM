@@ -49,6 +49,9 @@ Results will be appended after the scheduled task finishes.
   dropout 0.1, Adam at 1e-4, batch size 32, and 100 epochs.
 - No MART-NILM augmentation, threshold calibration, learning-rate scheduler,
   gradient clipping, or mixed-precision training is applied.
+- The checkpoint score is explicitly fixed to the released trainer's
+  `normalized MAE - macro-F1` with unit coefficients. This avoids inheriting
+  the shared runner's default MAE coefficient of seven.
 - The shared five-week house split and CSV state labels remain unchanged so the
   eventual Table V comparison uses identical ground truth and held-out houses.
   This is therefore a faithful architecture/training reproduction under the

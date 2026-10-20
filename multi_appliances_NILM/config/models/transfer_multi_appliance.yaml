@@ -73,10 +73,11 @@ training:
   torch_compile: false
   gradient_clip: 0.0
 
-  # The released trainer selects normalized validation MAE - macro-F1 and
-  # stops after 60 epochs without improvement.
+  # The released trainer selects normalized validation MAE - macro-F1 with
+  # unit coefficients and stops after 60 epochs without improvement.
   checkpoint_monitor: val_mae_minus_f1
   checkpoint_mae_space: normalized
+  checkpoint_mae_weight: 1.0
   early_stop_patience: 60
   scheduler: none
 
