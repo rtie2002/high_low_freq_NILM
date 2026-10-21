@@ -21,19 +21,11 @@
 \providecommand{\BIBdecl}{\relax}
 \BIBdecl
 
-\bibitem{dasilva2026nilm}
-E.~B. da~Silva, H.~G. de~Almeida, G.~d.~A. Silva, R.~P.~P. de~Souza, C.~M.
-  Agulhari, M.~F. Castoldi, A.~Goedtel, and W.~A. de~Souza, ``Non-intrusive
-  load monitoring ({NILM}): A systematic review of observability regimes,
-  methods, and evaluation paradigms,'' \emph{IEEE Access}, vol.~14, pp.
-  29\,418--29\,455, 2026, doi: 10.1109/ACCESS.2026.3666553.
-
-\bibitem{rafiq2024nilm}
-H.~Rafiq, P.~Manandhar, E.~Rodriguez-Ubinas, O.~A. Qureshi, and T.~Palpanas,
-  ``A review of current methods and challenges of advanced deep learning-based
-  non-intrusive load monitoring ({NILM}) in residential context,'' \emph{Energy
-  and Buildings}, vol. 305, p. 113890, 2024, doi:
-  10.1016/j.enbuild.2024.113890.
+\bibitem{faustine2020unet}
+A.~Faustine, L.~Pereira, H.~Bousbiat, and S.~Kulkarni, ``{UNet-NILM}: A deep
+  neural network for multi-tasks appliances state detection and power
+  estimation in {NILM},'' in \emph{Proc. 5th Int. Workshop Non-Intrusive Load
+  Monitoring (NILM)}, 2020, pp. 84--88, doi: 10.1145/3427771.3427859.
 
 \bibitem{alami2023convnilm}
 M.~Alami~C., J.~Decock, R.~Kaddah, and J.~Read, ``{Conv-NILM-Net}: A causal and
@@ -43,38 +35,34 @@ M.~Alami~C., J.~Decock, R.~Kaddah, and J.~Read, ``{Conv-NILM-Net}: A causal and
   1753.\hskip 1em plus 0.5em minus 0.4em\relax Springer, 2023, pp. 207--222,
   doi: 10.1007/978-3-031-23633-4{\_}15.
 
+\bibitem{virtsionis2023multitarget}
+N.~Virtsionis~Gkalinikis, C.~Nalmpantis, and D.~Vrakas, ``Variational
+  regression for multi-target energy disaggregation,'' \emph{Sensors}, vol.~23,
+  no.~4, p. 2051, 2023, doi: 10.3390/s23042051.
+
 \bibitem{xiong2024matnilm}
 J.~Xiong, T.~Hong, D.~Zhao, and Y.~Zhang, ``{MATNilm}: Multi-appliance-task
   non-intrusive load monitoring with limited labeled data,'' \emph{IEEE
   Transactions on Industrial Informatics}, vol.~20, no.~3, pp. 3177--3187,
   2024, doi: 10.1109/TII.2023.3301026.
 
-\bibitem{virtsionis2023multitarget}
-N.~Virtsionis~Gkalinikis, C.~Nalmpantis, and D.~Vrakas, ``Variational
-  regression for multi-target energy disaggregation,'' \emph{Sensors}, vol.~23,
-  no.~4, p. 2051, 2023, doi: 10.3390/s23042051.
+\bibitem{dasilva2026nilm}
+E.~B. da~Silva, H.~G. de~Almeida, G.~d.~A. Silva, R.~P.~P. de~Souza, C.~M.
+  Agulhari, M.~F. Castoldi, A.~Goedtel, and W.~A. de~Souza, ``Non-intrusive
+  load monitoring ({NILM}): A systematic review of observability regimes,
+  methods, and evaluation paradigms,'' \emph{IEEE Access}, vol.~14, pp.
+  29\,418--29\,455, 2026, doi: 10.1109/ACCESS.2026.3666553.
 
-\bibitem{faustine2020unet}
-A.~Faustine, L.~Pereira, H.~Bousbiat, and S.~Kulkarni, ``{UNet-NILM}: A deep
-  neural network for multi-tasks appliances state detection and power
-  estimation in {NILM},'' in \emph{Proc. 5th Int. Workshop Non-Intrusive Load
-  Monitoring (NILM)}, 2020, pp. 84--88, doi: 10.1145/3427771.3427859.
+\bibitem{liu2022samnet}
+Y.~Liu, J.~Qiu, and J.~Ma, ``{SAMNet}: Toward latency-free non-intrusive load
+  monitoring via multi-task deep learning,'' \emph{IEEE Transactions on Smart
+  Grid}, vol.~13, no.~3, pp. 2412--2424, 2022, doi: 10.1109/TSG.2021.3139395.
 
 \bibitem{li2023onemany}
 D.~Li, J.~Li, X.~Zeng, V.~Stankovic, L.~Stankovic, C.~Xiao, and Q.~Shi,
   ``Transfer learning for multi-objective non-intrusive load monitoring in
   smart building,'' \emph{Applied Energy}, vol. 329, p. 120223, 2023, doi:
   10.1016/j.apenergy.2022.120223.
-
-\bibitem{liu2026recomposition}
-J.~Liu and Y.~Fan, ``Multi-appliance non-intrusive load monitoring via
-  label-preserving aggregate recomposition and prediction consistency,'' 2026,
-  arXiv:2609.18315.
-
-\bibitem{liu2022samnet}
-Y.~Liu, J.~Qiu, and J.~Ma, ``{SAMNet}: Toward latency-free non-intrusive load
-  monitoring via multi-task deep learning,'' \emph{IEEE Transactions on Smart
-  Grid}, vol.~13, no.~3, pp. 2412--2424, 2022, doi: 10.1109/TSG.2021.3139395.
 
 \bibitem{tanoni2023weak}
 G.~Tanoni, E.~Principi, and S.~Squartini, ``Multilabel appliance classification
@@ -88,6 +76,11 @@ S.~Dash and N.~C. Sahoo, ``Attention-based deep learning approach for
   buildings,'' \emph{IEEE Journal of Emerging and Selected Topics in Industrial
   Electronics}, vol.~5, no.~3, pp. 1248--1258, 2024, doi:
   10.1109/JESTIE.2023.3333308.
+
+\bibitem{liu2026recomposition}
+J.~Liu and Y.~Fan, ``Multi-appliance non-intrusive load monitoring via
+  label-preserving aggregate recomposition and prediction consistency,'' 2026,
+  arXiv:2609.18315.
 
 \bibitem{szegedy2015inception}
 C.~Szegedy, W.~Liu, Y.~Jia, P.~Sermanet, S.~Reed, D.~Anguelov, D.~Erhan,
