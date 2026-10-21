@@ -37,6 +37,22 @@ R.~Gopinath, M.~Kumar, C.~P.~C. Joshua, and K.~Srinivas, ``Energy management
   future research directions,'' \emph{Sustainable Cities and Society}, vol.~62,
   p. 102411, 2020.
 
+\bibitem{hart1992nilm}
+G.~W. Hart, ``Nonintrusive appliance load monitoring,'' \emph{Proceedings of
+  the IEEE}, vol.~80, no.~12, pp. 1870--1891, 1992.
+
+\bibitem{kolter2012fhmm}
+J.~Z. Kolter and T.~S. Jaakkola, ``Approximate inference in additive factorial
+  {HMMs} with application to energy disaggregation,'' in \emph{Proceedings of
+  the Fifteenth International Conference on Artificial Intelligence and
+  Statistics}, 2012, pp. 1472--1482.
+
+\bibitem{kelly2015neural}
+J.~Kelly and W.~Knottenbelt, ``Neural {NILM}: Deep neural networks applied to
+  energy disaggregation,'' in \emph{Proceedings of the 2nd ACM International
+  Conference on Embedded Systems for Energy-Efficient Built Environments},
+  2015, pp. 55--64, doi: 10.1145/2821650.2821672.
+
 \bibitem{dasilva2026nilm}
 E.~B. da~Silva, H.~G. de~Almeida, G.~d.~A. Silva, R.~P.~P. de~Souza, C.~M.
   Agulhari, M.~F. Castoldi, A.~Goedtel, and W.~A. de~Souza, ``Non-intrusive
@@ -89,11 +105,16 @@ Y.~Sun, J.~Feng, L.~Yuan, M.~Su, and W.~Luan, ``Transfer learning for
   multiappliance-task nonintrusive load monitoring,'' \emph{IEEE Transactions
   on Instrumentation and Measurement}, vol.~74, pp. 1--11, 2025.
 
-\bibitem{kelly2015neural}
-J.~Kelly and W.~Knottenbelt, ``Neural {NILM}: Deep neural networks applied to
-  energy disaggregation,'' in \emph{Proceedings of the 2nd ACM International
-  Conference on Embedded Systems for Energy-Efficient Built Environments},
-  2015, pp. 55--64, doi: 10.1145/2821650.2821672.
+\bibitem{xiong2024matnilm}
+J.~Xiong, T.~Hong, D.~Zhao, and Y.~Zhang, ``{MATNilm}: Multi-appliance-task
+  non-intrusive load monitoring with limited labeled data,'' \emph{IEEE
+  Transactions on Industrial Informatics}, vol.~20, no.~3, pp. 3177--3187,
+  2024, doi: 10.1109/TII.2023.3301026.
+
+\bibitem{liu2026recomposition}
+J.~Liu and Y.~Fan, ``Multi-appliance non-intrusive load monitoring via
+  label-preserving aggregate recomposition and prediction consistency,'' 2026,
+  arXiv:2609.18315.
 
 \bibitem{zhang2018sequence}
 C.~Zhang, M.~Zhong, Z.~Wang, N.~Goddard, and C.~Sutton, ``Sequence-to-point
@@ -112,22 +133,11 @@ Z.~Yue, C.~R. Witzig, D.~Jorde, and H.-A. Jacobsen, ``{BERT4NILM}: A
   \emph{Proceedings of the 5th International Workshop on Non-Intrusive Load
   Monitoring (NILM)}, 2020, pp. 89--93.
 
-\bibitem{xiong2024matnilm}
-J.~Xiong, T.~Hong, D.~Zhao, and Y.~Zhang, ``{MATNilm}: Multi-appliance-task
-  non-intrusive load monitoring with limited labeled data,'' \emph{IEEE
-  Transactions on Industrial Informatics}, vol.~20, no.~3, pp. 3177--3187,
-  2024, doi: 10.1109/TII.2023.3301026.
-
 \bibitem{li2023onemany}
 D.~Li, J.~Li, X.~Zeng, V.~Stankovic, L.~Stankovic, C.~Xiao, and Q.~Shi,
   ``Transfer learning for multi-objective non-intrusive load monitoring in
   smart building,'' \emph{Applied Energy}, vol. 329, p. 120223, 2023, doi:
   10.1016/j.apenergy.2022.120223.
-
-\bibitem{liu2026recomposition}
-J.~Liu and Y.~Fan, ``Multi-appliance non-intrusive load monitoring via
-  label-preserving aggregate recomposition and prediction consistency,'' 2026,
-  arXiv:2609.18315.
 
 \bibitem{tanoni2023weak}
 G.~Tanoni, E.~Principi, and S.~Squartini, ``Multilabel appliance classification
