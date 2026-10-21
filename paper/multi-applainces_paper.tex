@@ -52,31 +52,31 @@ x_t = \sum_{i=1}^{M} P_{t,i} + b_t + \epsilon_t,
 \end{equation}
 where $P_{t,i}$ is target power, $b_t$ is unmonitored household demand, and $\epsilon_t$ represents measurement and timing discrepancies. This residual background can exceed a low-power target and varies between households, so a familiar appliance event can occur in an unfamiliar aggregate context. House-held-out evaluation on recorded aggregates is therefore needed; results from different sensing and partitioning protocols are not directly interchangeable~\cite{dasilva2026nilm}.
 
-Within this setting, two common deep NILM modelling paradigms are single-appliance and multi-appliance estimation. Single-appliance networks predict one target per model and have advanced disaggregation accuracy~\cite{wang2022transformer,sun2023diffnilm,petralia2025nilmformer}, but repeating a model for every load repeats aggregate feature extraction and increases storage requirements. Recent deep NILM work has therefore increasingly studied multi-appliance estimation, in which one model jointly estimates a fixed set of $M$ target appliances from the same aggregate window~\cite{faustine2020unet,alami2023convnilm,virtsionis2023multitarget,liu2022samnet,sun2025transfer}. NILM research commonly considers two complementary tasks: power estimation and ON--OFF state detection. For appliance $i$ at time $t$, these tasks estimate a power trace $\hat y_{t,i}$ and an ON-state probability $\hat p_{t,i}$, respectively. Power estimation is a regression task, whereas state detection is multi-label classification in the multi-appliance setting because several appliances may be ON at the same time. For an aggregate window $\mathbf{x}$ of length $T$, the joint estimator is
+Within this setting, two common deep NILM modelling paradigms are single-appliance and multi-appliance estimation. Single-appliance networks predict one target per model and have advanced disaggregation accuracy~\cite{wang2022transformer,sun2023diffnilm,petralia2025nilmformer}, but repeating a model for every load repeats aggregate feature extraction and increases storage requirements. Recent deep NILM work has therefore increasingly studied multi-appliance estimation, in which one model jointly estimates a fixed set of $M$ target appliances from the same aggregate window~\cite{faustine2020unet,alami2023convnilm,virtsionis2023multitarget,liu2022samnet,sun2025transfer}. NILM research commonly considers two complementary tasks: power estimation and ON--OFF state detection. For appliance $i$ at time $t$, these tasks estimate a power trace $\hat y_{t,i}$ and an ON-state probability $\hat s_{t,i}$, respectively. Power estimation is a regression task, whereas state detection is multi-label classification in the multi-appliance setting because several appliances may be ON at the same time. For an aggregate window $\mathbf{x}$ of length $T$, the joint estimator is
 \begin{equation}
-\left(\hat{\mathbf{Y}},\hat{\mathbf{p}}\right)=f_{\boldsymbol{\theta}}(\mathbf{x}),
+\left(\hat{\mathbf{Y}},\hat{\mathbf{S}}\right)=f_{\boldsymbol{\theta}}(\mathbf{x}),
 \qquad
 \hat{\mathbf{Y}}\in\mathbb{R}^{T\times M},\quad
-\hat{\mathbf{p}}\in[0,1]^{T\times M},
+\hat{\mathbf{S}}\in[0,1]^{T\times M},
 \label{eq:joint-estimation}
 \end{equation}
-where $\hat{\mathbf{Y}}$ and $\hat{\mathbf{p}}$ collect the estimated power traces and ON-state probabilities, respectively. Sharing this representation can make residential monitoring more economical.
+where $\hat{\mathbf{Y}}$ and $\hat{\mathbf{S}}$ collect the estimated power traces and ON-state probabilities, respectively.
 
-Joint multi-appliance and multi-label estimation introduces a structural challenge beyond running $M$ independent predictors. Concurrent activations can provide useful cross-appliance context, but their superposed transitions can also mask a weak target beneath other target loads or the residual background~\cite{faustine2020unet,alami2023convnilm,xiong2024matnilm}. A joint architecture must therefore exchange cross-appliance information while retaining appliance-specific evidence; its power and state outputs should also remain mutually coherent.
+Joint multi-appliance and multi-label estimation is more challenging than running $M$ independent predictors. Concurrent activations provide useful cross-appliance context, but their superposed transitions can mask a weak target beneath other loads or the residual background~\cite{faustine2020unet,alami2023convnilm,xiong2024matnilm}. A joint architecture must exchange cross-appliance information while retaining appliance-specific evidence and coherent power--state outputs. It should also avoid repeating costly aggregate feature extraction across appliances.
 
-Training such a joint estimator raises two further difficulties. First, sparse events in a finite training record occur under only a subset of residual-background conditions. A model can then use residual-background correlations as a shortcut instead of the appliance signature; this reliance can fail when those correlations change across households~\cite{liu2026recomposition}. Second, appliance power ranges and on-state prevalences differ substantially. Existing joint objectives use a shared regression--classification balance, either as a fixed coefficient or as a global loss-ratio weight~\cite{sun2025transfer,liu2022samnet}. Such a shared balance cannot represent appliance-specific scales; when it is derived from joint losses, a large power error for one appliance also changes the relative state weight of the others. These observations motivate control over residual-background conditions during training and over the power--state balance of each appliance.
+Training raises two further difficulties. First, sparse events in a finite record occur under only a subset of residual-background conditions. A model can then use residual-background correlations as a shortcut instead of the appliance signature; this can fail when those correlations change across households~\cite{liu2026recomposition}. Second, appliance power ranges and on-state prevalences differ substantially. Existing joint objectives use a shared regression--classification balance, either as a fixed coefficient or a global loss-ratio weight~\cite{sun2025transfer,liu2022samnet}. Such a shared balance cannot represent appliance-specific scales; when derived from joint losses, a large power error for one appliance also changes the relative state weight of the others. These observations motivate control over both residual-background conditions and the power--state balance of each appliance.
 
-We propose the Multi-Appliance Relational Temporal Network for NILM (MART-NILM), a compact joint estimator that operates on a single aggregate channel. Shared temporal encoding captures load evolution once, appliance-specific decoders preserve distinct signatures, and cross-appliance relation attention supplies context between target streams. Focal-event background-stratified mixing exposes active appliance traces to a controlled range of recorded residual-background conditions, while bounded appliance-wise balancing adjusts each state objective relative to its corresponding power objective. Both strategies are used only during training. We assess the resulting estimation--cost trade-off using five-week records, three seeds, and disjoint training, validation, and test houses from UK-DALE and REFIT.
+To address these issues, we propose the Multi-Appliance Relational Temporal Network for NILM (MART-NILM), a relational temporal model for joint power and ON--OFF state estimation under residual-background variation.
 
-The contributions are threefold:
+The main contributions are threefold:
 \begin{enumerate}
-    \item We develop MART-NILM, a compact multi-appliance architecture for
+    \item A compact multi-appliance architecture, MART-NILM, is designed for
     joint power and state estimation. It extracts a shared temporal
     representation once and combines appliance-specific decoding with
     cross-appliance relational context to produce five paired power--state
     outputs in a single forward pass.
 
-    \item We introduce two training-only strategies for sparse events,
+    \item Two training-only strategies address sparse events,
     residual-background variation, and appliance-wise power--state imbalance.
     Focal-event background-stratified mixing exposes activations to a controlled
     range of recorded residual-background conditions, while bounded
@@ -84,8 +84,8 @@ The contributions are threefold:
     objectives of each appliance. Neither strategy adds inference-time
     computation.
 
-    \item We evaluate joint power and state estimation under a house-held-out
-    protocol with recorded aggregates from UK-DALE and REFIT. Three-seed
+    \item A house-held-out evaluation uses recorded aggregates from UK-DALE
+    and REFIT. Three-seed
     baseline comparisons, architecture and training ablations, and
     background-conditioned analyses quantify power estimation, state
     detection, computational cost, and remaining failure modes.
@@ -173,7 +173,7 @@ The encoder combines a multi-branch convolutional neural network (CNN) stem~\cit
 This produces the shared representation $\mathbf{H}$ without temporal downsampling, preserving the alignment between input transitions and appliance outputs.
 
 \textit{Appliance decoding and relation modelling:}
-Each decoder applies a channel gate~\cite{hu2018senet} and a local residual transformation to obtain an appliance-specific representation $\mathbf{F}_i$. These private streams prevent all appliances from being forced into the same representation. To model simultaneous operation, scaled dot-product attention~\cite{vaswani2017attention} is evaluated across appliances at each time $t$, rather than across time:
+Each decoder applies a channel gate~\cite{hu2018senet} and a local residual transformation to obtain an appliance-specific representation $\mathbf{F}_i$. These private streams prevent all appliances from being forced into the same representation. The relation module adapts the cross-task information-sharing principle of PAD-Net~\cite{xu2018padnet} to appliance-specific feature streams. To model simultaneous operation, scaled dot-product attention~\cite{vaswani2017attention} is evaluated across appliances at each time $t$, rather than across time:
 \begin{equation}
 \mathbf{A}_t=\operatorname{softmax}\!\left(
 \frac{\mathbf{Q}_t\mathbf{K}_t^{\mathsf T}}{\sqrt{d}}
@@ -184,10 +184,10 @@ Each decoder applies a channel gate~\cite{hu2018senet} and a local residual tran
 Here $\mathbf{Q}_t$, $\mathbf{K}_t$, and $\mathbf{V}_t$ are learned projections of the stacked appliance representations, and $d$ is their projection width. A gated residual connection adds the relation message $\mathbf{M}_t$ to each private stream, so cross-appliance context supplements rather than replaces appliance-specific evidence.
 
 \textit{Joint power and state prediction:}
-For each appliance, two time-shared fully connected (FC) heads produce a raw standardized power $\hat y_i^{\mathrm{raw}}(t)$ and a state logit $a_i(t)$. The on-state probability $\hat p_i(t)=\sigma(a_i(t))$ is both the state prediction and a differentiable gate on the power branch~\cite{shin2019sgn,xiong2024matnilm}:
+For each appliance, two time-shared fully connected (FC) heads produce a raw standardized power $\hat y_i^{\mathrm{raw}}(t)$ and a state logit $a_i(t)$. The on-state probability $\hat s_i(t)=\sigma(a_i(t))$ is both the state prediction and a differentiable gate on the power branch~\cite{shin2019sgn,xiong2024matnilm}:
 \begin{equation}
-\hat y_i(t)=\hat p_i(t)\hat y_i^{\mathrm{raw}}(t)
-+[1-\hat p_i(t)]y_i^{\mathrm{off}},
+\hat y_i(t)=\hat s_i(t)\hat y_i^{\mathrm{raw}}(t)
++[1-\hat s_i(t)]y_i^{\mathrm{off}},
 \label{eq:soft-power-gate}
 \end{equation}
 where $y_i^{\mathrm{off}}=-\mu_i/\sigma_i$ is zero watts on the standardized scale. Thus an on probability near one preserves the regressed waveform, whereas a probability near zero moves the estimate towards zero watts. The final prediction in physical units is
@@ -201,7 +201,7 @@ The state head therefore provides an explicit operating-state prior while the po
 \subsection{Loss Function}
 \label{sec:loss}
 
-The model is trained jointly over all appliances, as in multi-task NILM~\cite{faustine2020unet,xiong2024matnilm,virtsionis2023multitarget}. Let $b=1,\ldots,B$ index windows in a mini-batch, $t=1,\ldots,T$ index samples, and $i=1,\ldots,M$ index appliances. The standardized target and predicted powers are $y_{b,t,i}$ and $\hat y_{b,t,i}$; $z_{b,t,i}\in\{0,1\}$ is the on--off label; and $\hat p_{b,t,i}\in(0,1)$ is the predicted on probability. The objective separates power regression from state classification:
+The model is trained jointly over all appliances, as in multi-task NILM~\cite{faustine2020unet,xiong2024matnilm,virtsionis2023multitarget}. Let $b=1,\ldots,B$ index windows in a mini-batch, $t=1,\ldots,T$ index samples, and $i=1,\ldots,M$ index appliances. The standardized target and predicted powers are $y_{b,t,i}$ and $\hat y_{b,t,i}$; $z_{b,t,i}\in\{0,1\}$ is the on--off label; and $\hat s_{b,t,i}\in(0,1)$ is the predicted on probability. The objective separates power regression from state classification:
 \begin{equation}
 \mathcal{L}=\underbrace{\sum_{i=1}^{M}\mathcal{L}_{\mathrm{power},i}}_{\mathcal{L}_{\mathrm{power}}}
 +\lambda\underbrace{\sum_{i=1}^{M}r_i\mathcal{L}_{\mathrm{state},i}}_{\mathcal{L}_{\mathrm{state}}},
@@ -256,15 +256,15 @@ Let $\pi_i$ denote the proportion of on samples for appliance $i$ in the trainin
 \begin{equation}
 \begin{aligned}
 \mathrm{BCE}_i=-\frac{1}{BT}\sum_{b,t}\bigl[&
-w_i z_{b,t,i}\log\hat p_{b,t,i}\\
-&+(1-z_{b,t,i})\log(1-\hat p_{b,t,i})\bigr].
+w_i z_{b,t,i}\log\hat s_{b,t,i}\\
+&+(1-z_{b,t,i})\log(1-\hat s_{b,t,i})\bigr].
 \end{aligned}
 \label{eq:weighted-bce}
 \end{equation}
 An additional false-positive term penalizes high on probabilities when the appliance is off:
 \begin{equation}
 \mathcal{L}_{\mathrm{fp},i}=
-\frac{\sum_{b,t}(1-z_{b,t,i})\hat p_{b,t,i}^{2}}
+\frac{\sum_{b,t}(1-z_{b,t,i})\hat s_{b,t,i}^{2}}
 {\max(N_i^{\mathrm{off}},1)},
 \qquad
 \mathcal{L}_{\mathrm{state},i}=\mathrm{BCE}_i+

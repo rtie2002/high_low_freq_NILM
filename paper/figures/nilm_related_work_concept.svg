@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1260" height="790" viewBox="0 0 1260 790">
+<defs>
+ <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#394550"/></marker>
+ <style>
+ text{font-family:Arial,Helvetica,sans-serif;fill:#27333d;text-anchor:middle;font-size:18px}
+ .heading{font-size:21px;font-weight:700}.title{font-size:19px;font-weight:700}.small{font-size:15px}.math{font-family:Georgia,'Times New Roman',serif;font-size:21px;font-style:italic}
+ .box{stroke:#63727e;stroke-width:1.4;fill:#e9edf0}.power{fill:#dceaf2;stroke:#527b93;stroke-width:1.4}.state{fill:#f4e6d5;stroke:#aa7c43;stroke-width:1.4}.private{fill:#e3ece4;stroke:#63846a;stroke-width:1.4}.relation{fill:#e9e3ef;stroke:#847098;stroke-width:1.4}
+ .line{fill:none;stroke:#394550;stroke-width:1.5;marker-end:url(#arrow)}.derived{fill:none;stroke:#78818a;stroke-width:1.5;stroke-dasharray:5 4;marker-end:url(#arrow)}.bus{fill:none;stroke:#394550;stroke-width:1.5}.divider{stroke:#d7dde2;stroke-width:1}
+ </style>
+</defs>
+<rect width="1260" height="790" fill="white"/>
+<text x="630" y="28" class="heading">Prediction objectives</text>
+<path d="M420 51V331M840 51V331" class="divider"/>
+<g transform="translate(0,0)">
+ <text x="210" y="64" class="title">(a) Power regression</text>
+ <rect x="80" y="96" width="260" height="42" class="box"/><text x="210" y="123">Aggregate input x</text>
+ <path d="M210 138V160" class="line"/>
+ <rect x="80" y="160" width="260" height="46" class="box"/><text x="210" y="189">Multi-target regressor</text>
+ <path d="M210 206V228" class="line"/>
+ <rect x="80" y="228" width="260" height="42" class="power"/><text x="210" y="255" class="math">ŷ₁, …, ŷₘ</text>
+ <path d="M210 270V292" class="derived"/>
+ <text x="210" y="315" class="small">Optional: power threshold → states</text>
+</g>
+<g transform="translate(420,0)">
+ <text x="210" y="64" class="title">(b) State classification</text>
+ <rect x="80" y="96" width="260" height="42" class="box"/><text x="210" y="123">Aggregate input / features</text>
+ <path d="M210 138V160" class="line"/>
+ <rect x="80" y="160" width="260" height="46" class="box"/><text x="210" y="189">Multi-label classifier</text>
+ <path d="M210 206V228" class="line"/>
+ <rect x="80" y="228" width="260" height="42" class="state"/><text x="210" y="255" class="math">ẑ₁, …, ẑₘ</text>
+ <path d="M210 270V292" class="derived"/>
+ <text x="210" y="315" class="small">Optional: state power lookup → power</text>
+</g>
+<g transform="translate(840,0)">
+ <text x="210" y="64" class="title">(c) Joint power and state learning</text>
+ <rect x="80" y="96" width="260" height="42" class="box"/><text x="210" y="123">Aggregate input x</text>
+ <path d="M210 138V160" class="line"/>
+ <rect x="80" y="160" width="260" height="46" class="box"/><text x="210" y="189">Joint representation</text>
+ <path d="M210 206V216H115V228" class="line"/><path d="M210 216H305V228" class="line"/>
+ <rect x="35" y="228" width="160" height="42" class="power"/><text x="115" y="255" class="math">ŷ₁, …, ŷₘ</text>
+ <rect x="225" y="228" width="160" height="42" class="state"/><text x="305" y="255" class="math">ŝ₁, …, ŝₘ</text>
+ <text x="210" y="309" class="small">Paired supervision for each appliance</text>
+</g>
+<path d="M20 343H1240" class="divider"/>
+<text x="630" y="375" class="heading">Representation sharing across appliances</text>
+<text x="630" y="400" class="small">Joint outputs are shown below to hold the prediction objectives fixed.</text>
+<path d="M420 423V748M840 423V748" class="divider"/>
+<g>
+ <text x="210" y="438" class="title">(d) Independent appliance models</text>
+ <rect x="70" y="462" width="280" height="37" class="box"/><text x="210" y="487">Aggregate input x</text>
+ <path d="M210 499V516H110V538" class="line"/><path d="M210 516H310V538" class="line"/>
+ <rect x="38" y="538" width="144" height="47" class="box"/><text x="110" y="568">Encoder 1</text>
+ <rect x="238" y="538" width="144" height="47" class="box"/><text x="310" y="568">Encoder M</text>
+ <text x="210" y="568">…</text>
+ <path d="M110 585V607" class="line"/><path d="M310 585V607" class="line"/>
+ <rect x="38" y="607" width="144" height="42" class="private"/><text x="110" y="634">Decoder 1</text>
+ <rect x="238" y="607" width="144" height="42" class="private"/><text x="310" y="634">Decoder M</text>
+ <path d="M110 649V662H73V674" class="line"/><path d="M110 662H145V674" class="line"/><path d="M310 649V662H273V674" class="line"/><path d="M310 662H345V674" class="line"/>
+ <rect x="38" y="674" width="70" height="38" class="power"/><rect x="108" y="674" width="74" height="38" class="state"/>
+ <text x="73" y="699" class="math">ŷ₁</text><text x="145" y="699" class="math">ŝ₁</text>
+ <rect x="238" y="674" width="70" height="38" class="power"/><rect x="308" y="674" width="74" height="38" class="state"/>
+ <text x="273" y="699" class="math">ŷₘ</text><text x="345" y="699" class="math">ŝₘ</text>
+ <text x="210" y="739" class="small">Separate aggregate feature extraction</text>
+</g>
+<g transform="translate(420,0)">
+ <text x="210" y="438" class="title">(e) Shared encoder, private decoders</text>
+ <rect x="70" y="462" width="280" height="37" class="box"/><text x="210" y="487">Aggregate input x</text>
+ <path d="M210 499V519" class="line"/>
+ <rect x="70" y="519" width="280" height="47" class="box"/><text x="210" y="549">Shared encoder</text>
+ <path d="M210 566V586H110V607" class="line"/><path d="M210 586H310V607" class="line"/>
+ <rect x="38" y="607" width="144" height="42" class="private"/><text x="110" y="634">Decoder 1</text>
+ <rect x="238" y="607" width="144" height="42" class="private"/><text x="310" y="634">Decoder M</text><text x="210" y="634">…</text>
+ <path d="M110 649V662H73V674" class="line"/><path d="M110 662H145V674" class="line"/><path d="M310 649V662H273V674" class="line"/><path d="M310 662H345V674" class="line"/>
+ <rect x="38" y="674" width="70" height="38" class="power"/><rect x="108" y="674" width="74" height="38" class="state"/>
+ <text x="73" y="699" class="math">ŷ₁</text><text x="145" y="699" class="math">ŝ₁</text>
+ <rect x="238" y="674" width="70" height="38" class="power"/><rect x="308" y="674" width="74" height="38" class="state"/>
+ <text x="273" y="699" class="math">ŷₘ</text><text x="345" y="699" class="math">ŝₘ</text>
+ <text x="210" y="739" class="small">Shared features; separate appliance decoding</text>
+</g>
+<g transform="translate(840,0)">
+ <text x="210" y="438" class="title">(f) Interaction among private streams</text>
+ <rect x="70" y="462" width="280" height="37" class="box"/><text x="210" y="487">Aggregate input x</text>
+ <path d="M210 499V519" class="line"/>
+ <rect x="70" y="519" width="280" height="38" class="box"/><text x="210" y="544">Shared encoder</text>
+ <path d="M210 557V568H110V580" class="line"/><path d="M210 568H310V580" class="line"/>
+ <rect x="38" y="580" width="144" height="37" class="private"/><text x="110" y="605">Decoder 1</text>
+ <rect x="238" y="580" width="144" height="37" class="private"/><text x="310" y="605">Decoder M</text><text x="210" y="605">…</text>
+ <path d="M110 617V633" class="line"/><path d="M310 617V633" class="line"/>
+ <rect x="38" y="633" width="344" height="27" class="relation"/><text x="210" y="653" class="small">Cross-appliance feature interaction</text>
+ <path d="M110 660V667H73V674" class="line"/><path d="M110 667H145V674" class="line"/><path d="M310 660V667H273V674" class="line"/><path d="M310 667H345V674" class="line"/>
+ <rect x="38" y="674" width="70" height="38" class="power"/><rect x="108" y="674" width="74" height="38" class="state"/>
+ <text x="73" y="699" class="math">ŷ₁</text><text x="145" y="699" class="math">ŝ₁</text>
+ <rect x="238" y="674" width="70" height="38" class="power"/><rect x="308" y="674" width="74" height="38" class="state"/>
+ <text x="273" y="699" class="math">ŷₘ</text><text x="345" y="699" class="math">ŝₘ</text>
+ <text x="210" y="739" class="small">MART-NILM follows this sharing pattern</text>
+</g>
+<path d="M30 770H76" class="line"/><text x="164" y="776" class="small">Learned prediction</text>
+<path d="M310 770H356" class="derived"/><text x="469" y="776" class="small">Derived output (optional)</text>
+<text x="935" y="776" class="small">Conceptual patterns; variants can coexist within one method.</text>
+</svg>

@@ -179,6 +179,12 @@ J.~Hu, L.~Shen, and G.~Sun, ``Squeeze-and-excitation networks,'' in
   \emph{Proceedings of the IEEE Conference on Computer Vision and Pattern
   Recognition}, 2018, pp. 7132--7141.
 
+\bibitem{xu2018padnet}
+D.~Xu, W.~Ouyang, X.~Wang, and N.~Sebe, ``{PAD-Net}: Multi-tasks guided
+  prediction-and-distillation network for simultaneous depth estimation and
+  scene parsing,'' in \emph{Proceedings of the IEEE/CVF Conference on Computer
+  Vision and Pattern Recognition (CVPR)}, 2018, pp. 675--684.
+
 \bibitem{vaswani2017attention}
 A.~Vaswani, N.~Shazeer, N.~Parmar, J.~Uszkoreit, L.~Jones, A.~N. Gomez,
   L.~Kaiser, and I.~Polosukhin, ``Attention is all you need,'' in
