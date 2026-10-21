@@ -1,4 +1,4 @@
-\documentclass[conference]{IEEEtran}
+\documentclass[journal]{IEEEtran}
 
 \usepackage{cite}
 \usepackage{amsmath,amssymb,amsfonts}
@@ -17,38 +17,19 @@
 
 \begin{document}
 
-\title{MART-NILM: A Multi-Appliance Relational Temporal Network for Joint Power and State Estimation in Non-Intrusive Load Monitoring}
+\title{MART-NILM: A Compact Multi-Appliance Relational Temporal Network for Joint Power and State Estimation in Non-Intrusive Load Monitoring}
 
-\author{\IEEEauthorblockN{Raymond Tie Siou Hin}
-\IEEEauthorblockA{\textit{Department of Electrical and Robotics} \\
-\textit{Centre for Net-Zero Technology} \\
-\textit{Monash University Malaysia} \\
-Bandar Sunway, Malaysia}
-\and
-\IEEEauthorblockN{Tan Wen Shan}
-\IEEEauthorblockA{\textit{Department of Electrical and Robotics} \\
-\textit{Centre for Net-Zero Technology} \\
-\textit{Monash University Malaysia} \\
-Bandar Sunway, Malaysia \\
-tan.wenshan@monash.edu}
-\and
-\IEEEauthorblockN{Ding Ze Yang}
-\IEEEauthorblockA{\textit{Department of Electrical and Robotics} \\
-\textit{Centre for Net-Zero Technology} \\
-\textit{Monash University Malaysia} \\
-Bandar Sunway, Malaysia}
-\and
-\IEEEauthorblockN{Mirza Rayana Sanzana}
-\IEEEauthorblockA{\textit{School of Information Technology} \\
-\textit{Monash University Malaysia} \\
-Bandar Sunway, Malaysia}
-\and
-\IEEEauthorblockN{Haval Kamil}
-\IEEEauthorblockA{\textit{Department of Air Conditioning and Refrigeration} \\
-\textit{College of Engineering Technology} \\
-\textit{Al-Kitab University} \\
-Kirkuk, Iraq}
-}
+\author{Raymond Tie Siou Hin, Tan Wen Shan, Ding Ze Yang,
+Mirza Rayana Sanzana, and Haval Kamil%
+\thanks{Raymond Tie Siou Hin, Tan Wen Shan, and Ding Ze Yang are with the
+Department of Electrical and Robotics and the Centre for Net-Zero Technology,
+Monash University Malaysia, Bandar Sunway, Malaysia
+(e-mail: tan.wenshan@monash.edu).}%
+\thanks{Mirza Rayana Sanzana is with the School of Information Technology,
+Monash University Malaysia, Bandar Sunway, Malaysia.}%
+\thanks{Haval Kamil is with the Department of Air Conditioning and
+Refrigeration, College of Engineering Technology, Al-Kitab University,
+Kirkuk, Iraq.}}
 
 \maketitle
 
@@ -62,36 +43,50 @@ non-intrusive load monitoring, energy disaggregation, multi-task learning, power
 
 \section{Introduction}
 
-Residential energy management requires information about both the magnitude and operating state of individual loads. Aggregate metering provides household demand, but does not directly provide this appliance-level visibility. Dedicated submetering can supply detailed feedback~\cite{delmas2013information}, at the cost of installing and maintaining additional sensors. Non-intrusive load monitoring (NILM) estimates appliance consumption from aggregate measurements and offers a less instrument-intensive basis for residential load analysis~\cite{zoha2012nonintrusive,gopinath2020energy}. For such estimates to inform energy management, a model must identify active appliances as well as reconstruct their power. Low average power error alone can conceal missed operating periods, particularly for appliances that remain off for most of the record.
+Residential energy management requires information about both the magnitude and operating state of individual loads. Aggregate metering provides household demand, but not this appliance-level visibility. Dedicated submetering can supply detailed feedback~\cite{delmas2013information}, at the cost of installing and maintaining additional sensors. Non-intrusive load monitoring (NILM) estimates appliance consumption from aggregate measurements and offers a less instrument-intensive basis for residential load analysis~\cite{zoha2012nonintrusive,gopinath2020energy}. To support residential load observability, a NILM estimator must identify appliance activity as well as reconstruct appliance power: low average power error can conceal missed operating periods, particularly for appliances that remain off for most of the record.
 
-Single-appliance networks have advanced disaggregation accuracy~\cite{wang2022transformer,sun2023diffnilm,petralia2025nilmformer}, but maintaining a separate model for each load repeats feature extraction and increases storage requirements. Multi-appliance models instead share an aggregate representation and estimate several loads in one forward pass~\cite{faustine2020unet,alami2023convnilm,virtsionis2023multitarget}. Joint power and state prediction further connects consumption estimates to operating activity~\cite{xiong2024matnilm,sun2025transfer}. The resulting computational benefit is attractive for scalable monitoring, provided that sharing does not obscure appliance-specific signatures or allow dominant tasks to determine the training objective.
-
-Real aggregate measurements also contain demand outside the monitored target set. For $M$ target appliances, the measured power is
+Real aggregate measurements contain demand outside the monitored target set. For $M$ target appliances, the measured power is
 \begin{equation}
 x_t = \sum_{i=1}^{M} P_{t,i} + b_t + \epsilon_t,
 \label{eq:aggregate}
 \end{equation}
-where $P_{t,i}$ is target power, $b_t$ is unmonitored household demand, and $\epsilon_t$ represents measurement and timing discrepancies. The residual demand can exceed the power of an active low-power appliance. Its distribution also changes between households, so a model may encounter familiar appliance events in unfamiliar aggregate conditions. Evaluation on recorded aggregates and houses absent from training is therefore needed to assess this setting; results obtained under different sensing and partitioning protocols are not directly interchangeable~\cite{dasilva2026nilm}.
+where $P_{t,i}$ is target power, $b_t$ is unmonitored household demand, and $\epsilon_t$ represents measurement and timing discrepancies. This residual background can exceed the power of an active low-power appliance and differs between households. A model can therefore encounter a familiar appliance event in an unfamiliar aggregate context. House-held-out evaluation on recorded aggregates is needed to assess this setting; results obtained under different sensing and partitioning protocols are not directly interchangeable~\cite{dasilva2026nilm}.
 
-Two training difficulties follow. First, sparse appliance events cover only a limited range of backgrounds in the available records. A model can associate an event with the accompanying household demand rather than its load signature. Second, appliance powers and activation frequencies differ, producing unequal regression and classification loss scales. A single power--state balancing ratio couples these scales across appliances: a large regression error for one load changes the classification weighting of the others. These difficulties motivate control over both the backgrounds presented during training and the relative weighting of each appliance's objectives.
+Within this setting, two common deep NILM modelling paradigms are single-appliance and multi-appliance estimation. Single-appliance networks predict one target per model and have advanced disaggregation accuracy~\cite{wang2022transformer,sun2023diffnilm,petralia2025nilmformer}, but repeating a model for every load repeats aggregate feature extraction and increases storage requirements. Multi-appliance estimation instead uses one model to jointly predict a fixed set of $M$ target appliances from the same aggregate window~\cite{faustine2020unet,alami2023convnilm,virtsionis2023multitarget,liu2022samnet,sun2025transfer}. NILM commonly involves two complementary prediction tasks: power regression reconstructs appliance consumption, whereas appliance-state classification identifies operating activity. In the multi-appliance setting, state classification is multi-label: it estimates the operating probability of every appliance independently, allowing several appliances to be active at the same time. For an aggregate window $\mathbf{x}$ of length $T$, the joint estimator is
+\begin{equation}
+\left(\hat{\mathbf{P}},\hat{\mathbf{Z}}\right)=f_{\boldsymbol{\theta}}(\mathbf{x}),
+\qquad
+\hat{\mathbf{P}}\in\mathbb{R}^{T\times M},\quad
+\hat{\mathbf{Z}}\in[0,1]^{T\times M},
+\label{eq:joint-estimation}
+\end{equation}
+where $\hat{\mathbf{P}}$ contains the regressed power traces and $\hat{\mathbf{Z}}$ contains the corresponding on-state probabilities. Sharing computation can make residential monitoring more economical, provided that it preserves appliance-specific signatures and that a dominant power objective does not determine the state-learning objective of the other appliances.
 
-We propose the Multi-Appliance Relational Temporal Network for NILM (MART-NILM) for joint estimation from a single aggregate channel. Shared temporal encoding captures load evolution, appliance-specific decoding preserves distinct signatures, and relation attention supplies context between target streams. Focal-event background-stratified mixing presents recorded activations against varied residual loads; bounded appliance-wise balancing adjusts each state loss relative to its own power loss. We assess the resulting accuracy--cost trade-off using five-week records, three seeds, and disjoint training, validation, and test houses from UK-DALE and REFIT.
+Two training difficulties arise in this setting. First, within a finite training record, sparse appliance events occur under only a limited subset of residual-background conditions. This can encourage a model to rely on household context that accompanies an event rather than on the appliance signature itself. Second, appliance power ranges and activation prevalences differ substantially, so the numerical scales of their regression and classification objectives are unequal. A single global power--state weight couples these objectives across appliances: the scale of one appliance's power loss can alter the relative weight assigned to the state losses of the other appliances. These observations motivate control over the residual-background conditions presented during training and over the power--state balance for each appliance.
+
+We propose the Multi-Appliance Relational Temporal Network for NILM (MART-NILM), a compact joint estimator that operates on a single aggregate channel. Shared temporal encoding captures load evolution once, appliance-specific decoders preserve distinct signatures, and cross-appliance relation attention supplies context between target streams. Focal-event background-stratified mixing exposes active appliance traces to a controlled range of recorded residual-background conditions, while bounded appliance-wise balancing adjusts each state objective relative to its corresponding power objective. Both strategies are used only during training. We assess the resulting estimation--cost trade-off using five-week records, three seeds, and disjoint training, validation, and test houses from UK-DALE and REFIT.
 
 The contributions are threefold:
 \begin{enumerate}
-    \item We develop a compact multi-appliance architecture for joint power and
-    state estimation. A shared temporal encoder, appliance-specific decoders,
-    cross-appliance relation attention, and state-conditioned power heads allow
-    MART-NILM to predict five appliances in a single forward pass.
+    \item We develop MART-NILM, a compact multi-appliance architecture for
+    joint power and state estimation. It extracts a shared temporal
+    representation once and combines appliance-specific decoding with
+    cross-appliance relational context to produce five paired power--state
+    outputs in a single forward pass.
 
-    \item We introduce a two-part training strategy for sparse events,
-    background variation, and multi-task imbalance. Focal-event
-    background-stratified recomposition exposes appliance activations to varied
-    residual loads, while bounded appliance-wise balancing controls each
-    appliance's power and state objectives. Both operations are confined to
-    training and add no inference-time computation.
+    \item We introduce two training-only strategies for sparse events,
+    residual-background variation, and appliance-wise power--state imbalance.
+    Focal-event background-stratified mixing exposes activations to a controlled
+    range of recorded residual-background conditions, while bounded
+    appliance-wise balancing independently aligns the power and state
+    objectives of each appliance. Neither strategy adds inference-time
+    computation.
 
-    \item We evaluate joint power and state estimation under a common house-held-out protocol with recorded aggregates from UK-DALE and REFIT. Three-seed baseline comparisons, module and training ablations, and background-conditioned analyses quantify estimation quality, computational cost, and remaining failure modes.
+    \item We evaluate joint power and state estimation under a house-held-out
+    protocol with recorded aggregates from UK-DALE and REFIT. Three-seed
+    baseline comparisons, architecture and training ablations, and
+    background-conditioned analyses quantify power estimation, state
+    detection, computational cost, and remaining failure modes.
 \end{enumerate}
 
 \section{Background and Related Work}
@@ -145,14 +140,7 @@ These studies establish shared representations and cross-house evaluation as exi
 \subsection{Problem Formulation}
 \label{sec:problem}
 
-Let $x_t$ denote aggregate power and $P_{t,i}$ the power of target appliance $i$, as in \eqref{eq:aggregate}. From a standardized aggregate window $\mathbf{x}\in\mathbb{R}^{T}$, the model jointly estimates the standardized power and on-state probability of $M=5$ appliances,
-\begin{equation}
-\hat{\mathbf{Y}}\in\mathbb{R}^{T\times M},
-\qquad
-\hat{\mathbf{Z}}\in[0,1]^{T\times M}.
-\label{eq:outputs}
-\end{equation}
-The input contains no appliance measurements or hand-crafted channels. The unobserved remainder is
+Let $x_t$ denote aggregate power and $P_{t,i}$ the power of target appliance $i$, as in \eqref{eq:aggregate}. In this work, $M=5$ and the power branch of \eqref{eq:joint-estimation} is represented on a standardized scale during training. The input contains no appliance measurements or hand-crafted channels. The unobserved remainder is
 \begin{equation}
 x_{t}-\sum_{i=1}^{M}P_{t,i}=b_{t}+\epsilon_{t}.
 \label{eq:residual}

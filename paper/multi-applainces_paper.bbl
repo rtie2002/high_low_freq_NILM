@@ -37,6 +37,13 @@ R.~Gopinath, M.~Kumar, C.~P.~C. Joshua, and K.~Srinivas, ``Energy management
   future research directions,'' \emph{Sustainable Cities and Society}, vol.~62,
   p. 102411, 2020.
 
+\bibitem{dasilva2026nilm}
+E.~B. da~Silva, H.~G. de~Almeida, G.~d.~A. Silva, R.~P.~P. de~Souza, C.~M.
+  Agulhari, M.~F. Castoldi, A.~Goedtel, and W.~A. de~Souza, ``Non-intrusive
+  load monitoring ({NILM}): A systematic review of observability regimes,
+  methods, and evaluation paradigms,'' \emph{IEEE Access}, vol.~14, pp.
+  29\,418--29\,455, 2026, doi: 10.1109/ACCESS.2026.3666553.
+
 \bibitem{wang2022transformer}
 L.~Wang, S.~Mao, and R.~M. Nelms, ``Transformer for non-intrusive load
   monitoring: Complexity reduction and transferability,'' \emph{IEEE Internet
@@ -72,23 +79,15 @@ N.~Virtsionis~Gkalinikis, C.~Nalmpantis, and D.~Vrakas, ``Variational
   regression for multi-target energy disaggregation,'' \emph{Sensors}, vol.~23,
   no.~4, p. 2051, 2023, doi: 10.3390/s23042051.
 
-\bibitem{xiong2024matnilm}
-J.~Xiong, T.~Hong, D.~Zhao, and Y.~Zhang, ``{MATNilm}: Multi-appliance-task
-  non-intrusive load monitoring with limited labeled data,'' \emph{IEEE
-  Transactions on Industrial Informatics}, vol.~20, no.~3, pp. 3177--3187,
-  2024, doi: 10.1109/TII.2023.3301026.
+\bibitem{liu2022samnet}
+Y.~Liu, J.~Qiu, and J.~Ma, ``{SAMNet}: Toward latency-free non-intrusive load
+  monitoring via multi-task deep learning,'' \emph{IEEE Transactions on Smart
+  Grid}, vol.~13, no.~3, pp. 2412--2424, 2022, doi: 10.1109/TSG.2021.3139395.
 
 \bibitem{sun2025transfer}
 Y.~Sun, J.~Feng, L.~Yuan, M.~Su, and W.~Luan, ``Transfer learning for
   multiappliance-task nonintrusive load monitoring,'' \emph{IEEE Transactions
   on Instrumentation and Measurement}, vol.~74, pp. 1--11, 2025.
-
-\bibitem{dasilva2026nilm}
-E.~B. da~Silva, H.~G. de~Almeida, G.~d.~A. Silva, R.~P.~P. de~Souza, C.~M.
-  Agulhari, M.~F. Castoldi, A.~Goedtel, and W.~A. de~Souza, ``Non-intrusive
-  load monitoring ({NILM}): A systematic review of observability regimes,
-  methods, and evaluation paradigms,'' \emph{IEEE Access}, vol.~14, pp.
-  29\,418--29\,455, 2026, doi: 10.1109/ACCESS.2026.3666553.
 
 \bibitem{kelly2015neural}
 J.~Kelly and W.~Knottenbelt, ``Neural {NILM}: Deep neural networks applied to
@@ -113,10 +112,11 @@ Z.~Yue, C.~R. Witzig, D.~Jorde, and H.-A. Jacobsen, ``{BERT4NILM}: A
   \emph{Proceedings of the 5th International Workshop on Non-Intrusive Load
   Monitoring (NILM)}, 2020, pp. 89--93.
 
-\bibitem{liu2022samnet}
-Y.~Liu, J.~Qiu, and J.~Ma, ``{SAMNet}: Toward latency-free non-intrusive load
-  monitoring via multi-task deep learning,'' \emph{IEEE Transactions on Smart
-  Grid}, vol.~13, no.~3, pp. 2412--2424, 2022, doi: 10.1109/TSG.2021.3139395.
+\bibitem{xiong2024matnilm}
+J.~Xiong, T.~Hong, D.~Zhao, and Y.~Zhang, ``{MATNilm}: Multi-appliance-task
+  non-intrusive load monitoring with limited labeled data,'' \emph{IEEE
+  Transactions on Industrial Informatics}, vol.~20, no.~3, pp. 3177--3187,
+  2024, doi: 10.1109/TII.2023.3301026.
 
 \bibitem{li2023onemany}
 D.~Li, J.~Li, X.~Zeng, V.~Stankovic, L.~Stankovic, C.~Xiao, and Q.~Shi,
