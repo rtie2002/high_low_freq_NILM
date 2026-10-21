@@ -94,9 +94,15 @@ The contributions are threefold:
     \item We evaluate joint power and state estimation under a common house-held-out protocol with recorded aggregates from UK-DALE and REFIT. Three-seed baseline comparisons, module and training ablations, and background-conditioned analyses quantify estimation quality, computational cost, and remaining failure modes.
 \end{enumerate}
 
-\section{Related Work}
+\section{Background and Related Work}
+\label{sec:background-related-work}
 
-Multi-appliance NILM replaces a collection of appliance-specific models with one network that estimates several loads jointly. UNet-NILM, for example, estimates the on--off state and power of several appliances with a single model~\cite{faustine2020unet}. Table~\ref{tab:protocol} compares recent multi-appliance methods by evaluation scenario, data split, architecture, and principal contribution.
+\subsection{Multi-Appliance Energy Disaggregation}
+\label{sec:rel-multi-appliance}
+
+Early deep-learning NILM predominantly deployed single-appliance models~\cite{kelly2015neural,zhang2018sequence,shin2019sgn,yue2020bert4nilm,petralia2025nilmformer}. While isolating a single target simplifies network optimization, monitoring $M$ household loads necessitates training and storing $M$ independent models, multiplies aggregate feature-extraction passes, and ignores simultaneous appliance interactions~\cite{alami2023convnilm,xiong2024matnilm,virtsionis2023multitarget}.
+
+Multi-appliance disaggregation overcomes these limitations by estimating multiple target loads simultaneously from a single aggregate window~\cite{faustine2020unet,liu2022samnet,li2023onemany,sun2025transfer}. As summarized in Table~\ref{tab:protocol}, architectural strategies have evolved from shared convolutional stems with independent output heads (e.g., Conv-NILM-Net~\cite{alami2023convnilm} and MATNilm~\cite{xiong2024matnilm}) to multi-branch representations and mixture-of-experts designs~\cite{liu2026recomposition}. However, existing multi-appliance networks largely decouple appliance decoding after the shared backbone, lacking explicit mechanisms for cross-stream relational context during concurrent switching events. Furthermore, evaluation setups across the literature vary widely: several studies evaluate on synthetic additive sums omitting unmonitored baseload, tune hyperparameters on subsets of the training buildings, or restrict testing to single-house configurations (Table~\ref{tab:protocol}). True residential scalability demands multi-appliance estimators capable of generalizing across unseen households with real, unmonitored residual demand.
 
 \begin{table*}[!t]
 \caption{Multi-appliance studies. The split column states how training, validation, and test are divided. An entry $a{\to}b$ means training on houses $a$ and testing on houses $b$. ``Val.\ in train'' means validation uses part of a training house.}
@@ -121,6 +127,15 @@ Liu and Fan~\cite{liu2026recomposition} & Cross-house & Separate datasets. Val.\
 \hline
 \end{tabularx}
 \end{table*}
+
+\subsection{Multi-Label Appliance State Detection and Multi-Task Formulation}
+\label{sec:rel-multilabel}
+
+Because residential appliances switch and operate concurrently, appliance state identification is fundamentally a multi-label classification (MLC) problem rather than a single-label multiclass task: at any timestamp $t$, the operating state vector $\mathbf{z}_t \in \{0, 1\}^M$ contains multiple concurrent active entries. 
+
+Early NILM literature approached simultaneous state detection by coupling handcrafted feature extraction (such as wavelets, statistical moments, and switching transients) with shallow MLC classifiers, including support vector machines (SVM) and decision trees~\cite{tabatabaei2017novel}. Although computationally lightweight, handcrafted descriptors are sensitive to noise and degrade markedly when evaluated across unseen dwellings with different voltage fluctuations and baseload profiles. Recent research has therefore embraced end-to-end deep MLC formulations. For instance, Tanoni et al.~\cite{tanoni2023weak} investigated convolutional recurrent networks trained on weakly labeled data, while Dash and Sahoo~\cite{dash2024jestie} developed an attention-based causal convolutional network for simultaneous multi-appliance state identification.
+
+Simultaneous power regression and state detection within a multi-task learning framework offers mutual structural regularization~\cite{faustine2020unet,xiong2024matnilm,sun2025transfer}. Incorporating state prediction supplies hard or soft gating that suppresses phantom power predictions when appliances are idle~\cite{shin2019sgn}. However, multi-appliance multi-task training introduces an acute loss-scale discrepancy across appliances: high-power loads (e.g., washing machine heating elements) incur substantial mean-squared regression errors, whereas low-power or infrequent loads (e.g., fridges or microwaves) produce small numerical errors. Standard multi-task NILM formulations apply a single uniform power-to-state loss weighting across all appliances, allowing the regression gradients of dominant loads to overwhelm the state classification objectives of sparse appliances. This limitation motivates our bounded appliance-wise balancing scheme, which balances power and state objectives independently for each appliance.
 
 These studies establish shared representations and cross-house evaluation as existing directions. Our focus is the interaction between residual-background coverage and appliance-wise power--state scaling in a compact joint estimator. The common evaluation holds out validation houses as well as test houses and retains recorded aggregates, allowing the effects of both training strategies to be examined alongside the architecture.
 
