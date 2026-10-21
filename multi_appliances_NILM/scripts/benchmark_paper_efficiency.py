@@ -33,6 +33,11 @@ MODEL_LABELS = {
     "transfer_multi_appliance": "TransferNILM",
     "mart_nilm": "MART-NILM",
 }
+# Paper-facing result directories use ``mart_nilm`` while the registered
+# runtime adapter retains the historical ``multinilm_fractional`` name.
+MODEL_ADAPTER_NAMES = {
+    "mart_nilm": "multinilm_fractional",
+}
 DEFAULT_MODELS = ("mart_nilm", "unetnilm")
 DEFAULT_SEEDS = (2026, 2027, 2028)
 DEFAULT_SPLITS = ("ukdale_house2", "refit_house20")
@@ -114,7 +119,8 @@ def benchmark_run(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     _, tensor_dtype = resolve_tensor_dtype(config["model"])
-    adapter = get_adapter(model_name, config, data_root=str(_data_root(config)))
+    adapter_name = MODEL_ADAPTER_NAMES.get(model_name, model_name)
+    adapter = get_adapter(adapter_name, config, data_root=str(_data_root(config)))
     model = adapter.build_model(device)
     if tensor_dtype == torch.float64:
         model = model.double()
