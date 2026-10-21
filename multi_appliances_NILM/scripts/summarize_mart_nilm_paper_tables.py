@@ -154,6 +154,13 @@ def table_v(
                 frame = pd.read_csv(path).set_index("appliance")
                 for metric in METRICS:
                     for appliance in (*APPLIANCES, "overall"):
+                        value = float(frame.loc[appliance, metric])
+                        # Precision is undefined when a model predicts no
+                        # positive samples.  Use the standard zero-division
+                        # convention so every seed contributes to the reported
+                        # three-seed mean and standard deviation.
+                        if metric == "precision" and not np.isfinite(value):
+                            value = 0.0
                         records.append(
                             {
                                 "model": MODEL_LABELS[model],
@@ -161,7 +168,7 @@ def table_v(
                                 "seed": seed,
                                 "metric": metric,
                                 "appliance": appliance,
-                                "value": float(frame.loc[appliance, metric]),
+                                "value": value,
                             }
                         )
     raw = pd.DataFrame(records)
