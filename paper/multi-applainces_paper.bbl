@@ -35,6 +35,25 @@ H.~Rafiq, P.~Manandhar, E.~Rodriguez-Ubinas, O.~A. Qureshi, and T.~Palpanas,
   and Buildings}, vol. 305, p. 113890, 2024, doi:
   10.1016/j.enbuild.2024.113890.
 
+\bibitem{alami2023convnilm}
+M.~Alami~C., J.~Decock, R.~Kaddah, and J.~Read, ``{Conv-NILM-Net}: A causal and
+  multi-appliance model for energy source separation,'' in \emph{Machine
+  Learning and Principles and Practice of Knowledge Discovery in Databases
+  (ECML PKDD)}, ser. Communications in Computer and Information Science, vol.
+  1753.\hskip 1em plus 0.5em minus 0.4em\relax Springer, 2023, pp. 207--222,
+  doi: 10.1007/978-3-031-23633-4{\_}15.
+
+\bibitem{xiong2024matnilm}
+J.~Xiong, T.~Hong, D.~Zhao, and Y.~Zhang, ``{MATNilm}: Multi-appliance-task
+  non-intrusive load monitoring with limited labeled data,'' \emph{IEEE
+  Transactions on Industrial Informatics}, vol.~20, no.~3, pp. 3177--3187,
+  2024, doi: 10.1109/TII.2023.3301026.
+
+\bibitem{virtsionis2023multitarget}
+N.~Virtsionis~Gkalinikis, C.~Nalmpantis, and D.~Vrakas, ``Variational
+  regression for multi-target energy disaggregation,'' \emph{Sensors}, vol.~23,
+  no.~4, p. 2051, 2023, doi: 10.3390/s23042051.
+
 \bibitem{faustine2020unet}
 A.~Faustine, L.~Pereira, H.~Bousbiat, and S.~Kulkarni, ``{UNet-NILM}: A deep
   neural network for multi-tasks appliances state detection and power
@@ -47,12 +66,6 @@ D.~Li, J.~Li, X.~Zeng, V.~Stankovic, L.~Stankovic, C.~Xiao, and Q.~Shi,
   smart building,'' \emph{Applied Energy}, vol. 329, p. 120223, 2023, doi:
   10.1016/j.apenergy.2022.120223.
 
-\bibitem{xiong2024matnilm}
-J.~Xiong, T.~Hong, D.~Zhao, and Y.~Zhang, ``{MATNilm}: Multi-appliance-task
-  non-intrusive load monitoring with limited labeled data,'' \emph{IEEE
-  Transactions on Industrial Informatics}, vol.~20, no.~3, pp. 3177--3187,
-  2024, doi: 10.1109/TII.2023.3301026.
-
 \bibitem{liu2026recomposition}
 J.~Liu and Y.~Fan, ``Multi-appliance non-intrusive load monitoring via
   label-preserving aggregate recomposition and prediction consistency,'' 2026,
@@ -62,19 +75,6 @@ J.~Liu and Y.~Fan, ``Multi-appliance non-intrusive load monitoring via
 Y.~Liu, J.~Qiu, and J.~Ma, ``{SAMNet}: Toward latency-free non-intrusive load
   monitoring via multi-task deep learning,'' \emph{IEEE Transactions on Smart
   Grid}, vol.~13, no.~3, pp. 2412--2424, 2022, doi: 10.1109/TSG.2021.3139395.
-
-\bibitem{alami2023convnilm}
-M.~Alami~C., J.~Decock, R.~Kaddah, and J.~Read, ``{Conv-NILM-Net}: A causal and
-  multi-appliance model for energy source separation,'' in \emph{Machine
-  Learning and Principles and Practice of Knowledge Discovery in Databases
-  (ECML PKDD)}, ser. Communications in Computer and Information Science, vol.
-  1753.\hskip 1em plus 0.5em minus 0.4em\relax Springer, 2023, pp. 207--222,
-  doi: 10.1007/978-3-031-23633-4{\_}15.
-
-\bibitem{virtsionis2023multitarget}
-N.~Virtsionis~Gkalinikis, C.~Nalmpantis, and D.~Vrakas, ``Variational
-  regression for multi-target energy disaggregation,'' \emph{Sensors}, vol.~23,
-  no.~4, p. 2051, 2023, doi: 10.3390/s23042051.
 
 \bibitem{tanoni2023weak}
 G.~Tanoni, E.~Principi, and S.~Squartini, ``Multilabel appliance classification

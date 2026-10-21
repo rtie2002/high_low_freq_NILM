@@ -59,3 +59,29 @@ Results will be appended after the scheduled task finishes.
   REFIT-to-UK-DALE/REDD transfer protocol.
 - Verification completed: Python compilation, two model/loss smoke checks, and
   exact official/local parameter-count equality. Training has not yet started.
+
+## TransferNILM final result (2026-10-21)
+
+- Seeds 2026, 2027, and 2028 completed under the common five-week protocol.
+  Checkpoint selection used the validation houses only; UK-DALE house 2 and
+  REFIT house 20 were evaluated once for final reporting.
+- Three-seed house-macro results were: UK-DALE MAE 26.7 +/- 1.5 W, SAE
+  21.8 +/- 1.2 W, ON MAE 579.4 +/- 45.8 W, AP 0.681 +/- 0.075, and macro-F1
+  0.49 +/- 0.02; REFIT MAE 29.7 +/- 0.9 W, SAE 21.7 +/- 1.0 W, ON MAE
+  585.6 +/- 12.9 W, AP 0.440 +/- 0.000, and macro-F1 0.36 +/- 0.02.
+- Two seeds produced no positive microwave prediction. The paper summary uses
+  the standard zero-division convention (precision = 0) rather than omitting
+  those seeds. This gives microwave F1 values of 0.01 +/- 0.02 on UK-DALE and
+  0.00 +/- 0.00 on REFIT.
+- Representative waveforms agree with the metrics. Fridge cycles are detected
+  but their plateau amplitude is strongly underestimated and false low-power
+  activations remain. Microwave events are almost entirely suppressed on both
+  held-out houses, explaining the high microwave ON MAE and near-zero F1.
+- The reproduced model has 7.829 M parameters, a 59.793 MiB checkpoint, and a
+  mean training time of 16,493.8 s on the common RTX 4090. In comparison,
+  MART-NILM uses 1.373 M parameters, a 5.335 MiB checkpoint, and 485.2 s of
+  training time.
+- `table_v_models.csv`, `table_vi_models.csv`, all final metrics, timing JSON
+  files, and representative fridge/microwave waveform figures were copied to
+  the local run directory. Tables V and VI in the manuscript were updated from
+  these frozen summaries; MART-NILM remains the final proposed-model row.
