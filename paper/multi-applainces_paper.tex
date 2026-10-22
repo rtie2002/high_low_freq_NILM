@@ -15,6 +15,24 @@
 % Mean and standard deviation stacked in two rows with matching font size.
 \newcommand{\mstd}[2]{\shortstack{#1\\[-2pt]{$\pm$#2}}}
 
+% Center single-line figure captions in IEEEtran journal mode
+\makeatletter
+\long\def\@makecaption#1#2{%
+  \ifx\@captype\@IEEEtablestring
+    \footnotesize\bgroup\par\centering\@IEEEtabletopskipstrut{\normalfont\footnotesize #1}\\{\normalfont\footnotesize\scshape #2}\par\addvspace{0.5\baselineskip}\egroup
+    \@IEEEtablecaptionsepspace
+  \else
+    \@IEEEfigurecaptionsepspace
+    \setbox\@tempboxa\hbox{\normalfont\footnotesize {#1.}\nobreakspace\nobreakspace #2}%
+    \ifdim \wd\@tempboxa >\hsize
+      \setbox\@tempboxa\hbox{\normalfont\footnotesize {#1.}\nobreakspace\nobreakspace}%
+      \parbox[t]{\hsize}{\normalfont\footnotesize\noindent\unhbox\@tempboxa#2}%
+    \else
+      \hbox to\hsize{\normalfont\footnotesize\hfil\box\@tempboxa\hfil}%
+    \fi
+  \fi}
+\makeatother
+
 \begin{document}
 
 \title{MART-NILM: A Compact Multi-Appliance Relational Temporal Network for Joint Power and State Estimation in Non-Intrusive Load Monitoring}
@@ -45,24 +63,24 @@ non-intrusive load monitoring, energy disaggregation, multi-task learning, power
 
 Residential energy management requires information about both the magnitude and operating state of individual loads. Aggregate metering provides household demand, but not this appliance-level visibility. Dedicated submetering can supply detailed feedback~\cite{delmas2013information}, at the cost of installing and maintaining additional sensors. Non-intrusive load monitoring (NILM) estimates appliance consumption from aggregate measurements and offers a less instrument-intensive basis for residential load analysis~\cite{zoha2012nonintrusive,gopinath2020energy}. To support residential load observability, a NILM estimator must identify appliance activity as well as reconstruct appliance power: low average power error can conceal missed operating periods, particularly for appliances that remain off for most of the record.
 
-Classical NILM identifies appliance signatures and infers appliance states with finite-state or factorial hidden Markov models~\cite{hart1992nilm,kolter2012fhmm}. Deep approaches instead learn representations directly from aggregate windows~\cite{kelly2015neural}, reducing the need to specify signatures and state-transition models manually. Regardless of the estimator, a recorded aggregate contains demand outside the monitored target set. For $M$ target appliances, the measured power is
+Classical NILM identifies appliance signatures and infers appliance states with finite-state or factorial hidden Markov models~\cite{hart1992nilm,kolter2012fhmm}. Deep approaches instead learn representations directly from aggregate windows~\cite{kelly2015neural}, reducing the need to specify signatures and state-transition models manually. Regardless of the estimator, a recorded aggregate contains demand outside the monitored target set. For $N$ target appliances, the measured power is
 \begin{equation}
-x_t = \sum_{i=1}^{M} P_{t,i} + b_t + \epsilon_t,
+x_t = \sum_{i=1}^{N} P_{t,i} + b_t + \epsilon_t,
 \label{eq:aggregate}
 \end{equation}
 where $P_{t,i}$ is target power, $b_t$ is unmonitored household demand, and $\epsilon_t$ represents measurement and timing discrepancies. This residual background can exceed a low-power target and varies between households, so a familiar appliance event can occur in an unfamiliar aggregate context. House-held-out evaluation on recorded aggregates is therefore needed; results from different sensing and partitioning protocols are not directly interchangeable~\cite{dasilva2026nilm}.
 
-Within this setting, two common deep NILM modelling paradigms are single-appliance and multi-appliance estimation. Single-appliance networks predict one target per model and have advanced disaggregation accuracy~\cite{wang2022transformer,sun2023diffnilm,petralia2025nilmformer}, but repeating a model for every load repeats aggregate feature extraction and increases storage requirements. Recent deep NILM work has therefore increasingly studied multi-appliance estimation, in which one model jointly estimates a fixed set of $M$ target appliances from the same aggregate window~\cite{faustine2020unet,alami2023convnilm,virtsionis2023multitarget,sun2025transfer}. NILM research commonly considers two complementary tasks: power estimation and ON--OFF state detection. For appliance $i$ at time $t$, these tasks estimate a power trace $\hat y_{t,i}$ and an ON-state probability $\hat s_{t,i}$, respectively. Power estimation is a regression task, whereas state detection is multi-label classification in the multi-appliance setting because several appliances may be ON at the same time. For an aggregate window $\mathbf{x}$ of length $T$, the joint estimator is
+Within this setting, two common deep NILM modelling paradigms are single-appliance and multi-appliance estimation. Single-appliance networks predict one target per model and have advanced disaggregation accuracy~\cite{wang2022transformer,sun2023diffnilm,petralia2025nilmformer}, but repeating a model for every load repeats aggregate feature extraction and increases storage requirements. Recent deep NILM work has therefore increasingly studied multi-appliance estimation, in which one model jointly estimates a fixed set of $N$ target appliances from the same aggregate window~\cite{faustine2020unet,alami2023convnilm,virtsionis2023multitarget,sun2025transfer}. NILM research commonly considers two complementary tasks: power estimation and ON--OFF state detection. For appliance $i$ at time $t$, these tasks estimate a power trace $\hat y_{t,i}$ and an ON-state probability $\hat s_{t,i}$, respectively. Power estimation is a regression task, whereas state detection is multi-label classification in the multi-appliance setting because several appliances may be ON at the same time. For an aggregate window $\mathbf{x}$ of length $T$, the joint estimator is
 \begin{equation}
 \left(\hat{\mathbf{Y}},\hat{\mathbf{S}}\right)=f_{\boldsymbol{\theta}}(\mathbf{x}),
 \qquad
-\hat{\mathbf{Y}}\in\mathbb{R}^{T\times M},\quad
-\hat{\mathbf{S}}\in[0,1]^{T\times M},
+\hat{\mathbf{Y}}\in\mathbb{R}^{T\times N},\quad
+\hat{\mathbf{S}}\in[0,1]^{T\times N},
 \label{eq:joint-estimation}
 \end{equation}
 where $\hat{\mathbf{Y}}$ and $\hat{\mathbf{S}}$ collect the estimated power traces and ON-state probabilities, respectively.
 
-Joint multi-appliance and multi-label estimation is more challenging than running $M$ independent predictors. Concurrent activations provide useful cross-appliance context, but their superposed transitions can mask a weak target beneath other loads or the residual background~\cite{faustine2020unet,alami2023convnilm,xiong2024matnilm}. A joint architecture must distinguish appliance-specific evidence within the shared aggregate and support coherent power--state outputs. Explicit cross-appliance interaction offers one way to incorporate relational context. Shared feature extraction can also reduce repeated computation across appliances.
+Joint multi-appliance and multi-label estimation is more challenging than running $N$ independent predictors. Concurrent activations provide useful cross-appliance context, but their superposed transitions can mask a weak target beneath other loads or the residual background~\cite{faustine2020unet,alami2023convnilm,xiong2024matnilm}. A joint architecture must distinguish appliance-specific evidence within the shared aggregate and support coherent power--state outputs. Explicit cross-appliance interaction offers one way to incorporate relational context. Shared feature extraction can also reduce repeated computation across appliances.
 
 Training raises two further difficulties. First, sparse events in a finite record occur under only a subset of residual-background conditions. A model can then use residual-background correlations as a shortcut instead of the appliance signature; this can fail when those correlations change across households~\cite{liu2026recomposition}. Second, appliance power ranges and on-state prevalences differ substantially. Existing joint objectives use a shared regression--classification balance, either as a fixed coefficient or a global loss-ratio weight~\cite{sun2025transfer,liu2022samnet}. Such a shared balance cannot represent appliance-specific scales; when derived from joint losses, a large power error for one appliance also changes the relative state weight of the others. These observations motivate control over both residual-background conditions and the power--state balance of each appliance.
 
@@ -157,25 +175,40 @@ Here $\hat y_{t,i}$ estimates appliance power on the standardized scale, and $\h
 \begin{figure*}[!t]
     \centering
     \includegraphics[width=\textwidth]{figures/martnilm_architecture.pdf}
-    \caption{Architecture of MART-NILM. The aggregate input is processed by a multi-scale convolutional stem and a shared temporal encoder. Appliance-specific decoders form five feature streams, cross-appliance attention exchanges information among them, and separate power and state heads jointly produce gated power estimates and on--off probabilities.}
+    \caption{Model Architecture of MART-NILM.}
     \label{fig:martnilm-architecture}
 \end{figure*}
 
-Figure~\ref{fig:martnilm-architecture} presents the overall architecture of MART-NILM. Its body follows the private-stream interaction pattern in Fig.~\ref{fig:model-body-design}(c), while its appliance heads adopt the state-gated power design in Fig.~\ref{fig:appliance-head}(b), with an additional OFF-state power term. A shared encoder extracts a common temporal representation, appliance-specific decoders form separate feature streams, and relation attention exchanges information among them before joint power and state prediction. Temporal resolution is preserved throughout.
+Figure~\ref{fig:martnilm-architecture} presents MART-NILM, combining the private-stream interaction body in Fig.~\ref{fig:model-body-design}(c) with the state-gated heads in Fig.~\ref{fig:appliance-head}(b). The components are described below in processing order, using the same names as the architecture ablations in Table~\ref{tab:architecture-ablation}.
 
-\textit{Shared aggregate encoder:}
-The encoder combines a multi-branch CNN stem~\cite{szegedy2015inception} with residual temporal convolution. Parallel kernels capture switching patterns at complementary local scales. Instance--batch normalization (IBN)~\cite{pan2018ibn} divides shallow channels equally between instance normalization (IN) and batch normalization (BN), combining per-window and batch-level normalization. This design is intended to reduce sensitivity to household-specific offsets while retaining complementary amplitude information. The resulting sequence is processed by five dilated TCN blocks~\cite{lea2017tcn}. Writing $\mathcal{T}_{\ell}$ for the 1D convolution, BN, rectified linear unit (ReLU) activation, and dropout in block $\ell$,
+\textit{Multi-scale CNN:}
+Parallel convolutional branches~\cite{szegedy2015inception} extract local features at complementary time scales from the standardized aggregate $\bar{\mathbf{x}}$:
 \begin{equation}
-\mathbf{H}^{(\ell+1)}
-=\mathbf{H}^{(\ell)}+\mathcal{T}_{\ell}
-\!\left(\mathbf{H}^{(\ell)};d_{\ell}\right),
-\qquad d_{\ell}\in\{1,2,4,8,16\}.
+\mathbf{Z}=\mathcal{F}\!\left(
+[\mathcal{B}_{3}(\bar{\mathbf{x}});\mathcal{B}_{5}(\bar{\mathbf{x}});
+\mathcal{B}_{9}(\bar{\mathbf{x}})]\right)+\mathcal{S}(\bar{\mathbf{x}}).
+\label{eq:multiscale-fusion}
+\end{equation}
+Here $\mathcal{B}_{k}$ is a kernel-$k$ convolution followed by instance--batch normalization (IBN)~\cite{pan2018ibn} and a rectified linear unit (ReLU); $[\cdot;\cdot]$ denotes channel concatenation. The $1\times1$ fusion $\mathcal{F}$ combines the branches, while the projected shortcut $\mathcal{S}$ retains a direct input path. IBN applies instance normalization (IN) and batch normalization (BN) to separate channel halves.
+
+\textit{Feature encoder:}
+Two convolution--IBN--ReLU stages combine the local features into a shared representation $\mathbf{H}^{(0)}\in\mathbb{R}^{128\times T}$. Feature extraction is performed once for all appliances.
+
+\textit{Temporal encoder:}
+Residual dilated TCN blocks~\cite{lea2017tcn} extend temporal context:
+\begin{equation}
+\mathbf{H}^{(\ell+1)}=\mathbf{H}^{(\ell)}+
+\mathcal{T}_{2^{\ell}}(\mathbf{H}^{(\ell)}),
+\qquad \ell\in\{0,1,2,3,4\}.
 \label{eq:temporal-block}
 \end{equation}
-This produces the shared representation $\mathbf{H}$ without temporal downsampling, preserving the alignment between input transitions and appliance outputs.
+Here $\mathcal{T}_{d}$ comprises a dilation-$d$ convolution, BN, ReLU, and dropout. Increasing dilation expands context, while residual connections and symmetric padding retain the incoming features and temporal alignment. The output is $\mathbf{H}=\mathbf{H}^{(5)}$.
 
-\textit{Appliance decoding and relation modelling:}
-Each decoder applies a channel gate~\cite{hu2018senet} and a local residual transformation to obtain an appliance-specific representation $\mathbf{F}_i$. These private streams prevent all appliances from being forced into the same representation. The relation module adapts the cross-task information-sharing principle of PAD-Net~\cite{xu2018padnet} to appliance-specific feature streams. To model simultaneous operation, scaled dot-product attention~\cite{vaswani2017attention} is evaluated across appliances at each time $t$, rather than across time:
+\textit{Appliance decoders:}
+Each decoder applies a channel gate, inspired by channel recalibration~\cite{hu2018senet}, and a local residual transformation to obtain an appliance-specific representation $\mathbf{F}_i$. These private streams adapt the shared temporal features to individual load characteristics.
+
+\textit{Relation attention:}
+The relation module draws on the cross-task information-sharing principle of PAD-Net~\cite{xu2018padnet} to exchange context among appliance-specific feature streams. Scaled dot-product attention~\cite{vaswani2017attention} is evaluated across appliances at each time $t$:
 \begin{equation}
 \mathbf{A}_t=\operatorname{softmax}\!\left(
 \frac{\mathbf{Q}_t\mathbf{K}_t^{\mathsf T}}{\sqrt{d}}
@@ -183,37 +216,33 @@ Each decoder applies a channel gate~\cite{hu2018senet} and a local residual tran
 \mathbf{M}_t=\mathbf{A}_t\mathbf{V}_t.
 \label{eq:relation-attention}
 \end{equation}
-Here $\mathbf{Q}_t$, $\mathbf{K}_t$, and $\mathbf{V}_t$ are learned projections of the stacked appliance representations, and $d$ is their projection width. A gated residual connection adds the relation message $\mathbf{M}_t$ to each private stream, so cross-appliance context supplements rather than replaces appliance-specific evidence.
+Here $\mathbf{Q}_t$, $\mathbf{K}_t$, and $\mathbf{V}_t$ are learned projections of the stacked appliance representations, and $d$ is their projection width. The attended context is projected back to the feature dimension and added to each private stream through a gated residual connection.
 
 \textit{Joint power and state prediction:}
-For each appliance, two time-shared fully connected (FC) heads produce a raw standardized power $\hat y_i^{\mathrm{raw}}(t)$ and a state logit $a_i(t)$. The on-state probability $\hat s_i(t)=\sigma(a_i(t))$ is both the state prediction and a differentiable gate on the power branch~\cite{shin2019sgn,xiong2024matnilm}:
+For each appliance, two time-shared fully connected (FC) heads predict raw standardized power $\hat y_i^{\mathrm{raw}}(t)$ and a state logit $a_i(t)$. Following the state-gating principle of the subtask-gated network (SGN)~\cite{shin2019sgn}, the on-state probability $\hat s_i(t)=\operatorname{sigmoid}(a_i(t))$ softly gates the power prediction:
 \begin{equation}
 \hat y_i(t)=\hat s_i(t)\hat y_i^{\mathrm{raw}}(t)
-+[1-\hat s_i(t)]y_i^{\mathrm{off}},
++[1-\hat s_i(t)]y_i^{(0)},
 \label{eq:soft-power-gate}
 \end{equation}
-where $y_i^{\mathrm{off}}=-\mu_i/\sigma_i$ is zero watts on the standardized scale. Thus an on probability near one preserves the regressed waveform, whereas a probability near zero moves the estimate towards zero watts. The final prediction in physical units is
-\begin{equation}
-\hat P_i(t)=\left[\sigma_i\hat y_i(t)+\mu_i\right]_+,
-\qquad [u]_+=\max(u,0).
-\label{eq:power-in-watts}
-\end{equation}
-The state head therefore provides an explicit operating-state prior while the power head retains the appliance waveform.
+where $y_i^{(0)}=-\mu_i/\sigma_i$ is the standardized zero-power anchor. Hence, a low on-state probability smoothly moves the estimate towards zero power. Predictions are converted back to watts using the appliance training mean $\mu_i$ and standard deviation $\sigma_i$, and negative values are clipped to zero. The gate couples the state and power predictions while retaining a separate waveform regressor.
 
 \subsection{Loss Function}
 \label{sec:loss}
 
-The model is trained jointly over all appliances, as in multi-task NILM~\cite{faustine2020unet,xiong2024matnilm,virtsionis2023multitarget}. Let $b=1,\ldots,B$ index windows in a mini-batch, $t=1,\ldots,T$ index samples, and $i=1,\ldots,M$ index appliances. The standardized target and predicted powers are $y_{b,t,i}$ and $\hat y_{b,t,i}$; $z_{b,t,i}\in\{0,1\}$ is the on--off label; and $\hat s_{b,t,i}\in(0,1)$ is the predicted on probability. The objective separates power regression from state classification:
+The model is trained jointly over all appliances, as in multi-task NILM~\cite{faustine2020unet,xiong2024matnilm,virtsionis2023multitarget}. Let $\mathcal{L}_{\mathrm{power},i}$ and $\mathcal{L}_{\mathrm{state},i}$ denote the power and state losses for appliance $i$, respectively. The joint objective is
 \begin{equation}
-\mathcal{L}=\underbrace{\sum_{i=1}^{M}\mathcal{L}_{\mathrm{power},i}}_{\mathcal{L}_{\mathrm{power}}}
-+\lambda\underbrace{\sum_{i=1}^{M}r_i\mathcal{L}_{\mathrm{state},i}}_{\mathcal{L}_{\mathrm{state}}},
+\mathcal{L}=\sum_{i=1}^{N}\left(
+\mathcal{L}_{\mathrm{power},i}
++\lambda r_i\mathcal{L}_{\mathrm{state},i}
+\right),
 \qquad \lambda=0.8.
 \label{eq:loss}
 \end{equation}
-Hence every appliance contributes one power loss and one state loss, and the five appliance losses are summed to train a single network.
+Here $r_i$ is an appliance-wise balancing factor defined below. Thus, every appliance contributes one power objective and one state objective to the single joint network. The constituent power and state losses, together with the appliance-wise balancing rule, are specified below.
 
 \textit{Power loss:}
-For appliance $i$, let $e_{b,t,i}=\hat y_{b,t,i}-y_{b,t,i}$, $N_i^{\mathrm{on}}=\sum_{b,t}z_{b,t,i}$, and $N_i^{\mathrm{off}}=BT-N_i^{\mathrm{on}}$. The overall, on-state, and off-state mean squared errors are
+For a mini-batch of $B$ windows, each with $T$ samples, let $y_{b,t,i}$ and $\hat y_{b,t,i}$ denote the standardized target and predicted power for appliance $i$, and let $z_{b,t,i}\in\{0,1\}$ denote its on--off label. Define $e_{b,t,i}=\hat y_{b,t,i}-y_{b,t,i}$, $N_i^{\mathrm{on}}=\sum_{b,t}z_{b,t,i}$, and $N_i^{\mathrm{off}}=BT-N_i^{\mathrm{on}}$. The overall, on-state, and off-state mean squared errors are
 \begin{align}
 \mathrm{MSE}_i&=\frac{1}{BT}\sum_{b,t}e_{b,t,i}^{2},\nonumber\\
 \mathrm{MSE}_i^{\mathrm{on}}&=
@@ -254,7 +283,7 @@ The per-appliance power loss is therefore
 \end{equation}
 
 \textit{State loss:}
-Let $\pi_i$ denote the proportion of on samples for appliance $i$ in the training set. Its positive-class weight is $w_i=\min\{(1-\pi_i)/\pi_i,12\}$. The weighted binary cross-entropy is
+Let $\hat s_{b,t,i}\in(0,1)$ denote the predicted on-state probability and $\pi_i$ the proportion of on samples for appliance $i$ in the training set. Its positive-class weight is $w_i=\min\{(1-\pi_i)/\pi_i,12\}$. The weighted binary cross-entropy is
 \begin{equation}
 \begin{aligned}
 \mathrm{BCE}_i=-\frac{1}{BT}\sum_{b,t}\bigl[&
@@ -295,18 +324,18 @@ Here $\operatorname{sg}$ stops gradients through the weights and $\varepsilon=10
 
 Training alternates between recorded and recomposed aggregate windows with equal probability. The recorded windows retain the natural joint distribution of household loads. The recomposed windows reduce dependence on appliance combinations and residual backgrounds observed in a particular house, following the use of synthetic aggregates in NILM~\cite{kelly2015neural,liu2026recomposition}. From each recorded training sequence, the non-target residual is
 \begin{equation}
-R_t=\left[x_t-\sum_{i=1}^{M}P_{t,i}\right]_+.
+R_t=\left[x_t-\sum_{i=1}^{N}P_{t,i}\right]_+.
 \label{eq:training-residual}
 \end{equation}
 For a recomposed window, each appliance trace and the residual are drawn from independently selected training windows:
 \begin{equation}
-\tilde{x}_t=R_t^{(k_0)}+\sum_{i=1}^{M}P_{t,i}^{(k_i)},
+\tilde{x}_t=R_t^{(k_0)}+\sum_{i=1}^{N}P_{t,i}^{(k_i)},
 \qquad
 \tilde{P}_{t,i}=P_{t,i}^{(k_i)},\quad
 \tilde{z}_{t,i}=z_{t,i}^{(k_i)},
 \label{eq:training-recomposition}
 \end{equation}
-where $k_0,k_1,\ldots,k_M$ denote independent window indices. The additive construction therefore preserves the power and state labels of every selected appliance.
+where $k_0,k_1,\ldots,k_N$ denote independent window indices. The additive construction therefore preserves the power and state labels of every selected appliance.
 
 To prevent sparse events from disappearing from the recomposed set, one focal appliance $i^\star$ is selected uniformly for each synthetic window and its trace is drawn from windows containing at least one on sample. The residual window is selected by first sampling uniformly from the non-empty median-power intervals $[0,100)$, $[100,200)$, $[200,400)$, $[400,800)$, and $[800,\infty)$~W, and then sampling a window within that interval. The remaining appliance traces are sampled without this constraint. Recomposition is used only for training; validation and test retain the recorded aggregate and its aligned labels. Fig.~\ref{fig:focal-mix} summarises the two-step procedure.
 
@@ -356,18 +385,18 @@ y_{n,t,i}=\frac{P_{n,t,i}-\mu_i}{\sigma_i}.
 \label{eq:power-normalization}
 \end{equation}
 
-State labels are obtained before windowing from $z_{t,i}=\mathbb{I}[P_{t,i}\geq\tau_i]$, where $t=1,\ldots,N$ and $N$ is the length of the recorded sequence. Off gaps no longer than $G_i$ are joined to the surrounding on period, and on periods shorter than $D_i$ are discarded. Algorithm~\ref{alg:labeling} gives the full procedure; Table~\ref{tab:label} lists the per-appliance parameters. A 30~s fridge gap is used in UK-DALE house~5. Isolated spikes are removed only for the appliances marked in Table~\ref{tab:label}.
+State labels are obtained before windowing from $z_{t,i}=\mathbb{I}[P_{t,i}\geq\tau_i]$, where $t=1,\ldots,T_{\mathrm{rec}}$ and $T_{\mathrm{rec}}$ is the length of the recorded sequence. Off gaps no longer than $G_i$ are joined to the surrounding on period, and on periods shorter than $D_i$ are discarded. Algorithm~\ref{alg:labeling} gives the full procedure; Table~\ref{tab:label} lists the per-appliance parameters. A 30~s fridge gap is used in UK-DALE house~5. Isolated spikes are removed only for the appliances marked in Table~\ref{tab:label}.
 
 \begin{algorithm}[!t]
 \caption{On/Off State Labeling for Appliance $i$}
 \label{alg:labeling}
 \begin{algorithmic}[1]
-\STATE \textbf{Input:} $P_{1:N}$ — resampled power ($N$ = recording length); $\tau$ — on-power threshold; $G$ — min-off gap (samples); $D$ — min-on duration (samples)
-\STATE \textbf{Output:} binary label sequence $z_{1:N}$
+\STATE \textbf{Input:} $P_{1:T_{\mathrm{rec}}}$ — resampled power ($T_{\mathrm{rec}}$ = recording length); $\tau$ — on-power threshold; $G$ — min-off gap (samples); $D$ — min-on duration (samples)
+\STATE \textbf{Output:} binary label sequence $z_{1:T_{\mathrm{rec}}}$
 \IF{spike removal enabled for appliance $i$}
     \STATE Remove isolated outliers from $P$ via rolling-window $z$-statistic
 \ENDIF
-\FOR{$t=1$ \textbf{to} $N$}
+\FOR{$t=1$ \textbf{to} $T_{\mathrm{rec}}$}
     \STATE $z_t \leftarrow \mathbb{I}[P_t \geq \tau]$ \COMMENT{threshold}
 \ENDFOR
 \FOR{each OFF run $[s,\,e)$ in $z$}
@@ -380,7 +409,7 @@ State labels are obtained before windowing from $z_{t,i}=\mathbb{I}[P_{t,i}\geq\
         \STATE $z_s,\ldots,z_{e-1} \leftarrow 0$ \COMMENT{remove brief event}
     \ENDIF
 \ENDFOR
-\RETURN $z_{1:N}$
+\RETURN $z_{1:T_{\mathrm{rec}}}$
 \end{algorithmic}
 \end{algorithm}
 
@@ -446,11 +475,11 @@ and temporal rules are then frozen and applied unchanged to both test houses.
 \subsection{Evaluation Metrics}
 \label{sec:metrics}
 
-Each appliance is evaluated on power and on the on--off state. For an evaluated record of length $T$, $P_{t}$ is the recorded power in watts and $\hat{P}_{t}$ is the predicted power. The label $z_{t}$ equals 1 when the appliance is recorded on and 0 when it is off. $\hat{z}_{t}$ is the predicted label. The Average column in Table~\ref{tab:results} is the mean of the five appliance scores. Here $T$ is the length of the record, not the training window of Section~\ref{sec:problem}.
+Each appliance is evaluated on power and on the on--off state. For an evaluated record of length $T_{\mathrm{rec}}$, $P_{t}$ is the recorded power in watts and $\hat{P}_{t}$ is the predicted power. The label $z_{t}$ equals 1 when the appliance is recorded on and 0 when it is off. $\hat{z}_{t}$ is the predicted label. The Average column in Table~\ref{tab:results} is the mean of the five appliance scores.
 
 For an appliance-level score $q_{h,i}$ of appliance $i$ in house $h$, we first form the appliance average within that house and then give every house equal weight,
 \begin{equation}
-\bar q_h=\frac{1}{M}\sum_{i=1}^{M}q_{h,i},\qquad
+\bar q_h=\frac{1}{N}\sum_{i=1}^{N}q_{h,i},\qquad
 \bar q_{\mathcal H}=\frac{1}{|\mathcal H|}\sum_{h\in\mathcal H}\bar q_h.
 \label{eq:house-macro}
 \end{equation}
@@ -459,10 +488,10 @@ For F1, $\bar q_h$ is the macro-F1 over the five appliances. Checkpoint selectio
 \subsubsection{Power}
 Power error is reported using MAE, ON MAE, and SAE. MAE uses every sample, whereas ON MAE is restricted to samples with $z_t=1$ so that reconstruction quality during appliance operation remains visible.
 \begin{equation}
-\mathrm{MAE}=\frac{1}{T}\sum_{t=1}^{T}\left|P_{t}-\hat{P}_{t}\right|.
+\mathrm{MAE}=\frac{1}{T_{\mathrm{rec}}}\sum_{t=1}^{T_{\mathrm{rec}}}\left|P_{t}-\hat{P}_{t}\right|.
 \label{eq:mae}
 \end{equation}
-SAE divides the record into consecutive blocks of $L=1200$ samples, or 160~min at 8~s. The index of a block is $k$, and $K=\lfloor T/L\rfloor$ is the number of complete blocks. A trailing block shorter than $L$ is omitted. SAE is the mean absolute error of the average power in each block,
+SAE divides the record into consecutive blocks of $L=1200$ samples, or 160~min at 8~s. The index of a block is $k$, and $K=\lfloor T_{\mathrm{rec}}/L\rfloor$ is the number of complete blocks. A trailing block shorter than $L$ is omitted. SAE is the mean absolute error of the average power in each block,
 \begin{equation}
 \mathrm{SAE}=\frac{1}{K}\sum_{k=1}^{K}\left|\frac{1}{L}\sum_{t=(k-1)L+1}^{kL}\left(P_{t}-\hat{P}_{t}\right)\right|.
 \label{eq:sae}
@@ -595,7 +624,7 @@ cost; Table~\ref{tab:results} separately reports predictive performance.
 \subsection{Ablation Study}
 \label{sec:ablation}
 
-Architecture and training effects are evaluated separately. Every architecture variant in Table~\ref{tab:architecture-ablation} remains one joint five-appliance network and retains five power and five state outputs. A removed module is replaced only by an identity mapping or the pointwise projection required to preserve tensor dimensions. Each row therefore removes one complete block shown in Fig.~\ref{fig:martnilm-architecture}, while all other settings remain fixed. Checkpoints are selected on the validation houses. The table then reports frozen evaluation on UK-DALE house~2 and REFIT house~20: each metric is calculated separately for each house and the two values are averaged with equal weight using \eqref{eq:house-macro}.
+Architecture and training effects are evaluated separately. Every architecture variant in Table~\ref{tab:architecture-ablation} remains one joint five-appliance network and retains five power and five state outputs. A removed module is replaced only by an identity mapping or the pointwise projection required to preserve tensor dimensions. Each row therefore removes or simplifies one component shown in Fig.~\ref{fig:martnilm-architecture}, while all other settings remain fixed. Checkpoints are selected on the validation houses. The table then reports frozen evaluation on UK-DALE house~2 and REFIT house~20: each metric is calculated separately for each house and the two values are averaged with equal weight using \eqref{eq:house-macro}.
 
 \begin{table}[!t]
 \caption{Architecture ablation on the two test houses (three-seed mean $\pm$ standard deviation). Every row is one joint five-appliance model.}
@@ -608,7 +637,7 @@ Architecture and training effects are evaluated separately. Every architecture v
 \toprule
 Variant & \shortstack{Params\\(M)} & \shortstack{MAE\\(W) $\downarrow$} & \shortstack{ON MAE\\(W) $\downarrow$} & \shortstack{SAE\\(W) $\downarrow$} & \shortstack{Macro-F1\\$\uparrow$} \\
 \midrule
-w/o multi-scale CNN    & 1.372 & \mstd{9.22}{0.18} & \mstd{241.75}{8.76} & \mstd{5.66}{0.17} & \mstd{0.795}{0.001} \\
+Single-scale CNN       & 1.372 & \mstd{9.22}{0.18} & \mstd{241.75}{8.76} & \mstd{5.66}{0.17} & \mstd{0.795}{0.001} \\
 w/o feature encoder    & 1.326 & \mstd{9.16}{0.06} & \mstd{252.01}{2.21} & \mstd{5.59}{0.07} & \mstd{0.790}{0.006} \\
 w/o temporal encoder   & 0.634 & \mstd{10.56}{0.33} & \mstd{288.07}{10.25} & \mstd{6.56}{0.16} & \mstd{0.710}{0.013} \\
 w/o appliance decoders & 0.836 & \mstd{9.22}{0.66} & \mstd{265.84}{4.30} & \mstd{5.63}{0.63} & \mstd{0.783}{0.015} \\
@@ -633,9 +662,9 @@ increases MAE by 1.44~W and ON MAE by 45.13~W, while macro-F1 falls from
 0.796 to 0.710.  Removing the appliance-specific decoders increases ON MAE
 by 22.90~W and reduces macro-F1 by 0.013.  The feature encoder provides a
 smaller but consistent benefit to ON-state reconstruction and detection.
-The multi-scale CNN has little effect on the aggregate averages, but its
+The multi-scale branches have little effect on the aggregate averages, but their
 benefit is concentrated on the sparse microwave task: on validation
-UK-DALE~5 its removal increases microwave ON MAE from 589.49 to 696.45~W,
+UK-DALE~5 the single-scale variant increases microwave ON MAE from 589.49 to 696.45~W,
 and on REFIT~20 microwave F1 falls from 0.549 to 0.512.  Relation attention
 also exhibits a task trade-off.  Removing it lowers average ON MAE, but
 reduces macro-F1 and lowers REFIT~20 microwave F1 from 0.549 to 0.496.
