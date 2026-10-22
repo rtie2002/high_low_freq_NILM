@@ -1,0 +1,26 @@
+---
+description: Training device SSH, conda nilm path, and remote run workflow
+alwaysApply: true
+---
+
+# Training device (always)
+
+Read `training_device.md` (and `MATUDA_NILM/training_device.md` when in that project) before remote work.
+
+## Defaults
+
+- SSH: `raymond@100.110.55.5`
+- Remote repo: `D:\Raymond\high_low_freq_NILM`
+- **Always** run Python as: `C:\Users\PC\anaconda3\envs\nilm\python.exe`
+  - Verified: torch cu124, RTX 4090
+  - Do **not** use bare `python` or `D:\Raymond\miniconda3` for GPU training
+- Password / hostkey: `MATUDA_NILM/training_device.secrets.md` (gitignored) if present
+
+## Workflow
+
+1. Edit code **locally** first.
+2. Commit (and push if remote pulls from git).
+3. Remote: `Set-Location D:\Raymond\high_low_freq_NILM` → `git pull` → run with **nilm** python.
+4. Prefer plink automation; for visible runs use `MATUDA_NILM/scripts/run_training_device_visible.ps1`.
+5. Do **not** edit code on the training device unless the user explicitly asks.
+6. Delete one-off remote probe scripts after use; keep only reusable runners under `scripts/`.

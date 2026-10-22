@@ -1,144 +1,24 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# IDEs
-.vscode/
-.idea/
-
-# ==========================================
-# NILM PROJECT SPECIFIC IGNORES
-# ==========================================
-
-# 1. Ignore ALL large data file types globally
-*.dat
-*.flac
-*.csv
-*.h5
-*.npy
-*.npz
-*.rar
-*.zip
-*.7z
-
-# 2. Ignore specific data-heavy directories but allow the folder structure
-# (We don't use **/Folder/ because it ignores everything inside INCLUDING scripts)
-
-# 3. Specific processed outputs
-dataset_preprocess/created_data/
-
-# 4. White-list: ALWAYS keep these files even if they are in data folders
-!**/*.py
-!**/*.md
-!**/*.yaml
-!**/*.txt
-!**/README.md
-!**/.gitignore
-
-# UNet-NILM bundled reproduction assets (see baseline/UNETNILM/REPRODUCTION.md)
-!NILM_model/baseline/UNETNILM/data.zip
-!NILM_model/baseline/UNETNILM/results.zip
-!NILM_model/baseline/UNETNILM/*.md
-!NILM_model/baseline/UNETNILM/requirements.txt
-!NILM_model/baseline/UNETNILM/run_reproduce.py
-
-# Logs
-*.log
-*.cfg
-
-# Local secrets (training device passwords, etc.)
-**/training_device.secrets.md
-**/*.secrets.md
-
-# Agent / Cursor local state
-.cursor/
-
-# MATUDA / multi_appliances run artifacts (regenerable)
-MATUDA_NILM/results/
-MATUDA_NILM/paper/figures/
-multi_appliances_NILM/runs/
-**/_auto_loop/
-**/_journal_p0_logs/
-**/_matuda_queue_logs/
-
-# LaTeX build products (keep main.tex / IEEEtran.cls)
-MATUDA_NILM/paper/*.aux
-MATUDA_NILM/paper/*.log
-MATUDA_NILM/paper/*.fls
-MATUDA_NILM/paper/*.fdb_latexmk
-MATUDA_NILM/paper/*.synctex.gz
-MATUDA_NILM/paper/*.out
-MATUDA_NILM/paper/main.pdf
-paper/*.aux
-paper/*.log
-paper/*.fls
-paper/*.fdb_latexmk
-paper/*.synctex.gz
-paper/*.blg
-paper/*.out
-
-# Agent / scratch dumps (never commit)
-**/_lit_extract/
-**/_remote*
-**/_tmp*
-**/_plink*
-**/docs/_tmp_*
-**/docs/_lin_pdf_extract.txt
-*.tmp.ps1
-matuda_visible_*.ps1
-matuda_test_*.ps1
-
-# 5. Literature and papers
-/frequency domain/
-
-/feature_selection_outputs
-/.history
-/dataset_preprocess
-!/dataset_preprocess/
-!/dataset_preprocess/UK_DALE_16khz/
-!/dataset_preprocess/UK_DALE_16khz/calibration_house_*.cfg
-/feature_selection_outputs(on only)
-/feature_selection/results
-*.png
-*.pdf
-*.png
-!feature_selection/
-!feature_selection/dataset/
-
-
-/Clean Version (detail_branch_channels)
-/Clean Version (checkpoint_ap)
-/Clean Version (conditional_power)
-/Clean Version (dropout035)
-/Clean Version (head_local_1)
-/Clean Version (no_state_transition)
-/Clean Version (ungated_power)
-/Clean Version (window512)
-/Clean Version (8w)
-/new one
-/Random Mix 0.5 (8w)
-/Random Mix 0.5 (8w) second try
-/x
-/background_swap_8w_1
-/background_swap_8w
-/background_swap_8w_no_relation
-/background_swap_8w_relation_dual_expert
-/background_swap_8w_relation_microwave_adapter
-/background_swap_8w_relation_background_head
 /comparison_8w_matnilm_paper
-/comparison_8w_unetnilm_paper_hparams
 /comparison_8w_multinilm_dual_expert
-/k4_alpha1_tower
-/k4_alpha1_no_multiscale_stem
-/k4_alpha1_no_task_attention
-/k4_alpha1_local_contrast
-/k4_alpha1_mixture_consistent_output
-/k4_alpha1_state_conditioned_mixture
-/k4_alpha1_paired_background_consistency
-/k4_alpha1_private_local_experts
+/comparison_8w_unetnilm_paper_hparams
+/data_quality_checking/__pycache__
+/dataset_preprocess/__pycache__
+/dataset_preprocess/created_data/REDD
+/dataset_preprocess/created_data/REFIT
+/dataset_preprocess/created_data/UK_DALE
+/dataset_preprocess/high_frequency_data_extract/__pycache__
+/dataset_preprocess/high_frequency_data_extract/output(Full_dataset_wk30_only)
+/dataset_preprocess/high_frequency_data_extract
+/dataset_preprocess/REDD
+/dataset_preprocess/REFIT
+/dataset_preprocess/UK_DALE
+/dataset_preprocess/UK_DALE_16khz/__pycache__
+/feature_selection/__pycache__
+/feature_selection/cache
+/feature_selection/dataset
+/feature_selection/extratrees_nilm/__pycache__
+/feature_selection
+/multi_appliances_NILM/datasets/ukdale
+*.txt
 /tmp
-/stable
-
-# Vector paper figure paired with its editable draw.io source.
-!paper/figures/focal_event_stratified_mix.pdf
+*.bkp
