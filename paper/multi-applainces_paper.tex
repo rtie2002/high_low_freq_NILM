@@ -454,13 +454,7 @@ houses; test labels are not used to select $\tau_i$.
 
 Each appliance is evaluated on power and on the on--off state. For an evaluated record of length $T_{\mathrm{rec}}$, $P_{t}$ is the recorded power in watts and $\hat{P}_{t}$ is the predicted power. The label $z_{t}$ equals 1 when the appliance is recorded on and 0 when it is off. $\hat{z}_{t}$ is the predicted label. The Average column in Table~\ref{tab:results} is the mean of the five appliance scores.
 
-For an appliance-level score $q_{h,i}$ of appliance $i$ in house $h$, we first form the appliance average within that house and then give every house equal weight,
-\begin{equation}
-\bar q_h=\frac{1}{N}\sum_{i=1}^{N}q_{h,i},\qquad
-\bar q_{\mathcal H}=\frac{1}{|\mathcal H|}\sum_{h\in\mathcal H}\bar q_h.
-\label{eq:house-macro}
-\end{equation}
-For F1, $\bar q_h$ is the macro-F1 over the five appliances. Checkpoint selection uses $\mathcal H=\{\text{UK-DALE~5},\text{REFIT~2}\}$, the two validation houses. UK-DALE~2 and REFIT~20 are excluded from checkpoint selection and reported separately as cross-house test cases. Their equal-house mean is used for the architecture-ablation summary. Because these test cases were also inspected during method development, they constitute a development-informed benchmark rather than an untouched confirmatory evaluation~\cite{cawley2010overfitting}. Three-seed variability measures training randomness on this fixed split, not variability across households.
+Results are reported separately for UK-DALE house~2 and REFIT house~20. Within each house, the Avg. column is the macro average over the five appliances; architecture-ablation summaries give the two test houses equal weight. All reported results are mean $\pm$ standard deviation over three random seeds. These seeds quantify training variability on the fixed house split, rather than variability across households. Because the test houses were inspected during method development, they provide a development-informed cross-house benchmark rather than an untouched confirmatory evaluation~\cite{cawley2010overfitting}.
 
 \subsubsection{Power}
 Power error is reported using MAE, ON MAE, and SAE. MAE uses every sample, whereas ON MAE is restricted to samples with $z_t=1$ so that reconstruction quality during appliance operation remains visible.
@@ -601,7 +595,7 @@ cost; Table~\ref{tab:results} separately reports predictive performance.
 \subsection{Ablation Study}
 \label{sec:ablation}
 
-Architecture and training effects are evaluated separately. Every architecture variant in Table~\ref{tab:architecture-ablation} remains one joint five-appliance network and retains five power and five state outputs. A removed module is replaced only by an identity mapping or the pointwise projection required to preserve tensor dimensions. Each row therefore removes or simplifies one component shown in Fig.~\ref{fig:martnilm-architecture}, while all other settings remain fixed. Checkpoints are selected on the validation houses. The table then reports frozen evaluation on UK-DALE house~2 and REFIT house~20: each metric is calculated separately for each house and the two values are averaged with equal weight using \eqref{eq:house-macro}.
+Architecture and training effects are evaluated separately. Every architecture variant in Table~\ref{tab:architecture-ablation} remains one joint five-appliance network and retains five power and five state outputs. A removed module is replaced only by an identity mapping or the pointwise projection required to preserve tensor dimensions. Each row therefore removes or simplifies one component shown in Fig.~\ref{fig:martnilm-architecture}, while all other settings remain fixed. Checkpoints are selected on the validation houses. The table then reports frozen evaluation on UK-DALE house~2 and REFIT house~20, with the two house-level metrics averaged equally.
 
 \begin{table}[!t]
 \caption{Architecture ablation on the two test houses (three-seed mean $\pm$ standard deviation). Every row is one joint five-appliance model.}
