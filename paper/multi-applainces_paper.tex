@@ -452,19 +452,24 @@ houses; test labels are not used to select $\tau_i$.
 \subsection{Evaluation Metrics}
 \label{sec:metrics}
 
-Each appliance is evaluated on power and on the on--off state. For an evaluated record of length $T_{\mathrm{rec}}$, $P_{t}$ is the recorded power in watts and $\hat{P}_{t}$ is the predicted power. The label $z_{t}$ equals 1 when the appliance is recorded on and 0 when it is off. $\hat{z}_{t}$ is the predicted label. The Average column in Table~\ref{tab:results} is the mean of the five appliance scores.
+Each appliance is evaluated on power and on the on--off state. For an evaluated record of length $T_{\mathrm{rec}}$, $P_t$ is the recorded power in watts and $\tilde P_t=\hat P^{\mathrm{eval}}_{t,i}$ is the state-decoded prediction. The label $z_t$ equals 1 when the appliance is recorded on and 0 when it is off. $\hat z_t$ is the predicted label. The Average column in Table~\ref{tab:results} is the mean of the five appliance scores.
 
 Results are reported separately for UK-DALE house~2 and REFIT house~20. Within each house, the Avg. column is the macro average over the five appliances; architecture-ablation summaries give the two test houses equal weight. All reported results are mean $\pm$ standard deviation over three random seeds. These seeds quantify training variability on the fixed house split, rather than variability across households. Because the test houses were inspected during method development, they provide a development-informed cross-house benchmark rather than an untouched confirmatory evaluation~\cite{cawley2010overfitting}. The evaluation therefore considers complementary power-estimation and state-detection metrics.
 
 \subsubsection{Power}
-Power error is reported using MAE, ON MAE, and SAE. MAE uses every sample, whereas ON MAE is restricted to samples with $z_t=1$ so that reconstruction quality during appliance operation remains visible.
+Power error is reported using mean absolute error (MAE), ON-state MAE (ON MAE), and blockwise signal aggregate error (SAE). MAE uses every sample, whereas ON MAE is restricted to samples with $z_t=1$ so that reconstruction quality during appliance operation remains visible:
 \begin{equation}
-\mathrm{MAE}=\frac{1}{T_{\mathrm{rec}}}\sum_{t=1}^{T_{\mathrm{rec}}}\left|P_{t}-\hat{P}_{t}\right|.
+\begin{aligned}
+\mathrm{MAE}&=\frac{1}{T_{\mathrm{rec}}}\sum_{t=1}^{T_{\mathrm{rec}}}\left|P_t-\tilde P_t\right|,\\
+\mathrm{ON\ MAE}&=
+\frac{\sum_{t=1}^{T_{\mathrm{rec}}}z_t\left|P_t-\tilde P_t\right|}
+{\sum_{t=1}^{T_{\mathrm{rec}}}z_t}.
+\end{aligned}
 \label{eq:mae}
 \end{equation}
 SAE divides the record into consecutive blocks of $L=1200$ samples, or 160~min at 8~s. The index of a block is $k$, and $K=\lfloor T_{\mathrm{rec}}/L\rfloor$ is the number of complete blocks. A trailing block shorter than $L$ is omitted. SAE is the mean absolute error of the average power in each block,
 \begin{equation}
-\mathrm{SAE}=\frac{1}{K}\sum_{k=1}^{K}\left|\frac{1}{L}\sum_{t=(k-1)L+1}^{kL}\left(P_{t}-\hat{P}_{t}\right)\right|.
+\mathrm{SAE}=\frac{1}{K}\sum_{k=1}^{K}\left|\frac{1}{L}\sum_{t=(k-1)L+1}^{kL}\left(P_t-\tilde P_t\right)\right|.
 \label{eq:sae}
 \end{equation}
 
