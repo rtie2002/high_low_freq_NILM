@@ -101,3 +101,17 @@ Results will be appended after the scheduled task finishes.
   affects the current Table-V power and F1 rows. This one-seed audit is not a
   replacement for the reported three-seed table; it motivates a uniform final
   evaluation protocol before those rows are treated as architecture-only.
+
+## Transfer multiappliance-task state-decoding audit (2026-10-23)
+
+- The frozen Transfer seed-2026 checkpoint was re-evaluated under the same
+  validation-only threshold sweep, microwave temporal cleanup, and hard state
+  power mask used by the completed MART-NILM, UNet-NILM, and MAT-Conv runs.
+  No model weights or checkpoint selection changed.
+- UK-DALE house 2 changed from MAE/SAE/macro-F1/AP = 26.880 W / 21.802 W /
+  0.487 / 0.671 to 15.622 W / 14.232 W / 0.604 / 0.671. REFIT house 20
+  changed from 30.655 W / 22.843 W / 0.366 / 0.440 to 16.099 W / 11.850 W /
+  0.448 / 0.440.
+- The unchanged AP confirms that the overlay changes hard decoding and power
+  masking, not probability ranking. Its large effect on Transfer confirms that
+  it is a benchmark-level protocol choice rather than a MART-specific effect.
