@@ -22,3 +22,25 @@
 *.txt
 /tmp
 *.bkp
+
+# Local interpreter and test caches
+__pycache__/
+.pytest_cache/
+
+# Reproducible LaTeX and PDF-review by-products
+/paper/_render_check/
+/paper/_q1_scan.txt
+/paper/*.aux
+/paper/*.bbl
+/paper/*.blg
+/paper/*.fdb_latexmk
+/paper/*.fls
+/paper/*.log
+/paper/*.synctex.gz
+
+# Local agent and one-off audit artifacts
+/.agents/
+/.codex-build/
+/_tai_hua_notice_qa/
+/tmp_label_audit.csv
+/multi-applainces_paper.pdf
