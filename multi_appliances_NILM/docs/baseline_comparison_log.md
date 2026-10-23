@@ -85,3 +85,19 @@ Results will be appended after the scheduled task finishes.
   files, and representative fridge/microwave waveform figures were copied to
   the local run directory. Tables V and VI in the manuscript were updated from
   these frozen summaries; MART-NILM remains the final proposed-model row.
+
+## MART-NILM state-decoding audit (2026-10-23)
+
+- A narrow audit reused the frozen Table-V MART-NILM seed-2026 checkpoint and
+  evaluated the same validation and held-out house data with validation
+  threshold calibration, microwave temporal cleanup, and evaluator-side hard
+  state-to-power gating disabled. It did not retrain or select any checkpoint.
+- UK-DALE house 2 changed from MAE/SAE/macro-F1/AP = 7.407 W / 5.287 W /
+  0.879 / 0.935 to 8.598 W / 5.076 W / 0.791 / 0.935. REFIT house 20 changed
+  from 11.133 W / 6.246 W / 0.697 / 0.742 to 15.883 W / 10.333 W / 0.598 /
+  0.742.
+- AP is identical because it uses the unthresholded state probabilities. The
+  sizeable MAE and F1 changes show that the state-decoding overlay materially
+  affects the current Table-V power and F1 rows. This one-seed audit is not a
+  replacement for the reported three-seed table; it motivates a uniform final
+  evaluation protocol before those rows are treated as architecture-only.
