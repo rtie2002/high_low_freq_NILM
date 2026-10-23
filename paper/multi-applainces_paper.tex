@@ -462,7 +462,7 @@ Power error is reported using mean absolute error (MAE), ON-state MAE (ON MAE), 
 \mathrm{MAE}=\frac{1}{T_{\mathrm{rec}}}\sum_{t=1}^{T_{\mathrm{rec}}}\left|P_t-\tilde P_t\right|.
 \label{eq:mae}
 \end{equation}
-Following MATNilm~\cite{matnilm}, SAE measures the mean absolute error of average power over non-overlapping 160~min blocks ($L=1200$ samples):
+Following MATNilm~\cite{xiong2024matnilm}, SAE measures the mean absolute error of average power over non-overlapping 160~min blocks ($L=1200$ samples):
 \begin{equation}
 \mathrm{SAE}=\frac{1}{K}\sum_{k=1}^{K}\left|\frac{1}{L}\sum_{t=(k-1)L+1}^{kL}\left(P_t-\tilde P_t\right)\right|,
 \qquad K=\left\lfloor\frac{T_{\mathrm{rec}}}{L}\right\rfloor.
