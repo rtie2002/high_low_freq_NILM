@@ -430,11 +430,20 @@ S_{\mathrm{val}}=\mathrm{MAE}^{\mathrm{norm}}_{\mathrm{val}}
 \label{eq:checkpoint-score}
 \end{equation}
 where the AP term summarizes the precision--recall curve without selecting a
-decision threshold. For every model, after its checkpoint has been selected,
-an appliance-specific threshold is chosen from $\{0.05,0.06,\ldots,0.98\}$ to
-maximize validation F1. For the microwave, predicted on periods shorter than
-32~s are removed and off gaps no longer than 24~s are joined. The resulting
-binary state $\hat z_{t,i}$ is also applied to the power output,
+decision threshold. For each model and appliance $i$, let
+$\hat s_{t,i}\in[0,1]$ denote the predicted ON probability at sample $t$.
+After checkpoint selection, an appliance-specific threshold
+$\tau_i\in\{0.05,0.06,\ldots,0.98\}$ is selected on the validation houses to
+maximize appliance-level F1 after the fixed temporal decoding rules are
+applied. The frozen test-state label is
+\begin{equation}
+\hat z_{t,i}=\mathbb{I}[\hat s_{t,i}\geq\tau_i],
+\label{eq:state-decoding}
+\end{equation}
+where $\mathbb{I}[\cdot]$ is the indicator function; test labels are not used
+to select $\tau_i$. For the microwave, the fixed decoder removes predicted ON
+runs shorter than 32~s and merges OFF gaps of at most 24~s. The resulting
+binary state is also applied to the power output,
 $\hat P^{\mathrm{eval}}_{t,i}=\hat z_{t,i}\hat P_{t,i}$. The fitted thresholds
 and temporal rules are then frozen and applied unchanged to both test houses.
 
