@@ -115,3 +115,17 @@ Results will be appended after the scheduled task finishes.
 - The unchanged AP confirms that the overlay changes hard decoding and power
   masking, not probability ranking. Its large effect on Transfer confirms that
   it is a benchmark-level protocol choice rather than a MART-specific effect.
+
+## Multiappliance-task network final uniform-decoding result (2026-10-23)
+
+- The frozen checkpoints for seeds 2026, 2027, and 2028 were all re-evaluated
+  with the common validation-only decoding protocol. No weights, selected
+  checkpoints, test-time thresholds, or model configuration were changed.
+- The resulting Table-V three-seed means (UK-DALE / REFIT) are MAE
+  $15.9\pm1.3$ W / $16.1\pm0.8$ W, SAE $14.4\pm1.4$ W / $11.3\pm0.7$ W,
+  macro-F1 $0.56\pm0.05$ / $0.45\pm0.00$, and AP $0.681\pm0.075$ /
+  $0.440\pm0.000$. The full machine-readable summary is
+  `runs/paper_5w/summaries/table_v_multiappliance_task_calibrated.csv`.
+- This replaces the previous non-uniform hard-decoding rows for the model
+  formerly labelled ``TransferNILM.'' The author paper calls it a
+  multiappliance-task network; that term is now used in the manuscript.

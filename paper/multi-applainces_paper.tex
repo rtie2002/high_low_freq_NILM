@@ -239,95 +239,106 @@ The model is trained jointly over all appliances, as in multi-task NILM~\cite{fa
 \qquad \lambda=0.8.
 \label{eq:loss}
 \end{equation}
-Here $r_i$ is an appliance-wise balancing factor defined below. Thus, every appliance contributes one power objective and one state objective to the single joint network. The constituent power and state losses, together with the appliance-wise balancing rule, are specified below.
+Here $r_i$ is an appliance-wise balancing factor defined below.
 
 \textit{Power loss:}
-For a mini-batch of $B$ windows, each with $T$ samples, let $y_{b,t,i}$ and $\hat y_{b,t,i}$ denote the standardized target and predicted power for appliance $i$, and let $z_{b,t,i}\in\{0,1\}$ denote its on--off label. Define $e_{b,t,i}=\hat y_{b,t,i}-y_{b,t,i}$, $N_i^{\mathrm{on}}=\sum_{b,t}z_{b,t,i}$, and $N_i^{\mathrm{off}}=BT-N_i^{\mathrm{on}}$. The overall, on-state, and off-state mean squared errors are
-\begin{align}
-\mathrm{MSE}_i&=\frac{1}{BT}\sum_{b,t}e_{b,t,i}^{2},\nonumber\\
-\mathrm{MSE}_i^{\mathrm{on}}&=
-\tfrac{\sum_{b,t}z_{b,t,i}e_{b,t,i}^{2}}
-{\max(N_i^{\mathrm{on}},1)},\nonumber\\
-\mathrm{MSE}_i^{\mathrm{off}}&=
-\tfrac{\sum_{b,t}(1-z_{b,t,i})e_{b,t,i}^{2}}
-{\max(N_i^{\mathrm{off}},1)}.
-\label{eq:power-mse}
-\end{align}
-The conditional terms keep errors during the sparse on state visible instead of allowing the many off samples to dominate the regression objective.
-
-To preserve switching behaviour, define $\Delta y_{b,t,i}=y_{b,t,i}-y_{b,t-1,i}$ and $m_{b,t,i}=\max(z_{b,t,i},z_{b,t-1,i})$. With $N_i^{\Delta}=\sum_{b,t=2}^{T}m_{b,t,i}$,
+The power objective combines waveform fidelity, switching fidelity, and window-energy consistency:
 \begin{equation}
-\mathrm{MSE}_i^{\Delta}=
-\frac{\displaystyle\sum_{b,\,t=2}^{T}m_{b,t,i}
-(\Delta\hat{y}_{b,t,i}-\Delta y_{b,t,i})^{2}}
-{\max(N_i^{\Delta},1)}.
+\mathcal{L}_{\mathrm{power},i}=
+\underbrace{\mathcal{L}_{\mathrm{wave},i}}_{\text{power-level fidelity}}
++\underbrace{0.15\,\mathcal{L}_{\mathrm{trans},i}}_{\text{transition fidelity}}
++\underbrace{0.25\,\mathcal{L}_{\mathrm{RE},i}}_{\text{energy consistency}}.
+\label{eq:power-loss}
+\end{equation}
+The three terms respectively fit instantaneous power levels, changes around appliance activity, and the total energy within each window.
+
+The waveform and transition terms both use MSE, applied to power values and temporal differences, respectively. Let $y_i(t)$ and $\hat y_i(t)$ denote standardized target and predicted power, and let $z_i(t)\in\{0,1\}$ denote the on--off label. For a temporal index set $\mathcal{S}$, define
+\begin{equation}
+\operatorname{MSE}_{\mathcal{S}}(u,v)=
+\frac{1}{\max(|\mathcal{S}|,1)}
+\sum_{t\in\mathcal{S}}\bigl(u(t)-v(t)\bigr)^2.
+\label{eq:temporal-mse}
+\end{equation}
+The waveform term evaluates power errors over all samples $\mathcal{T}_0=\{1,\ldots,T\}$, on-state samples $\mathcal{T}^{\mathrm{on}}_i=\{t\in\mathcal{T}_0:z_i(t)=1\}$, and off-state samples $\mathcal{T}^{\mathrm{off}}_i=\{t\in\mathcal{T}_0:z_i(t)=0\}$:
+\begin{equation}
+\begin{aligned}
+\mathcal{L}_{\mathrm{wave},i}={}&
+\operatorname{MSE}_{\mathcal{T}_0}(y_i,\hat y_i)
++\operatorname{MSE}_{\mathcal{T}^{\mathrm{on}}_i}(y_i,\hat y_i)\\
+&+0.5\,\operatorname{MSE}_{\mathcal{T}^{\mathrm{off}}_i}(y_i,\hat y_i).
+\end{aligned}
+\label{eq:waveform-loss}
+\end{equation}
+The first term measures global waveform fidelity; the on-state term prevents sparse activations from being dominated by off samples, and the lower-weight off-state term constrains inactive predictions.
+
+To additionally constrain changes in power, let $\Delta y_i(t)=y_i(t)-y_i(t-1)$ and define $\Delta\hat y_i(t)$ analogously. The transition term compares these differences whenever the appliance is on at either adjacent sample, over $\mathcal{T}^{\Delta}_i=\{t\in\{2,\ldots,T\}:z_i(t)=1\ \text{or}\ z_i(t-1)=1\}$:
+\begin{equation}
+\mathcal{L}_{\mathrm{trans},i}=
+\operatorname{MSE}_{\mathcal{T}^{\Delta}_i}(\Delta y_i,\Delta\hat y_i).
 \label{eq:transition-loss}
 \end{equation}
-Window-level energy is measured in watts using $P_{b,t,i}=[\sigma_i y_{b,t,i}+\mu_i]_+$ and $\hat P_{b,t,i}=[\sigma_i\hat y_{b,t,i}+\mu_i]_+$:
+
+Finally, a stabilized relative energy term constrains the window total. With physical-unit powers $P_i(t)=[\sigma_i y_i(t)+\mu_i]_+$ and $\hat P_i(t)=[\sigma_i\hat y_i(t)+\mu_i]_+$, it is
 \begin{equation}
-\mathrm{RE}_i=\frac{1}{B}\sum_{b=1}^{B}
-\frac{\bigl|\sum_{t=1}^{T}(\hat{P}_{b,t,i}-P_{b,t,i})\bigr|}
-{\sum_{t=1}^{T}P_{b,t,i}+TP_0},
+\mathcal{L}_{\mathrm{RE},i}=
+\frac{\bigl|\sum_{t=1}^{T}(\hat{P}_i(t)-P_i(t))\bigr|}
+{\sum_{t=1}^{T}P_i(t)+TP_0},
 \quad P_0=10~\mathrm{W}.
 \label{eq:energy-loss}
 \end{equation}
-The per-appliance power loss is therefore
-\begin{equation}
-\begin{aligned}
-\mathcal{L}_{\mathrm{power},i}={}&
-\mathrm{MSE}_i+\mathrm{MSE}_i^{\mathrm{on}}
-+0.5\,\mathrm{MSE}_i^{\mathrm{off}}\\
-&+0.15\,\mathrm{MSE}_i^{\Delta}+0.25\,\mathrm{RE}_i.
-\end{aligned}
-\label{eq:power-loss}
-\end{equation}
+Here $P_0$ is a stabilizing power scale that limits the weight of near-zero-energy windows while retaining a penalty for false power in all-off windows. The constant sampling interval cancels in the ratio.
 
 \textit{State loss:}
-Let $\hat s_{b,t,i}\in(0,1)$ denote the predicted on-state probability and $\pi_i$ the proportion of on samples for appliance $i$ in the training set. Its positive-class weight is $w_i=\min\{(1-\pi_i)/\pi_i,12\}$. The weighted binary cross-entropy is
+The state objective combines class-balanced state detection with explicit false-positive control:
+\begin{equation}
+\mathcal{L}_{\mathrm{state},i}=
+\underbrace{\mathcal{L}_{\mathrm{BCE},i}}_{\text{class-balanced state detection}}
++\underbrace{\mathcal{L}_{\mathrm{fp},i}}_{\text{false-positive control}}.
+\label{eq:state-loss}
+\end{equation}
+For a mini-batch of $B$ windows, let $\hat s_{b,t,i}\in(0,1)$ be the predicted on-state probability and $z_{b,t,i}\in\{0,1\}$ the target label. The class-balanced detection term is a weighted binary cross-entropy, with $w_i=\min\{(1-\pi_i)/\pi_i,12\}$ determined by the training on-state proportion $\pi_i$:
 \begin{equation}
 \begin{aligned}
-\mathrm{BCE}_i=-\frac{1}{BT}\sum_{b,t}\bigl[&
+\mathcal{L}_{\mathrm{BCE},i}=-\frac{1}{BT}\sum_{b,t}\bigl[&
 w_i z_{b,t,i}\log\hat s_{b,t,i}\\
 &+(1-z_{b,t,i})\log(1-\hat s_{b,t,i})\bigr].
 \end{aligned}
 \label{eq:weighted-bce}
 \end{equation}
-An additional false-positive term penalizes high on probabilities when the appliance is off:
+The false-positive term penalizes confident on-state predictions on off samples:
 \begin{equation}
 \mathcal{L}_{\mathrm{fp},i}=
 \frac{\sum_{b,t}(1-z_{b,t,i})\hat s_{b,t,i}^{2}}
-{\max(N_i^{\mathrm{off}},1)},
-\qquad
-\mathcal{L}_{\mathrm{state},i}=\mathrm{BCE}_i+
-\mathcal{L}_{\mathrm{fp},i}.
-\label{eq:state-loss}
+{\max\left(\sum_{b,t}(1-z_{b,t,i}),1\right)}.
+\label{eq:false-positive-loss}
 \end{equation}
 
 \textit{Appliance-wise task balance:}
-Because MSE and BCE have different numerical scales, the state loss of each appliance is matched to its own power loss. Let
+To account for the different numerical scales of regression and classification losses, a bounded loss-ratio weighting is used. It is motivated by loss-ratio balancing in SAMNet~\cite{liu2022samnet} and differs from gradient-norm balancing in GradNorm~\cite{chen2018gradnorm}. The global reference ratio $g$ bounds the appliance-specific ratio $r_i$:
 \begin{equation}
 \begin{aligned}
-r&=\operatorname{sg}\!\left(
-\frac{\mathcal{L}_{\mathrm{power}}}
-{\sum_j\mathcal{L}_{\mathrm{state},j}+\varepsilon}\right),\\
-q_i&=\frac{\mathcal{L}_{\mathrm{power},i}}
-{\mathcal{L}_{\mathrm{state},i}+\varepsilon},\qquad
-r_i=\operatorname{sg}\!\left[
-\operatorname{clip}\!\left(q_i,\frac{r}{3},3r\right)\right].
+g&=
+\frac{\sum_j\mathcal{L}_{\mathrm{power},j}}
+{\sum_j\mathcal{L}_{\mathrm{state},j}},\\[-1pt]
+r_i&=\min\!\left\{3g,\max\!\left\{
+\frac{g}{3},
+\frac{\mathcal{L}_{\mathrm{power},i}}
+{\mathcal{L}_{\mathrm{state},i}}
+\right\}\right\}.
 \end{aligned}
 \label{eq:balanced-ratio}
 \end{equation}
-Here $\operatorname{sg}$ stops gradients through the weights and $\varepsilon=10^{-8}$ prevents division by zero. Each appliance has its own power--state ratio, bounded relative to the joint ratio to limit extreme weights. The shared bounds retain some cross-appliance dependence; this is loss-scale balancing rather than direct gradient-norm equalization.
+At each mini-batch update, $g$ and $r_i$ are evaluated from the current losses and held fixed during back-propagation. The three-fold bounds limit each local ratio to $[g/3,3g]$, preventing extreme weights from dominating optimization.
 
-\subsection{Training Strategy}
+\subsection{Focal-Event Background-Stratified Mixing}
 \label{sec:training-strategy}
 
-Training alternates between recorded and recomposed aggregate windows with equal probability. The recorded windows retain the natural joint distribution of household loads. The recomposed windows reduce dependence on appliance combinations and residual backgrounds observed in a particular house, following the use of synthetic aggregates in NILM~\cite{kelly2015neural,liu2026recomposition}. From each recorded training sequence, the non-target residual is
+Training uses recorded and recomposed aggregate windows with equal probability. Recorded windows preserve the observed joint demand. Recomposed windows pair appliance events with residual backgrounds from other training windows, reducing reliance on house-specific event--background correlations~\cite{kelly2015neural,liu2026recomposition}. For a recorded sequence, the non-target residual is
 \begin{equation}
 R_t=\left[x_t-\sum_{i=1}^{N}P_{t,i}\right]_+.
 \label{eq:training-residual}
 \end{equation}
-For a recomposed window, each appliance trace and the residual are drawn from independently selected training windows:
+For each recomposed window, the residual and appliance traces are drawn from independently selected training windows:
 \begin{equation}
 \tilde{x}_t=R_t^{(k_0)}+\sum_{i=1}^{N}P_{t,i}^{(k_i)},
 \qquad
@@ -335,49 +346,30 @@ For a recomposed window, each appliance trace and the residual are drawn from in
 \tilde{z}_{t,i}=z_{t,i}^{(k_i)},
 \label{eq:training-recomposition}
 \end{equation}
-where $k_0,k_1,\ldots,k_N$ denote independent window indices. The additive construction therefore preserves the power and state labels of every selected appliance.
-
-To prevent sparse events from disappearing from the recomposed set, one focal appliance $i^\star$ is selected uniformly for each synthetic window and its trace is drawn from windows containing at least one on sample. The residual window is selected by first sampling uniformly from the non-empty median-power intervals $[0,100)$, $[100,200)$, $[200,400)$, $[400,800)$, and $[800,\infty)$~W, and then sampling a window within that interval. The remaining appliance traces are sampled without this constraint. Recomposition is used only for training; validation and test retain the recorded aggregate and its aligned labels. Fig.~\ref{fig:focal-mix} summarises the two-step procedure.
+where $k_0,k_1,\ldots,k_N$ denote independent window indices. One focal appliance $i^\star$ is selected uniformly, and its trace is drawn from a window containing at least one on sample. The residual is sampled from a uniformly selected non-empty bin of median residual power; all remaining appliance traces are sampled independently. Thus, rare events occur against varied recorded backgrounds while their selected power and state labels are retained. Recomposition is used only during training; validation and test use recorded aggregates and aligned labels.
 
 \begin{figure}[!t]
 \centering
 \includegraphics[width=\columnwidth]{figures/focal_event_stratified_mix_crop.pdf}
-\caption{Focal-event stratified mixing. Step~1 selects a focal appliance $i^\star$ and draws its source window from the on-event pool. Step~2 draws the background residual from a stratified power bin so that rare on events appear against a broad range of household loads. The remaining appliance traces are sampled independently and summed to form the recomposed aggregate $\tilde{x}_t$.}
+\caption{Focal-event stratified mixing recomposes $\tilde{x}_t$ from an on-event focal trace, a power-stratified residual background, and independently sampled remaining appliance traces.}
 \label{fig:focal-mix}
 \end{figure}
 
 
-\section{Experimental Setup}
+\section{Experimental Evaluation}
 \label{sec:setup}
 
 \subsection{Dataset}
 Two public datasets are used: UK-DALE~\cite{kelly2015ukdale} and REFIT~\cite{murray2017refit}. The target appliances are the kettle, fridge, dishwasher, washing machine, and microwave, and all signals are resampled at 8~s.
 
-The experiment uses a whole-house split. Each house belongs to only one of training, validation, and test, as listed in Table~\ref{tab:split}. Every house contributes one continuous 5-week block. The held-out blocks are centred within the previously established eight-week recording intervals and are selected without reference to appliance events or model performance. Normalization statistics are estimated from the training houses only.
-\begin{table}[!t]
-\caption{Whole-house split.}
-\label{tab:split}
-\centering
-\renewcommand{\arraystretch}{1.15}
-\footnotesize
-\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\linewidth}{@{}lX>{\centering\arraybackslash}c@{}}
-\hline
-Split & Houses & Block \\
-\hline
-Training & UK-DALE house 1; REFIT houses 3, 5, 9, 11 & 5 weeks \\
-Validation & UK-DALE house 5; REFIT house 2 & 5 weeks \\
-Test & UK-DALE house 2; REFIT house 20 & 5 weeks \\
-\hline
-\end{tabularx}
-\end{table}
+The experiment uses a whole-house split: UK-DALE house 1 and REFIT houses 3, 5, 9, and 11 for training; UK-DALE house 5 and REFIT house 2 for validation; and UK-DALE house 2 and REFIT house 20 for testing. Each house contributes one continuous 5-week block. The held-out blocks are centred within the previously established eight-week recording intervals and are selected without reference to appliance events or model performance. Normalization statistics are estimated from the training houses only.
 
 \subsection{Data Preprocessing}
 \label{sec:preprocess}
 
-Aggregate and appliance channels are independently mean-resampled onto an 8~s grid. The primary experiments retain the recorded timing; residual timing discrepancies remain a limitation of the measurements.
+After 8~s resampling, no additional temporal alignment is applied; residual timing discrepancies remain a measurement limitation. Rows missing any required aggregate, appliance-power, or state-label value are excluded, and windows do not cross timestamp discontinuities.
 
-Let $\mu_x,\sigma_x$ and $\mu_i,\sigma_i$ be the aggregate and appliance statistics estimated from the training houses. The input and target powers are standardized as
+Let $n$ index windows and $t$ index samples within a window. The aggregate mean and standard deviation, $\mu_x$ and $\sigma_x$, and the corresponding appliance-$i$ statistics, $\mu_i$ and $\sigma_i$, are estimated from the training houses. The input and target powers are standardized as
 \begin{equation}
 \bar x_{n,t}=\frac{x_{n,t}-\mu_x}{\sigma_x},
 \qquad
@@ -385,86 +377,60 @@ y_{n,t,i}=\frac{P_{n,t,i}-\mu_i}{\sigma_i}.
 \label{eq:power-normalization}
 \end{equation}
 
-State labels are obtained before windowing from $z_{t,i}=\mathbb{I}[P_{t,i}\geq\tau_i]$, where $t=1,\ldots,T_{\mathrm{rec}}$ and $T_{\mathrm{rec}}$ is the length of the recorded sequence. Off gaps no longer than $G_i$ are joined to the surrounding on period, and on periods shorter than $D_i$ are discarded. Algorithm~\ref{alg:labeling} gives the full procedure; Table~\ref{tab:label} lists the per-appliance parameters. A 30~s fridge gap is used in UK-DALE house~5. Isolated spikes are removed only for the appliances marked in Table~\ref{tab:label}.
-
-\begin{algorithm}[!t]
-\caption{On/Off State Labeling for Appliance $i$}
-\label{alg:labeling}
-\begin{algorithmic}[1]
-\STATE \textbf{Input:} $P_{1:T_{\mathrm{rec}}}$ — resampled power ($T_{\mathrm{rec}}$ = recording length); $\tau$ — on-power threshold; $G$ — min-off gap (samples); $D$ — min-on duration (samples)
-\STATE \textbf{Output:} binary label sequence $z_{1:T_{\mathrm{rec}}}$
-\IF{spike removal enabled for appliance $i$}
-    \STATE Remove isolated outliers from $P$ via rolling-window $z$-statistic
-\ENDIF
-\FOR{$t=1$ \textbf{to} $T_{\mathrm{rec}}$}
-    \STATE $z_t \leftarrow \mathbb{I}[P_t \geq \tau]$ \COMMENT{threshold}
-\ENDFOR
-\FOR{each OFF run $[s,\,e)$ in $z$}
-    \IF{$e - s \leq G$}
-        \STATE $z_s,\ldots,z_{e-1} \leftarrow 1$ \COMMENT{close short gap}
-    \ENDIF
-\ENDFOR
-\FOR{each \emph{complete} ON run $[s,\,e)$ in $z$ (not at segment boundary)}
-    \IF{$e - s < D$}
-        \STATE $z_s,\ldots,z_{e-1} \leftarrow 0$ \COMMENT{remove brief event}
-    \ENDIF
-\ENDFOR
-\RETURN $z_{1:T_{\mathrm{rec}}}$
-\end{algorithmic}
-\end{algorithm}
+State labels are precomputed in the CSVs before windowing. For appliances marked in Table~\ref{tab:label}, isolated spikes are first removed on a label-only copy of the resampled power trace. Each sample is then labeled on when this trace reaches its appliance-specific threshold $\tau_i$. OFF gaps of at most $G_i$ are merged; subsequently, complete ON runs shorter than $D_i$ are removed. Runs touching a sequence boundary are retained because their full duration is unobserved. Thus, $\tau_i$, $G_i$, and $D_i$ denote the ON-power threshold, maximum OFF-gap duration, and minimum ON duration for appliance $i$, respectively. Table~\ref{tab:label} specifies their physical-time values, which are converted to 8~s samples by half-up rounding before labeling. UK-DALE house~5 uses a 30~s fridge gap.
 
 \begin{table}[!t]
-\caption{On-off labeling parameters.}
+\caption{ON--OFF label parameters. The final column lists UK-DALE / REFIT values.}
 \label{tab:label}
 \centering
 \renewcommand{\arraystretch}{1.15}
 \footnotesize
 \setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\linewidth}{@{}l*{5}{>{\centering\arraybackslash}X}@{}}
+\begin{tabularx}{\linewidth}{@{}l*{3}{>{\centering\arraybackslash}X}@{}}
 \hline
-Appliance & $\tau$ (W) & $G$ (s) & \multicolumn{2}{c}{$D$ (s)} & Spike \\
-\cline{4-5}
- & & & UK-DALE & REFIT & \\
+Appliance & $\tau$ (W) & $G$ (s) & $D$ (s) \\
 \hline
-Kettle & 200 & 0 & 12 & 12 & No \\
-Fridge & 50 & 12 & 60 & 60 & Yes \\
-Dishwasher & 50 & 1800 & 960 & 960 & Yes \\
-Washing machine & 20 & 960 & 960 & 960 & Yes \\
-Microwave & 200 & 30 & 12 & 6 & No \\
+Kettle & 200 & 0 & 12 / 12 \\
+Fridge$^{\dagger}$ & 50 & 12 & 60 / 60 \\
+Dishwasher$^{\dagger}$ & 50 & 1800 & 960 / 960 \\
+Washing machine$^{\dagger}$ & 20 & 960 & 960 / 960 \\
+Microwave & 200 & 30 & 12 / 6 \\
 \hline
 \end{tabularx}
+\vspace{1pt}
+\raggedright\footnotesize $^{\dagger}$ For each sample, a five-sample local-median filter sets its label-generation power to zero when at least 60\% of its four surrounding values are below 50~W and the sample exceeds both three times their median and 100~W. Endpoint windows use edge replication.
 \end{table}
-\subsection{Experimental Design}
+\subsection{Experimental Setup}
 \label{sec:design}
 
-MART-NILM is compared with UNet-NILM~\cite{faustine2020unet}, MAT-Conv~\cite{xiong2024matnilm}, and TransferNILM~\cite{sun2025transfer}. Each baseline retains the architecture, objective, and training hyperparameters of its source paper, while all models use the common house-held-out data protocol. Table~\ref{tab:cost} lists their settings. All four models are trained with Adam. UNet-NILM runs for the full 50 epochs. MAT-Conv stops after 30 epochs without improvement. TransferNILM jointly minimizes mean-squared power error and binary cross-entropy state error; it runs for at most 100 epochs and stops after 60 epochs without improvement in its published validation criterion. MART-NILM uses weight decay $10^{-4}$ and unit-norm gradient clipping. Its learning rate is reduced by a factor of 0.5 after 12 epochs without validation improvement, to a minimum of $10^{-5}$. Training is limited to 150 epochs; early stopping is disabled before epoch 100 and thereafter uses a patience of 55 epochs. A 1024-sample window covers about 136.5~min.
+Experiments were conducted on a workstation with an Intel Core i7-13700K central processing unit (CPU; 16 cores and 24 logical processors), 64~GB random-access memory (RAM), and one NVIDIA GeForce RTX 4090 graphics processing unit (GPU; 24~GB), using PyTorch~2.6.0 with Compute Unified Device Architecture (CUDA)~12.4. MART-NILM is compared with UNet-NILM~\cite{faustine2020unet}, MAT-Conv~\cite{xiong2024matnilm}, and the multiappliance-task network of Sun \emph{et al.}~\cite{sun2025transfer}. Each baseline retains the architecture, objective, and training hyperparameters of its source paper, while all models use the common house-held-out data protocol. Table~\ref{tab:cost} lists their settings. MART-NILM uses weight decay $10^{-4}$ and unit-norm gradient clipping. Its learning rate is reduced by a factor of 0.5 after 12 epochs without validation improvement, to a minimum of $10^{-5}$. Training is limited to 150 epochs; early stopping is disabled before epoch 100 and thereafter uses a patience of 55 epochs. Its 1024-sample input and output windows each cover about 136.5~min.
 \begin{table}[!t]
-\caption{Training hyperparameters.}
+\caption{Training windowing and batch settings. All window lengths and strides are in samples.}
 \label{tab:cost}
 \centering
 \renewcommand{\arraystretch}{1.15}
 \footnotesize
 \setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\linewidth}{@{}l*{5}{>{\centering\arraybackslash}X}@{}}
+\begin{tabularx}{\linewidth}{@{}l*{6}{>{\centering\arraybackslash}X}@{}}
 \hline
-Model & Window & Stride & Batch & LR & Epochs \\
+Model & Input & Output & Stride & Batch & Opt. & Max. epochs \\
 \hline
-UNet-NILM~\cite{faustine2020unet} & 100 & 1 & 256 & $10^{-3}$ & 50 \\
-MAT-Conv~\cite{xiong2024matnilm} & 864 & 64 & 64 & $10^{-3}$ & 200 \\
-TransferNILM~\cite{sun2025transfer} & 480 & 240 & 32 & $10^{-4}$ & 100 \\
-MART-NILM & 1024 & 512 & 64 & $10^{-4}$ & 150 \\
+UNet-NILM~\cite{faustine2020unet} & 100 & 1 & 1 & 256 & Adam & 50 \\
+MAT-Conv~\cite{xiong2024matnilm} & 864 & 64 & 64 & 64 & Adam & 200 \\
+Multiappliance-task network~\cite{sun2025transfer} & 480 & 480 & 240 & 32 & Adam & 100 \\
+MART-NILM & 1024 & 1024 & 512 & 64 & Adam & 150 \\
 \hline
 \end{tabularx}
 \end{table}
 
-For MART-NILM, checkpoint selection and state calibration use only the validation houses. Average precision (AP) is computed from the continuous state probabilities, and the retained checkpoint minimizes
+For MART-NILM, checkpoint selection uses only the validation houses. Average precision (AP) is computed from the continuous state probabilities, and the retained checkpoint minimizes
 \begin{equation}
 S_{\mathrm{val}}=\mathrm{MAE}^{\mathrm{norm}}_{\mathrm{val}}
 +1-\mathrm{AP}^{\mathrm{macro}}_{\mathrm{val}},
 \label{eq:checkpoint-score}
 \end{equation}
 where the AP term summarizes the precision--recall curve without selecting a
-decision threshold. After checkpoint selection,
+decision threshold. For every model, after its checkpoint has been selected,
 an appliance-specific threshold is chosen from $\{0.05,0.06,\ldots,0.98\}$ to
 maximize validation F1. For the microwave, predicted on periods shorter than
 32~s are removed and off gaps no longer than 24~s are joined. The resulting
@@ -541,43 +507,43 @@ Table~\ref{tab:results} compares each model on UK-DALE and REFIT. DW, WM, and MW
 \multirow{4}{*}{MAE (W)}
  & UNet-NILM~\cite{faustine2020unet} & \mstd{9.2}{2.1} & \mstd{29.1}{0.9} & \mstd{22.6}{5.1} & \mstd{9.1}{0.1} & \mstd{6.1}{0.3} & \mstd{15.2}{1.1} & \mstd{8.6}{0.9} & \mstd{35.0}{1.7} & \mstd{12.1}{1.1} & \mstd{7.6}{0.1} & \mstd{7.4}{0.3} & \mstd{14.2}{0.3} \\
  & MAT-Conv~\cite{xiong2024matnilm} & \mstd{5.5}{1.6} & \textbf{\mstd{18.4}{0.7}} & \mstd{8.9}{2.1} & \mstd{9.6}{1.4} & \mstd{5.3}{0.4} & \mstd{9.5}{1.1} & \textbf{\mstd{5.4}{0.4}} & \mstd{40.8}{0.1} & \mstd{5.4}{0.8} & \mstd{6.2}{2.3} & \textbf{\mstd{6.0}{0.7}} & \mstd{12.8}{0.6} \\
- & TransferNILM~\cite{sun2025transfer} & \mstd{27.5}{2.0} & \mstd{30.4}{3.3} & \mstd{37.6}{4.7} & \mstd{22.4}{4.8} & \mstd{15.3}{0.9} & \mstd{26.7}{1.5} & \mstd{36.2}{3.4} & \mstd{37.9}{1.8} & \mstd{33.9}{1.9} & \mstd{28.3}{6.9} & \mstd{12.3}{1.0} & \mstd{29.7}{0.9} \\
+ & Multiappliance-task network~\cite{sun2025transfer} & \mstd{8.8}{1.7} & \mstd{34.4}{3.0} & \mstd{14.7}{6.2} & \mstd{15.5}{5.0} & \mstd{6.3}{0.1} & \mstd{15.9}{1.3} & \mstd{10.9}{1.6} & \mstd{35.6}{1.8} & \mstd{9.0}{1.2} & \mstd{18.0}{7.3} & \mstd{6.7}{0.1} & \mstd{16.1}{0.8} \\
  & \textbf{MART-NILM (proposed)} & \textbf{\mstd{3.8}{0.3}} & \mstd{20.3}{0.4} & \textbf{\mstd{4.4}{0.4}} & \textbf{\mstd{5.3}{0.3}} & \textbf{\mstd{3.4}{0.1}} & \textbf{\mstd{7.5}{0.1}} & \mstd{5.7}{0.1} & \textbf{\mstd{32.6}{1.5}} & \textbf{\mstd{4.8}{0.3}} & \textbf{\mstd{3.6}{0.2}} & \mstd{7.3}{0.4} & \textbf{\mstd{10.8}{0.4}} \\
 \hline
 \multirow{4}{*}{SAE (W)}
  & UNet-NILM & \mstd{8.4}{2.6} & \mstd{24.5}{2.5} & \mstd{21.1}{6.5} & \mstd{9.0}{0.1} & \mstd{6.0}{0.4} & \mstd{13.8}{1.3} & \mstd{5.6}{1.1} & \mstd{25.9}{2.6} & \mstd{9.8}{0.3} & \mstd{7.1}{0.3} & \mstd{7.0}{0.2} & \mstd{11.1}{0.7} \\
  & MAT-Conv & \mstd{4.3}{1.2} & \textbf{\mstd{10.0}{1.0}} & \mstd{6.7}{1.4} & \mstd{8.8}{1.3} & \mstd{5.0}{0.4} & \mstd{6.9}{0.8} & \mstd{2.9}{0.3} & \mstd{23.7}{0.6} & \mstd{4.5}{1.0} & \mstd{5.0}{1.8} & \textbf{\mstd{5.2}{0.5}} & \mstd{8.3}{0.5} \\
- & TransferNILM & \mstd{19.4}{1.1} & \mstd{25.3}{3.4} & \mstd{33.1}{4.5} & \mstd{21.6}{4.7} & \mstd{9.7}{0.4} & \mstd{21.8}{1.2} & \mstd{28.5}{4.3} & \mstd{16.6}{3.8} & \mstd{31.8}{1.5} & \mstd{22.9}{5.2} & \mstd{8.8}{0.6} & \mstd{21.7}{1.0} \\
+ & Multiappliance-task network & \mstd{7.3}{1.4} & \mstd{32.1}{3.5} & \mstd{12.0}{5.9} & \mstd{14.5}{4.9} & \mstd{6.2}{0.1} & \mstd{14.4}{1.4} & \mstd{7.1}{1.1} & \mstd{21.7}{4.4} & \mstd{7.9}{1.3} & \mstd{13.0}{5.5} & \mstd{6.6}{0.0} & \mstd{11.3}{0.7} \\
  & \textbf{MART-NILM (proposed)} & \textbf{\mstd{2.9}{0.2}} & \mstd{13.6}{0.6} & \textbf{\mstd{2.8}{0.5}} & \textbf{\mstd{4.1}{0.5}} & \textbf{\mstd{3.0}{0.1}} & \textbf{\mstd{5.3}{0.1}} & \textbf{\mstd{2.3}{0.2}} & \textbf{\mstd{15.0}{1.6}} & \textbf{\mstd{3.6}{0.1}} & \textbf{\mstd{2.9}{0.2}} & \mstd{5.6}{0.3} & \textbf{\mstd{5.9}{0.4}} \\
 \hline
 \multirow{4}{*}{ON MAE (W)}
  & UNet-NILM & \mstd{1296.5}{443.8} & \mstd{48.4}{4.0} & \mstd{747.7}{180.9} & \mstd{462.6}{7.3} & \mstd{1178.8}{93.3} & \mstd{746.8}{110.0} & \mstd{1289.1}{190.7} & \mstd{63.4}{3.4} & \mstd{398.3}{93.1} & \mstd{306.1}{6.7} & \mstd{1196.7}{58.0} & \mstd{650.7}{59.1} \\
  & MAT-Conv & \mstd{547.5}{180.2} & \textbf{\mstd{22.1}{1.6}} & \mstd{206.9}{46.2} & \mstd{385.7}{59.1} & \mstd{946.4}{99.8} & \mstd{421.7}{75.2} & \mstd{850.7}{44.4} & \mstd{46.3}{2.5} & \mstd{208.2}{21.0} & \mstd{195.6}{10.1} & \mstd{1062.2}{90.6} & \mstd{472.6}{29.3} \\
- & TransferNILM & \mstd{739.5}{103.4} & \mstd{60.0}{7.2} & \mstd{441.6}{208.0} & \mstd{474.6}{28.1} & \mstd{1181.2}{29.5} & \mstd{579.4}{45.8} & \mstd{941.3}{73.1} & \mstd{55.8}{6.3} & \mstd{428.6}{95.3} & \mstd{302.8}{18.3} & \mstd{1199.7}{6.8} & \mstd{585.6}{12.9} \\
+ & Multiappliance-task network & \mstd{807.3}{69.1} & \mstd{61.0}{7.1} & \mstd{449.8}{212.8} & \mstd{478.2}{28.0} & \mstd{1215.2}{19.2} & \mstd{602.3}{44.3} & \mstd{1012.0}{65.7} & \mstd{59.1}{6.4} & \mstd{437.1}{91.3} & \mstd{306.7}{17.6} & \mstd{1224.2}{5.6} & \mstd{607.8}{16.5} \\
  & \textbf{MART-NILM (proposed)} & \textbf{\mstd{388.0}{38.1}} & \mstd{26.8}{1.0} & \textbf{\mstd{96.0}{9.6}} & \textbf{\mstd{164.0}{19.2}} & \textbf{\mstd{208.5}{21.1}} & \textbf{\mstd{176.7}{7.7}} & \textbf{\mstd{791.8}{22.3}} & \textbf{\mstd{40.7}{1.9}} & \textbf{\mstd{156.9}{17.9}} & \textbf{\mstd{167.7}{2.2}} & \textbf{\mstd{388.9}{22.6}} & \textbf{\mstd{309.2}{4.6}} \\
 \hline
 \multirow{4}{*}{AP}
  & UNet-NILM & \mstd{0.908}{0.016} & \mstd{0.873}{0.041} & \mstd{0.580}{0.274} & \mstd{0.866}{0.026} & \mstd{0.535}{0.024} & \mstd{0.753}{0.049} & \mstd{0.653}{0.036} & \mstd{0.657}{0.030} & \mstd{0.269}{0.056} & \mstd{0.654}{0.129} & \mstd{0.136}{0.046} & \mstd{0.474}{0.024} \\
  & MAT-Conv & \mstd{0.968}{0.020} & \mstd{0.951}{0.006} & \mstd{0.868}{0.039} & \mstd{0.555}{0.191} & \textbf{\mstd{0.718}{0.063}} & \mstd{0.812}{0.051} & \mstd{0.801}{0.018} & \mstd{0.537}{0.005} & \mstd{0.736}{0.040} & \mstd{0.653}{0.066} & \mstd{0.152}{0.046} & \mstd{0.576}{0.024} \\
- & TransferNILM & \mstd{0.930}{0.016} & \mstd{0.915}{0.030} & \mstd{0.838}{0.094} & \mstd{0.207}{0.128} & \mstd{0.514}{0.194} & \mstd{0.681}{0.075} & \mstd{0.660}{0.090} & \mstd{0.641}{0.053} & \mstd{0.615}{0.040} & \mstd{0.123}{0.019} & \mstd{0.160}{0.069} & \mstd{0.440}{0.000} \\
+ & Multiappliance-task network & \mstd{0.930}{0.016} & \mstd{0.915}{0.030} & \mstd{0.838}{0.094} & \mstd{0.207}{0.128} & \mstd{0.514}{0.194} & \mstd{0.681}{0.075} & \mstd{0.660}{0.090} & \mstd{0.641}{0.053} & \mstd{0.615}{0.040} & \mstd{0.123}{0.019} & \mstd{0.160}{0.069} & \mstd{0.440}{0.000} \\
  & \textbf{MART-NILM (proposed)} & \textbf{\mstd{0.997}{0.001}} & \textbf{\mstd{0.969}{0.001}} & \textbf{\mstd{0.963}{0.002}} & \textbf{\mstd{0.985}{0.008}} & \textbf{\mstd{0.718}{0.033}} & \textbf{\mstd{0.926}{0.008}} & \textbf{\mstd{0.848}{0.008}} & \textbf{\mstd{0.737}{0.025}} & \textbf{\mstd{0.766}{0.009}} & \textbf{\mstd{0.904}{0.033}} & \textbf{\mstd{0.557}{0.045}} & \textbf{\mstd{0.762}{0.018}} \\
 \hline
 \multirow{4}{*}{Precision}
  & UNet-NILM & \mstd{0.80}{0.09} & \mstd{0.74}{0.09} & \mstd{0.55}{0.19} & \mstd{0.84}{0.09} & \mstd{0.57}{0.07} & \mstd{0.70}{0.03} & \mstd{0.63}{0.08} & \mstd{0.60}{0.12} & \mstd{0.26}{0.06} & \textbf{\mstd{0.89}{0.05}} & \mstd{0.18}{0.07} & \mstd{0.51}{0.04} \\
  & MAT-Conv & \mstd{0.82}{0.10} & \mstd{0.76}{0.03} & \mstd{0.47}{0.05} & \mstd{0.61}{0.18} & \mstd{0.71}{0.09} & \mstd{0.67}{0.08} & \mstd{0.70}{0.10} & \mstd{0.59}{0.00} & \mstd{0.42}{0.06} & \mstd{0.59}{0.07} & \mstd{0.16}{0.03} & \mstd{0.49}{0.04} \\
- & TransferNILM & \mstd{0.69}{0.11} & \textbf{\mstd{0.92}{0.01}} & \textbf{\mstd{0.81}{0.06}} & \mstd{0.31}{0.43} & \mstd{0.29}{0.50} & \mstd{0.70}{0.07} & \mstd{0.50}{0.14} & \textbf{\mstd{0.68}{0.04}} & \textbf{\mstd{0.71}{0.03}} & \mstd{0.24}{0.09} & \mstd{0.03}{0.06} & \mstd{0.50}{0.06} \\
+ & Multiappliance-task network & \mstd{0.74}{0.08} & \mstd{0.87}{0.01} & \mstd{0.51}{0.16} & \mstd{0.22}{0.09} & \mstd{0.55}{0.49} & \mstd{0.58}{0.11} & \mstd{0.57}{0.08} & \mstd{0.63}{0.00} & \mstd{0.54}{0.09} & \mstd{0.14}{0.02} & \mstd{0.37}{0.28} & \mstd{0.45}{0.04} \\
  & \textbf{MART-NILM (proposed)} & \textbf{\mstd{0.94}{0.02}} & \mstd{0.88}{0.01} & \mstd{0.63}{0.06} & \textbf{\mstd{0.92}{0.02}} & \textbf{\mstd{0.71}{0.00}} & \textbf{\mstd{0.82}{0.01}} & \textbf{\mstd{0.76}{0.01}} & \mstd{0.64}{0.00} & \mstd{0.62}{0.04} & \mstd{0.85}{0.07} & \textbf{\mstd{0.43}{0.03}} & \textbf{\mstd{0.66}{0.01}} \\
 \hline
 \multirow{4}{*}{Recall}
  & UNet-NILM & \mstd{0.87}{0.08} & \mstd{0.82}{0.14} & \mstd{0.65}{0.21} & \mstd{0.78}{0.04} & \mstd{0.57}{0.07} & \mstd{0.74}{0.05} & \mstd{0.73}{0.03} & \mstd{0.65}{0.18} & \mstd{0.46}{0.07} & \mstd{0.43}{0.13} & \mstd{0.37}{0.04} & \mstd{0.53}{0.07} \\
  & MAT-Conv & \mstd{0.97}{0.01} & \textbf{\mstd{0.98}{0.02}} & \mstd{0.98}{0.02} & \mstd{0.49}{0.18} & \mstd{0.67}{0.13} & \mstd{0.82}{0.02} & \mstd{0.78}{0.03} & \textbf{\mstd{0.93}{0.06}} & \textbf{\mstd{0.83}{0.02}} & \mstd{0.76}{0.21} & \mstd{0.42}{0.25} & \mstd{0.74}{0.11} \\
- & TransferNILM & \mstd{0.94}{0.02} & \mstd{0.80}{0.05} & \mstd{0.69}{0.20} & \mstd{0.05}{0.04} & \mstd{0.01}{0.01} & \mstd{0.50}{0.05} & \mstd{0.77}{0.06} & \mstd{0.64}{0.03} & \mstd{0.31}{0.05} & \mstd{0.08}{0.04} & \mstd{0.00}{0.00} & \mstd{0.36}{0.02} \\
+ & Multiappliance-task network & \mstd{0.92}{0.03} & \mstd{0.94}{0.01} & \mstd{0.89}{0.14} & \mstd{0.56}{0.06} & \mstd{0.08}{0.07} & \mstd{0.68}{0.05} & \mstd{0.75}{0.05} & \mstd{0.78}{0.01} & \mstd{0.77}{0.08} & \mstd{0.50}{0.12} & \mstd{0.03}{0.02} & \mstd{0.57}{0.01} \\
  & \textbf{MART-NILM (proposed)} & \textbf{\mstd{0.99}{0.00}} & \mstd{0.94}{0.01} & \textbf{\mstd{0.99}{0.01}} & \textbf{\mstd{0.97}{0.02}} & \textbf{\mstd{0.91}{0.03}} & \textbf{\mstd{0.96}{0.00}} & \textbf{\mstd{0.81}{0.01}} & \mstd{0.79}{0.02} & \mstd{0.77}{0.04} & \textbf{\mstd{0.85}{0.09}} & \textbf{\mstd{0.76}{0.03}} & \textbf{\mstd{0.80}{0.03}} \\
 \hline
 \multirow{4}{*}{F1}
  & UNet-NILM & \mstd{0.83}{0.03} & \mstd{0.77}{0.07} & \mstd{0.60}{0.20} & \mstd{0.81}{0.03} & \mstd{0.57}{0.04} & \mstd{0.71}{0.03} & \mstd{0.67}{0.03} & \mstd{0.61}{0.08} & \mstd{0.33}{0.07} & \mstd{0.58}{0.12} & \mstd{0.23}{0.05} & \mstd{0.48}{0.04} \\
  & MAT-Conv & \mstd{0.89}{0.06} & \mstd{0.86}{0.01} & \mstd{0.63}{0.04} & \mstd{0.54}{0.17} & \mstd{0.68}{0.06} & \mstd{0.72}{0.05} & \mstd{0.73}{0.05} & \textbf{\mstd{0.72}{0.02}} & \mstd{0.55}{0.05} & \mstd{0.65}{0.06} & \mstd{0.23}{0.08} & \mstd{0.58}{0.02} \\
- & TransferNILM & \mstd{0.79}{0.06} & \mstd{0.85}{0.02} & \mstd{0.73}{0.11} & \mstd{0.07}{0.06} & \mstd{0.01}{0.02} & \mstd{0.49}{0.02} & \mstd{0.60}{0.08} & \mstd{0.65}{0.01} & \mstd{0.43}{0.05} & \mstd{0.12}{0.03} & \mstd{0.00}{0.00} & \mstd{0.36}{0.02} \\
+ & Multiappliance-task network & \mstd{0.82}{0.04} & \mstd{0.91}{0.00} & \mstd{0.64}{0.14} & \mstd{0.30}{0.09} & \mstd{0.15}{0.13} & \mstd{0.56}{0.05} & \mstd{0.64}{0.03} & \mstd{0.70}{0.00} & \mstd{0.63}{0.05} & \mstd{0.21}{0.01} & \mstd{0.06}{0.04} & \mstd{0.45}{0.00} \\
  & \textbf{MART-NILM (proposed)} & \textbf{\mstd{0.96}{0.01}} & \textbf{\mstd{0.91}{0.00}} & \textbf{\mstd{0.77}{0.04}} & \textbf{\mstd{0.94}{0.02}} & \textbf{\mstd{0.80}{0.01}} & \textbf{\mstd{0.88}{0.01}} & \textbf{\mstd{0.79}{0.00}} & \mstd{0.71}{0.01} & \textbf{\mstd{0.69}{0.01}} & \textbf{\mstd{0.85}{0.05}} & \textbf{\mstd{0.55}{0.03}} & \textbf{\mstd{0.72}{0.02}} \\
 \hline
 \end{tabularx}
@@ -586,7 +552,7 @@ Table~\ref{tab:results} compares each model on UK-DALE and REFIT. DW, WM, and MW
 The threshold-independent results agree with the calibrated F1 comparison.
 MART-NILM obtains macro-AP values of $0.926$ on UK-DALE and $0.762$ on
 REFIT, compared with $0.812$ and $0.576$ for MAT-Conv, $0.753$ and $0.474$
-for UNet-NILM, and $0.681$ and $0.440$ for TransferNILM, respectively. It
+for UNet-NILM, and $0.681$ and $0.440$ for the multiappliance-task network, respectively. It
 also gives the highest reported AP
 for every appliance, with a tie at the reported precision for the UK-DALE
 microwave. The state-detection advantage therefore persists across the full
@@ -610,14 +576,14 @@ Model & Params (M) & Model size (MB) & Time (s) \\
 \hline
 UNet-NILM & 5.832 & 22.299 & 17455.8 \\
 MAT-Conv & 3.022 & 11.611 & 10354.9 \\
-TransferNILM & 7.829 & 59.793 & 16493.8 \\
+Multiappliance-task network & 7.829 & 59.793 & 16493.8 \\
 MART-NILM & \textbf{1.373} & \textbf{5.335} & \textbf{485.2} \\
 \hline
 \end{tabularx}
 \end{table}
 
 Under the common implementation and hardware protocol, MART-NILM contains
-$82.5\%$ fewer trainable parameters than TransferNILM and reduces mean training
+$82.5\%$ fewer trainable parameters than the multiappliance-task network and reduces mean training
 time from $16493.8$~s to $485.2$~s. This comparison concerns computational
 cost; Table~\ref{tab:results} separately reports predictive performance.
 
