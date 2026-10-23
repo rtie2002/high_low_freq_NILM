@@ -462,9 +462,10 @@ Power error is reported using mean absolute error (MAE), ON-state MAE (ON MAE), 
 \mathrm{MAE}=\frac{1}{T_{\mathrm{rec}}}\sum_{t=1}^{T_{\mathrm{rec}}}\left|P_t-\tilde P_t\right|.
 \label{eq:mae}
 \end{equation}
-SAE divides the record into consecutive blocks of $L=1200$ samples, or 160~min at 8~s. The index of a block is $k$, and $K=\lfloor T_{\mathrm{rec}}/L\rfloor$ is the number of complete blocks. A trailing block shorter than $L$ is omitted. SAE is the mean absolute error of the average power in each block,
+SAE measures the mean absolute error of average power over non-overlapping 160~min blocks ($L=1200$ samples):
 \begin{equation}
-\mathrm{SAE}=\frac{1}{K}\sum_{k=1}^{K}\left|\frac{1}{L}\sum_{t=(k-1)L+1}^{kL}\left(P_t-\tilde P_t\right)\right|.
+\mathrm{SAE}=\frac{1}{K}\sum_{k=1}^{K}\left|\frac{1}{L}\sum_{t=(k-1)L+1}^{kL}\left(P_t-\tilde P_t\right)\right|,
+\qquad K=\left\lfloor\frac{T_{\mathrm{rec}}}{L}\right\rfloor.
 \label{eq:sae}
 \end{equation}
 
