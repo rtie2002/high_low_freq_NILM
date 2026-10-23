@@ -30,6 +30,9 @@ DEFAULT_EXPERIMENT = (
 MART_CONFIG = ROOT / "config" / "models" / "mart_nilm.yaml"
 TABLE_V_ROOT = ROOT / "runs" / "paper_5w" / "table_v" / "mart_nilm"
 AUDIT_ROOT = ROOT / "runs" / "paper_5w" / "postprocess_audit" / "mart_nilm"
+# ``mart_nilm`` is the paper/run-directory alias.  The registered adapter that
+# implements that architecture is the raw-input fractional-front-end variant.
+MART_ADAPTER_NAME = "multinilm_fractional"
 
 
 def raw_state_decoding_config(base: dict, seed: int) -> dict:
@@ -69,9 +72,10 @@ def main() -> None:
         experiment["seed"] = seed
         model_cfg = raw_state_decoding_config(base_model, seed)
         merged = merge_configs(experiment, model_cfg)
-        adapter = get_adapter(
-            merged["model_name"], merged, data_root=str(ROOT / merged["data_root"])
-        )
+        data_root = Path(merged["data_root"])
+        if not data_root.is_absolute():
+            data_root = ROOT / data_root
+        adapter = get_adapter(MART_ADAPTER_NAME, merged, data_root=str(data_root))
         run_dir = AUDIT_ROOT / f"seed_{seed}"
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "audit_protocol.json").write_text(
