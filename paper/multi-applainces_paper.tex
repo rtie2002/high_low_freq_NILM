@@ -496,7 +496,7 @@ Unlike F1, AP does not use the appliance-specific threshold or the temporal stat
 Table~\ref{tab:results} compares each model on UK-DALE and REFIT. DW, WM, and MW are the dishwasher, washing machine, and microwave. Each entry is the mean and standard deviation over three seeds; entries with $\pm0.0$, $\pm0.00$, or $\pm0.000$ indicate values below the reported display precision. When a seed produces no positive prediction, its precision is defined as zero. The scores are defined in Section~\ref{sec:metrics}. Lower power error is better. Higher AP, precision, recall, and F1 are better.
 
 \begin{table*}[!t]
-\caption{Power and on-off results on UK-DALE and REFIT (mean $\pm$ standard deviation over three seeds).}
+\caption{Power and on-off results on UK-DALE and REFIT (mean $\pm$ standard deviation over three seeds). Best reported means, including ties at the displayed precision, are in bold.}
 \label{tab:results}
 \centering
 \renewcommand{\arraystretch}{1.15}
@@ -536,7 +536,7 @@ Table~\ref{tab:results} compares each model on UK-DALE and REFIT. DW, WM, and MW
 \hline
 \multirow{4}{*}{Precision}
  & UNet-NILM & \mstd{0.80}{0.09} & \mstd{0.74}{0.09} & \mstd{0.55}{0.19} & \mstd{0.84}{0.09} & \mstd{0.57}{0.07} & \mstd{0.70}{0.03} & \mstd{0.63}{0.08} & \mstd{0.60}{0.12} & \mstd{0.26}{0.06} & \textbf{\mstd{0.89}{0.05}} & \mstd{0.18}{0.07} & \mstd{0.51}{0.04} \\
- & MAT-Conv & \mstd{0.82}{0.10} & \mstd{0.76}{0.03} & \mstd{0.47}{0.05} & \mstd{0.61}{0.18} & \mstd{0.71}{0.09} & \mstd{0.67}{0.08} & \mstd{0.70}{0.10} & \mstd{0.59}{0.00} & \mstd{0.42}{0.06} & \mstd{0.59}{0.07} & \mstd{0.16}{0.03} & \mstd{0.49}{0.04} \\
+ & MAT-Conv & \mstd{0.82}{0.10} & \mstd{0.76}{0.03} & \mstd{0.47}{0.05} & \mstd{0.61}{0.18} & \textbf{\mstd{0.71}{0.09}} & \mstd{0.67}{0.08} & \mstd{0.70}{0.10} & \mstd{0.59}{0.00} & \mstd{0.42}{0.06} & \mstd{0.59}{0.07} & \mstd{0.16}{0.03} & \mstd{0.49}{0.04} \\
  & Multiappliance-task network & \mstd{0.74}{0.08} & \mstd{0.87}{0.01} & \mstd{0.51}{0.16} & \mstd{0.22}{0.09} & \mstd{0.55}{0.49} & \mstd{0.58}{0.11} & \mstd{0.57}{0.08} & \mstd{0.63}{0.00} & \mstd{0.54}{0.09} & \mstd{0.14}{0.02} & \mstd{0.37}{0.28} & \mstd{0.45}{0.04} \\
  & \textbf{MART-NILM (proposed)} & \textbf{\mstd{0.94}{0.02}} & \mstd{0.88}{0.01} & \mstd{0.63}{0.06} & \textbf{\mstd{0.92}{0.02}} & \textbf{\mstd{0.71}{0.00}} & \textbf{\mstd{0.82}{0.01}} & \textbf{\mstd{0.76}{0.01}} & \mstd{0.64}{0.00} & \mstd{0.62}{0.04} & \mstd{0.85}{0.07} & \textbf{\mstd{0.43}{0.03}} & \textbf{\mstd{0.66}{0.01}} \\
 \hline
@@ -549,7 +549,7 @@ Table~\ref{tab:results} compares each model on UK-DALE and REFIT. DW, WM, and MW
 \multirow{4}{*}{F1}
  & UNet-NILM & \mstd{0.83}{0.03} & \mstd{0.77}{0.07} & \mstd{0.60}{0.20} & \mstd{0.81}{0.03} & \mstd{0.57}{0.04} & \mstd{0.71}{0.03} & \mstd{0.67}{0.03} & \mstd{0.61}{0.08} & \mstd{0.33}{0.07} & \mstd{0.58}{0.12} & \mstd{0.23}{0.05} & \mstd{0.48}{0.04} \\
  & MAT-Conv & \mstd{0.89}{0.06} & \mstd{0.86}{0.01} & \mstd{0.63}{0.04} & \mstd{0.54}{0.17} & \mstd{0.68}{0.06} & \mstd{0.72}{0.05} & \mstd{0.73}{0.05} & \textbf{\mstd{0.72}{0.02}} & \mstd{0.55}{0.05} & \mstd{0.65}{0.06} & \mstd{0.23}{0.08} & \mstd{0.58}{0.02} \\
- & Multiappliance-task network & \mstd{0.82}{0.04} & \mstd{0.91}{0.00} & \mstd{0.64}{0.14} & \mstd{0.30}{0.09} & \mstd{0.15}{0.13} & \mstd{0.56}{0.05} & \mstd{0.64}{0.03} & \mstd{0.70}{0.00} & \mstd{0.63}{0.05} & \mstd{0.21}{0.01} & \mstd{0.06}{0.04} & \mstd{0.45}{0.00} \\
+ & Multiappliance-task network & \mstd{0.82}{0.04} & \textbf{\mstd{0.91}{0.00}} & \mstd{0.64}{0.14} & \mstd{0.30}{0.09} & \mstd{0.15}{0.13} & \mstd{0.56}{0.05} & \mstd{0.64}{0.03} & \mstd{0.70}{0.00} & \mstd{0.63}{0.05} & \mstd{0.21}{0.01} & \mstd{0.06}{0.04} & \mstd{0.45}{0.00} \\
  & \textbf{MART-NILM (proposed)} & \textbf{\mstd{0.96}{0.01}} & \textbf{\mstd{0.91}{0.00}} & \textbf{\mstd{0.77}{0.04}} & \textbf{\mstd{0.94}{0.02}} & \textbf{\mstd{0.80}{0.01}} & \textbf{\mstd{0.88}{0.01}} & \textbf{\mstd{0.79}{0.00}} & \mstd{0.71}{0.01} & \textbf{\mstd{0.69}{0.01}} & \textbf{\mstd{0.85}{0.05}} & \textbf{\mstd{0.55}{0.03}} & \textbf{\mstd{0.72}{0.02}} \\
 \hline
 \end{tabularx}
