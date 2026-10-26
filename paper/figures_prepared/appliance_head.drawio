@@ -1,6 +1,6 @@
 <mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/29.6.6 Chrome/144.0.7559.236 Electron/40.8.4 Safari/537.36" version="29.6.6">
   <diagram name="Page-1" id="Ak50bejKJoYM_Jna7bkF">
-    <mxGraphModel dx="2194" dy="1294" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="1273" dy="939" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="1280" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -23,10 +23,10 @@
           <mxGeometry height="28" width="390" x="35.5" y="328.5" as="geometry" />
         </mxCell>
         <mxCell id="WUM6PyOI8Mk7egbfJC0Z-7" parent="1" style="text;html=1;strokeColor=none;fillColor=none;whiteSpace=wrap;overflow=hidden;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=18;fontColor=#27333D;fontStyle=1;" value="(b) Subtask-gated power" vertex="1">
-          <mxGeometry height="28" width="390" x="405" y="334.5" as="geometry" />
+          <mxGeometry height="28" width="390" x="409" y="326.5" as="geometry" />
         </mxCell>
         <mxCell id="WUM6PyOI8Mk7egbfJC0Z-8" parent="1" style="text;html=1;strokeColor=none;fillColor=none;whiteSpace=wrap;overflow=hidden;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=18;fontColor=#27333D;fontStyle=1;" value="(c) Scale/context-aware fusion" vertex="1">
-          <mxGeometry height="28" width="390" x="825" y="328.5" as="geometry" />
+          <mxGeometry height="28" width="390" x="820" y="329" as="geometry" />
         </mxCell>
         <mxCell id="WUM6PyOI8Mk7egbfJC0Z-9" parent="1" style="shape=line;strokeColor=#D7DDE2;strokeWidth=1;endArrow=none;" value="" vertex="1">
           <mxGeometry width="1218" x="20" y="343" as="geometry" />

@@ -24,7 +24,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 APPLIANCES = ("kettle", "fridge", "dishwasher", "washingmachine", "microwave")
-DISPLAY_NAMES = ("Kettle", "Fridge", "Dishwasher", "Washing machine", "Microwave")
+DISPLAY_NAMES = ("Kettle", "Fridge", "Dishwasher", "Washer", "Microwave")
 BACKGROUND_EDGES = np.asarray([0.0, 100.0, 200.0, 400.0, 800.0, np.inf])
 BACKGROUND_LABELS = ("0-100", "100-200", "200-400", "400-800", r"$\geq$800")
 SEEDS = (2026, 2027, 2028)

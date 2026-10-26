@@ -22,7 +22,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 APPLIANCES = ("kettle", "fridge", "dishwasher", "washingmachine", "microwave")
-NAMES = ("Kettle", "Fridge", "Dishwasher", "Washing machine", "Microwave")
+NAMES = ("Kettle", "Fridge", "Dishwasher", "Washer", "Microwave")
 MODELS = ("unetnilm", "mat_nilm", "multi_task", "mart_nilm")
 LABELS = ("UNet-NILM", "MAT-Conv", "Multi-task net.", "MART-NILM")
 COLORS = ("#D89000", "#009E73", "#A45A99", "#0072B2")
@@ -242,7 +242,7 @@ def main() -> None:
     draw(data, crops, args.output_dir)
     draw(data, crops, args.output_dir, context=True)
     metadata = dict(seed=2026, sample_seconds=8, smoothing="none",
-                    selection="Illustrative examples, not a random sample or performance estimate. REFIT fridge and washing-machine intervals are explicitly selected MART-NILM success cases; see per-panel selection records. Other intervals use typical energy and lower-quartile interfering demand.",
+                    selection="Illustrative examples, not a random sample or performance estimate. REFIT fridge and washer intervals are explicitly selected MART-NILM success cases; see per-panel selection records. Other intervals use typical energy and lower-quartile interfering demand.",
                     original_run_paths={model: (
                         "runs/paper_5w/postprocess_audit/transfer_multi_appliance/calibrated/seed_2026"
                         if model == "multi_task" else f"runs/paper_5w/table_v/{model}/seed_2026"
