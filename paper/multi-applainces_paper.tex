@@ -418,7 +418,7 @@ Model & Input & Output & Stride & Batch & Opt. & Max. epochs \\
 \hline
 UNet-NILM~\cite{faustine2020unet} & 100 & 1 & 1 & 256 & Adam & 50 \\
 MAT-Conv~\cite{xiong2024matnilm} & 864 & 64 & 64 & 64 & Adam & 200 \\
-Multiappliance-task network~\cite{sun2025transfer} & 480 & 480 & 240 & 32 & Adam & 100 \\
+Multi-task net.~\cite{sun2025transfer} & 480 & 480 & 240 & 32 & Adam & 100 \\
 MART-NILM & 1024 & 1024 & 512 & 64 & Adam & 150 \\
 \hline
 \end{tabularx}
@@ -494,66 +494,70 @@ Unlike F1, AP does not use the appliance-specific threshold or the temporal stat
 \subsection{Power Disaggregation and State Detection}
 \label{sec:power-state}
 
-Table~\ref{tab:results} compares each model on UK-DALE and REFIT. DW, WM, and MW are the dishwasher, washing machine, and microwave. Each entry is the mean and standard deviation over three seeds; entries with $\pm0.0$, $\pm0.00$, or $\pm0.000$ indicate values below the reported display precision. When a seed produces no positive prediction, its precision is defined as zero. The scores are defined in Section~\ref{sec:metrics}. Lower power error is better. Higher AP, precision, recall, and F1 are better.
+Table~\ref{tab:results} compares each model on UK-DALE and REFIT. DW, WM, and MW are the dishwasher, washing machine, and microwave. Power errors are reported in watts. Each entry is the mean and standard deviation over three seeds; entries with $\pm0.0$, $\pm0.00$, or $\pm0.000$ indicate values below the reported display precision. When a seed produces no positive prediction, its precision is defined as zero. The scores are defined in Section~\ref{sec:metrics}. Lower power error is better. Higher AP, precision, recall, and F1 are better.
 
 \begin{table*}[!t]
-\caption{Power and on-off results on UK-DALE and REFIT (mean $\pm$ standard deviation over three seeds). Best reported means, including ties at the displayed precision, are in bold.}
+\begingroup
+\renewcommand{\mstd}[2]{{\fontsize{5.4}{5.9}\selectfont #1$\pm$#2}}
+\renewcommand{\bestmstd}[2]{{\fontsize{5.4}{5.9}\selectfont\bfseries #1$\boldsymbol{\pm}$#2}}
+\caption{Power and on--off results (mean $\pm$ standard deviation over three seeds). Bold denotes the best displayed mean, including ties.}
 \label{tab:results}
 \centering
-\renewcommand{\arraystretch}{1.15}
-\scriptsize
-\setlength{\tabcolsep}{2.5pt}
-\begin{tabularx}{\textwidth}{@{}ll|*{6}{>{\centering\arraybackslash}X}|*{6}{>{\centering\arraybackslash}X}@{}}
+\renewcommand{\arraystretch}{1.08}
+\fontsize{6.0}{6.6}\selectfont
+\setlength{\tabcolsep}{1.5pt}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash\fontsize{5.0}{5.5}\selectfont}p{0.24in}>{\raggedright\arraybackslash\fontsize{5.0}{5.5}\selectfont}p{0.48in}|*{6}{>{\centering\arraybackslash}X}|*{6}{>{\centering\arraybackslash}X}@{}}
 \hline
-\multirow{2}{*}{Metric} & \multirow{2}{*}{Model}
+\multirow{2}{*}{Metric} & \multirow{2}{*}{Method}
  & \multicolumn{6}{c|}{UK-DALE} & \multicolumn{6}{c}{REFIT} \\
 \cline{3-14}
  & & Kettle & Fridge & DW & WM & MW & Avg.
  & Kettle & Fridge & DW & WM & MW & Avg. \\
 \hline
-\multirow{4}{*}{MAE (W)}
- & UNet-NILM~\cite{faustine2020unet} & \mstd{9.2}{2.1} & \mstd{29.1}{0.9} & \mstd{22.6}{5.1} & \mstd{9.1}{0.1} & \mstd{6.1}{0.3} & \mstd{15.2}{1.1} & \mstd{8.6}{0.9} & \mstd{35.0}{1.7} & \mstd{12.1}{1.1} & \mstd{7.6}{0.1} & \mstd{7.4}{0.3} & \mstd{14.2}{0.3} \\
- & MAT-Conv~\cite{xiong2024matnilm} & \mstd{5.5}{1.6} & \bestmstd{18.4}{0.7} & \mstd{8.9}{2.1} & \mstd{9.6}{1.4} & \mstd{5.3}{0.4} & \mstd{9.5}{1.1} & \bestmstd{5.4}{0.4} & \mstd{40.8}{0.1} & \mstd{5.4}{0.8} & \mstd{6.2}{2.3} & \bestmstd{6.0}{0.7} & \mstd{12.8}{0.6} \\
- & Multiappliance-task network~\cite{sun2025transfer} & \mstd{8.8}{1.7} & \mstd{34.4}{3.0} & \mstd{14.7}{6.2} & \mstd{15.5}{5.0} & \mstd{6.3}{0.1} & \mstd{15.9}{1.3} & \mstd{10.9}{1.6} & \mstd{35.6}{1.8} & \mstd{9.0}{1.2} & \mstd{18.0}{7.3} & \mstd{6.7}{0.1} & \mstd{16.1}{0.8} \\
- & \textbf{MART-NILM (proposed)} & \bestmstd{3.8}{0.3} & \mstd{20.3}{0.4} & \bestmstd{4.4}{0.4} & \bestmstd{5.3}{0.3} & \bestmstd{3.4}{0.1} & \bestmstd{7.5}{0.1} & \mstd{5.7}{0.1} & \bestmstd{32.6}{1.5} & \bestmstd{4.8}{0.3} & \bestmstd{3.6}{0.2} & \mstd{7.3}{0.4} & \bestmstd{10.8}{0.4} \\
+\multirow{4}{*}{MAE}
+ & UNet-NILM & \mstd{9.2}{2.1} & \mstd{29.1}{0.9} & \mstd{22.6}{5.1} & \mstd{9.1}{0.1} & \mstd{6.1}{0.3} & \mstd{15.2}{1.1} & \mstd{8.6}{0.9} & \mstd{35.0}{1.7} & \mstd{12.1}{1.1} & \mstd{7.6}{0.1} & \mstd{7.4}{0.3} & \mstd{14.2}{0.3} \\
+ & MAT-Conv & \mstd{5.5}{1.6} & \bestmstd{18.4}{0.7} & \mstd{8.9}{2.1} & \mstd{9.6}{1.4} & \mstd{5.3}{0.4} & \mstd{9.5}{1.1} & \bestmstd{5.4}{0.4} & \mstd{40.8}{0.1} & \mstd{5.4}{0.8} & \mstd{6.2}{2.3} & \bestmstd{6.0}{0.7} & \mstd{12.8}{0.6} \\
+ & Multi-task net. & \mstd{8.8}{1.7} & \mstd{34.4}{3.0} & \mstd{14.7}{6.2} & \mstd{15.5}{5.0} & \mstd{6.3}{0.1} & \mstd{15.9}{1.3} & \mstd{10.9}{1.6} & \mstd{35.6}{1.8} & \mstd{9.0}{1.2} & \mstd{18.0}{7.3} & \mstd{6.7}{0.1} & \mstd{16.1}{0.8} \\
+ & \textbf{MART-NILM} & \bestmstd{3.8}{0.3} & \mstd{20.3}{0.4} & \bestmstd{4.4}{0.4} & \bestmstd{5.3}{0.3} & \bestmstd{3.4}{0.1} & \bestmstd{7.5}{0.1} & \mstd{5.7}{0.1} & \bestmstd{32.6}{1.5} & \bestmstd{4.8}{0.3} & \bestmstd{3.6}{0.2} & \mstd{7.3}{0.4} & \bestmstd{10.8}{0.4} \\
 \hline
-\multirow{4}{*}{SAE (W)}
+\multirow{4}{*}{SAE}
  & UNet-NILM & \mstd{8.4}{2.6} & \mstd{24.5}{2.5} & \mstd{21.1}{6.5} & \mstd{9.0}{0.1} & \mstd{6.0}{0.4} & \mstd{13.8}{1.3} & \mstd{5.6}{1.1} & \mstd{25.9}{2.6} & \mstd{9.8}{0.3} & \mstd{7.1}{0.3} & \mstd{7.0}{0.2} & \mstd{11.1}{0.7} \\
  & MAT-Conv & \mstd{4.3}{1.2} & \bestmstd{10.0}{1.0} & \mstd{6.7}{1.4} & \mstd{8.8}{1.3} & \mstd{5.0}{0.4} & \mstd{6.9}{0.8} & \mstd{2.9}{0.3} & \mstd{23.7}{0.6} & \mstd{4.5}{1.0} & \mstd{5.0}{1.8} & \bestmstd{5.2}{0.5} & \mstd{8.3}{0.5} \\
- & Multiappliance-task network & \mstd{7.3}{1.4} & \mstd{32.1}{3.5} & \mstd{12.0}{5.9} & \mstd{14.5}{4.9} & \mstd{6.2}{0.1} & \mstd{14.4}{1.4} & \mstd{7.1}{1.1} & \mstd{21.7}{4.4} & \mstd{7.9}{1.3} & \mstd{13.0}{5.5} & \mstd{6.6}{0.0} & \mstd{11.3}{0.7} \\
- & \textbf{MART-NILM (proposed)} & \bestmstd{2.9}{0.2} & \mstd{13.6}{0.6} & \bestmstd{2.8}{0.5} & \bestmstd{4.1}{0.5} & \bestmstd{3.0}{0.1} & \bestmstd{5.3}{0.1} & \bestmstd{2.3}{0.2} & \bestmstd{15.0}{1.6} & \bestmstd{3.6}{0.1} & \bestmstd{2.9}{0.2} & \mstd{5.6}{0.3} & \bestmstd{5.9}{0.4} \\
+ & Multi-task net. & \mstd{7.3}{1.4} & \mstd{32.1}{3.5} & \mstd{12.0}{5.9} & \mstd{14.5}{4.9} & \mstd{6.2}{0.1} & \mstd{14.4}{1.4} & \mstd{7.1}{1.1} & \mstd{21.7}{4.4} & \mstd{7.9}{1.3} & \mstd{13.0}{5.5} & \mstd{6.6}{0.0} & \mstd{11.3}{0.7} \\
+ & \textbf{MART-NILM} & \bestmstd{2.9}{0.2} & \mstd{13.6}{0.6} & \bestmstd{2.8}{0.5} & \bestmstd{4.1}{0.5} & \bestmstd{3.0}{0.1} & \bestmstd{5.3}{0.1} & \bestmstd{2.3}{0.2} & \bestmstd{15.0}{1.6} & \bestmstd{3.6}{0.1} & \bestmstd{2.9}{0.2} & \mstd{5.6}{0.3} & \bestmstd{5.9}{0.4} \\
 \hline
-\multirow{4}{*}{ON MAE (W)}
+\multirow{4}{*}{\shortstack{ON\\MAE}}
  & UNet-NILM & \mstd{1296.5}{443.8} & \mstd{48.4}{4.0} & \mstd{747.7}{180.9} & \mstd{462.6}{7.3} & \mstd{1178.8}{93.3} & \mstd{746.8}{110.0} & \mstd{1289.1}{190.7} & \mstd{63.4}{3.4} & \mstd{398.3}{93.1} & \mstd{306.1}{6.7} & \mstd{1196.7}{58.0} & \mstd{650.7}{59.1} \\
  & MAT-Conv & \mstd{547.5}{180.2} & \bestmstd{22.1}{1.6} & \mstd{206.9}{46.2} & \mstd{385.7}{59.1} & \mstd{946.4}{99.8} & \mstd{421.7}{75.2} & \mstd{850.7}{44.4} & \mstd{46.3}{2.5} & \mstd{208.2}{21.0} & \mstd{195.6}{10.1} & \mstd{1062.2}{90.6} & \mstd{472.6}{29.3} \\
- & Multiappliance-task network & \mstd{807.3}{69.1} & \mstd{61.0}{7.1} & \mstd{449.8}{212.8} & \mstd{478.2}{28.0} & \mstd{1215.2}{19.2} & \mstd{602.3}{44.3} & \mstd{1012.0}{65.7} & \mstd{59.1}{6.4} & \mstd{437.1}{91.3} & \mstd{306.7}{17.6} & \mstd{1224.2}{5.6} & \mstd{607.8}{16.5} \\
- & \textbf{MART-NILM (proposed)} & \bestmstd{388.0}{38.1} & \mstd{26.8}{1.0} & \bestmstd{96.0}{9.6} & \bestmstd{164.0}{19.2} & \bestmstd{208.5}{21.1} & \bestmstd{176.7}{7.7} & \bestmstd{791.8}{22.3} & \bestmstd{40.7}{1.9} & \bestmstd{156.9}{17.9} & \bestmstd{167.7}{2.2} & \bestmstd{388.9}{22.6} & \bestmstd{309.2}{4.6} \\
+ & Multi-task net. & \mstd{807.3}{69.1} & \mstd{61.0}{7.1} & \mstd{449.8}{212.8} & \mstd{478.2}{28.0} & \mstd{1215.2}{19.2} & \mstd{602.3}{44.3} & \mstd{1012.0}{65.7} & \mstd{59.1}{6.4} & \mstd{437.1}{91.3} & \mstd{306.7}{17.6} & \mstd{1224.2}{5.6} & \mstd{607.8}{16.5} \\
+ & \textbf{MART-NILM} & \bestmstd{388.0}{38.1} & \mstd{26.8}{1.0} & \bestmstd{96.0}{9.6} & \bestmstd{164.0}{19.2} & \bestmstd{208.5}{21.1} & \bestmstd{176.7}{7.7} & \bestmstd{791.8}{22.3} & \bestmstd{40.7}{1.9} & \bestmstd{156.9}{17.9} & \bestmstd{167.7}{2.2} & \bestmstd{388.9}{22.6} & \bestmstd{309.2}{4.6} \\
 \hline
 \multirow{4}{*}{AP}
  & UNet-NILM & \mstd{0.908}{0.016} & \mstd{0.873}{0.041} & \mstd{0.580}{0.274} & \mstd{0.866}{0.026} & \mstd{0.535}{0.024} & \mstd{0.753}{0.049} & \mstd{0.653}{0.036} & \mstd{0.657}{0.030} & \mstd{0.269}{0.056} & \mstd{0.654}{0.129} & \mstd{0.136}{0.046} & \mstd{0.474}{0.024} \\
  & MAT-Conv & \mstd{0.968}{0.020} & \mstd{0.951}{0.006} & \mstd{0.868}{0.039} & \mstd{0.555}{0.191} & \bestmstd{0.718}{0.063} & \mstd{0.812}{0.051} & \mstd{0.801}{0.018} & \mstd{0.537}{0.005} & \mstd{0.736}{0.040} & \mstd{0.653}{0.066} & \mstd{0.152}{0.046} & \mstd{0.576}{0.024} \\
- & Multiappliance-task network & \mstd{0.930}{0.016} & \mstd{0.915}{0.030} & \mstd{0.838}{0.094} & \mstd{0.207}{0.128} & \mstd{0.514}{0.194} & \mstd{0.681}{0.075} & \mstd{0.660}{0.090} & \mstd{0.641}{0.053} & \mstd{0.615}{0.040} & \mstd{0.123}{0.019} & \mstd{0.160}{0.069} & \mstd{0.440}{0.000} \\
- & \textbf{MART-NILM (proposed)} & \bestmstd{0.997}{0.001} & \bestmstd{0.969}{0.001} & \bestmstd{0.963}{0.002} & \bestmstd{0.985}{0.008} & \bestmstd{0.718}{0.033} & \bestmstd{0.926}{0.008} & \bestmstd{0.848}{0.008} & \bestmstd{0.737}{0.025} & \bestmstd{0.766}{0.009} & \bestmstd{0.904}{0.033} & \bestmstd{0.557}{0.045} & \bestmstd{0.762}{0.018} \\
+ & Multi-task net. & \mstd{0.930}{0.016} & \mstd{0.915}{0.030} & \mstd{0.838}{0.094} & \mstd{0.207}{0.128} & \mstd{0.514}{0.194} & \mstd{0.681}{0.075} & \mstd{0.660}{0.090} & \mstd{0.641}{0.053} & \mstd{0.615}{0.040} & \mstd{0.123}{0.019} & \mstd{0.160}{0.069} & \mstd{0.440}{0.000} \\
+ & \textbf{MART-NILM} & \bestmstd{0.997}{0.001} & \bestmstd{0.969}{0.001} & \bestmstd{0.963}{0.002} & \bestmstd{0.985}{0.008} & \bestmstd{0.718}{0.033} & \bestmstd{0.926}{0.008} & \bestmstd{0.848}{0.008} & \bestmstd{0.737}{0.025} & \bestmstd{0.766}{0.009} & \bestmstd{0.904}{0.033} & \bestmstd{0.557}{0.045} & \bestmstd{0.762}{0.018} \\
 \hline
 \multirow{4}{*}{Precision}
  & UNet-NILM & \mstd{0.80}{0.09} & \mstd{0.74}{0.09} & \mstd{0.55}{0.19} & \mstd{0.84}{0.09} & \mstd{0.57}{0.07} & \mstd{0.70}{0.03} & \mstd{0.63}{0.08} & \mstd{0.60}{0.12} & \mstd{0.26}{0.06} & \bestmstd{0.89}{0.05} & \mstd{0.18}{0.07} & \mstd{0.51}{0.04} \\
  & MAT-Conv & \mstd{0.82}{0.10} & \mstd{0.76}{0.03} & \mstd{0.47}{0.05} & \mstd{0.61}{0.18} & \bestmstd{0.71}{0.09} & \mstd{0.67}{0.08} & \mstd{0.70}{0.10} & \mstd{0.59}{0.00} & \mstd{0.42}{0.06} & \mstd{0.59}{0.07} & \mstd{0.16}{0.03} & \mstd{0.49}{0.04} \\
- & Multiappliance-task network & \mstd{0.74}{0.08} & \mstd{0.87}{0.01} & \mstd{0.51}{0.16} & \mstd{0.22}{0.09} & \mstd{0.55}{0.49} & \mstd{0.58}{0.11} & \mstd{0.57}{0.08} & \mstd{0.63}{0.00} & \mstd{0.54}{0.09} & \mstd{0.14}{0.02} & \mstd{0.37}{0.28} & \mstd{0.45}{0.04} \\
- & \textbf{MART-NILM (proposed)} & \bestmstd{0.94}{0.02} & \mstd{0.88}{0.01} & \mstd{0.63}{0.06} & \bestmstd{0.92}{0.02} & \bestmstd{0.71}{0.00} & \bestmstd{0.82}{0.01} & \bestmstd{0.76}{0.01} & \mstd{0.64}{0.00} & \mstd{0.62}{0.04} & \mstd{0.85}{0.07} & \bestmstd{0.43}{0.03} & \bestmstd{0.66}{0.01} \\
+ & Multi-task net. & \mstd{0.74}{0.08} & \mstd{0.87}{0.01} & \mstd{0.51}{0.16} & \mstd{0.22}{0.09} & \mstd{0.55}{0.49} & \mstd{0.58}{0.11} & \mstd{0.57}{0.08} & \mstd{0.63}{0.00} & \mstd{0.54}{0.09} & \mstd{0.14}{0.02} & \mstd{0.37}{0.28} & \mstd{0.45}{0.04} \\
+ & \textbf{MART-NILM} & \bestmstd{0.94}{0.02} & \bestmstd{0.88}{0.01} & \bestmstd{0.63}{0.06} & \bestmstd{0.92}{0.02} & \bestmstd{0.71}{0.00} & \bestmstd{0.82}{0.01} & \bestmstd{0.76}{0.01} & \bestmstd{0.64}{0.00} & \bestmstd{0.62}{0.04} & \mstd{0.85}{0.07} & \bestmstd{0.43}{0.03} & \bestmstd{0.66}{0.01} \\
 \hline
 \multirow{4}{*}{Recall}
  & UNet-NILM & \mstd{0.87}{0.08} & \mstd{0.82}{0.14} & \mstd{0.65}{0.21} & \mstd{0.78}{0.04} & \mstd{0.57}{0.07} & \mstd{0.74}{0.05} & \mstd{0.73}{0.03} & \mstd{0.65}{0.18} & \mstd{0.46}{0.07} & \mstd{0.43}{0.13} & \mstd{0.37}{0.04} & \mstd{0.53}{0.07} \\
  & MAT-Conv & \mstd{0.97}{0.01} & \bestmstd{0.98}{0.02} & \mstd{0.98}{0.02} & \mstd{0.49}{0.18} & \mstd{0.67}{0.13} & \mstd{0.82}{0.02} & \mstd{0.78}{0.03} & \bestmstd{0.93}{0.06} & \bestmstd{0.83}{0.02} & \mstd{0.76}{0.21} & \mstd{0.42}{0.25} & \mstd{0.74}{0.11} \\
- & Multiappliance-task network & \mstd{0.92}{0.03} & \mstd{0.94}{0.01} & \mstd{0.89}{0.14} & \mstd{0.56}{0.06} & \mstd{0.08}{0.07} & \mstd{0.68}{0.05} & \mstd{0.75}{0.05} & \mstd{0.78}{0.01} & \mstd{0.77}{0.08} & \mstd{0.50}{0.12} & \mstd{0.03}{0.02} & \mstd{0.57}{0.01} \\
- & \textbf{MART-NILM (proposed)} & \bestmstd{0.99}{0.00} & \mstd{0.94}{0.01} & \bestmstd{0.99}{0.01} & \bestmstd{0.97}{0.02} & \bestmstd{0.91}{0.03} & \bestmstd{0.96}{0.00} & \bestmstd{0.81}{0.01} & \mstd{0.79}{0.02} & \mstd{0.77}{0.04} & \bestmstd{0.85}{0.09} & \bestmstd{0.76}{0.03} & \bestmstd{0.80}{0.03} \\
+ & Multi-task net. & \mstd{0.92}{0.03} & \mstd{0.94}{0.01} & \mstd{0.89}{0.14} & \mstd{0.56}{0.06} & \mstd{0.08}{0.07} & \mstd{0.68}{0.05} & \mstd{0.75}{0.05} & \mstd{0.78}{0.01} & \mstd{0.77}{0.08} & \mstd{0.50}{0.12} & \mstd{0.03}{0.02} & \mstd{0.57}{0.01} \\
+ & \textbf{MART-NILM} & \bestmstd{0.99}{0.00} & \mstd{0.94}{0.01} & \bestmstd{0.99}{0.01} & \bestmstd{0.97}{0.02} & \bestmstd{0.91}{0.03} & \bestmstd{0.96}{0.00} & \bestmstd{0.81}{0.01} & \mstd{0.79}{0.02} & \mstd{0.77}{0.04} & \bestmstd{0.85}{0.09} & \bestmstd{0.76}{0.03} & \bestmstd{0.80}{0.03} \\
 \hline
 \multirow{4}{*}{F1}
  & UNet-NILM & \mstd{0.83}{0.03} & \mstd{0.77}{0.07} & \mstd{0.60}{0.20} & \mstd{0.81}{0.03} & \mstd{0.57}{0.04} & \mstd{0.71}{0.03} & \mstd{0.67}{0.03} & \mstd{0.61}{0.08} & \mstd{0.33}{0.07} & \mstd{0.58}{0.12} & \mstd{0.23}{0.05} & \mstd{0.48}{0.04} \\
  & MAT-Conv & \mstd{0.89}{0.06} & \mstd{0.86}{0.01} & \mstd{0.63}{0.04} & \mstd{0.54}{0.17} & \mstd{0.68}{0.06} & \mstd{0.72}{0.05} & \mstd{0.73}{0.05} & \bestmstd{0.72}{0.02} & \mstd{0.55}{0.05} & \mstd{0.65}{0.06} & \mstd{0.23}{0.08} & \mstd{0.58}{0.02} \\
- & Multiappliance-task network & \mstd{0.82}{0.04} & \bestmstd{0.91}{0.00} & \mstd{0.64}{0.14} & \mstd{0.30}{0.09} & \mstd{0.15}{0.13} & \mstd{0.56}{0.05} & \mstd{0.64}{0.03} & \mstd{0.70}{0.00} & \mstd{0.63}{0.05} & \mstd{0.21}{0.01} & \mstd{0.06}{0.04} & \mstd{0.45}{0.00} \\
- & \textbf{MART-NILM (proposed)} & \bestmstd{0.96}{0.01} & \bestmstd{0.91}{0.00} & \bestmstd{0.77}{0.04} & \bestmstd{0.94}{0.02} & \bestmstd{0.80}{0.01} & \bestmstd{0.88}{0.01} & \bestmstd{0.79}{0.00} & \mstd{0.71}{0.01} & \bestmstd{0.69}{0.01} & \bestmstd{0.85}{0.05} & \bestmstd{0.55}{0.03} & \bestmstd{0.72}{0.02} \\
+ & Multi-task net. & \mstd{0.82}{0.04} & \bestmstd{0.91}{0.00} & \mstd{0.64}{0.14} & \mstd{0.30}{0.09} & \mstd{0.15}{0.13} & \mstd{0.56}{0.05} & \mstd{0.64}{0.03} & \mstd{0.70}{0.00} & \mstd{0.63}{0.05} & \mstd{0.21}{0.01} & \mstd{0.06}{0.04} & \mstd{0.45}{0.00} \\
+ & \textbf{MART-NILM} & \bestmstd{0.96}{0.01} & \bestmstd{0.91}{0.00} & \bestmstd{0.77}{0.04} & \bestmstd{0.94}{0.02} & \bestmstd{0.80}{0.01} & \bestmstd{0.88}{0.01} & \bestmstd{0.79}{0.00} & \mstd{0.71}{0.01} & \bestmstd{0.69}{0.01} & \bestmstd{0.85}{0.05} & \bestmstd{0.55}{0.03} & \bestmstd{0.72}{0.02} \\
 \hline
 \end{tabularx}
+\endgroup
 \end{table*}
 
 The threshold-independent results agree with the calibrated F1 comparison.
@@ -565,6 +569,15 @@ for every appliance, with a tie at the reported precision for the UK-DALE
 microwave. The state-detection advantage therefore persists across the full
 precision--recall ranking and cannot be attributed only to the calibrated
 decision thresholds.
+
+Figure~\ref{fig:baseline-waveforms} compares the four models on identical selected intervals. MART-NILM tracks the activation plateaus and switching patterns in these examples, although amplitude errors remain visible. The REFIT fridge and washing-machine panels are selected success cases; overall performance is assessed over the complete test recordings in Table~\ref{tab:results}.
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=\textwidth]{figures/baseline_waveforms_context.pdf}
+\caption{Waveform comparisons on the two test houses.}
+\label{fig:baseline-waveforms}
+\end{figure*}
 
 \subsection{Computational Cost}
 \label{sec:cost}
@@ -583,7 +596,7 @@ Model & Params (M) & Model size (MB) & Time (s) \\
 \hline
 UNet-NILM & 5.832 & 22.299 & 17455.8 \\
 MAT-Conv & 3.022 & 11.611 & 10354.9 \\
-Multiappliance-task network & 7.829 & 59.793 & 16493.8 \\
+Multi-task net. & 7.829 & 59.793 & 16493.8 \\
 MART-NILM & \textbf{1.373} & \textbf{5.335} & \textbf{485.2} \\
 \hline
 \end{tabularx}
@@ -600,7 +613,7 @@ cost; Table~\ref{tab:results} separately reports predictive performance.
 Architecture and training effects are evaluated separately. Every architecture variant in Table~\ref{tab:architecture-ablation} remains one joint five-appliance network and retains five power and five state outputs. A removed module is replaced only by an identity mapping or the pointwise projection required to preserve tensor dimensions. Each row therefore removes or simplifies one component shown in Fig.~\ref{fig:martnilm-architecture}, while all other settings remain fixed. Checkpoints are selected on the validation houses. The table then reports frozen evaluation on UK-DALE house~2 and REFIT house~20, with the two house-level metrics averaged equally.
 
 \begin{table}[!t]
-\caption{Architecture ablation on the two test houses (three-seed mean $\pm$ standard deviation). Every row is one joint five-appliance model.}
+\caption{Architecture ablation on the two test houses (three-seed mean $\pm$ standard deviation).}
 \label{tab:architecture-ablation}
 \centering
 \renewcommand{\arraystretch}{1.15}
@@ -615,7 +628,6 @@ w/o feature encoder    & 1.326 & \mstd{9.16}{0.06} & \mstd{252.01}{2.21} & \mstd
 w/o temporal encoder   & 0.634 & \mstd{10.56}{0.33} & \mstd{288.07}{10.25} & \mstd{6.56}{0.16} & \mstd{0.710}{0.013} \\
 w/o appliance decoders & 0.836 & \mstd{9.22}{0.66} & \mstd{265.84}{4.30} & \mstd{5.63}{0.63} & \mstd{0.783}{0.015} \\
 w/o relation attention & 1.332 & \mstd{9.18}{0.09} & \bestmstd{230.84}{14.69} & \bestmstd{5.55}{0.04} & \mstd{0.790}{0.015} \\
-\midrule
 \textbf{MART-NILM}     & 1.373 & \bestmstd{9.12}{0.14} & \mstd{242.94}{5.35} & \mstd{5.58}{0.17} & \bestmstd{0.796}{0.008} \\
 \bottomrule
 \end{tabular}
@@ -666,7 +678,6 @@ Training strategy & \shortstack{MAE\\(W) $\downarrow$} & \shortstack{ON MAE\\(W)
 \hspace{3pt}Standard joint training       & \mstd{21.164}{0.394} & \mstd{357.808}{19.280} & \mstd{15.938}{0.348} & \mstd{0.605}{0.012} \\
 \hspace{3pt}$+$ Focal-event mixing$^\dagger$       & \mstd{21.679}{0.144} & \bestmstd{301.623}{16.196} & \mstd{15.601}{0.365} & \mstd{0.649}{0.016} \\
 \hspace{3pt}$+$ Appliance-wise bal.$^\dagger$      & \mstd{20.929}{0.065} & \mstd{334.862}{10.888} & \mstd{15.175}{0.322} & \mstd{0.661}{0.014} \\
-\midrule
 \textbf{Complete MART-NILM}$^\dagger$  & \bestmstd{20.791}{0.175} & \mstd{315.408}{10.405} & \bestmstd{15.016}{0.385} & \bestmstd{0.687}{0.003} \\
 \bottomrule
 \end{tabularx}
@@ -684,10 +695,7 @@ over standard joint training.
 \begin{figure}[!t]
 \centering
 \includegraphics[width=\columnwidth]{figures/focal_recall_by_background.pdf}
-\caption{Background-conditioned validation recall change produced by
-focal-event mixing (paired three-seed mean).  Each entry is focal-event mixing
-minus standard training in percentage points; positive values denote improved
-recall.}
+\caption{Validation recall change from focal-event mixing across residual backgrounds (positive values denote improvement).}
 \label{fig:focal-recall}
 \end{figure}
 
@@ -700,9 +708,7 @@ with the unchanged overall microwave F1.
 \begin{figure}[!t]
 \centering
 \includegraphics[width=\columnwidth]{figures/focal_on_mae_by_background.pdf}
-\caption{Background-conditioned validation ON-MAE reduction produced by
-focal-event mixing (paired three-seed mean).  Each entry is standard training
-minus focal-event mixing in watts; positive values denote lower ON MAE.}
+\caption{Validation ON-MAE reduction from focal-event mixing across residual backgrounds (positive values denote lower error).}
 \label{fig:focal-on-mae}
 \end{figure}
 
@@ -716,10 +722,7 @@ increase in aggregate MAE.
 \begin{figure}[!t]
 \centering
 \includegraphics[width=\columnwidth]{figures/appliance_balance_scale.pdf}
-\caption{Power--state scale alignment produced by appliance-wise balancing.
-Bars report the median effective state-term--to--power-loss ratio after epoch
-20; error bars show interquartile ranges.  The dashed line denotes equal
-numerical magnitude.}
+\caption{Power--state scale alignment produced by appliance-wise balancing (median and interquartile range after epoch 20).}
 \label{fig:balance-scale}
 \end{figure}
 

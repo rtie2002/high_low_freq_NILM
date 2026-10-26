@@ -1,0 +1,162 @@
+{
+  "seed": 2026,
+  "sample_seconds": 8,
+  "smoothing": "none",
+  "selection": "Illustrative examples, not a random sample or performance estimate. REFIT fridge and washing-machine intervals are explicitly selected MART-NILM success cases; see per-panel selection records. Other intervals use typical energy and lower-quartile interfering demand.",
+  "original_run_paths": {
+    "unetnilm": "runs/paper_5w/table_v/unetnilm/seed_2026",
+    "mat_nilm": "runs/paper_5w/table_v/mat_nilm/seed_2026",
+    "multi_task": "runs/paper_5w/postprocess_audit/transfer_multi_appliance/calibrated/seed_2026",
+    "mart_nilm": "runs/paper_5w/table_v/mart_nilm/seed_2026"
+  },
+  "power_limits": {
+    "min_power_watts": 5,
+    "max_on_power_watts": {
+      "kettle": 4000,
+      "fridge": 600,
+      "dishwasher": 4000,
+      "washingmachine": 3999,
+      "microwave": 4000
+    }
+  },
+  "sources": {
+    "ukdale_house2": {
+      "unetnilm": "C:\\Users\\Raymond Tie\\Desktop\\PhD\\Code\\multi-domain NILM\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\waveform_comparison\\unetnilm\\test\\ukdale_house2\\predictions.npz",
+      "mat_nilm": "C:\\Users\\Raymond Tie\\Desktop\\PhD\\Code\\multi-domain NILM\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\waveform_comparison\\mat_nilm\\test\\ukdale_house2\\predictions.npz",
+      "multi_task": "C:\\Users\\Raymond Tie\\Desktop\\PhD\\Code\\multi-domain NILM\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\waveform_comparison\\multi_task\\test\\ukdale_house2\\predictions.npz",
+      "mart_nilm": "C:\\Users\\Raymond Tie\\Desktop\\PhD\\Code\\multi-domain NILM\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\waveform_comparison\\mart_nilm\\test\\ukdale_house2\\predictions.npz"
+    },
+    "refit_house20": {
+      "unetnilm": "C:\\Users\\Raymond Tie\\Desktop\\PhD\\Code\\multi-domain NILM\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\waveform_comparison\\unetnilm\\test\\refit_house20\\predictions.npz",
+      "mat_nilm": "C:\\Users\\Raymond Tie\\Desktop\\PhD\\Code\\multi-domain NILM\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\waveform_comparison\\mat_nilm\\test\\refit_house20\\predictions.npz",
+      "multi_task": "C:\\Users\\Raymond Tie\\Desktop\\PhD\\Code\\multi-domain NILM\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\waveform_comparison\\multi_task\\test\\refit_house20\\predictions.npz",
+      "mart_nilm": "C:\\Users\\Raymond Tie\\Desktop\\PhD\\Code\\multi-domain NILM\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\waveform_comparison\\mart_nilm\\test\\refit_house20\\predictions.npz"
+    }
+  },
+  "intervals": {
+    "ukdale_house2": [
+      {
+        "appliance": "kettle",
+        "complete_event_count": 106,
+        "selection": "Typical-energy events at lower-quartile interfering demand; fridge: two regular consecutive cycles",
+        "mean_interfering_power_watts": 219.0803782608696,
+        "event_csv_start": 122654,
+        "event_csv_end_inclusive": 122676,
+        "crop_csv_start": 122609,
+        "crop_csv_end_inclusive": 122721,
+        "start_time": "2013-06-28 20:46:08+00:00",
+        "end_time": "2013-06-28 21:01:04+00:00"
+      },
+      {
+        "appliance": "fridge",
+        "complete_event_count": 1078,
+        "selection": "Typical-energy events at lower-quartile interfering demand; fridge: two regular consecutive cycles",
+        "mean_interfering_power_watts": 95.38367664651163,
+        "event_csv_start": 269397,
+        "event_csv_end_inclusive": 269826,
+        "crop_csv_start": 269367,
+        "crop_csv_end_inclusive": 269856,
+        "start_time": "2013-07-12 10:54:32+00:00",
+        "end_time": "2013-07-12 11:59:44+00:00"
+      },
+      {
+        "appliance": "dishwasher",
+        "complete_event_count": 27,
+        "selection": "Typical-energy events at lower-quartile interfering demand; fridge: two regular consecutive cycles",
+        "mean_interfering_power_watts": 249.72896747058823,
+        "event_csv_start": 155802,
+        "event_csv_end_inclusive": 156141,
+        "crop_csv_start": 155728,
+        "crop_csv_end_inclusive": 156215,
+        "start_time": "2013-07-01 22:22:00+00:00",
+        "end_time": "2013-07-01 23:26:56+00:00"
+      },
+      {
+        "appliance": "washingmachine",
+        "complete_event_count": 12,
+        "selection": "Typical-energy events at lower-quartile interfering demand; fridge: two regular consecutive cycles",
+        "mean_interfering_power_watts": 154.32279084210526,
+        "event_csv_start": 280408,
+        "event_csv_end_inclusive": 280692,
+        "crop_csv_start": 280346,
+        "crop_csv_end_inclusive": 280754,
+        "start_time": "2013-07-13 11:19:04+00:00",
+        "end_time": "2013-07-13 12:13:28+00:00"
+      },
+      {
+        "appliance": "microwave",
+        "complete_event_count": 127,
+        "selection": "Typical-energy events at lower-quartile interfering demand; fridge: two regular consecutive cycles",
+        "mean_interfering_power_watts": 186.74339999999995,
+        "event_csv_start": 56747,
+        "event_csv_end_inclusive": 56757,
+        "crop_csv_start": 56702,
+        "crop_csv_end_inclusive": 56802,
+        "start_time": "2013-06-22 18:18:00+00:00",
+        "end_time": "2013-06-22 18:31:20+00:00"
+      }
+    ],
+    "refit_house20": [
+      {
+        "appliance": "kettle",
+        "complete_event_count": 101,
+        "selection": "Typical-energy events at lower-quartile interfering demand; fridge: two regular consecutive cycles",
+        "mean_interfering_power_watts": 513.6923076923077,
+        "event_csv_start": 184405,
+        "event_csv_end_inclusive": 184417,
+        "crop_csv_start": 184360,
+        "crop_csv_end_inclusive": 184462,
+        "start_time": "2014-06-25 14:31:12+00:00",
+        "end_time": "2014-06-25 14:44:48+00:00"
+      },
+      {
+        "appliance": "fridge",
+        "complete_event_count": 491,
+        "selection": "Selected MART-NILM success case: minimum relative waveform L1 error among typical-energy candidates; fridge: two regular consecutive cycles, preferring aggregate peaks <=800 W for legibility",
+        "mean_interfering_power_watts": 187.94459228723406,
+        "event_csv_start": 302959,
+        "event_csv_end_inclusive": 303522,
+        "crop_csv_start": 302929,
+        "crop_csv_end_inclusive": 303552,
+        "start_time": "2014-07-06 15:15:28+00:00",
+        "end_time": "2014-07-06 16:38:32+00:00"
+      },
+      {
+        "appliance": "dishwasher",
+        "complete_event_count": 7,
+        "selection": "Typical-energy events at lower-quartile interfering demand; fridge: two regular consecutive cycles",
+        "mean_interfering_power_watts": 283.3406666523605,
+        "event_csv_start": 261269,
+        "event_csv_end_inclusive": 261734,
+        "crop_csv_start": 261167,
+        "crop_csv_end_inclusive": 261836,
+        "start_time": "2014-07-02 18:22:08+00:00",
+        "end_time": "2014-07-02 19:51:20+00:00"
+      },
+      {
+        "appliance": "washingmachine",
+        "complete_event_count": 5,
+        "selection": "Selected MART-NILM success case: minimum relative waveform L1 error among typical-energy candidates; fridge: two regular consecutive cycles, preferring aggregate peaks <=800 W for legibility",
+        "mean_interfering_power_watts": 369.3411028989474,
+        "event_csv_start": 108228,
+        "event_csv_end_inclusive": 108892,
+        "crop_csv_start": 108082,
+        "crop_csv_end_inclusive": 109038,
+        "start_time": "2014-06-18 12:26:16+00:00",
+        "end_time": "2014-06-18 14:33:44+00:00"
+      },
+      {
+        "appliance": "microwave",
+        "complete_event_count": 47,
+        "selection": "Typical-energy events at lower-quartile interfering demand; fridge: two regular consecutive cycles",
+        "mean_interfering_power_watts": 232.13333333333333,
+        "event_csv_start": 45711,
+        "event_csv_end_inclusive": 45725,
+        "crop_csv_start": 45666,
+        "crop_csv_end_inclusive": 45770,
+        "start_time": "2014-06-12 17:34:56+00:00",
+        "end_time": "2014-06-12 17:48:48+00:00"
+      }
+    ]
+  }
+}
