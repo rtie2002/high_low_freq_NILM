@@ -1413,3 +1413,31 @@ reports fixed-to-balanced ratios of kettle 0.027 to 0.464, fridge
 and microwave 0.026 to 0.641 (three-seed means). The balancing rule therefore
 raises the relative state-gradient scale but does not make all task gradients
 equal. The paper now makes this distinction explicit when citing GradNorm.
+
+## Relative-energy-loss ablation — completed 2026-10-28
+
+This controlled three-seed experiment removed only the relative-energy power
+loss by setting `power_energy_relative_weight: 0.25 -> 0.0`. The MART-NILM
+architecture, five-week house split, labels, FBS-Mix, appliance-wise balance,
+optimizer, checkpoint rule, state calibration, and test-time reconstruction
+were unchanged. Seeds 2026, 2027, and 2028 were trained and evaluated on the
+same held-out UK-DALE house 2 and REFIT house 20 protocol as Table III.
+
+| Condition | UK-DALE MAE (W) | UK-DALE ON MAE (W) | UK-DALE SAE (W) | UK-DALE AP | UK-DALE macro-F1 | REFIT MAE (W) | REFIT ON MAE (W) | REFIT SAE (W) | REFIT AP | REFIT macro-F1 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Table III MART-NILM | 7.451 +/- 0.090 | 176.669 +/- 7.616 | 5.275 +/- 0.100 | 0.926 +/- 0.008 | 0.876 +/- 0.010 | 10.798 +/- 0.355 | 309.207 +/- 4.603 | 5.893 +/- 0.391 | 0.762 +/- 0.018 | 0.716 +/- 0.016 |
+| No relative-energy loss | 7.296 +/- 0.173 | 175.296 +/- 7.119 | 5.059 +/- 0.363 | 0.926 +/- 0.010 | 0.880 +/- 0.003 | 10.931 +/- 0.177 | 309.988 +/- 3.565 | 5.959 +/- 0.041 | 0.761 +/- 0.016 | 0.717 +/- 0.003 |
+
+Each completed seed was screened after both Table III test-house evaluations:
+remaining seeds would have stopped if either test-house MAE was over 10% worse
+than its matching frozen baseline seed or if macro-F1 fell by more than 0.05.
+All three seeds passed. This screen was a cost-control rule that used test data,
+not a validation-only selection procedure.
+
+Conclusion: removing the term produces no meaningful aggregate deterioration.
+It lowers UK-DALE MAE by 0.155 W and raises macro-F1 by 0.004, while REFIT MAE
+increases by 0.132 W and macro-F1 rises by 0.001. These differences are small
+relative to the three-seed variation and do not justify retaining a tunable
+energy floor. The next paper configuration should remove the relative-energy
+term and therefore eliminate the $P_0=10$ W setting, then regenerate only the
+final required evidence under that simplified objective.
