@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from config import load_experiment, load_model_config, merge_configs
+from data.dataloader import resolve_test_scenarios
 from main import get_adapter
 from runner import evaluate_model, train_model
 
@@ -74,6 +75,11 @@ def main() -> None:
     parser.add_argument("--seeds", type=int, nargs="+", default=[2026])
     parser.add_argument("--candidates", nargs="+", default=list(CANDIDATES))
     parser.add_argument("--root", type=Path, default=ROOT / "runs" / "paper_5w" / "loss_study")
+    parser.add_argument(
+        "--validation-only",
+        action="store_true",
+        help="Skip report-only Table III test-house evaluation.",
+    )
     args = parser.parse_args()
     unknown = sorted(set(args.candidates) - set(CANDIDATES))
     if unknown:
@@ -81,6 +87,9 @@ def main() -> None:
 
     experiment_base = load_experiment(args.experiment)
     model_base = load_model_config(args.model)
+    evaluation_splits = ["validation"]
+    if not args.validation_only:
+        evaluation_splits.extend(resolve_test_scenarios(experiment_base))
     for name in args.candidates:
         for seed in args.seeds:
             experiment = copy.deepcopy(experiment_base)
@@ -93,7 +102,15 @@ def main() -> None:
             checkpoint = run_dir / "best.pt"
             if not checkpoint.exists():
                 checkpoint = train_model(adapter, run_dir, seed=seed)
-            evaluate_model(adapter, checkpoint, run_dir, split="validation", show_cost_summary=False)
+            for split in evaluation_splits:
+                metrics_path = (
+                    run_dir / "validation_metrics.csv"
+                    if split == "validation"
+                    else run_dir / "test" / split / "metrics.csv"
+                )
+                if metrics_path.exists():
+                    continue
+                evaluate_model(adapter, checkpoint, run_dir, split=split, show_cost_summary=False)
 
 
 if __name__ == "__main__":
