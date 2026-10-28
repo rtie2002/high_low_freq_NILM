@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
 from config import load_experiment, load_model_config, merge_configs, model_name_from_config
 from data.dataloader import resolve_test_scenarios
 from model.MATNILM import MATNILMAdapter
+from model.MARTNILM import MARTNILMAdapter
 from model.MultiNILM import MultiNILMAdapter, MultiNILMFractionalAdapter
 from model.TransferNILM import TransferMultiApplianceAdapter
 from model.UNETNILM import UNetNILMAdapter
@@ -23,6 +24,7 @@ from runner import evaluate_model, train_model
 # Register new models here: name -> adapter class
 MODELS = {
     "mat_nilm": MATNILMAdapter,
+    "mart_nilm": MARTNILMAdapter,
     "multinilm": MultiNILMAdapter,
     "multinilm_fractional": MultiNILMFractionalAdapter,
     "transfer_multi_appliance": TransferMultiApplianceAdapter,
