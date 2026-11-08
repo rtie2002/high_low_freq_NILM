@@ -1,0 +1,143 @@
+\documentclass{article}
+\usepackage[paperwidth=16in,paperheight=10in,margin=0pt]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta}
+\usepackage[hidelinks]{hyperref}
+\pagestyle{empty}
+\definecolor{Ink}{HTML}{142B39}
+\definecolor{Slate}{HTML}{49606C}
+\definecolor{Teal}{HTML}{00685F}
+\definecolor{Blue}{HTML}{254A80}
+\definecolor{Amber}{HTML}{92521F}
+\definecolor{Paper}{HTML}{F5F8FA}
+\definecolor{TealWash}{HTML}{E6F3EF}
+\definecolor{BlueWash}{HTML}{E9EFF9}
+\definecolor{AmberWash}{HTML}{F8EEDF}
+\definecolor{Rule}{HTML}{CDD9E1}
+\newcommand{\bodyfont}{\fontsize{15}{19}\selectfont}
+\newcommand{\smallfont}{\fontsize{13}{16}\selectfont}
+\newcommand{\labelfont}{\fontsize{12}{14}\selectfont\bfseries}
+\newcommand{\titlefont}{\fontsize{22}{25}\selectfont\bfseries}
+\newcommand{\vct}[1]{\boldsymbol{#1}}
+\newcommand{\obs}{\vct y_{\mathrm{obs}}}
+\newcommand{\candidate}{\vct x}
+\newcommand{\panel}[6]{%
+  \fill[white,rounded corners=9pt] (#1,3.72) rectangle (#2,17.92);
+  \draw[Rule,rounded corners=9pt] (#1,3.72) rectangle (#2,17.92);
+  \fill[#3,rounded corners=8pt] (#1,3.72) rectangle (#2,5.63);
+  \fill[#3] (#1,4.72) rectangle (#2,5.63);
+  \node[anchor=west,inner sep=0,text=white,font=\labelfont] at (#4,4.18) {#5};
+  \node[anchor=west,inner sep=0,text=white,font=\titlefont] at (#4,4.99) {#6};
+}
+\newcommand{\tagat}[4]{\node[anchor=north west,inner sep=0,text=#3,font=\labelfont] at (#1,#2) {#4};}
+\newcommand{\txtat}[4]{\node[anchor=north west,inner sep=0,text width=#3cm,font=\bodyfont,align=left,text=Ink] at (#1,#2) {#4};}
+\newcommand{\mathat}[3]{\node[anchor=north,inner sep=0,font=\bodyfont,text=Ink] at (#1,#2) {\(\displaystyle #3\)};}
+\begin{document}
+\sffamily
+\noindent\begin{tikzpicture}[remember picture,overlay,x=1cm,y=-1cm,
+    >={Latex[length=3.1mm]},line cap=round]
+  \begin{scope}[shift={(current page.north west)}]
+  \fill[Paper] (0,0) rectangle (40.64,25.4);
+  \fill[Ink] (0,0) rectangle (40.64,3.25);
+  \node[anchor=west,inner sep=0,text=white,font=\labelfont] at (1,0.58)
+    {RESEARCH DESIGN \enspace / \enspace BAYESIAN SOURCE SEPARATION};
+  \node[anchor=west,inner sep=0,text=white,font=\fontsize{37}{41}\selectfont\bfseries]
+    at (1,1.62) {Score-based inverse modelling for NILM};
+  \node[anchor=west,inner sep=0,text=white,font=\bodyfont] at (1,2.64)
+    {Non-intrusive load monitoring (NILM) with one total meter, five target appliances and one unmonitored background};
+
+  \panel{0.9}{12.0}{Teal}{1.42}{01 \quad TRAINING}{Learn source priors}
+  \panel{12.6}{28.1}{Blue}{13.12}{02 \quad TEST-TIME INVERSE INFERENCE}{Sample a decomposition}
+  \panel{28.7}{39.74}{Amber}{29.22}{03 \quad OUTPUTS}{Read out power and states}
+
+  % 01: clean channels -> noisy examples -> trained score.
+  \tagat{1.42}{6.15}{Teal}{ALIGNED TRAINING WINDOWS}
+  \txtat{1.42}{6.74}{10.05}{Use individual power windows from the fridge, microwave, kettle, washer and dishwasher.}
+  \txtat{1.42}{8.45}{10.05}{Use the training meter to obtain the effective background.}
+  \mathat{6.45}{9.54}{\vct r_{\rm train}=\vct y_{\rm train}-\sum_{i=1}^{5}\vct p_{i,\rm label}}
+  \draw[->,Teal,line width=1.25pt] (6.45,10.58) -- (6.45,11.14);
+  \tagat{1.42}{11.37}{Teal}{ADD NOISE TO ONE SOURCE AT A TIME}
+  \mathat{6.45}{12.08}{\tilde{\vct v}=\vct v+\sigma\vct\epsilon,\qquad \vct\epsilon\sim\mathcal N(0,I)}
+  \draw[->,Teal,line width=1.25pt] (6.45,12.91) -- (6.45,13.42);
+  \fill[TealWash,rounded corners=5pt] (1.4,13.62) rectangle (11.5,17.38);
+  \tagat{1.72}{13.94}{Teal}{1D CNN SCORE NETWORK}
+  \txtat{1.72}{14.57}{9.42}{Inputs: noisy window, source ID \(j\) and noise level \(\sigma\). Fit the target score.}
+  \mathat{6.45}{16.15}{\mathcal L=\left\|S_\theta(\tilde{\vct v},j,\sigma)-\frac{\vct v-\tilde{\vct v}}{\sigma^2}\right\|_2^2.}
+
+  % 02: input, forward calculation, posterior, update, and repeat.
+  \tagat{13.12}{6.15}{Blue}{INPUT \quad ONE OBSERVED METER WINDOW \(\obs\)}
+  \txtat{13.12}{6.70}{14.42}{Initialise six candidate curves \(\candidate^{(0)}=(\vct p_1,\ldots,\vct p_5,\vct r)^{(0)}\).}
+  \fill[BlueWash,rounded corners=5pt] (13.1,7.72) rectangle (26.96,9.71);
+  \tagat{13.42}{8.00}{Blue}{1. PREDICT THE TOTAL WITH KNOWN POWER BALANCE}
+  \mathat{20.03}{8.67}{\hat{\vct y}^{(k)}=F(\candidate^{(k)})=\sum\nolimits_{i=1}^5 \vct p_i^{(k)}+\vct r^{(k)}}
+  \draw[->,Blue,line width=1.25pt] (20.03,9.76) -- (20.03,10.14);
+  \fill[BlueWash,rounded corners=5pt] (13.1,10.21) rectangle (26.96,12.70);
+  \tagat{13.42}{10.49}{Blue}{2. COMBINE METER AGREEMENT AND SOURCE PRIORS}
+  \mathat{20.03}{11.04}{\log p_\ell(\candidate\mid\obs)=
+  -\tfrac{\|F(\candidate)-\obs\|_2^2}{2\gamma_\ell^2}
+  +\sum\nolimits_{j=1}^{6}\log q_{j,\sigma_\ell}(\vct v_j)+C_\ell}
+  \node[anchor=north,inner sep=0,text=Slate,font=\smallfont] at (20.03,12.14)
+    {Independent priors before observing the meter. \(C_\ell\) is constant in \(\candidate\).};
+  \draw[->,Blue,line width=1.25pt] (20.03,12.75) -- (20.03,13.04);
+  \fill[BlueWash,rounded corners=5pt] (13.1,13.11) rectangle (26.96,16.86);
+  \tagat{13.42}{13.39}{Blue}{3. UPDATE EVERY CANDIDATE SOURCE \(j\)}
+  \mathat{20.03}{13.99}{\begin{aligned}
+     \vct v_j^{(k+1)}={}&\vct v_j^{(k)}
+      +\eta_\ell\Bigg[
+      \underbrace{S_\theta(\vct v_j^{(k)},j,\sigma_\ell)}_{\text{learned source direction}}
+      +\underbrace{\frac{\obs-\hat{\vct y}^{(k)}}{\gamma_\ell^2}}_{\text{meter correction}}\Bigg]\\[-1pt]
+      &+\sqrt{2\eta_\ell}\,\vct\xi_j^{(k)},
+      \qquad \vct\xi_j^{(k)}\sim\mathcal N(0,I)\quad\text{(random step)}.
+     \end{aligned}}
+  \draw[->,Blue,line width=1.55pt] (27.04,15.58) -- (27.63,15.58)
+       -- (27.63,8.72) -- (27.05,8.72);
+  \node[rotate=90,fill=white,inner sep=1.4pt,text=Blue,font=\labelfont] at (27.63,12.13) {REPEAT};
+  \node[anchor=north west,inner sep=0,text width=14.4cm,font=\smallfont,text=Blue] at (13.12,17.05)
+    {\textbf{Anneal from high to low noise.} Keep \(\theta\) fixed and update the six curves.};
+
+  % 03: power outputs and per-appliance state readout.
+  \tagat{29.22}{6.15}{Amber}{EACH COMPLETED SAMPLING RUN}
+  \txtat{29.22}{6.75}{9.98}{One plausible decomposition with five target power curves and one effective background curve.}
+  \mathat{34.2}{8.54}{\hat{\candidate}^{(s)}=(\hat{\vct p}_1^{(s)},\ldots,\hat{\vct p}_5^{(s)},\hat{\vct r}^{(s)})}
+  \draw[->,Amber,line width=1.25pt] (34.2,9.31) -- (34.2,9.92);
+  \tagat{29.22}{10.19}{Amber}{CONVERT POWER TO ON/OFF LABELS}
+  \mathat{34.2}{10.92}{a_i^{(s)}(t)=\mathbf{1}\bigl[\hat p_i^{(s)}(t)>\tau_i\bigr]}
+  \txtat{29.22}{11.79}{9.98}{Apply a device threshold \(\tau_i\) to each sampled curve. Multiple devices can be on at the same time.}
+  \fill[AmberWash,rounded corners=5pt] (29.2,13.62) rectangle (39.23,17.38);
+  \tagat{29.52}{13.94}{Amber}{ESTIMATE ON PROBABILITY}
+  \mathat{34.22}{14.67}{\widehat{\Pr}(a_i(t)=1\mid\obs)=\frac{1}{S}\sum\nolimits_{s=1}^S a_i^{(s)}(t)}
+  \txtat{29.52}{15.79}{9.36}{Microwave on in 75 of 100 samples gives an estimated on probability of 75\%.}
+
+  % Connect the three stages across gutters.
+  \draw[->,Teal,line width=1.5pt] (11.79,4.7) -- (12.52,4.7);
+  \draw[->,Blue,line width=1.5pt] (27.89,4.7) -- (28.62,4.7);
+
+  % Worked example: two allocations, one observed window.
+  \fill[white,rounded corners=9pt] (0.9,18.42) rectangle (39.74,23.92);
+  \draw[Rule,rounded corners=9pt] (0.9,18.42) rectangle (39.74,23.92);
+  \tagat{1.42}{18.82}{Ink}{WORKED EXAMPLE \quad TWO ALLOCATIONS CAN EXPLAIN THE SAME METER}
+  \txtat{1.42}{19.44}{20.9}{Observed window \([400,2000,400]\) W. The other three targets are off in both examples.}
+  \node[anchor=north west,inner sep=0,font=\bodyfont,text=Ink] at (1.42,20.46) {
+    \setlength{\tabcolsep}{12pt}\renewcommand{\arraystretch}{1.26}
+    \begin{tabular}{@{}lrrrr@{}}
+       \textbf{Candidate} & \textbf{Fridge} & \textbf{Microwave} & \textbf{Background} & \textbf{Predicted meter}\\
+       A & \([100,100,100]\) & \([0,1500,0]\) & \([300,400,300]\) & \([400,2000,400]\)\\
+       B & \([100,100,100]\) & \([0,0,0]\) & \([300,1900,300]\) & \([400,2000,400]\)
+    \end{tabular}};
+  \draw[Rule,line width=0.65pt] (23.06,19.38) -- (23.06,23.43);
+  \tagat{23.62}{19.53}{Blue}{WHAT DRIVES THE NEXT UPDATE?}
+  \txtat{23.62}{20.18}{15.47}{If a current guess sums to \(1900\) W at the middle point, the meter correction pushes all six sources upward there. The source scores can oppose a fridge spike and support a microwave-shaped event.}
+  \txtat{23.62}{22.23}{15.47}{A and B have equal meter fit. The priors influence their relative support. Held-out appliance labels test correct attribution.}
+
+  \node[anchor=north west,inner sep=0,text=Slate,font=\smallfont] at (0.95,24.42)
+    {Proposed NILM adaptation \enspace\(\cdot\)\enspace Illustrative values, no experimental results};
+  \node[anchor=north east,inner sep=0,text=Slate,font=\smallfont] at (39.7,24.42)
+    {Sources \enspace\href{https://proceedings.mlr.press/v119/jayaram20a.html}{Jayaram \& Thickstun, ICML 2020 (BASIS)}
+     \enspace\(\cdot\)\enspace\href{https://papers.nips.cc/paper_files/paper/2019/hash/3001ef257407d5a371a96dcd947c7d93-Abstract.html}{Song \& Ermon, NeurIPS 2019 (score matching)}};
+  \end{scope}
+\end{tikzpicture}
+\null
+\end{document}

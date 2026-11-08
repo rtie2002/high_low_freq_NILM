@@ -1,0 +1,160 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Purpose and scope}{1}{section.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Forward and inverse problems}{1}{section.2}\protected@file@percent }
+\newlabel{eq:forward_general}{{1}{1}{Forward and inverse problems}{equation.1}{}}
+\citation{ren2020}
+\newlabel{eq:inverse_general}{{2}{2}{Forward and inverse problems}{equation.2}{}}
+\newlabel{eq:power_balance_scalar}{{5}{2}{Forward and inverse problems}{equation.5}{}}
+\newlabel{eq:power_balance_vector}{{6}{2}{Forward and inverse problems}{equation.6}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3}What Neural Adjoint (NA) does}{2}{section.3}\protected@file@percent }
+\newlabel{eq:na_paper_forward}{{7}{2}{What Neural Adjoint (NA) does}{equation.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Stage A: learn a differentiable replacement for the forward process}{2}{subsection.3.1}\protected@file@percent }
+\newlabel{eq:na_forward_data}{{8}{2}{Stage A: learn a differentiable replacement for the forward process}{equation.8}{}}
+\newlabel{eq:na_forward_train}{{9}{2}{Stage A: learn a differentiable replacement for the forward process}{equation.9}{}}
+\citation{ren2020}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Stage B: freeze the network and optimise its input}{3}{subsection.3.2}\protected@file@percent }
+\newlabel{eq:na_freeze}{{10}{3}{Stage B: freeze the network and optimise its input}{equation.10}{}}
+\newlabel{eq:na_initialise}{{11}{3}{Stage B: freeze the network and optimise its input}{equation.11}{}}
+\newlabel{eq:na_forward_pass}{{12}{3}{Stage B: freeze the network and optimise its input}{equation.12}{}}
+\newlabel{eq:na_loss}{{13}{3}{Stage B: freeze the network and optimise its input}{equation.13}{}}
+\citation{ren2020}
+\newlabel{eq:neural_adjoint}{{14}{4}{Stage B: freeze the network and optimise its input}{equation.14}{}}
+\newlabel{eq:na_composite_loss}{{15}{4}{Stage B: freeze the network and optimise its input}{equation.15}{}}
+\@writefile{toc}{\contentsline {paragraph}{A one-variable numerical example.}{4}{section*.1}\protected@file@percent }
+\newlabel{eq:na_scalar_loss}{{16}{4}{A one-variable numerical example}{equation.16}{}}
+\newlabel{eq:na_scalar_gradient}{{17}{4}{A one-variable numerical example}{equation.17}{}}
+\newlabel{eq:na_scalar_update}{{18}{4}{A one-variable numerical example}{equation.18}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Boundary loss and its purpose}{4}{subsection.3.3}\protected@file@percent }
+\newlabel{eq:boundary_loss}{{19}{4}{Boundary loss and its purpose}{equation.19}{}}
+\citation{jayaram2020}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}When this is useful, and what changes for NILM}{5}{subsection.3.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Why learning the power sum is not a sufficient NILM method}{5}{section.4}\protected@file@percent }
+\newlabel{eq:learned_sum}{{22}{5}{Why learning the power sum is not a sufficient NILM method}{equation.22}{}}
+\newlabel{eq:equal_gradient}{{23}{5}{Why learning the power sum is not a sufficient NILM method}{equation.23}{}}
+\newlabel{eq:null_space}{{24}{5}{Why learning the power sum is not a sufficient NILM method}{equation.24}{}}
+\citation{kelly2015}
+\citation{kolter2012}
+\citation{zhong2014}
+\citation{ren2020}
+\citation{adler2018}
+\citation{ren2020}
+\citation{liu2018}
+\citation{adler2018}
+\citation{ardizzone2019}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Direct NILM and inverse optimisation are different tools}{6}{section.5}\protected@file@percent }
+\newlabel{eq:direct_nilm}{{25}{6}{Direct NILM and inverse optimisation are different tools}{equation.25}{}}
+\@writefile{toc}{\contentsline {paragraph}{Does disaggregation violate physical logic?}{6}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Four related approaches and what they change}{6}{subsection.5.1}\protected@file@percent }
+\citation{ren2020}
+\citation{ren2020}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Comparison of the five benchmark inverse models}{8}{subsection.5.2}\protected@file@percent }
+\newlabel{sec:benchmark_comparison}{{5.2}{8}{Comparison of the five benchmark inverse models}{subsection.5.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Learning objectives and inference procedures for the benchmark models in Ren et al.~\cite  {ren2020}, Section~4.}}{8}{table.1}\protected@file@percent }
+\newlabel{tab:benchmark_inverse_models}{{1}{8}{Learning objectives and inference procedures for the benchmark models in Ren et al.~\cite {ren2020}, Section~4}{table.1}{}}
+\citation{kingma2013}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}How to read the comparison table}{9}{subsection.5.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{MDN: choosing among several possible explanations.}{9}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{cVAE: training reconstruction and test-time sampling are different.}{9}{section*.4}\protected@file@percent }
+\newlabel{eq:benchmark_vae_kl}{{26}{9}{cVAE: training reconstruction and test-time sampling are different}{equation.26}{}}
+\@writefile{toc}{\contentsline {paragraph}{INN and cINN: what the determinant means.}{9}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Tandem versus NA: what is updated?}{9}{section*.6}\protected@file@percent }
+\citation{narayanaswamy2020}
+\citation{jayaram2020}
+\citation{bora2017}
+\@writefile{toc}{\contentsline {section}{\numberline {6}A more coherent inverse-optimisation route: generative appliance priors}{10}{section.6}\protected@file@percent }
+\newlabel{eq:appliance_generator}{{27}{10}{A more coherent inverse-optimisation route: generative appliance priors}{equation.27}{}}
+\newlabel{eq:training_residual}{{28}{10}{A more coherent inverse-optimisation route: generative appliance priors}{equation.28}{}}
+\newlabel{eq:latent_inverse}{{29}{10}{A more coherent inverse-optimisation route: generative appliance priors}{equation.29}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {7}Detailed worked example: from observation to appliance estimates}{10}{section.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}Step 0: one observed aggregate window}{10}{subsection.7.1}\protected@file@percent }
+\newlabel{eq:example_observation}{{30}{10}{Step 0: one observed aggregate window}{equation.30}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Illustrative hidden appliance powers. Only the aggregate row is available at test time. All values are watts.}}{11}{table.2}\protected@file@percent }
+\newlabel{tab:example_truth}{{2}{11}{Illustrative hidden appliance powers. Only the aggregate row is available at test time. All values are watts}{table.2}{}}
+\newlabel{eq:example_balance}{{31}{11}{Step 0: one observed aggregate window}{equation.31}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Step 1: what a direct CNN NILM model does}{11}{subsection.7.2}\protected@file@percent }
+\newlabel{eq:direct_training_example}{{33}{11}{Step 1: what a direct CNN NILM model does}{equation.33}{}}
+\newlabel{eq:direct_initialisation}{{36}{11}{Step 1: what a direct CNN NILM model does}{equation.36}{}}
+\newlabel{eq:initial_residual}{{38}{12}{Step 1: what a direct CNN NILM model does}{equation.38}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Step 2: why summation-only inverse optimisation cannot decide}{12}{subsection.7.3}\protected@file@percent }
+\newlabel{eq:sum_only_objective}{{39}{12}{Step 2: why summation-only inverse optimisation cannot decide}{equation.39}{}}
+\newlabel{eq:example_equal_gradients}{{41}{12}{Step 2: why summation-only inverse optimisation cannot decide}{equation.41}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.4}Step 3: what a CNN-based generative prior changes}{12}{subsection.7.4}\protected@file@percent }
+\newlabel{eq:example_generators}{{44}{12}{Step 3: what a CNN-based generative prior changes}{equation.44}{}}
+\newlabel{eq:microwave_shape}{{45}{13}{Step 3: what a CNN-based generative prior changes}{equation.45}{}}
+\newlabel{eq:fridge_shape}{{46}{13}{Step 3: what a CNN-based generative prior changes}{equation.46}{}}
+\newlabel{eq:example_prior_objective}{{47}{13}{Step 3: what a CNN-based generative prior changes}{equation.47}{}}
+\newlabel{eq:latent_update_example}{{48}{13}{Step 3: what a CNN-based generative prior changes}{equation.48}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.5}Step 4: possible outcomes and interpretation}{13}{subsection.7.5}\protected@file@percent }
+\newlabel{eq:desired_example_solution}{{51}{13}{Step 4: possible outcomes and interpretation}{equation.51}{}}
+\newlabel{eq:example_mae}{{52}{13}{Step 4: possible outcomes and interpretation}{equation.52}{}}
+\citation{jayaram2020}
+\citation{wong2014}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.6}What this example does and does not establish}{14}{subsection.7.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}Why waveform shape, operating logic, and forward consistency matter}{14}{section.8}\protected@file@percent }
+\newlabel{sec:behaviour_logic}{{8}{14}{Why waveform shape, operating logic, and forward consistency matter}{section.8}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.1}What the supervisor's direction can mean}{14}{subsection.8.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.2}What is physical, and what is learned behaviour?}{14}{subsection.8.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.3}Example: the same MAE can hide different event errors}{15}{subsection.8.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.4}Example: classification and power should agree}{15}{subsection.8.4}\protected@file@percent }
+\newlabel{eq:state_power_logic}{{53}{15}{Example: classification and power should agree}{equation.53}{}}
+\citation{wong2014}
+\citation{bao2018}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.5}Example: a duration penalty for short false events}{16}{subsection.8.5}\protected@file@percent }
+\newlabel{eq:duration_logic}{{54}{16}{Example: a duration penalty for short false events}{equation.54}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.6}How these ideas enter training and inversion}{16}{subsection.8.6}\protected@file@percent }
+\citation{kelly2015}
+\citation{kolter2012}
+\citation{zhong2014}
+\citation{wong2014}
+\citation{ren2020}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.7}Related literature and the limits of a novelty claim}{17}{subsection.8.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {9}Formula-by-formula reading guide}{17}{section.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.1}Basic forward and inverse notation}{17}{subsection.9.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:forward_general}: $\mathbf  {y}=f(\mathbf  {x})$.}{17}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:inverse_general}: $\hat  {\mathbf  {x}}\in \operatorname  *{arg\,min}_{\mathbf  {x}}\mathcal  {L}(f(\mathbf  {x}),\mathbf  {y}_{\mathrm  {obs}})+R(\mathbf  {x})$.}{17}{section*.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equations~\eqref  {eq:power_balance_scalar} and \eqref  {eq:power_balance_vector}: physical power balance.}{17}{section*.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.2}NA equations}{18}{subsection.9.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:neural_adjoint}: the NA update.}{18}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:boundary_loss}: boundary loss.}{18}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.3}Why the sum-only model is ambiguous}{18}{subsection.9.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:learned_sum}: learned summation.}{18}{section*.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:equal_gradient}: equal gradients of a sum.}{18}{section*.13}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:null_space}: unchanged aggregate directions.}{18}{section*.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.4}Direct NILM and learned shape priors}{19}{subsection.9.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:direct_nilm}: direct supervised NILM prediction.}{19}{section*.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:appliance_generator}: $\mathbf  {p}_i=G_i(\mathbf  {z}_i)$.}{19}{section*.16}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:training_residual}: construction of training residuals.}{19}{section*.17}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:latent_inverse}: constrained latent-space inverse objective.}{19}{section*.18}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.5}Formulae in the numerical example}{19}{subsection.9.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:example_observation}: observed aggregate window.}{19}{section*.19}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:example_balance}: example power balance.}{20}{section*.20}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:direct_training_example}: direct-model training loss.}{20}{section*.21}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equations~\eqref  {eq:direct_initialisation} and \eqref  {eq:initial_residual}: direct prediction and implied residual.}{20}{section*.22}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:sum_only_objective}: sum-only objective.}{20}{section*.23}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:example_equal_gradients}: sample-level gradient example.}{20}{section*.24}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equations~\eqref  {eq:example_generators}, \eqref  {eq:microwave_shape}, and \eqref  {eq:fridge_shape}: generated shapes.}{20}{section*.25}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:example_prior_objective}: prior-constrained objective.}{20}{section*.26}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:latent_update_example}: latent-variable update.}{21}{section*.27}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:desired_example_solution}: desired result.}{21}{section*.28}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Equation~\eqref  {eq:example_mae}: microwave MAE.}{21}{section*.29}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {10}Research risks and experimental requirements}{21}{section.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.1}A staged first experiment}{22}{subsection.10.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.2}Metrics that match the research goal}{22}{subsection.10.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {11}Conclusion and recommended project statement}{22}{section.11}\protected@file@percent }
+\bibcite{ren2020}{1}
+\bibcite{liu2018}{2}
+\bibcite{bora2017}{3}
+\bibcite{narayanaswamy2020}{4}
+\bibcite{jayaram2020}{5}
+\bibcite{kolter2012}{6}
+\bibcite{zhong2014}{7}
+\bibcite{adler2018}{8}
+\bibcite{ardizzone2019}{9}
+\bibcite{kelly2015}{10}
+\bibcite{bao2018}{11}
+\bibcite{wong2014}{12}
+\bibcite{kingma2013}{13}
+\gdef \@abspage@last{24}

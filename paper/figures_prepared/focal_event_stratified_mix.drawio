@@ -1,10 +1,10 @@
 <mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/29.6.6 Chrome/144.0.7559.236 Electron/40.8.4 Safari/537.36" compressed="false" version="29.6.6">
   <diagram id="focal-stratified-mix-square" name="Focal-Event Stratified Mix">
-    <mxGraphModel dx="562" dy="415" grid="1" gridSize="5" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="545" pageHeight="490" background="#FFFFFF" math="1" shadow="0">
+    <mxGraphModel dx="691" dy="510" grid="1" gridSize="5" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="545" pageHeight="490" background="#FFFFFF" math="1" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="pool-banner" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#EEF3F6;strokeColor=#B4C5CF;strokeWidth=1.3;fontFamily=Helvetica;fontSize=12;fontStyle=1;fontColor=#273D49;" value="Training partition only&lt;br&gt;&lt;font style=&quot;font-size: 8px;&quot;&gt;UK-DALE 1; REFIT 3, 5, 9, 11 · 50% recorded unchanged · 50% recomposed shown · validation/test recorded only&lt;/font&gt;" vertex="1">
+        <mxCell id="pool-banner" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#EEF3F6;strokeColor=#B4C5CF;strokeWidth=1.3;fontFamily=Helvetica;fontSize=12;fontStyle=1;fontColor=#273D49;" value="&lt;font&gt;Training partition only&lt;br&gt;&lt;/font&gt;&lt;font style=&quot;font-size: 8px;&quot;&gt;UK-DALE 1; REFIT 3, 5, 9, 11 · 50% recorded unchanged · 50% recomposed shown · validation/test recorded only&lt;/font&gt;" vertex="1">
           <mxGeometry height="42" width="510" x="25" y="10" as="geometry" />
         </mxCell>
         <mxCell id="fork-dot" parent="1" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fillColor=#456B80;strokeColor=#456B80;" value="" vertex="1">
@@ -37,23 +37,30 @@
         <mxCell id="hdr-s1" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E5EEF3;strokeColor=#A1BAC7;strokeWidth=1.2;fontFamily=Helvetica;fontSize=12;fontStyle=1;fontColor=#28536C;" value="Step 1 — Focal source-window sampling" vertex="1">
           <mxGeometry height="26" width="240" x="25" y="76" as="geometry" />
         </mxCell>
+        <mxCell id="CpQgsgDtsqVTtPJjHFxI-5" edge="1" parent="1" source="box-s1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="focal-block">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
         <mxCell id="box-s1" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8FAFB;strokeColor=#A1BAC7;strokeWidth=1.2;fontFamily=Helvetica;fontSize=10;fontColor=#273D49;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;" value="&amp;bull; Select focal appliance &lt;i&gt;i&lt;/i&gt;&lt;sup&gt;&amp;lowast;&lt;/sup&gt; uniformly&lt;br&gt;&amp;bull; Sample a source window with &lt;font color=&quot;#B45726&quot;&gt;&lt;b&gt;\(\exists t:\;z_{t,i^\star}=1\)&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&amp;bull; Other appliance traces sampled independently" vertex="1">
           <mxGeometry height="66" width="240" x="25" y="102" as="geometry" />
         </mxCell>
         <mxCell id="focal-block-sh" parent="1" style="rounded=0;fillColor=#C0D5E0;strokeColor=none;" value="" vertex="1">
-          <mxGeometry height="30" width="218" x="38" y="177" as="geometry" />
+          <mxGeometry height="30" width="218" x="37.5" y="183" as="geometry" />
         </mxCell>
-        <mxCell id="focal-block" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#BBD2DE;gradientColor=#E7DCEC;gradientDirection=east;strokeColor=#527990;strokeWidth=1.3;fontFamily=Helvetica;fontSize=10;fontStyle=1;fontColor=#273D49;" value="\(P_{t,i^\star}^{(k_{i^\star})}\) · focal trace with at least one ON sample" vertex="1">
-          <mxGeometry height="30" width="220" x="35" y="174" as="geometry" />
-        </mxCell>
-        <mxCell id="e-s1-block" edge="1" parent="1" style="endArrow=block;endFill=1;rounded=0;html=1;strokeColor=#354C58;strokeWidth=1.3;">
+        <mxCell id="CpQgsgDtsqVTtPJjHFxI-13" edge="1" parent="1" source="focal-block" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="add-node">
           <mxGeometry relative="1" as="geometry">
-            <mxPoint x="145" y="168" as="sourcePoint" />
-            <mxPoint x="145" y="174" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="145" y="228" />
+            </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="hdr-s2" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E9ECEE;strokeColor=#B0B9BE;strokeWidth=1.2;fontFamily=Helvetica;fontSize=10;fontStyle=1;fontColor=#374952;" value="Step 2 — Median-residual bin sampling" vertex="1">
+        <mxCell id="focal-block" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#BBD2DE;gradientColor=#E7DCEC;gradientDirection=east;strokeColor=#527990;strokeWidth=1.3;fontFamily=Helvetica;fontSize=10;fontStyle=1;fontColor=#273D49;" value="\(P_{t,i^\star}^{(k_{i^\star})}\) · focal trace with at least one ON sample" vertex="1">
+          <mxGeometry height="30" width="220" x="34.5" y="180" as="geometry" />
+        </mxCell>
+        <mxCell id="hdr-s2" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E9ECEE;strokeColor=#B0B9BE;strokeWidth=1.2;fontFamily=Helvetica;fontSize=10;fontStyle=1;fontColor=#374952;" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;Step 2 — Median-residual bin sampling&lt;/font&gt;" vertex="1">
           <mxGeometry height="26" width="240" x="295" y="76" as="geometry" />
+        </mxCell>
+        <mxCell id="CpQgsgDtsqVTtPJjHFxI-12" edge="1" parent="1" source="box-s2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="bg-block">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="box-s2" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8FAFB;strokeColor=#B0B9BE;strokeWidth=1.2;" value="" vertex="1">
           <mxGeometry height="66" width="240" x="295" y="102" as="geometry" />
@@ -74,34 +81,17 @@
           <mxGeometry height="42" width="41" x="483" y="120" as="geometry" />
         </mxCell>
         <mxCell id="bg-block-sh" parent="1" style="rounded=0;fillColor=#B0B9BE;strokeColor=none;" value="" vertex="1">
-          <mxGeometry height="30" width="218" x="308" y="177" as="geometry" />
+          <mxGeometry height="30" width="218" x="307.5" y="184.5" as="geometry" />
         </mxCell>
-        <mxCell id="bg-block" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#C8D3D8;strokeColor=#6B7B83;strokeWidth=1.3;fontFamily=Helvetica;fontSize=9;fontStyle=1;fontColor=#273D49;" value="\(\mathbf{u}_t=R_t^{(k_0)}+\sum_{i\ne i^\star}P_{t,i}^{(k_i)}\)&lt;br&gt;independent other targets + stratified residual" vertex="1">
-          <mxGeometry height="30" width="220" x="305" y="174" as="geometry" />
-        </mxCell>
-        <mxCell id="e-s2-block" edge="1" parent="1" style="endArrow=block;endFill=1;rounded=0;html=1;strokeColor=#354C58;strokeWidth=1.3;">
-          <mxGeometry relative="1" as="geometry">
-            <mxPoint x="415" y="168" as="sourcePoint" />
-            <mxPoint x="415" y="174" as="targetPoint" />
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="e-left-to-add" edge="1" parent="1" style="endArrow=block;endFill=1;rounded=0;html=1;strokeColor=#354C58;strokeWidth=1.5;">
-          <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="145" y="228" />
-            </Array>
-            <mxPoint x="145" y="204" as="sourcePoint" />
-            <mxPoint x="261" y="228" as="targetPoint" />
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="e-right-to-add" edge="1" parent="1" style="endArrow=block;endFill=1;rounded=0;html=1;strokeColor=#354C58;strokeWidth=1.5;">
+        <mxCell id="CpQgsgDtsqVTtPJjHFxI-14" edge="1" parent="1" source="bg-block" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" target="add-node">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="415" y="228" />
             </Array>
-            <mxPoint x="415" y="204" as="sourcePoint" />
-            <mxPoint x="299" y="228" as="targetPoint" />
           </mxGeometry>
+        </mxCell>
+        <mxCell id="bg-block" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#C8D3D8;strokeColor=#6B7B83;strokeWidth=1.3;fontFamily=Helvetica;fontSize=9;fontStyle=1;fontColor=#273D49;" value="\(\mathbf{u}_t=R_t^{(k_0)}+\sum_{i\ne i^\star}P_{t,i}^{(k_i)}\)&lt;br&gt;independent other targets + stratified residual" vertex="1">
+          <mxGeometry height="30" width="220" x="305" y="183" as="geometry" />
         </mxCell>
         <mxCell id="add-node" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#BECBD1;strokeColor=#596F79;strokeWidth=1.5;fontFamily=Times New Roman;fontSize=22;fontColor=#2F4651;" value="\(\mathbf{\oplus}\)" vertex="1">
           <mxGeometry height="36" width="36" x="262" y="210" as="geometry" />

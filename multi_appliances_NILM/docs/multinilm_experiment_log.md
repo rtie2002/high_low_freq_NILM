@@ -1441,3 +1441,116 @@ relative to the three-seed variation and do not justify retaining a tunable
 energy floor. The next paper configuration should remove the relative-energy
 term and therefore eliminate the $P_0=10$ W setting, then regenerate only the
 final required evidence under that simplified objective.
+
+### Collection audit — 2026-10-28
+
+The collection automation independently confirmed that Scheduled Task
+`NILM-RelativeEnergyAblation-20261028` finished at 12:27:39 +08:00 with
+`LastTaskResult=0` and a fresh `.exit.txt` containing 0. No Python process
+remained. All three seeds have validation and both held-out metrics files.
+Selected checkpoint epochs were 147/107/124 (baseline: 134/107/144), after
+150 epochs per seed. No training or configuration changes were made by this audit.
+
+Equal-house validation metrics were recomputed from saved prediction bundles
+using the existing paper summarizer, preserving its per-house evaluation and
+power postprocessing. Values below are mean +/- sample SD across three seeds.
+
+| Condition | MAE (W) | ON MAE (W) | OFF MAE (W) | SAE (W) | AP | Macro-F1 |
+|---|---:|---:|---:|---:|---:|---:|
+| Frozen MART-NILM | 20.791 +/- 0.175 | 315.408 +/- 10.405 | 13.666 +/- 0.182 | 15.016 +/- 0.385 | 0.766 +/- 0.008 | 0.687 +/- 0.003 |
+| No relative-energy loss | 20.723 +/- 0.300 | 320.064 +/- 2.677 | 13.881 +/- 0.386 | 14.814 +/- 0.420 | 0.763 +/- 0.011 | 0.685 +/- 0.002 |
+
+Thus removal improves validation MAE by only 0.068 W and SAE by 0.202 W,
+while worsening ON MAE by 4.656 W, OFF MAE by 0.215 W, AP by 0.003,
+and macro-F1 by 0.002. This is a small trade-off, not an across-metric gain.
+Pooled validation CSVs instead give MAE 18.493 -> 18.381 W and macro-F1
+0.737 -> 0.742; these must not be substituted for equal-house results.
+
+An audit of the saved test CSVs confirms the means in the preceding table,
+but some reported SDs need correction. Direct sample SDs from those CSVs are:
+UK-DALE baseline MAE 0.091 and ON MAE 7.675; ablation ON MAE 6.924 and SAE
+0.364; REFIT baseline ON MAE 4.577 and SAE 0.390; ablation MAE 0.174,
+ON MAE 3.540 and SAE 0.233. In particular, the preceding REFIT ablation SAE
+SD of 0.041 is not reproduced by the saved seed-level CSVs. This paragraph
+supersedes those SD entries; no frozen paper artifact was rewritten.
+
+Fridge and microwave audit (three-seed means from saved per-appliance CSVs;
+validation here is explicitly pooled). FPR denotes false-positive rate,
+AP denotes average precision, and MAE denotes mean absolute error.
+
+| Split / appliance | Condition | FPR | AP | F1 | ON MAE (W) | OFF MAE (W) |
+|---|---|---:|---:|---:|---:|---:|
+| Validation / fridge | Frozen | 0.1767 | 0.902 | 0.827 | 40.010 | 10.213 |
+| Validation / fridge | Removed | 0.1710 | 0.905 | 0.831 | 37.053 | 10.772 |
+| Validation / microwave | Frozen | 0.0033 | 0.393 | 0.444 | 495.413 | 9.077 |
+| Validation / microwave | Removed | 0.0027 | 0.412 | 0.462 | 532.092 | 8.009 |
+| UK-DALE2 / fridge | Frozen | 0.1063 | 0.969 | 0.911 | 26.843 | 14.727 |
+| UK-DALE2 / fridge | Removed | 0.1023 | 0.970 | 0.914 | 25.372 | 14.948 |
+| UK-DALE2 / microwave | Frozen | 0.0020 | 0.718 | 0.798 | 208.499 | 2.504 |
+| UK-DALE2 / microwave | Removed | 0.0020 | 0.722 | 0.799 | 218.821 | 2.416 |
+| REFIT20 / fridge | Frozen | 0.4123 | 0.737 | 0.707 | 40.675 | 25.082 |
+| REFIT20 / fridge | Removed | 0.4047 | 0.736 | 0.707 | 40.369 | 26.195 |
+| REFIT20 / microwave | Frozen | 0.0033 | 0.557 | 0.549 | 388.929 | 6.040 |
+| REFIT20 / microwave | Removed | 0.0030 | 0.547 | 0.564 | 428.984 | 5.337 |
+
+Waveform audit: inspected eight existing seed-2026 background-range PNGs
+(fridge/microwave, both test houses, both conditions). REFIT fridge retains
+long false plateaus and fragmented true cycles in noisy backgrounds. For the
+matched 400--800 W true event its error rises from 120.8 to 146.2 W after
+removal; the above-800 W highest-energy false event rises from 199.4 to
+251.4 W mean false power. REFIT microwave retains delayed plateaus and large
+false activations; its matched above-800 W true-event error rises from 280.3
+to 419.7 W. UK-DALE microwave still reconstructs most selected plateaus, with
+mixed amplitude/timing changes; fridge retains false plateaus in both cases.
+False-event panels are selected independently per model and need not show
+identical intervals; these examples illustrate failures, not statistical gains.
+
+Evidence remains under remote `runs/paper_5w/table_ix/no_relative_energy`
+and `runs/paper_5w/table_v/mart_nilm`. Collected seed-level metrics (JSON/CSV)
+and the eight inspected PNGs are also saved locally under
+`C:/Users/Raymond Tie/.codex/automations/collect-relative-energy-ablation/artifacts`.
+
+Audited conclusion: the term has no clear aggregate benefit in this three-seed
+comparison, so simplification is defensible, but removal does not improve
+every validation metric and worsens microwave ON MAE on both test houses.
+Do not claim equivalence, statistical significance, or a noisy-background fix.
+The existing test-based stopping screen limits the experiment's status as a
+strictly test-independent ablation. Any configuration change and regenerated
+paper evidence remain a separate action; this collection does not retune it.
+
+### Loss-study monitoring — 2026-10-28 15:18 +08:00
+
+Scheduled Task `NILM-LossStudy-Screen-20261028` is Ready after its
+14:53:12 run, with `LastTaskResult=1`. No NILM Python process is running.
+The stdout log contains only `=== Loss study: reference; seed 2026 ===`;
+stderr is empty and the launcher exit-code file is absent. The loss-study
+output tree contains no completed candidate artifacts. The failure cause is
+not established by these logs; scheduler result 1 is not a recorded Python
+exit code. Remote HEAD is `a1c8d42`; unrelated remote dataset changes remain.
+
+Completed candidates: 0/20 (including reference). No validation/Table III
+metrics or waveforms are available for this screen, so no candidate can be
+retained or rejected and no three-seed confirmation was started. Next action:
+diagnose the launcher/startup failure and recover the one-seed screen with
+persistent diagnostic capture before judging any candidate. Frozen paper
+metrics and artifacts were unchanged. Task retained for failure diagnosis.
+
+### Loss-study monitoring — 2026-10-28 15:37:39 +08:00
+
+Scheduled Task NILM-LossStudy-Screen-20261028 remains Ready; last run
+2026-10-28 14:53:12 +08:00, LastTaskResult=1, next trigger 23:59.
+No Python process is running. stdout still contains only the reference seed
+2026 header; stderr is zero bytes; no process exit file exists. Recursive
+inspection found zero loss-study artifact files: 0/20 candidates completed.
+No validation/Table III metrics or fridge/microwave waveforms can be compared;
+no retain/reject decisions and no three-seed confirmation were made.
+
+Launcher inspection found ErrorActionPreference=Stop around native Python
+stderr redirection with no try/finally exit capture. A diagnostic invocation
+emitting Python error output reproduced PowerShell NativeCommandError; this
+shows a launcher error-handling hazard but does not establish the original
+training failure. Scheduler operational history returned no matching events.
+Next action: repair diagnostic/exit capture locally, verify and commit the
+launcher fix, deploy through the documented Git workflow, then restart the
+approved one-seed screen. Existing logs and unrelated changes were preserved;
+no remote code or task changes were made during this monitoring run.

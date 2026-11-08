@@ -13,6 +13,8 @@
 /dataset_preprocess/REFIT
 /dataset_preprocess/UK_DALE
 /dataset_preprocess/UK_DALE_16khz/__pycache__
+/dataset_preprocess/UK_DALE_16khz/.ceda_token_cache
+/dataset_preprocess/UK_DALE_16khz/.wget-hsts
 /feature_selection/__pycache__
 /feature_selection/cache
 /feature_selection/dataset
