@@ -293,6 +293,36 @@ def _annotated_heatmap(
     colorbar.ax.tick_params(labelsize=7)
 
 
+def plot_loss_scale(output_dir: Path) -> None:
+    """Preserve the published loss-ratio diagnostic and its pooled IQR."""
+    frame = pd.read_csv(output_dir / "appliance_balance_effect.csv")
+    fig, ax = plt.subplots(figsize=(3.55, 2.35), constrained_layout=True)
+    x = np.arange(len(APPLIANCES), dtype=float)
+    for offset, variant, label, color in (
+        (-0.18, "standard_joint_training", "Fixed task weight", "#666666"),
+        (0.18, "appliance_wise_balancing", "Appliance-wise balance", "#0072B2"),
+    ):
+        grouped = frame.loc[frame["variant"].eq(variant)].groupby("appliance")["state_to_power_ratio"]
+        median = grouped.median().loc[list(APPLIANCES)].to_numpy()
+        lower = grouped.quantile(0.25).loc[list(APPLIANCES)].to_numpy()
+        upper = grouped.quantile(0.75).loc[list(APPLIANCES)].to_numpy()
+        ax.bar(x + offset, median, width=0.32, color=color, label=label,
+               yerr=np.vstack((median - lower, upper - median)), capsize=2)
+    ax.axhline(1.0, color="black", linewidth=0.9, linestyle="--", label="Equal magnitude")
+    ax.set_yscale("log")
+    ax.set_ylim(0.005, 2.0)
+    ax.set_xticks(x, DISPLAY_NAMES, rotation=22, ha="right")
+    ax.set_ylabel("Effective state term / power loss", fontsize=9)
+    ax.grid(axis="y", color="#DDDDDD", linewidth=0.7, which="major")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.legend(frameon=False, fontsize=5.9, loc="lower center",
+              bbox_to_anchor=(0.5, 1.005), ncol=3, columnspacing=0.7,
+              handletextpad=0.35, handlelength=1.2, borderaxespad=0.1)
+    fig.savefig(output_dir / "appliance_balance_scale.png", dpi=900)
+    fig.savefig(output_dir / "appliance_balance_scale.pdf")
+    plt.close(fig)
+
+
 def plot_gradient_scale(output_dir: Path) -> None:
     """Plot measured shared-encoder gradient scales, not loss magnitudes.
 
@@ -326,7 +356,9 @@ def plot_gradient_scale(output_dir: Path) -> None:
     )
     summary.to_csv(output_dir / "appliance_gradient_scale.csv", index=False, float_format="%.6f")
 
-    fig, ax = plt.subplots(figsize=(3.55, 3.15), constrained_layout=True)
+    # A one-line legend keeps the single-column diagnostic compact without
+    # reducing the size of the bars or appliance labels.
+    fig, ax = plt.subplots(figsize=(3.55, 2.35), constrained_layout=True)
     x = np.arange(len(APPLIANCES), dtype=float)
     for offset, rule, label, color in (
         (-0.18, "Fixed task weight", "Fixed task weight", "#666666"),
@@ -336,7 +368,7 @@ def plot_gradient_scale(output_dir: Path) -> None:
         mean = values.loc[list(APPLIANCES), "gradient_ratio_mean"].to_numpy(float)
         std = values.loc[list(APPLIANCES), "gradient_ratio_std"].fillna(0.0).to_numpy(float)
         ax.bar(x + offset, mean, width=0.32, yerr=std, capsize=2, color=color, label=label)
-    ax.axhline(1.0, color="black", linewidth=0.9, linestyle="--", label="Matched scale")
+    ax.axhline(1.0, color="black", linewidth=0.9, linestyle="--", label="Equal magnitude")
     ax.set_yscale("log")
     ax.set_ylim(0.005, 20.0)
     ax.set_xticks(x, DISPLAY_NAMES, rotation=22, ha="right")
@@ -345,14 +377,15 @@ def plot_gradient_scale(output_dir: Path) -> None:
     ax.spines[["top", "right"]].set_visible(False)
     ax.legend(
         frameon=False,
-        fontsize=6.3,
+        fontsize=5.9,
         loc="lower center",
-        bbox_to_anchor=(0.5, 1.0),
-        ncol=2,
-        labelspacing=0.25,
-        handlelength=1.4,
+        bbox_to_anchor=(0.5, 1.005),
+        ncol=3,
+        columnspacing=0.7,
+        handletextpad=0.35,
+        handlelength=1.2,
     )
-    fig.savefig(output_dir / "appliance_balance_scale.png", dpi=600)
+    fig.savefig(output_dir / "appliance_balance_scale.png", dpi=900)
     fig.savefig(output_dir / "appliance_balance_scale.pdf")
     plt.close(fig)
 
@@ -389,7 +422,7 @@ def plot_training_mechanisms(
     # Each mechanism is saved as an independent IEEE single-column figure.
     # Keeping the figures separate makes the cell values legible at print size
     # and lets the paper explain each empirical effect immediately below it.
-    fig, ax = plt.subplots(figsize=(3.55, 3.25), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(3.15, 2.42), constrained_layout=True)
     _annotated_heatmap(
         ax,
         recall,
@@ -397,11 +430,11 @@ def plot_training_mechanisms(
         "Focal minus standard (percentage points)",
         "{:+.1f}",
     )
-    fig.savefig(output_dir / "focal_recall_by_background.png", dpi=600)
+    fig.savefig(output_dir / "focal_recall_by_background.png", dpi=900)
     fig.savefig(output_dir / "focal_recall_by_background.pdf")
     plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(3.55, 3.25), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(3.15, 2.42), constrained_layout=True)
     _annotated_heatmap(
         ax,
         on_mae,
@@ -409,11 +442,11 @@ def plot_training_mechanisms(
         "Standard minus focal (W)",
         "{:+.0f}",
     )
-    fig.savefig(output_dir / "focal_on_mae_by_background.png", dpi=600)
+    fig.savefig(output_dir / "focal_on_mae_by_background.png", dpi=900)
     fig.savefig(output_dir / "focal_on_mae_by_background.pdf")
     plt.close(fig)
 
-    plot_gradient_scale(output_dir)
+    plot_loss_scale(output_dir)
 
 
 def plot_per_appliance_change(paired_changes_path: Path, output_dir: Path) -> None:
