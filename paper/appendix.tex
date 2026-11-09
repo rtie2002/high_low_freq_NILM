@@ -351,4 +351,11 @@ Balance limit & 5 & 11.094 & 301.253 & 7.715 & 6.036 & .743 & .712 \\
 
 State metrics alone are insufficient: removing OFF-MSE raises REFIT OFF-MAE from 7.55 to 8.21~W despite similar F1 (0.717 to 0.715), and removing Delta-MSE raises UK-DALE ON-MAE from 175.30 to 202.03~W despite AP changing only from 0.926 to 0.924. The evidence therefore supports the compact retained objective within the tested ranges, not a claim of formal global hyperparameter optimality.
 
+\section{Controlled Training-Strategy Comparisons and Concurrent-Activation Audit}
+\label{sec:reviewer-controls}
+
+The controlled comparisons use the final no-LRE objective, the fixed five-week household split, and seeds 2026, 2027, and 2028. Each intervention changes one mechanism: (i) random recomposition disables focal-event selection and residual-power stratification while retaining the 50\% recomposition probability; (ii) global balancing replaces local ratios with the batch-global power-to-state loss ratio; (iii) unbounded appliance-wise balancing removes the global bounds from local ratios; and (iv) the relation-attention ablation disables only cross-appliance attention. All remaining losses, coefficients, architecture settings, and decoding rules are held fixed. Checkpoints and state thresholds use validation data only; held-out test results are report-only.
+
+For the concurrency audit, samples are grouped by the number of recorded active target appliances, $c_t=\sum_i z_{t,i}$, into $0$, $1$, $2$, $3$, and $4$--$5$ active targets. Paired model comparisons require identical sample alignment and recorded targets. Each group reports its sample count, power MAE, ON MAE, macro-F1, and the exact-match proportion $|\mathcal{G}|^{-1}\sum_{t\in\mathcal{G}}\mathbb{I}[\hat{\mathbf z}_t=\mathbf z_t]$. Per-appliance F1 is undefined when there are no recorded or predicted positives; ON MAE is undefined when there are no recorded ON samples. Such entries are excluded from the group macro average and their available-class counts are reported. All-OFF samples are reported separately to expose their influence on exact match. These analyses evaluate frozen models and do not select an architecture or tune a decision threshold.
+
 \end{document}
