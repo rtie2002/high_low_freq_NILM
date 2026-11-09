@@ -52,7 +52,7 @@ def main() -> None:
                 print(json.dumps({"variant": variant, "seed": seed, "loss": cfg["loss"], "run": str(run)}))
                 continue
             from data.dataloader import resolve_test_scenarios
-            from main import get_adapter
+            from model.MARTNILM import MARTNILMAdapter
             from runner import evaluate_model, train_model
             exp = copy.deepcopy(experiment)
             exp["seed"] = seed
@@ -61,7 +61,7 @@ def main() -> None:
             if not data_root.is_absolute():
                 data_root = ROOT / data_root
             print(f"=== {variant}, seed {seed} ===", flush=True)
-            adapter = get_adapter(merged["model_name"], merged, data_root=str(data_root))
+            adapter = MARTNILMAdapter(merged, data_root=str(data_root))
             checkpoint = run / "best.pt"
             # Skip completed runs only; a partial checkpoint must not be
             # mistaken for a completed training run after interruption.
