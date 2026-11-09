@@ -3,8 +3,8 @@ Set-Location 'D:\Raymond\high_low_freq_NILM\multi_appliances_NILM'
 $logDir = 'D:\Raymond\high_low_freq_NILM\multi_appliances_NILM\runs\_logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $pythonExe = 'C:\Users\PC\anaconda3\envs\nilm\python.exe'
-& $pythonExe -u scripts\run_mart_reviewer_controls.py 1> "$logDir\reviewer_controls_20261109.stdout.log" 2> "$logDir\reviewer_controls_20261109.stderr.log"
-$trainingExit = $LASTEXITCODE
+$process = Start-Process -FilePath $pythonExe -ArgumentList '-u','scripts\run_mart_reviewer_controls.py' -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput "$logDir\reviewer_controls_20261109.stdout.log" -RedirectStandardError "$logDir\reviewer_controls_20261109.stderr.log"
+$trainingExit = $process.ExitCode
 if ($trainingExit -eq 0) {
     $reference = 'runs\paper_5w\table_ix\no_relative_energy'
     $control = 'runs\paper_5w\reviewer_controls\no_relation'
