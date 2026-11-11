@@ -296,6 +296,7 @@ def evaluate_bundle(
     power_postprocess: PowerPostprocessConfig | None = None,
     sample_seconds: float | None = None,
     event_tolerance_seconds: float = 0.0,
+    state_scores: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """Per-appliance power, sample-state, and energy diagnostics."""
     y_true, y_pred = apply_power_postprocess_pair(
@@ -308,12 +309,13 @@ def evaluate_bundle(
     mae_vals = mae(y_true, y_pred)
     sae_vals = sae(y_true, y_pred, sae_period)
     f1_vals = per_appliance_f1(z_true, z_pred)
-    if bundle.y_pred_state_prob is None:
+    ranking_scores = bundle.y_pred_state_prob if state_scores is None else state_scores
+    if ranking_scores is None:
         average_precision_vals = np.full(y_true.shape[1], np.nan)
     else:
         average_precision_vals = per_appliance_average_precision(
             z_true,
-            bundle.y_pred_state_prob,
+            ranking_scores,
         )
     tp, fp, fn = _tp_fp_fn(z_true, z_pred)
     precision_vals = _safe_ratio(tp, tp + fp)

@@ -17,9 +17,10 @@ import numpy as np
 from .config import appliance_list, load_experiment
 
 from .data_loader import NILMDataLoader
-from .metrics import background_fpr_table, evaluate_bundle, resolve_power_postprocess
+from .metrics import apply_power_postprocess_pair, background_fpr_table, evaluate_bundle, resolve_power_postprocess
 from .output_format import save_result_json, save_result_table
 from .prediction import PredictionBundle
+from .state_postprocess import apply_state_postprocess_arrays
 from .waveform_capture import save_appliance_on_waveforms
 
 
@@ -77,7 +78,7 @@ def save_inverse_evaluation(
     predicted_appliance_watts: np.ndarray,
     manifest: dict[str, Any],
     waveform_periods: int = 5,
-    waveform_dpi: int = 200,
+    waveform_dpi: int = 300,
     random_seed: int = 2026,
 ) -> PredictionBundle:
     """Evaluate one inverse timeline with this project's fixed protocol."""
@@ -90,6 +91,18 @@ def save_inverse_evaluation(
     if prediction.shape != expected_shape:
         raise ValueError(f"Predictions must have shape {expected_shape}, got {prediction.shape}")
 
+    sample_seconds = float(protocol.experiment["csv"]["sample_seconds"])
+    segments = raw.segment_ids[csv_timesteps]
+    microwave = np.asarray([app == "microwave" for app in protocol.appliances])
+    # Match the paper's duration rules and power gate. The inverse baseline
+    # thresholds watts because it has no learned state head.
+    pred_on = apply_state_postprocess_arrays(
+        prediction,
+        thresholds=protocol.thresholds_watts.tolist(),
+        min_on_samples=np.where(microwave, round(32 / sample_seconds), 1).tolist(),
+        merge_gap_samples=np.where(microwave, round(24 / sample_seconds), 0).tolist(),
+        segment_ids=segments,
+    )
     bundle = PredictionBundle(
         experiment_id=str(protocol.experiment.get("dataset_id", "legacy_dataset")),
         model_name=model_name,
@@ -97,19 +110,18 @@ def save_inverse_evaluation(
         appliances=protocol.appliances,
         sample_index=np.arange(len(csv_timesteps), dtype=np.int64),
         y_true_watts=raw.targets[csv_timesteps],
-        y_pred_watts=prediction,
+        y_pred_watts=prediction * pred_on,
         y_true_on=raw.states[csv_timesteps].astype(np.int32),
-        y_pred_on=(prediction > protocol.thresholds_watts).astype(np.int32),
+        y_pred_on=pred_on,
         # Deterministic inverse models do not have a calibrated state score.
         y_pred_state_prob=None,
         csv_timesteps=csv_timesteps,
-        segment_ids=raw.segment_ids[csv_timesteps],
+        segment_ids=segments,
     )
     bundle.save(run_dir / "predictions.npz")
 
     postprocess = resolve_power_postprocess(protocol.experiment, protocol.appliances)
     evaluation_cfg = protocol.experiment["evaluation"]
-    sample_seconds = float(protocol.experiment["csv"]["sample_seconds"])
     metrics = evaluate_bundle(
         bundle,
         sae_period=int(evaluation_cfg.get("sae_period", 1200)),
@@ -118,6 +130,7 @@ def save_inverse_evaluation(
         power_postprocess=postprocess,
         sample_seconds=sample_seconds,
         event_tolerance_seconds=float(evaluation_cfg.get("event_tolerance_seconds", 0.0)),
+        state_scores=prediction,  # Rank by raw watts before thresholding or gating.
     )
     save_result_table(metrics, run_dir / "metrics.csv")
 
@@ -131,12 +144,21 @@ def save_inverse_evaluation(
         power_postprocess=postprocess,
     )
     save_result_table(background_metrics, run_dir / "background_fpr.csv")
-    save_result_json(run_dir / "run_manifest.json", manifest)
+    save_result_json(run_dir / "run_manifest.json", {
+        **manifest,
+        "average_precision_score": "ungated_predicted_watts",
+        "on_thresholds_watts": dict(zip(protocol.appliances, protocol.thresholds_watts.tolist())),
+        "microwave_min_on_seconds": 32,
+        "microwave_merge_gap_seconds": 24,
+        "power_gated_by_decoded_state": True,
+        "waveform_context_scale": 10,
+    })
+    _, plotted_watts = apply_power_postprocess_pair(bundle.y_true_watts, bundle.y_pred_watts, postprocess)
     save_appliance_on_waveforms(
         run_dir / "waveforms",
         appliances=protocol.appliances,
         y_true_watts=bundle.y_true_watts,
-        y_pred_watts=bundle.y_pred_watts,
+        y_pred_watts=plotted_watts,
         y_true_on=bundle.y_true_on,
         y_pred_on=bundle.y_pred_on,
         state_label_source="csv",
@@ -145,6 +167,7 @@ def save_inverse_evaluation(
         segment_ids=bundle.segment_ids,
         n_periods=int(waveform_periods),
         dpi=int(waveform_dpi),
+        context_scale=10.0,
         title_prefix=f"{model_name} — ",
         rng=np.random.default_rng(random_seed),
     )
