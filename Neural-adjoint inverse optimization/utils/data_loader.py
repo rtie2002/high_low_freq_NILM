@@ -1,0 +1,1014 @@
+"""Shared NILM data pipeline.
+
+Flow: experiment config -> load CSV arrays -> normalize -> sliding windows -> tensors.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
+
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import Dataset
+
+from .config import appliance_list, resolve_tensor_dtype, resolve_training_targets
+
+SplitName = str
+OutputAlignment = Literal["end", "center"]
+TargetMode = Literal["output_window", "full_input"]
+RandomMixMode = Literal["full", "background_swap"]
+
+_SOURCE_DATASET_CODES = {"unknown": 0, "refit": 1, "ukdale": 2, "redd": 3}
+
+_SPLIT_FILE_KEYS = {
+    "train": "train_file",
+    "validation": "validation_file",
+    "test": "test_file",
+}
+
+
+def resolve_state_thresholds_watts(
+    experiment_cfg: dict[str, Any],
+    appliances: list[str],
+) -> np.ndarray:
+    """Per-appliance ON thresholds from the selected experiment yaml only."""
+    per_app = experiment_cfg.get("evaluation", {}).get("on_thresholds_watts")
+    if not isinstance(per_app, dict) or not per_app:
+        raise ValueError(
+            "experiment.evaluation.on_thresholds_watts must define one threshold "
+            "per appliance for the selected dataset"
+        )
+    missing = [app for app in appliances if app not in per_app]
+    if missing:
+        raise ValueError(
+            "experiment.evaluation.on_thresholds_watts missing appliances: "
+            + ", ".join(missing)
+        )
+    return np.asarray([float(per_app[app]) for app in appliances], dtype=np.float32)
+
+
+def get_state_label_source(model_cfg: dict[str, Any]) -> str:
+    """Choose where ON/OFF supervision comes from: csv, threshold, or auto."""
+    source = str(model_cfg.get("data", {}).get("state_label_source", "auto")).lower()
+    if source not in {"auto", "csv", "threshold"}:
+        raise ValueError("data.state_label_source must be one of: auto, csv, threshold")
+    return source
+
+
+def get_random_mix_prob(model_cfg: dict[str, Any]) -> float:
+    """Share of training windows replaced by random mixes (0 when disabled)."""
+    mix = model_cfg.get("training", {}).get("random_mix") or {}
+    if not mix.get("enabled", False):
+        return 0.0
+    prob = float(mix.get("prob", 0.5))
+    if not 0.0 < prob <= 1.0:
+        raise ValueError(f"training.random_mix.prob must be in (0, 1], got {prob}")
+    return prob
+
+
+def get_random_mix_mode(model_cfg: dict[str, Any]) -> RandomMixMode:
+    """How a synthetic training window is assembled.
+
+    ``full`` keeps the original behaviour: every appliance and the residual
+    background come from independent windows. ``background_swap`` keeps all
+    appliance targets from the requested real window and replaces only its
+    residual background.
+    """
+    mix = model_cfg.get("training", {}).get("random_mix") or {}
+    mode = str(mix.get("mode", "full")).strip().lower()
+    if mode not in {"full", "background_swap"}:
+        raise ValueError(
+            "training.random_mix.mode must be one of: full, background_swap"
+        )
+    return mode  # type: ignore[return-value]
+
+
+def _source_dataset_code(name: str) -> int:
+    normalized = str(name).strip().lower()
+    if normalized in {"all", "any"}:
+        return -1
+    if normalized not in _SOURCE_DATASET_CODES or normalized == "unknown":
+        raise ValueError(
+            "alignment_jitter.source_dataset must be one of: all, refit, ukdale, redd"
+        )
+    return _SOURCE_DATASET_CODES[normalized]
+
+
+def _shift_with_edge_fill(trace: np.ndarray, offset: int) -> np.ndarray:
+    """Shift a 1-D trace in samples without wrapping unrelated edge values."""
+    offset = int(offset)
+    if offset == 0:
+        return trace.copy()
+    if abs(offset) >= len(trace):
+        raise ValueError("alignment offset must be shorter than the training window")
+
+    shifted = np.empty_like(trace)
+    if offset > 0:
+        shifted[offset:] = trace[:-offset]
+        shifted[:offset] = trace[0]
+    else:
+        advance = -offset
+        shifted[:-advance] = trace[advance:]
+        shifted[-advance:] = trace[-1]
+    return shifted
+
+
+def get_background_consistency_enabled(model_cfg: dict[str, Any]) -> bool:
+    """Whether train windows return a real/background-swapped view pair."""
+    cfg = model_cfg.get("training", {}).get("background_consistency") or {}
+    return bool(cfg.get("enabled", False))
+
+
+def get_power_scale(model_cfg: dict[str, Any]) -> float:
+    """Legacy divide-by-scale fallback when experiment has no normalization block."""
+    return float(model_cfg.get("data", {}).get("power_scale", 1.0))
+
+
+def get_normalization_cfg(experiment_cfg: dict[str, Any]) -> dict[str, Any] | None:
+    norm = experiment_cfg.get("normalization")
+    return norm if isinstance(norm, dict) else None
+
+
+@dataclass
+class NormalizationStats:
+    """Single place for z-score (or legacy scale) normalize / denormalize."""
+
+    input_mean: float | None = None
+    input_std: float | None = None
+    target_mean: np.ndarray | None = None
+    target_std: np.ndarray | None = None
+    legacy_scale: float = 1.0
+
+    @classmethod
+    def from_config(
+        cls,
+        experiment_cfg: dict[str, Any],
+        model_cfg: dict[str, Any],
+        appliances: list[str],
+    ) -> NormalizationStats:
+        legacy_scale = get_power_scale(model_cfg)
+        norm = get_normalization_cfg(experiment_cfg)
+        if not norm:
+            return cls(legacy_scale=legacy_scale)
+
+        aggregate = norm.get("aggregate", {})
+        agg_mean, agg_std = aggregate.get("mean"), aggregate.get("std")
+        input_mean = float(agg_mean) if agg_mean is not None else None
+        input_std = float(agg_std) if agg_std is not None else None
+
+        app_cfg = norm.get("appliances", {})
+        means, stds = [], []
+        for app in appliances:
+            cfg = app_cfg.get(app)
+            if not cfg or "mean" not in cfg or "std" not in cfg:
+                raise ValueError(f"Normalization stats missing for appliance '{app}'")
+            means.append(float(cfg["mean"]))
+            stds.append(float(cfg["std"]))
+
+        return cls(
+            input_mean=input_mean,
+            input_std=input_std,
+            target_mean=np.asarray(means, dtype=np.float32),
+            target_std=np.asarray(stds, dtype=np.float32),
+            legacy_scale=legacy_scale,
+        )
+
+    @property
+    def loss_scale(self) -> float | np.ndarray:
+        """Scale for converting normalized MAE back toward watts."""
+        if self.target_std is not None:
+            return self.target_std
+        return self.legacy_scale
+
+    def normalize_inputs(self, x: np.ndarray) -> np.ndarray:
+        if self.input_mean is not None and self.input_std is not None:
+            return (x - self.input_mean) / self.input_std
+        if self.legacy_scale != 1.0:
+            return x / self.legacy_scale
+        return x
+
+    def normalize_targets(self, y: np.ndarray) -> np.ndarray:
+        if self.target_mean is not None and self.target_std is not None:
+            return (y - self.target_mean) / self.target_std
+        if self.legacy_scale != 1.0:
+            return y / self.legacy_scale
+        return y
+
+    def denorm(self, y: np.ndarray) -> np.ndarray:
+        if self.target_mean is not None and self.target_std is not None:
+            return np.maximum((y * self.target_std) + self.target_mean, 0.0)
+        if self.legacy_scale != 1.0:
+            return np.maximum(y * self.legacy_scale, 0.0)
+        return y
+
+
+def _split_key(split: str) -> SplitName:
+    if split in ("val", "validation"):
+        return "validation"
+    return str(split)
+
+
+def resolve_test_scenarios(experiment_cfg: dict[str, Any]) -> list[str]:
+    """Configured independent test splits, falling back to the legacy test file."""
+    scenarios = experiment_cfg.get("csv", {}).get("test_scenarios", {})
+    if not isinstance(scenarios, dict) or not scenarios:
+        return ["test"]
+    names = [str(name) for name in scenarios]
+    reserved = {"train", "val", "validation", "test", ".", ".."}
+    invalid = [
+        name
+        for name in names
+        if not name
+        or name.lower() in reserved
+        or name != name.strip()
+        or any(c in name for c in "/\\:")
+    ]
+    if invalid:
+        raise ValueError(f"test scenario names must be folder-safe: {invalid}")
+    return names
+
+
+def _resolve_input_length(windowing: dict[str, Any]) -> int:
+    seq_len = int(windowing["input_window_length"])
+    if windowing.get("force_even_input_length", False) and seq_len % 2 != 0:
+        seq_len += 1
+    return seq_len
+
+
+def _output_row_offset(windowing: dict[str, Any], seq_len: int) -> int:
+    out_len = int(windowing.get("output_window_length", 1))
+    alignment: OutputAlignment = windowing.get("output_alignment", "end")
+    if alignment == "center":
+        return (seq_len - out_len) // 2
+    if alignment == "end":
+        return seq_len - out_len
+    raise ValueError(f"Unsupported output_alignment: {alignment}")
+
+
+def _output_slice(start: int, seq_len: int, windowing: dict[str, Any]) -> slice:
+    out_len = int(windowing.get("output_window_length", 1))
+    offset = _output_row_offset(windowing, seq_len)
+    return slice(start + offset, start + offset + out_len)
+
+
+def _target_mode(windowing: dict[str, Any], split: str) -> TargetMode:
+    if split == "train" and resolve_training_targets(windowing) == "full_input":
+        return "full_input"
+    return "output_window"
+
+
+class WindowDataset(Dataset):
+    """Sliding-window dataset; windowing rules come from model config."""
+
+    def __init__(
+        self,
+        inputs: np.ndarray,
+        targets: np.ndarray,
+        states: np.ndarray,
+        windowing: dict[str, Any],
+        *,
+        stride: int,
+        segment_ids: np.ndarray | None = None,
+        target_mode: TargetMode = "output_window",
+        normalization: NormalizationStats | None = None,
+        state_threshold_watts: float | np.ndarray | None = None,
+        state_label_source: str = "auto",
+        tensor_dtype: np.dtype = np.float32,
+        random_mix_prob: float = 0.0,
+        random_mix_mode: RandomMixMode = "full",
+        random_mix_focal_event: bool = False,
+        random_mix_focal_event_prob: float = 1.0,
+        random_mix_background_bins_watts: list[float] | None = None,
+        source_codes: np.ndarray | None = None,
+        random_mix_alignment_app_index: int | None = None,
+        random_mix_alignment_source_code: int = 0,
+        random_mix_alignment_offsets: list[int] | None = None,
+        random_mix_alignment_probabilities: list[float] | None = None,
+        paired_background: bool = False,
+    ):
+        norm = normalization or NormalizationStats()
+        self.norm = norm
+        self.inputs = np.ascontiguousarray(norm.normalize_inputs(inputs), dtype=tensor_dtype)
+        self.targets = np.ascontiguousarray(targets, dtype=tensor_dtype)
+        self.states = np.ascontiguousarray(states, dtype=np.int64)
+
+        use_threshold_labels = state_label_source == "threshold"
+        if use_threshold_labels:
+            if state_threshold_watts is None:
+                raise ValueError(
+                    "state_label_source='threshold' requires experiment "
+                    "evaluation.on_thresholds_watts"
+                )
+            threshold = np.asarray(state_threshold_watts, dtype=np.float32)
+            self.states = (self.targets > threshold).astype(np.int64)
+
+        self.random_mix_prob = float(random_mix_prob)
+        self.random_mix_mode = str(random_mix_mode)
+        self.random_mix_focal_event = bool(random_mix_focal_event)
+        self.random_mix_focal_event_prob = float(random_mix_focal_event_prob)
+        self.source_codes = np.asarray(
+            source_codes if source_codes is not None else np.zeros(len(inputs)),
+            dtype=np.int8,
+        )
+        self.random_mix_alignment_app_index = random_mix_alignment_app_index
+        self.random_mix_alignment_source_code = int(random_mix_alignment_source_code)
+        self.random_mix_alignment_offsets = np.asarray(
+            random_mix_alignment_offsets or [0], dtype=np.int64
+        )
+        self.random_mix_alignment_probabilities = torch.as_tensor(
+            random_mix_alignment_probabilities or [1.0], dtype=torch.float64
+        )
+        self.paired_background = bool(paired_background)
+        if self.paired_background and self.random_mix_prob > 0.0:
+            raise ValueError(
+                "paired background consistency and random_mix cannot be enabled together"
+            )
+        if self.random_mix_mode not in {"full", "background_swap"}:
+            raise ValueError(
+                "random_mix_mode must be one of: full, background_swap"
+            )
+        if self.random_mix_focal_event and self.random_mix_mode != "full":
+            raise ValueError("focal-event sampling is only supported for random_mix mode='full'")
+        if self.random_mix_focal_event and self.random_mix_prob <= 0.0:
+            raise ValueError("focal-event sampling requires random_mix to be enabled")
+        if self.random_mix_focal_event and not 0.0 < self.random_mix_focal_event_prob <= 1.0:
+            raise ValueError("focal-event sampling probability must be in (0, 1]")
+        if self.source_codes.shape != (len(inputs),):
+            raise ValueError("source_codes must contain one code per input row")
+        if self.random_mix_alignment_app_index is not None:
+            app_i = int(self.random_mix_alignment_app_index)
+            if not 0 <= app_i < self.targets.shape[1]:
+                raise ValueError("alignment-jitter appliance index is out of range")
+            if self.random_mix_prob <= 0.0:
+                raise ValueError("alignment jitter requires random_mix to be enabled")
+            if self.random_mix_alignment_source_code == 0:
+                raise ValueError("alignment jitter requires a known source dataset")
+            if self.random_mix_alignment_offsets.ndim != 1:
+                raise ValueError("alignment-jitter offsets must be one-dimensional")
+            if len(self.random_mix_alignment_offsets) != len(
+                self.random_mix_alignment_probabilities
+            ):
+                raise ValueError("alignment-jitter offsets and probabilities must match")
+            if torch.any(self.random_mix_alignment_probabilities < 0):
+                raise ValueError("alignment-jitter probabilities cannot be negative")
+            probability_sum = float(self.random_mix_alignment_probabilities.sum())
+            if not np.isclose(probability_sum, 1.0, atol=1e-6):
+                raise ValueError("alignment-jitter probabilities must sum to 1")
+        if self.random_mix_prob > 0.0 or self.paired_background:
+            # Mixes are summed in watts. Clip the background at 0: mains can dip
+            # below the submeter sum when the channels are slightly misaligned.
+            self.targets_watts = self.targets
+            self.residual_watts = np.clip(
+                inputs - self.targets.sum(axis=1), 0.0, None
+            ).astype(tensor_dtype)
+
+        self.targets = np.ascontiguousarray(norm.normalize_targets(self.targets), dtype=tensor_dtype)
+
+        self.inputs_t = torch.from_numpy(self.inputs)
+        self.targets_t = torch.from_numpy(self.targets)
+        self.states_t = torch.from_numpy(self.states)
+        self.windowing = windowing
+        self.target_mode = target_mode
+        self.seq_len = _resolve_input_length(windowing)
+        self.stride = max(1, stride)
+        global_indices = np.arange(
+            0, max(0, len(inputs) - self.seq_len + 1), self.stride
+        )
+        self.indices = global_indices
+        self.n_rejected_windows = 0
+        if segment_ids is not None:
+            segments = np.asarray(segment_ids, dtype=np.int64)
+            if len(segments) != len(inputs):
+                raise ValueError(
+                    f"segment_ids has {len(segments)} rows but inputs has {len(inputs)}"
+                )
+            if len(global_indices):
+                same_segment = segments[global_indices] == segments[
+                    global_indices + self.seq_len - 1
+                ]
+                self.n_rejected_windows = int(np.sum(~same_segment))
+
+            # Restart stride at each boundary. Otherwise a segment's sampling
+            # phase depends on the total length of every preceding house.
+            boundaries = np.flatnonzero(
+                np.r_[True, segments[1:] != segments[:-1], True]
+            )
+            starts = [
+                np.arange(start, end - self.seq_len + 1, self.stride)
+                for start, end in zip(boundaries[:-1], boundaries[1:])
+                if end - start >= self.seq_len
+            ]
+            self.indices = (
+                np.concatenate(starts).astype(np.int64, copy=False)
+                if starts
+                else np.zeros(0, dtype=np.int64)
+            )
+        self.n_candidate_windows = len(self.indices) + self.n_rejected_windows
+
+        self.random_mix_on_starts: list[np.ndarray] = []
+        self.random_mix_background_starts: list[np.ndarray] = []
+        if self.random_mix_focal_event:
+            edges = random_mix_background_bins_watts or [0, 100, 200, 400, 800]
+            self._prepare_focal_event_mix_pools(edges)
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, index: int):
+        if self.paired_background:
+            # Counterfactual pair: identical appliance targets/states under two
+            # residual backgrounds.  The first view stays fully real so the
+            # consistency term has a stable reference distribution.
+            x, y, z = self._real_window(index)
+            x_swapped, _, _ = self._background_swap_window(index)
+            x = (x, x_swapped)
+        elif self.random_mix_prob > 0.0 and float(torch.rand(())) < self.random_mix_prob:
+            if self.random_mix_mode == "background_swap":
+                x, y, z = self._background_swap_window(index)
+            else:
+                x, y, z = self._random_mix_window()
+        else:
+            x, y, z = self._real_window(index)
+
+        if self.target_mode == "full_input":
+            return x, y, z
+
+        out = _output_slice(0, self.seq_len, self.windowing)
+        y = y[out]
+        z = z[out]
+        if int(self.windowing.get("output_window_length", 1)) == 1:
+            y = y.squeeze(0)
+            z = z.squeeze(0)
+        return x, y, z
+
+    def _real_window(
+        self,
+        index: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return the recorded aggregate and its aligned appliance labels."""
+        start = int(self.indices[index])
+        end = start + self.seq_len
+        return (
+            self.inputs_t[start:end].unsqueeze(-1),
+            self.targets_t[start:end],
+            self.states_t[start:end],
+        )
+
+    def _random_mix_window(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Sum appliance traces and a background residual from independent windows.
+
+        Each appliance (power and ON labels) and the background are drawn from
+        separately sampled training windows, so neither the background nor the
+        other appliances carry information about a given appliance. The input is
+        the exact sum, so all labels stay valid. Uses torch RNG so DataLoader
+        workers draw different mixes.
+        """
+        n_apps = self.targets_watts.shape[1]
+        seq_len = self.seq_len
+        picks = torch.randint(len(self.indices), (n_apps + 1,)).numpy()
+        *app_starts, bg = self.indices[picks].tolist()
+
+        use_focal_event = (
+            self.random_mix_focal_event
+            and float(torch.rand(())) < self.random_mix_focal_event_prob
+        )
+        if use_focal_event:
+            # Every synthetic example contains one explicitly selected real ON
+            # window. This prevents rare appliances (especially microwave) from
+            # disappearing inside mostly all-OFF random mixtures.
+            focal_app = int(torch.randint(n_apps, ()).item())
+            on_pool = self.random_mix_on_starts[focal_app]
+            on_pick = int(torch.randint(len(on_pool), ()).item())
+            app_starts[focal_app] = int(on_pool[on_pick])
+
+            # Draw the nuisance background uniformly across non-empty power
+            # ranges, rather than reproducing the strongly low-background-
+            # dominated training distribution.
+            bin_pick = int(torch.randint(len(self.random_mix_background_starts), ()).item())
+            bg_pool = self.random_mix_background_starts[bin_pick]
+            bg = int(bg_pool[int(torch.randint(len(bg_pool), ()).item())])
+
+        power = np.stack(
+            [self.targets_watts[s:s + seq_len, a] for a, s in enumerate(app_starts)], axis=1
+        )
+        states = np.stack(
+            [self.states[s:s + seq_len, a] for a, s in enumerate(app_starts)], axis=1
+        )
+        mains_power = power.copy()
+        app_i = self.random_mix_alignment_app_index
+        if (
+            app_i is not None
+            and (
+                self.random_mix_alignment_source_code < 0
+                or self.source_codes[app_starts[app_i]]
+                == self.random_mix_alignment_source_code
+            )
+        ):
+            # Synthetic recomposition otherwise makes every appliance perfectly
+            # aligned with the aggregate. Restore the configured measurement-time
+            # uncertainty; labels remain on the submeter time grid.
+            choice = int(
+                torch.multinomial(
+                    self.random_mix_alignment_probabilities, 1
+                ).item()
+            )
+            offset = int(self.random_mix_alignment_offsets[choice])
+            mains_power[:, app_i] = _shift_with_edge_fill(
+                mains_power[:, app_i], offset
+            )
+
+        mains = mains_power.sum(axis=1) + self.residual_watts[bg:bg + seq_len]
+
+        x = np.asarray(self.norm.normalize_inputs(mains), dtype=self.inputs.dtype)
+        y = np.asarray(self.norm.normalize_targets(power), dtype=self.targets.dtype)
+        return torch.from_numpy(x).unsqueeze(-1), torch.from_numpy(y), torch.from_numpy(states)
+
+    def _prepare_focal_event_mix_pools(self, bin_edges_watts: list[float]) -> None:
+        """Index real ON windows and residual-background ranges for full mix.
+
+        ``bin_edges_watts`` contains inclusive lower bounds. For example,
+        ``[0, 100, 200, 400, 800]`` creates five ranges whose final range is
+        ``[800, infinity)``. Empty ranges are skipped, so every draw is valid.
+        """
+        edges = np.asarray(bin_edges_watts, dtype=np.float64)
+        if (
+            edges.ndim != 1
+            or len(edges) == 0
+            or edges[0] != 0
+            or np.any(np.diff(edges) <= 0)
+        ):
+            raise ValueError(
+                "random_mix focal-event background bins must be strictly "
+                "increasing lower bounds beginning at 0 W"
+            )
+
+        starts = np.asarray(self.indices, dtype=np.int64)
+        ends = starts + self.seq_len
+        for app_i in range(self.states.shape[1]):
+            cumulative = np.pad(
+                np.cumsum(self.states[:, app_i], dtype=np.int64), (1, 0)
+            )
+            active = cumulative[ends] - cumulative[starts] > 0
+            pool = starts[active]
+            if len(pool) == 0:
+                raise ValueError(
+                    f"focal-event random mix found no ON window for appliance index {app_i}"
+                )
+            self.random_mix_on_starts.append(pool)
+
+        median_background = np.asarray(
+            [np.median(self.residual_watts[s:s + self.seq_len]) for s in starts],
+            dtype=np.float64,
+        )
+        bin_ids = np.searchsorted(edges[1:], median_background, side="right")
+        self.random_mix_background_starts = [
+            starts[bin_ids == bin_i]
+            for bin_i in range(len(edges))
+            if np.any(bin_ids == bin_i)
+        ]
+        if not self.random_mix_background_starts:
+            raise ValueError("focal-event random mix found no residual-background windows")
+
+    def _background_swap_window(
+        self,
+        index: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Keep one real target window and replace only its residual background.
+
+        If the requested window is ``sum(appliances) + background_a``, this
+        returns ``sum(the same appliances) + background_b``. Therefore all
+        appliance power and ON/OFF labels remain exact while the nuisance
+        background changes.
+        """
+        seq_len = self.seq_len
+        anchor = int(self.indices[index])
+        background_index = int(torch.randint(len(self.indices), ()).item())
+        if len(self.indices) > 1 and background_index == index:
+            background_index = (background_index + 1) % len(self.indices)
+        background = int(self.indices[background_index])
+
+        power = self.targets_watts[anchor:anchor + seq_len]
+        states = self.states[anchor:anchor + seq_len]
+        mains = power.sum(axis=1) + self.residual_watts[background:background + seq_len]
+
+        x = np.asarray(self.norm.normalize_inputs(mains), dtype=self.inputs.dtype)
+        y = np.asarray(self.norm.normalize_targets(power), dtype=self.targets.dtype)
+        return torch.from_numpy(x).unsqueeze(-1), torch.from_numpy(y), torch.from_numpy(states)
+
+
+def _csv_column_map(csv_cfg: dict[str, Any], appliances: list[str]) -> tuple[list[str], list[str]]:
+    app_cfg = csv_cfg.get("appliances", {})
+    power_cols, state_cols = [], []
+    for app in appliances:
+        if app not in app_cfg:
+            raise ValueError(f"Missing csv.appliances.{app} in experiment config")
+        power_cols.append(app_cfg[app]["power"])
+        state_cols.append(app_cfg[app]["state"])
+    return power_cols, state_cols
+
+
+def resolve_mains_column(experiment_cfg: dict[str, Any]) -> str:
+    """Aggregate-power column belongs to the dataset experiment config."""
+    if mains_col := experiment_cfg.get("csv", {}).get("mains_column"):
+        return str(mains_col)
+    raise ValueError("Set csv.mains_column in the experiment yaml")
+
+
+@dataclass
+class SplitArrays:
+    """Numeric model arrays plus training-only sequence boundary metadata."""
+
+    inputs: np.ndarray
+    targets: np.ndarray
+    states: np.ndarray
+    segment_ids: np.ndarray
+    source_codes: np.ndarray
+
+
+def _sequence_ids_from_csv(df: pd.DataFrame, sample_seconds: float | None) -> np.ndarray:
+    """Create monotonic IDs at dataset, house, declared segment, or time changes."""
+    n_rows = len(df)
+    if n_rows == 0:
+        return np.zeros(0, dtype=np.int64)
+
+    starts = np.zeros(n_rows, dtype=bool)
+    starts[0] = True
+    for column in ("dataset", "house", "sequence_id"):
+        if column not in df.columns:
+            continue
+        values = df[column].astype(str).to_numpy()
+        starts[1:] |= values[1:] != values[:-1]
+
+    time_values: np.ndarray | None = None
+    if "unix_time" in df.columns:
+        time_values = pd.to_numeric(df["unix_time"], errors="coerce").to_numpy(
+            dtype=np.float64
+        )
+    elif "readable_time" in df.columns:
+        parsed = pd.to_datetime(df["readable_time"], errors="coerce", utc=True)
+        time_values = parsed.astype("int64").to_numpy(dtype=np.float64) / 1e9
+        time_values[parsed.isna().to_numpy()] = np.nan
+
+    if sample_seconds is not None and time_values is not None and n_rows > 1:
+        delta = np.diff(time_values)
+        starts[1:] |= ~np.isclose(delta, float(sample_seconds), rtol=0.0, atol=1e-3)
+
+    return np.cumsum(starts, dtype=np.int64) - 1
+
+
+def load_csv_arrays(
+    csv_path: Path,
+    csv_cfg: dict[str, Any],
+    appliances: list[str],
+    *,
+    mains_column: str,
+) -> SplitArrays:
+    if not csv_path.exists():
+        raise FileNotFoundError(f"CSV not found: {csv_path}")
+
+    power_cols, state_cols = _csv_column_map(csv_cfg, appliances)
+    required = list(dict.fromkeys([mains_column, *power_cols, *state_cols]))
+    available = set(pd.read_csv(csv_path, nrows=0).columns)
+    metadata = [
+        col
+        for col in ("readable_time", "unix_time", "dataset", "house", "sequence_id")
+        if col in available
+    ]
+    df = pd.read_csv(csv_path, usecols=[*required, *metadata]).dropna(subset=required)
+
+    x = df[mains_column].to_numpy(dtype=np.float32)
+    y = df[power_cols].to_numpy(dtype=np.float32)
+    z = df[state_cols].to_numpy(dtype=np.int64)
+    sample_seconds = csv_cfg.get("sample_seconds")
+    segment_ids = _sequence_ids_from_csv(
+        df, float(sample_seconds) if sample_seconds is not None else None
+    )
+    if "dataset" in df.columns:
+        source_codes = (
+            df["dataset"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .map(_SOURCE_DATASET_CODES)
+            .fillna(0)
+            .to_numpy(dtype=np.int8)
+        )
+    else:
+        source_codes = np.zeros(len(df), dtype=np.int8)
+    return SplitArrays(x, y, z, segment_ids, source_codes)
+
+
+class NILMDataLoader:
+    """Load pre-split CSVs once, build per-model windowed datasets."""
+
+    def __init__(
+        self,
+        experiment_cfg: dict[str, Any],
+        model_cfg: dict[str, Any],
+        data_root: str | Path,
+    ):
+        self.experiment = experiment_cfg
+        self.model_cfg = model_cfg
+        self.data_root = Path(data_root)
+        self.csv_cfg = experiment_cfg.get("csv", {})
+        self.appliances = appliance_list(experiment_cfg, model_cfg)
+        self.state_label_source = get_state_label_source(model_cfg)
+        self.state_threshold_watts = (
+            resolve_state_thresholds_watts(experiment_cfg, self.appliances)
+            if self.state_label_source == "threshold"
+            else None
+        )
+        self.norm = NormalizationStats.from_config(experiment_cfg, model_cfg, self.appliances)
+        self.loss_scale = self.norm.loss_scale
+        self.tensor_dtype, _ = resolve_tensor_dtype(model_cfg)
+        self.random_mix_prob = get_random_mix_prob(model_cfg)
+        self.random_mix_mode = get_random_mix_mode(model_cfg)
+        mix_cfg = model_cfg.get("training", {}).get("random_mix") or {}
+        focal_cfg = mix_cfg.get("focal_event_sampling") or {}
+        self.random_mix_focal_event = bool(focal_cfg.get("enabled", False))
+        self.random_mix_focal_event_prob = float(focal_cfg.get("prob", 1.0))
+        self.random_mix_background_bins_watts = list(
+            focal_cfg.get("background_bins_watts", [0, 100, 200, 400, 800])
+        )
+        alignment_cfg = mix_cfg.get("alignment_jitter") or {}
+        if bool(alignment_cfg.get("enabled", False)):
+            app = str(alignment_cfg.get("appliance", "microwave"))
+            if app not in self.appliances:
+                raise ValueError(f"alignment-jitter appliance is not configured: {app}")
+            self.random_mix_alignment_app_index = self.appliances.index(app)
+            self.random_mix_alignment_source_code = _source_dataset_code(
+                str(alignment_cfg.get("source_dataset", "refit"))
+            )
+            self.random_mix_alignment_offsets = [
+                int(value) for value in alignment_cfg.get("offsets_samples", [])
+            ]
+            self.random_mix_alignment_probabilities = [
+                float(value) for value in alignment_cfg.get("probabilities", [])
+            ]
+        else:
+            self.random_mix_alignment_app_index = None
+            self.random_mix_alignment_source_code = 0
+            self.random_mix_alignment_offsets = [0]
+            self.random_mix_alignment_probabilities = [1.0]
+        self.paired_background = get_background_consistency_enabled(model_cfg)
+        self._splits: dict[SplitName, SplitArrays] = {}
+
+    def _resolve_csv_path(self, split: SplitName) -> Path:
+        if split in _SPLIT_FILE_KEYS:
+            key = _SPLIT_FILE_KEYS[split]
+            name = self.csv_cfg.get(key)
+        else:
+            key = f"test_scenarios.{split}"
+            scenarios = self.csv_cfg.get("test_scenarios", {})
+            name = scenarios.get(split) if isinstance(scenarios, dict) else None
+        if not name:
+            raise ValueError(f"csv.{key} required - point to a pre-split CSV")
+        path = Path(name)
+        return path if path.is_absolute() else self.data_root / path
+
+    def _load_split_csv(self, split: SplitName) -> SplitArrays:
+        return load_csv_arrays(
+            self._resolve_csv_path(split),
+            self.csv_cfg,
+            self.appliances,
+            mains_column=resolve_mains_column(self.experiment),
+        )
+
+    def _stride_for_split(self, split: str) -> int:
+        w = self.model_cfg["windowing"]
+        if split == "train":
+            return int(w["input_stride"])
+        return int(w.get("eval_stride", w["input_stride"]))
+
+    def _make_window_dataset(self, split: str) -> WindowDataset:
+        key = _split_key(split)
+        data = self.get_split(key)
+        w = self.model_cfg["windowing"]
+        dataset = WindowDataset(
+            data.inputs,
+            data.targets,
+            data.states,
+            w,
+            stride=self._stride_for_split(split),
+            segment_ids=data.segment_ids,
+            target_mode=_target_mode(w, split),
+            normalization=self.norm,
+            state_threshold_watts=self.state_threshold_watts,
+            state_label_source=self.state_label_source,
+            tensor_dtype=self.tensor_dtype,
+            random_mix_prob=self.random_mix_prob if split == "train" else 0.0,
+            random_mix_mode=self.random_mix_mode,
+            random_mix_focal_event=(
+                self.random_mix_focal_event if split == "train" else False
+            ),
+            random_mix_focal_event_prob=self.random_mix_focal_event_prob,
+            random_mix_background_bins_watts=self.random_mix_background_bins_watts,
+            source_codes=data.source_codes,
+            random_mix_alignment_app_index=(
+                self.random_mix_alignment_app_index if split == "train" else None
+            ),
+            random_mix_alignment_source_code=self.random_mix_alignment_source_code,
+            random_mix_alignment_offsets=self.random_mix_alignment_offsets,
+            random_mix_alignment_probabilities=self.random_mix_alignment_probabilities,
+            paired_background=self.paired_background if split == "train" else False,
+        )
+        if len(dataset) == 0:
+            _, segment_lengths = np.unique(data.segment_ids, return_counts=True)
+            longest_segment = int(segment_lengths.max()) if len(segment_lengths) else 0
+            raise ValueError(
+                f"No valid {split} windows: input length is {dataset.seq_len}, "
+                f"but the longest contiguous segment is {longest_segment} rows. "
+                "Check sample_seconds and regenerate sequence-aware CSVs."
+            )
+        return dataset
+
+    def window_output_timesteps(self, split: str, n_windows: int) -> np.ndarray:
+        """CSV row index for each sliding-window model output."""
+        ds = self._make_window_dataset(split)
+        n = min(int(n_windows), len(ds))
+        w = self.model_cfg["windowing"]
+        out_len = int(w.get("output_window_length", 1))
+        offset = _output_row_offset(w, ds.seq_len)
+        if out_len == 1:
+            return ds.indices[:n] + offset
+        return (ds.indices[:n, None] + offset + np.arange(out_len)).reshape(-1)
+
+    def reconstruct_timeline_from_windows(
+        self,
+        split: str,
+        window_values: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Map (n_windows, out_len, A) onto the CSV timeline with overlap averaging.
+
+        When eval stride < output length, multiple windows cover the same CSV row.
+        Averaging removes window-boundary pulses in plots and test metrics.
+        """
+        key = _split_key(split)
+        total = len(self.get_split(key).inputs)
+        window_values = np.asarray(window_values, dtype=np.float64)
+        if window_values.ndim != 3:
+            raise ValueError(f"Expected (n_windows, out_len, A), got {window_values.shape}")
+
+        ds = self._make_window_dataset(split)
+        n = min(len(window_values), len(ds))
+        window_values = window_values[:n]
+        w = self.model_cfg["windowing"]
+        out_len = int(w.get("output_window_length", 1))
+        offset = _output_row_offset(w, ds.seq_len)
+        n_apps = window_values.shape[-1]
+
+        acc = np.zeros((total, n_apps), dtype=np.float64)
+        cnt = np.zeros((total, n_apps), dtype=np.float64)
+        for i in range(n):
+            start = int(ds.indices[i]) + offset
+            end = min(total, start + out_len)
+            span = end - start
+            if span <= 0:
+                continue
+            acc[start:end] += window_values[i, :span]
+            cnt[start:end] += 1.0
+
+        covered = cnt.max(axis=1) > 0
+        cnt = np.maximum(cnt, 1.0)
+        timeline = (acc / cnt).astype(np.float32)
+        csv_timesteps = np.nonzero(covered)[0].astype(np.int64)
+        return timeline[covered], csv_timesteps
+
+    def csv_on_labels_at_timesteps(self, split: str, csv_timesteps: np.ndarray) -> np.ndarray:
+        """Dataset CSV *_on labels at the same CSV rows as a prediction bundle."""
+        z_csv = self.get_split(split).states
+        indices = np.asarray(csv_timesteps, dtype=np.int64)
+        return z_csv[indices].astype(np.int32)
+
+    def segment_ids_at_timesteps(
+        self,
+        split: str,
+        csv_timesteps: np.ndarray | None,
+    ) -> np.ndarray | None:
+        """Continuous-sequence IDs aligned with a prediction bundle timeline."""
+        if csv_timesteps is None:
+            return None
+        segment_ids = self.get_split(split).segment_ids
+        indices = np.asarray(csv_timesteps, dtype=np.int64)
+        return segment_ids[indices].astype(np.int64)
+
+    def get_raw_csv_arrays(self, split: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return raw CSV mains/power/state arrays (watts / labels, not z-scored)."""
+        data = self.get_split(split)
+        return data.inputs, data.targets, data.states
+
+    def mains_watts_at_timesteps(self, split: str, csv_timesteps: np.ndarray) -> np.ndarray:
+        """Raw aggregate (W) at the same CSV rows as a prediction-bundle timeline."""
+        mains, _, _ = self.get_raw_csv_arrays(split)
+        indices = np.asarray(csv_timesteps, dtype=np.int64).reshape(-1)
+        if indices.size == 0:
+            return np.zeros((0,), dtype=np.float32)
+        if int(indices.min()) < 0 or int(indices.max()) >= len(mains):
+            raise IndexError(
+                f"csv_timesteps out of range for {split}: "
+                f"need [0, {len(mains)}), got [{int(indices.min())}, {int(indices.max())}]"
+            )
+        return np.asarray(mains[indices], dtype=np.float32)
+
+    def appliance_watts_at_timesteps(self, split: str, csv_timesteps: np.ndarray) -> np.ndarray:
+        """Raw per-appliance power (W) at the same CSV rows (for waveform GT)."""
+        _, power, _ = self.get_raw_csv_arrays(split)
+        indices = np.asarray(csv_timesteps, dtype=np.int64).reshape(-1)
+        if indices.size == 0:
+            return np.zeros((0, power.shape[1]), dtype=np.float32)
+        if int(indices.min()) < 0 or int(indices.max()) >= len(power):
+            raise IndexError(
+                f"csv_timesteps out of range for {split}: "
+                f"need [0, {len(power)}), got [{int(indices.min())}, {int(indices.max())}]"
+            )
+        return np.asarray(power[indices], dtype=np.float32)
+
+    def window_flattened_csv_states(self, split: str, n_points: int) -> np.ndarray:
+        """Align dataset CSV *_on columns with flattened model output timesteps.
+
+        Waveform plotting uses these labels only. Training loss and F1 metrics
+        may still follow data.state_label_source in the model yaml.
+        """
+        key = _split_key(split)
+        data = self.get_split(key)
+        w = self.model_cfg["windowing"]
+        ds = WindowDataset(
+            data.inputs,
+            data.targets,
+            data.states,
+            w,
+            stride=self._stride_for_split(split),
+            segment_ids=data.segment_ids,
+            target_mode=_target_mode(w, split),
+            normalization=self.norm,
+            state_label_source="csv",
+        )
+        if len(ds) == 0:
+            return np.zeros((0, len(self.appliances)), dtype=np.int32)
+
+        rows: list[np.ndarray] = []
+        for i in range(len(ds)):
+            _, _, z = ds[i]
+            z_np = z.numpy() if hasattr(z, "numpy") else np.asarray(z)
+            rows.append(z_np.reshape(-1, len(self.appliances)))
+        flat = np.concatenate(rows, axis=0)
+        return flat[: int(n_points)].astype(np.int32)
+
+    def get_split(self, split: str) -> SplitArrays:
+        """Load one split on demand and cache it for later windows/plots."""
+        key = _split_key(split)
+        if key not in self._splits:
+            self._splits[key] = self._load_split_csv(key)
+        return self._splits[key]
+
+    def get_splits(self) -> dict[SplitName, SplitArrays]:
+        """Return the splits loaded so far; prefer get_split() for lazy access."""
+        return self._splits
+
+    def build_dataset(self, split: str) -> Dataset:
+        return self._make_window_dataset(split)
+
+    def denorm_to_watts(self, y: np.ndarray) -> np.ndarray:
+        """Convert normalized targets or predictions back to watts."""
+        return self.norm.denorm(y)
+
+    def estimate_state_pos_weights(self, split: str = "train") -> np.ndarray:
+        """Per-appliance BCE pos_weight = (1 - p) / p from training ON rate p."""
+        data = self.get_split(split)
+        y, z = data.targets, data.states
+        if self.state_threshold_watts is not None:
+            on = (y > self.state_threshold_watts).astype(np.float64)
+        else:
+            on = z.astype(np.float64)
+        p = np.clip(on.mean(axis=0), 1e-4, 1.0 - 1e-4)
+        return ((1.0 - p) / p).astype(np.float32)
+
+    def describe_split(self, split: str, *, batch_size: int) -> dict[str, Any]:
+        key = _split_key(split)
+        csv_path = self._resolve_csv_path(key)
+        x = self.get_split(key).inputs
+        w = self.model_cfg["windowing"]
+        stride = self._stride_for_split(split)
+        target_mode = _target_mode(w, split)
+        window_dataset = self._make_window_dataset(split)
+        n_windows = len(window_dataset)
+        n_batches = (n_windows + batch_size - 1) // batch_size if n_windows else 0
+        return {
+            "split": split,
+            "csv_path": str(csv_path),
+            "csv_name": csv_path.name,
+            "timesteps": len(x),
+            "n_appliances": len(self.appliances),
+            "input_length": _resolve_input_length(w),
+            "output_length": int(w.get("output_window_length", 1)),
+            "output_alignment": w.get("output_alignment", "end"),
+            "stride": stride,
+            "target_mode": target_mode,
+            "windows": n_windows,
+            "rejected_boundary_windows": window_dataset.n_rejected_windows,
+            "batch_size": batch_size,
+            "batches": n_batches,
+        }
