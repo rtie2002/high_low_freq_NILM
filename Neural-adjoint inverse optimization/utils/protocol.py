@@ -40,6 +40,7 @@ def load_protocol(
     window_length: int,
     stride: int,
     batch_size: int,
+    csv_sequence_only: bool = False,
 ) -> NILMProtocol:
     """Load the local benchmark split with inverse-method window settings."""
     experiment_path = Path(experiment_path).resolve()
@@ -60,7 +61,13 @@ def load_protocol(
     data_root = Path(experiment["data_root"])
     if not data_root.is_absolute():
         data_root = experiment_path.parent / data_root
-    loader = NILMDataLoader(experiment, inverse_window_cfg, data_root)
+    loader_experiment = experiment
+    if csv_sequence_only:
+        # Match Stage 1 windows, which use the preprocessed sequence IDs.
+        csv_cfg = dict(experiment["csv"])
+        csv_cfg.pop("sample_seconds", None)
+        loader_experiment = {**experiment, "csv": csv_cfg}
+    loader = NILMDataLoader(loader_experiment, inverse_window_cfg, data_root)
     thresholds = np.asarray(
         [experiment["evaluation"]["on_thresholds_watts"][app] for app in appliances],
         dtype=np.float32,
