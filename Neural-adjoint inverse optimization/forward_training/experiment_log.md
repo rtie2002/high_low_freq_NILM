@@ -198,3 +198,71 @@ The unchanged meter-only optimizer rapidly leaves the sampled encoder-code neigh
 3. Meter-only latent optimisation moves well beyond sampled encoded training codes, though sampled distance alone is not an invalidity certificate.
 4. The evidence now favours **source ambiguity / weak appliance-specific representation** as the first Paper 1 problem, with Jacobian-aware inverse updates as the linked second problem.
 5. The next algorithm should first improve or explicitly measure appliance discriminability in the forward representation. A solver-only penalty cannot recover attribution information absent from the representation. Any subsequent identifiability-aware solver should be tested against the unchanged Adam baseline and should not ban genuine simultaneous use.
+
+## 2026-11-12 — E1–E4 forward-representation ablation
+
+**Question.** Can an appliance-specific architecture or ON/OFF-balanced Stage-1 reconstruction loss improve source discrimination and downstream inverse attribution, while preserving the forward-model-to-latent-optimisation paradigm?
+
+**Controlled protocol.** E1 is the unchanged epoch-83 shared conditional CNN. E2 has five separate encoders and five separate decoders with the same `[B,5,T] -> [B,5,Z,T/8] -> [B,5,T]` interface. E3 keeps E1's architecture and trains using a per-appliance balanced reconstruction risk, `0.5 mean(error^2 | ON) + 0.5 mean(error^2 | OFF)`, where ON is derived solely from the fixed training power thresholds. E4 combines E2 and E3. All use the same house-disjoint training/validation data, five-appliance order, 1024/512 windows, 4000 W scale, seed 2026, Adam and validation-MSE checkpoint selection. No test houses were read. The inverse evaluation uses frozen decoders, train-mean code initialization, a nonnegative constant background, 150 Adam steps at 0.05, batch size eight, and the same 945 validation windows (558,592 reconstructed rows).
+
+E1 was re-evaluated without retraining because an older E1 inverse artifact did not explicitly record its initialization. The matched E1 run ensures that all entries below use `--train-mean-init`. All model runs and figures are on the training machine under `D:/Raymond/high_low_freq_NILM/Neural-adjoint inverse optimization/runs/paper1_e{1,2,3,4}_...`.
+
+| Variant | Forward model / training loss | Parameters | Best epoch | Validation MSE |
+| --- | --- | ---: | ---: | ---: |
+| E1 | Shared conditional CNN / MSE | 9,731 | 83 | 0.0000602 |
+| E2 | Separate encoders + decoders / MSE | 45,455 | 7 | 0.0028182 |
+| E3 | Shared conditional CNN / balanced ON/OFF MSE | 9,731 | 97 | 0.0000267 |
+| E4 | Separate encoders + decoders / balanced ON/OFF MSE | 45,455 | 92 | 0.0000899 |
+
+### Stage-1 reconstruction on validation traces
+
+The following macro values average the five appliance columns in each `source_attribution/A_reconstruction.csv`. F1 is raw fixed-threshold F1 and event recall uses the existing ±16 s onset protocol. These labels are used only for evaluation.
+
+| Variant | MAE (W) | ON MAE (W) | Macro-F1 | Mean event recall |
+| --- | ---: | ---: | ---: | ---: |
+| E1 | 10.746 | 122.287 | 0.769 | 0.594 |
+| E2 | 47.247 | 1,029.351 | 0.030 | 0.019 |
+| E3 | 8.458 | 74.478 | 0.863 | 0.661 |
+| E4 | 24.781 | 84.346 | 0.509 | 0.471 |
+
+E2 is a clear collapsed reconstruction model. Its MSE-only independent source networks converge to predominantly low-power outputs: kettle ON MAE is 2,348.6 W and microwave ON MAE is 918.5 W. Its decoder JVPs are mostly zero, so a tangent-alignment statistic is undefined rather than evidence of identifiability. This architecture-only ablation must be retained as a failure, not treated as support for independent decoders.
+
+E3 is the only variant that improves isolated Stage-1 reconstruction relative to E1. This confirms that ON events were underrepresented by ordinary MSE. E4 shows that event balancing does not rescue the independent architecture: fridge OFF MAE rises to 51.0 W and washing-machine OFF MAE to 33.0 W.
+
+### Controlled zero-background inversion
+
+For the 48-window zero-background control, compare the selected train-mean initialization. This control removes unmonitored loads; it does not make source attribution unique.
+
+| Variant | Meter RMSE (W) | Appliance MAE (W) | ON MAE (W) | Macro-F1 |
+| --- | ---: | ---: | ---: | ---: |
+| E1 | 47.827 | 40.629 | 688.966 | 0.404 |
+| E2 | 507.930 | 50.019 | 852.253 | 0.032 |
+| E3 | 64.613 | 45.997 | 622.097 | 0.304 |
+| E4 | 48.531 | 49.573 | 712.743 | 0.321 |
+
+Neither E2, E3 nor E4 improves controlled source-attribution F1 over E1. E3 improves controlled ON MAE but loses F1; this is another direct instance of different error objectives preferring different source allocations.
+
+### Real aggregate validation inversion
+
+| Variant | Appliance MAE (W) | ON MAE (W) | Macro-F1 | Aggregate MAE (W) | Inference time (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| E1 | 57.604 | 740.771 | 0.296 | 35.027 | 23.957 |
+| E2 | 36.311 | 866.817 | 0.030 | 349.950 | 50.934 |
+| E3 | 55.932 | 699.486 | 0.234 | 78.949 | 26.347 |
+| E4 | 73.508 | 764.669 | 0.233 | 22.299 | 48.159 |
+
+E3 reduces ON MAE by 41.3 W relative to E1 but lowers Macro-F1 by 0.062 and more than doubles aggregate MAE. E4 obtains the lowest aggregate MAE, 22.299 W, while lowering Macro-F1 from 0.296 to 0.233. Therefore neither better isolated reconstruction nor better aggregate agreement produced better appliance attribution in this ablation.
+
+The output CSV currently uses the legacy string `appliance_conditioned_cnn_inverse` for all Stage-2 rows. Architecture identity is unambiguous from each checkpoint's `model_config`, saved configuration and run directory. This label should be corrected before any later experiment, but metrics above are grouped by those saved run directories and are not mislabeled analytically.
+
+### Source-space diagnostics
+
+E3 reduces several sampled tangent alignments relative to E1, for example kettle–microwave from 0.943 to 0.832, but cross-source fitting remains overlapping. Its normalized ON-RMSE for a microwave target ranges from 0.154 (fridge decoder) to 0.219 (kettle decoder) versus 0.197 for its own decoder. E4 has strong fixed-code ID sensitivity, often 0.66–0.96 normalized difference, and low sampled tangent alignment for non-dead pairs (kettle–microwave 0.360). Yet independently optimized wrong-source fits still occur: its dishwasher target has normalized ON-RMSE 0.030 with kettle and 0.031 with its own decoder; its fridge target is better fit by the washer decoder (0.045) than its own decoder (0.400). Strong fixed-code identity separation therefore does not imply non-overlapping optimised generator spaces.
+
+### D3 step-0 zero-distance audit
+
+The apparent median E1 step-0 nearest-training-code distance of zero is **not** evidence that all validation codes have perfect training support. With ON/OFF window separation, OFF windows for kettle, dishwasher, microwave and washing machine have distance exactly zero because an all-zero power trace passes through the deterministic encoder to the same code and the 128 sampled training references contain that repeated OFF code. The fridge windows in this 48-window diagnostic are all ON. At step 0, median distances for ON-containing windows are kettle 12.935, fridge 1.089, dishwasher 23.875, washing machine 17.656 and microwave 3.941. D3's all-window median was therefore dominated by repeated OFF codes. The support-distance statistic remains useful only when stratified by ON/OFF status and is not a validity proof.
+
+### Decision after E1–E4
+
+The controlled ablation does **not** justify promoting separate decoder architecture or simple event balancing as the Paper 1 algorithm. E3 is a useful reconstruction baseline and shows that sparse ON events matter. E4 proves that structural identity separation alone does not remove cross-source fit overlap. The next research phase should not tune another diagonal latent prior. It should formulate an inverse-aware forward-learning objective and compare it against E1/E3, then separately test an identifiability-aware inverse update. No such new objective or solver has been implemented in this phase.
