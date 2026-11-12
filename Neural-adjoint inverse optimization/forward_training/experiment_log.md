@@ -289,3 +289,31 @@ The outer objective is \(L_{\rm rec}+0.1L_{\rm inv}\), where \(L_{\rm rec}\) is 
 F1 consequently uses **per-window RMS gradient normalisation** in the inner solve: \(g\leftarrow g/(\sqrt{\operatorname{mean}(g^2)}+10^{-8})\), then \(z\leftarrow z-0.50g\). This preserves the negative-gradient direction and uses no extra network, but makes the step size a stable latent-code displacement rather than a decoder-slope-dependent raw scalar. On the same preflight batch, three-step meter-loss ratios for normalized steps \(0.05,0.10,0.20,0.50,1.00,2.00\) were \(0.987,0.974,0.941,0.835,0.855,0.934\), respectively; 0.50 was the best inspected stable value. This is an explicit numerical implementation change, not evidence of F1 effectiveness. The next GPU smoke must still reject non-finite values and verify that the three updates reduce the meter loss.
 
 **Status.** Implementation and CPU smoke passed before this step-size correction: a nonzero inverse-to-decoder gradient was observed. No test house has been read. Full F1 training and all Stage-2 comparisons remain pending the GPU smoke test.
+
+### F1 completed result
+
+**Code and execution.** Commit `eacc109` (`Add inverse-aware forward training experiment`) was pushed before remote execution. The RTX 4090 run used `C:\Users\PC\anaconda3\envs\nilm\python.exe`, seed 2026, the existing house-disjoint train/validation split, five target appliance ordering, 1024-sample windows with 512-sample stride, and no test data. The model remains E1's 9,731-parameter shared conditional CNN. It trained for 41 epochs with early stopping; checkpoint selection selected epoch 26 by validation MSE \(1.57096\times10^{-4}\). Wall-clock training time was 100.62 s. The unrolled three-step path remained finite, propagated a nonzero inverse-to-decoder gradient, and used 181.44 MB peak GPU allocation in the recorded training epoch.
+
+**Evaluation commands/protocol.** The selected checkpoint was evaluated without further tuning using the original raw reconstruction evaluator, the 48-window zero-background control, and the 945-window real-validation Stage-2 solver. Both inverse evaluations used the pre-specified train-mean code start, 150 Adam updates, learning rate 0.05, batch size eight, no latent prior, and the existing fixed thresholds. The real-validation solver retained its existing nonnegative constant-per-window background convention. It completed in 23.52 s. No test house was evaluated.
+
+| Validation result | E1 reconstruction-MSE baseline | F1 inverse-aware training | Change |
+| --- | ---: | ---: | ---: |
+| Stage-1 waveform MAE (W) | 10.746 | 12.507 | worse |
+| Stage-1 ON MAE (W) | 122.287 | 207.345 | worse |
+| Stage-1 Macro-F1 | 0.769 | 0.350 | worse |
+| Controlled zero-background meter RMSE (W) | 47.827 | 128.120 | worse |
+| Controlled zero-background appliance MAE (W) | 40.629 | 51.740 | worse |
+| Controlled zero-background ON MAE (W) | 688.966 | 526.966 | lower, but not sufficient |
+| Controlled zero-background Macro-F1 | 0.404 | 0.089 | worse |
+| Real aggregate validation appliance MAE (W) | 57.604 | 61.263 | worse |
+| Real aggregate validation ON MAE (W) | 740.771 | 594.155 | lower, but not sufficient |
+| Real aggregate validation Macro-F1 | 0.296 | 0.093 | worse |
+| Real aggregate validation aggregate MAE (W) | 35.027 | 85.690 | worse |
+
+The full Stage-1 F1 was recomputed directly from the saved `forward/reconstruction.npz` with the unchanged watt thresholds: per-appliance F1 is kettle 0.531, fridge 0.010, dishwasher 0.422, washing machine 0.239, microwave 0.548. The very low fridge F1 reflects the model's poor validation state discrimination despite a lower continuous waveform error in some other sources.
+
+**Source-identifiability diagnostic.** The frozen F1 decoder was evaluated using the unchanged D1--D3 procedure (validation labels only create diagnostic valid codes; they never enter the inverse update). Local tangent overlap is severe: median closest Jacobian cosines include dishwasher--washing machine 0.99994, fridge--washing machine 0.99999, fridge--dishwasher 0.99998, dishwasher--microwave 0.99415 and kettle--microwave 0.99257. These values are higher than the already problematic E1 non-fridge alignments reported above. Fixed-code identity sensitivity is also weak for several sparse sources (e.g. dishwasher-origin codes change only 0.024--0.049 under most identity substitutions). This supports continued source overlap/confusion rather than improved identifiable source geometry. It does not prove a unique causal reason for every incorrect allocation.
+
+**Conclusion (negative result).** F1 answers the intended research question negatively for this formulation. Explicitly penalising three-step inverse recovery from one mean-code start did not improve controlled attribution, real aggregate attribution, aggregate agreement, or source geometry; it additionally degraded isolated reconstruction and ON/OFF F1. The continuous ON-MAE reductions must not be promoted as a success because they coincide with much poorer classification and attribution. The likely mechanism is an objective mismatch: a short, RMS-normalised unrolled solve encourages lower average source error along a highly overlapping decoder geometry, but does not make the five source spaces identifiable or match the 150-step Adam deployment trajectory. Do **not** continue tuning \(\lambda_{\rm inv}\), the three-step size, or this same loss as Paper 1's main method. Retain F1 as a controlled negative result; the next method must directly address source-space discriminability/measurement information before another inverse-aware outer loss is attempted.
+
+**Artifacts.** Remote results are retained under `D:/Raymond/high_low_freq_NILM/Neural-adjoint inverse optimization/runs/paper1_f1_inverse_aware/`: `best.pt`, `history.csv`, `loss_curve.png`, `forward/reconstruction_metrics.csv`, `forward/waveforms/`, `inverse/zero_background/`, `inverse/real_aggregate/`, and `source_identifiability/`. The temporary scheduled-task launch logs remain in `D:/Raymond/high_low_freq_NILM/runs/_logs/`; tasks were unregistered after recording terminal exit code 0.
