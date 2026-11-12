@@ -266,3 +266,26 @@ The apparent median E1 step-0 nearest-training-code distance of zero is **not** 
 ### Decision after E1–E4
 
 The controlled ablation does **not** justify promoting separate decoder architecture or simple event balancing as the Paper 1 algorithm. E3 is a useful reconstruction baseline and shows that sparse ON events matter. E4 proves that structural identity separation alone does not remove cross-source fit overlap. The next research phase should not tune another diagonal latent prior. It should formulate an inverse-aware forward-learning objective and compare it against E1/E3, then separately test an identifiability-aware inverse update. No such new objective or solver has been implemented in this phase.
+
+## 2026-11-12 — F1 inverse-aware forward learning (implementation and preflight)
+
+**Question.** Can the E1 shared conditional CNN be trained not only to reconstruct isolated appliance windows, but also to make its frozen decoder recover those sources after a short gradient-based inverse solve?
+
+**Controlled training formulation.** For a labelled training window \(P\in\mathbb{R}^{B\times5\times T}\), construct the zero-background measurement \(X=\sum_iP_i\). Let \(G_\theta(z_i,i)\) be the existing identity-conditioned decoder and initialise every candidate code from a detached mean code computed only from training windows. Three differentiable plain-gradient updates are applied:
+
+\[
+z^{(k+1)}=z^{(k)}-\alpha\nabla_z\operatorname{mean}\left[\left(\sum_iG_\theta(z_i^{(k)},i)-X\right)^2\right],\quad k=0,1,2.
+\]
+
+The outer objective is \(L_{\rm rec}+0.1L_{\rm inv}\), where \(L_{\rm rec}\) is the ordinary reconstruction MSE and \(L_{\rm inv}\) is an ON/OFF-balanced source MSE after the third update. `create_graph=True` is used in every inner derivative: therefore the outer inverse loss differentiates through the update rule into the decoder parameters. The encoder is trained by reconstruction; the decoder is trained by both terms. This is an unrolled/bilevel training objective, not a direct aggregate-to-appliance predictor.
+
+**Modified files (not yet a completed experiment).**
+
+- `forward_training/step1_train_forward_model.py`: added `inverse_aware_mse`, a detached training-code mean initializer, a three-step differentiable latent solve, inverse-loss gradient verification, inverse diagnostics and peak-GPU-memory recording.
+- `forward_training/train_forward_f1_inverse_aware.yaml`: E1 architecture, 1024/512 windows, five target sources, seed 2026, batch 16, K=3, \(\lambda_{\rm inv}=0.1\), balanced inverse source loss.
+
+**Local numerical preflight and correction.** On one freshly initialised 16-window training batch, with the exact mean-code initialisation and three *raw* plain-GD steps, the scaled meter-MSE ratio \(L_{\rm meter}^{(3)}/L_{\rm meter}^{(0)}\) was 1.000000 for \(\alpha\le10\), 0.999996 for \(\alpha=10^3\), 0.996423 for \(10^6\), 0.846352 for \(10^7\), and \(4.99\times10^7\) (divergent) for \(10^8\). A subsequent two-batch smoke at \(\alpha=10^7\) produced a finite decoder gradient but rose from meter loss 0.01210 before inversion to 2.05290 after it; therefore raw fixed-step GD is not stable enough to send to the GPU. The source is the decoder's changing low-slope Softplus regime: a raw gradient scale that is inert before an outer update can be explosive after it.
+
+F1 consequently uses **per-window RMS gradient normalisation** in the inner solve: \(g\leftarrow g/(\sqrt{\operatorname{mean}(g^2)}+10^{-8})\), then \(z\leftarrow z-0.50g\). This preserves the negative-gradient direction and uses no extra network, but makes the step size a stable latent-code displacement rather than a decoder-slope-dependent raw scalar. On the same preflight batch, three-step meter-loss ratios for normalized steps \(0.05,0.10,0.20,0.50,1.00,2.00\) were \(0.987,0.974,0.941,0.835,0.855,0.934\), respectively; 0.50 was the best inspected stable value. This is an explicit numerical implementation change, not evidence of F1 effectiveness. The next GPU smoke must still reject non-finite values and verify that the three updates reduce the meter loss.
+
+**Status.** Implementation and CPU smoke passed before this step-size correction: a nonzero inverse-to-decoder gradient was observed. No test house has been read. Full F1 training and all Stage-2 comparisons remain pending the GPU smoke test.

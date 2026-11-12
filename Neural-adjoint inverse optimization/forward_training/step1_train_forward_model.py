@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import random
 import shutil
 import sys
@@ -155,6 +156,116 @@ def _build_loader(
     )
 
 
+def _balanced_on_off_mse(prediction: Tensor, target: Tensor, thresholds: Tensor) -> Tensor:
+    """Average source-wise ON and OFF squared errors with equal weight.
+
+    This is used only with training submeter labels.  For source i, the loss is
+    ``.5 mean(error**2 | p_i >= threshold_i) + .5 mean(error**2 | p_i < threshold_i)``
+    whenever both sets occur in the mini-batch.  If a set is absent, the
+    available set is used so the loss remains finite for rare appliances.
+    """
+    squared_error = (prediction - target).square()
+    on_mask = target >= thresholds[None, :, None]
+    source_losses = []
+    for appliance in range(target.shape[1]):
+        appliance_error = squared_error[:, appliance]
+        appliance_on = on_mask[:, appliance]
+        state_losses = []
+        if bool(appliance_on.any()):
+            state_losses.append(appliance_error[appliance_on].mean())
+        if bool((~appliance_on).any()):
+            state_losses.append(appliance_error[~appliance_on].mean())
+        source_losses.append(torch.stack(state_losses).mean())
+    return torch.stack(source_losses).mean()
+
+
+def _training_code_center(
+    model: torch.nn.Module,
+    dataset: Dataset[Tensor],
+    *,
+    device: torch.device,
+    maximum_windows: int,
+) -> Tensor:
+    """Build a detached training-only initial code for unrolled inversion.
+
+    Stage 2 starts from a mean code estimated from training appliance windows.
+    F1 mirrors that valid inference-time strategy rather than starting the
+    unrolled solve from the target window's encoder code.  The centre is
+    recomputed at each epoch because the encoder changes during training, but
+    it is intentionally detached from the F1 computational graph.
+    """
+    picks = np.linspace(0, len(dataset) - 1, min(maximum_windows, len(dataset)), dtype=int)
+    previous_mode = model.training
+    model.eval()
+    with torch.no_grad():
+        windows = torch.stack([dataset[int(index)] for index in picks]).to(device)
+        center = model.encode(windows).mean(dim=(0, 3), keepdim=True)
+    model.train(previous_mode)
+    return center.detach()
+
+
+def _unrolled_inverse_recovery(
+    model: torch.nn.Module,
+    target: Tensor,
+    *,
+    initial_center: Tensor,
+    steps: int,
+    step_size: float,
+    gradient_normalization: str,
+    gradient_norm_epsilon: float,
+    inverse_loss_name: str,
+    on_thresholds_scaled: Tensor,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Differentiate K latent gradient-descent steps through the frozen-style decoder.
+
+    ``target`` is [B,5,T] in scaled watts.  During training the controlled
+    measurement is exactly ``meter = sum_i target_i``.  The latent update is
+
+        z_(k+1) = z_k - alpha * d/dz mean((sum_i G_theta(z_i,i) - meter)^2).
+
+    ``create_graph=True`` retains the dependence of this gradient on decoder
+    parameters theta.  Thus inverse attribution loss backpropagates through
+    the K optimisation updates instead of treating the solve as detached data.
+
+    ``rms`` normalisation leaves the negative-gradient *direction* unchanged
+    but divides each window's code gradient by its RMS magnitude.  This makes
+    alpha an update size in latent-code units, rather than a quantity coupled
+    to the changing Softplus slope of the decoder.  It prevents a fixed alpha
+    that is inert at initialisation but divergent after one outer update.
+    """
+    batch, _, length = target.shape
+    latent_length = math.ceil(length / model.DOWNSAMPLE)
+    if initial_center.shape[-1] not in {1, latent_length}:
+        raise ValueError("Training code centre and target window have incompatible latent lengths.")
+    # The Stage-2 train-mean initializer averages temporal code positions and
+    # tiles the resulting [1,5,Z,1] centre across the requested latent length.
+    # Use exactly that convention here, rather than target-derived encoder codes.
+    codes = initial_center.expand(batch, -1, -1, latent_length).clone().requires_grad_(True)
+    meter = target.sum(dim=1)
+    meter_initial = None
+    for _ in range(steps):
+        power = model.decode(codes, output_length=length)
+        meter_loss = (power.sum(dim=1) - meter).square().mean()
+        if meter_initial is None:
+            meter_initial = meter_loss
+        gradient = torch.autograd.grad(meter_loss, codes, create_graph=True)[0]
+        if gradient_normalization == "rms":
+            gradient_rms = gradient.square().mean(dim=(1, 2, 3), keepdim=True).sqrt()
+            gradient = gradient / gradient_rms.clamp_min(gradient_norm_epsilon)
+        elif gradient_normalization != "none":
+            raise ValueError("inverse_aware.gradient_normalization must be 'rms' or 'none'.")
+        codes = codes - step_size * gradient
+    recovered = model.decode(codes, output_length=length)
+    meter_final = (recovered.sum(dim=1) - meter).square().mean()
+    if inverse_loss_name == "mse":
+        inverse_loss = (recovered - target).square().mean()
+    elif inverse_loss_name == "event_balanced_mse":
+        inverse_loss = _balanced_on_off_mse(recovered, target, on_thresholds_scaled)
+    else:
+        raise ValueError("inverse_loss.name must be mse or event_balanced_mse.")
+    return recovered, inverse_loss, meter_initial, meter_final
+
+
 def _run_epoch(
     model: torch.nn.Module,
     loader: DataLoader[Tensor],
@@ -164,9 +275,11 @@ def _run_epoch(
     gradient_clip_norm: float | None,
     loss_name: str,
     on_thresholds_scaled: Tensor | None,
+    inverse_aware: dict[str, Any] | None = None,
+    inverse_initial_center: Tensor | None = None,
     max_batches: int | None = None,
-) -> tuple[float, float, float]:
-    """Return raw MSE, MAE and the optimized objective, averaged over samples.
+) -> tuple[float, float, float, dict[str, float]]:
+    """Return raw MSE, MAE, optimized objective and inverse diagnostics.
 
     ``event_balanced_mse`` is used only while training.  Let ``m[b,i,t]`` be
     whether target power exceeds the fixed training threshold for appliance i.
@@ -185,6 +298,11 @@ def _run_epoch(
     value_count = 0
     objective_sum = 0.0
     objective_batches = 0
+    inverse_loss_sum = 0.0
+    meter_initial_sum = 0.0
+    meter_final_sum = 0.0
+    inverse_batches = 0
+    inverse_decoder_gradient_norm = float("nan")
 
     for batch_index, appliance_power in enumerate(loader):
         # x[b,i,t] = p_watts[b,i,t] / S. Each trace is its own target.
@@ -196,21 +314,42 @@ def _run_epoch(
             if training and loss_name == "event_balanced_mse":
                 if on_thresholds_scaled is None:
                     raise ValueError("event_balanced_mse requires training thresholds.")
-                on_mask = target >= on_thresholds_scaled[None, :, None]
-                appliance_terms = []
-                for appliance in range(target.shape[1]):
-                    appliance_error = squared_error[:, appliance]
-                    on = on_mask[:, appliance]
-                    terms = []
-                    if bool(on.any()):
-                        terms.append(appliance_error[on].mean())
-                    if bool((~on).any()):
-                        terms.append(appliance_error[~on].mean())
-                    appliance_terms.append(torch.stack(terms).mean())
-                loss = torch.stack(appliance_terms).mean()
+                reconstruction_loss = _balanced_on_off_mse(reconstructed, target, on_thresholds_scaled)
             else:
                 # L_mse = mean_{b,i,t} (p_hat[b,i,t] - p[b,i,t])^2.
-                loss = squared_error.mean()
+                reconstruction_loss = squared_error.mean()
+            inverse_loss = None
+            if training and inverse_aware is not None:
+                if inverse_initial_center is None or on_thresholds_scaled is None:
+                    raise ValueError("Inverse-aware training requires a training code centre and thresholds.")
+                _, inverse_loss, meter_initial, meter_final = _unrolled_inverse_recovery(
+                    model, target, initial_center=inverse_initial_center,
+                    steps=int(inverse_aware["unroll_steps"]),
+                    step_size=float(inverse_aware["step_size"]),
+                    gradient_normalization=str(inverse_aware["gradient_normalization"]),
+                    gradient_norm_epsilon=float(inverse_aware["gradient_norm_epsilon"]),
+                    inverse_loss_name=str(inverse_aware["loss"]),
+                    on_thresholds_scaled=on_thresholds_scaled,
+                )
+                # This is the F1 objective: ordinary waveform reconstruction
+                # plus attribution error after a differentiable inverse solve.
+                loss = reconstruction_loss + float(inverse_aware["weight"]) * inverse_loss
+                inverse_loss_sum += float(inverse_loss.detach())
+                meter_initial_sum += float(meter_initial.detach())
+                meter_final_sum += float(meter_final.detach())
+                inverse_batches += 1
+                if batch_index == 0:
+                    decoder_parameters = [
+                        parameter for name, parameter in model.named_parameters() if name.startswith("decoder")
+                    ]
+                    gradients = torch.autograd.grad(inverse_loss, decoder_parameters, retain_graph=True)
+                    inverse_decoder_gradient_norm = float(torch.sqrt(sum(
+                        gradient.detach().square().sum() for gradient in gradients if gradient is not None
+                    )))
+                    if not math.isfinite(inverse_decoder_gradient_norm) or inverse_decoder_gradient_norm == 0.0:
+                        raise RuntimeError("Inverse loss did not produce a finite, nonzero decoder gradient.")
+            else:
+                loss = reconstruction_loss
             if training:
                 # Stage 1 updates encoder and decoder weights (psi, theta).
                 optimizer.zero_grad(set_to_none=True)
@@ -228,7 +367,13 @@ def _run_epoch(
         if max_batches is not None and batch_index + 1 >= max_batches:
             break
 
-    return squared_error_sum / value_count, absolute_error_sum / value_count, objective_sum / objective_batches
+    diagnostics = {
+        "inverse_loss": inverse_loss_sum / inverse_batches if inverse_batches else float("nan"),
+        "meter_loss_before": meter_initial_sum / inverse_batches if inverse_batches else float("nan"),
+        "meter_loss_after": meter_final_sum / inverse_batches if inverse_batches else float("nan"),
+        "inverse_decoder_gradient_norm": inverse_decoder_gradient_norm,
+    }
+    return squared_error_sum / value_count, absolute_error_sum / value_count, objective_sum / objective_batches, diagnostics
 
 
 def _save_curve(history: list[dict[str, float]], destination: Path) -> None:
@@ -269,8 +414,8 @@ def train(config_path: Path, *, run_dir: Path | None, overwrite: bool, smoke: bo
     checkpoint_cfg = config["checkpoint"]
     if model_cfg["name"] not in {"appliance_conditioned_cnn", "appliance_specific_cnn"}:
         raise ValueError("Unsupported forward-model name.")
-    if config["loss"]["name"] not in {"mse", "event_balanced_mse"}:
-        raise ValueError("loss.name must be mse or event_balanced_mse.")
+    if config["loss"]["name"] not in {"mse", "event_balanced_mse", "inverse_aware_mse"}:
+        raise ValueError("loss.name must be mse, event_balanced_mse, or inverse_aware_mse.")
     if optimizer_cfg["name"].lower() != "adam":
         raise ValueError("Stage 1 currently supports optimizer.name=adam only.")
     if checkpoint_cfg["monitor"] != "validation_mse" or checkpoint_cfg["mode"] != "min":
@@ -354,6 +499,24 @@ def train(config_path: Path, *, run_dir: Path | None, overwrite: bool, smoke: bo
         [experiment["evaluation"]["on_thresholds_watts"][app] for app in expected_order], dtype=np.float32,
     )
     on_thresholds_scaled = torch.as_tensor(thresholds_watts / power_scale_watts, device=device)
+    inverse_aware = None
+    if config["loss"]["name"] == "inverse_aware_mse":
+        inverse_aware = dict(config.get("inverse_aware", {}))
+        required = {
+            "unroll_steps", "step_size", "weight", "loss", "center_windows",
+            "gradient_normalization", "gradient_norm_epsilon",
+        }
+        missing = required.difference(inverse_aware)
+        if missing:
+            raise ValueError(f"inverse_aware is missing {sorted(missing)}.")
+        if int(inverse_aware["unroll_steps"]) < 1 or int(inverse_aware["center_windows"]) < 1:
+            raise ValueError("inverse_aware unroll_steps and center_windows must be positive.")
+        if float(inverse_aware["step_size"]) <= 0 or float(inverse_aware["weight"]) < 0:
+            raise ValueError("inverse_aware step_size must be positive and weight nonnegative.")
+        if str(inverse_aware["gradient_normalization"]) not in {"rms", "none"}:
+            raise ValueError("inverse_aware.gradient_normalization must be 'rms' or 'none'.")
+        if float(inverse_aware["gradient_norm_epsilon"]) <= 0:
+            raise ValueError("inverse_aware.gradient_norm_epsilon must be positive.")
 
     max_epochs = 1 if smoke else int(training_cfg["epochs"])
     max_batches = 2 if smoke else None
@@ -368,7 +531,14 @@ def train(config_path: Path, *, run_dir: Path | None, overwrite: bool, smoke: bo
     started = time.perf_counter()
 
     for epoch in range(1, max_epochs + 1):
-        train_mse, train_mae, train_objective = _run_epoch(
+        inverse_center = None
+        if inverse_aware is not None:
+            inverse_center = _training_code_center(
+                model, train_windows, device=device, maximum_windows=int(inverse_aware["center_windows"]),
+            )
+            if device.type == "cuda":
+                torch.cuda.reset_peak_memory_stats(device)
+        train_mse, train_mae, train_objective, train_inverse = _run_epoch(
             model,
             train_loader,
             device=device,
@@ -376,10 +546,12 @@ def train(config_path: Path, *, run_dir: Path | None, overwrite: bool, smoke: bo
             gradient_clip_norm=clip,
             loss_name=str(config["loss"]["name"]),
             on_thresholds_scaled=on_thresholds_scaled,
+            inverse_aware=inverse_aware,
+            inverse_initial_center=inverse_center,
             max_batches=max_batches,
         )
         with torch.no_grad():
-            val_mse, val_mae, _ = _run_epoch(
+            val_mse, val_mae, _, _ = _run_epoch(
                 model,
                 validation_loader,
                 device=device,
@@ -397,6 +569,13 @@ def train(config_path: Path, *, run_dir: Path | None, overwrite: bool, smoke: bo
             "val_mse": val_mse,
             "val_mae_scaled": val_mae,
             "val_mae_watts": val_mae * power_scale_watts,
+            "train_inverse_loss": train_inverse["inverse_loss"],
+            "train_meter_loss_before": train_inverse["meter_loss_before"],
+            "train_meter_loss_after": train_inverse["meter_loss_after"],
+            "inverse_decoder_gradient_norm": train_inverse["inverse_decoder_gradient_norm"],
+            "peak_gpu_memory_mb": (
+                torch.cuda.max_memory_allocated(device) / (1024**2) if inverse_aware is not None and device.type == "cuda" else float("nan")
+            ),
         }
         history.append(row)
         print(
@@ -443,6 +622,7 @@ def train(config_path: Path, *, run_dir: Path | None, overwrite: bool, smoke: bo
         "residual_input": False,
         "on_off_input": False,
         "training_loss": str(config["loss"]["name"]),
+        "inverse_aware": inverse_aware,
         "event_balance_thresholds_watts": dict(zip(expected_order, thresholds_watts.tolist())),
         "power_scale_watts": power_scale_watts,
         "window_length": length,

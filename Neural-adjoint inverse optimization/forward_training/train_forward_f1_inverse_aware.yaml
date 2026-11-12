@@ -1,0 +1,36 @@
+# F1: E1's shared conditional CNN with a three-step differentiable latent solve.
+# The controlled training meter is exactly the sum of the five target sources.
+experiment: experiment_mixed_ukdale_refit_5w_house_split.yaml
+run: {root: ../runs, name: paper1_f1_inverse_aware, seed: 2026, device: auto, deterministic: false}
+data: {window_length: 1024, window_stride: 512, power_scale_watts: 4000.0}
+model:
+  name: appliance_conditioned_cnn
+  hidden_channels: 32
+  latent_channels: 2
+  output_softplus_beta: 10.0
+  output_bias: -0.3
+loss: {name: inverse_aware_mse}
+inverse_aware:
+  # z_0 is a detached mean code from training windows, valid at deployment.
+  center_windows: 128
+  unroll_steps: 3
+  # Plain gradient descent inside training, not the 150-step Adam evaluator.
+  # Each latent gradient is RMS-normalised per window. alpha is therefore a
+  # stable code-space update size, not a decoder-slope-dependent raw scale.
+  step_size: 0.50
+  gradient_normalization: rms
+  gradient_norm_epsilon: 1.0e-8
+  # L_train = L_rec + weight * L_inv. L_inv is balanced over ON/OFF states.
+  weight: 0.10
+  loss: event_balanced_mse
+optimizer: {name: adam, learning_rate: 0.001, weight_decay: 0.00001}
+training:
+  # Smaller than E1 because unrolling needs second-order decoder gradients.
+  batch_size: 16
+  epochs: 100
+  shuffle_train: true
+  num_workers: 0
+  gradient_clip_norm: 1.0
+  early_stopping_patience: 15
+  min_epochs: 30
+checkpoint: {monitor: validation_mse, mode: min, filename: best.pt}
