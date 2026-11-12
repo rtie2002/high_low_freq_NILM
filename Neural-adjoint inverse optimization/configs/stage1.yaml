@@ -29,12 +29,12 @@ optimizer:
 
 training:
   batch_size: 64
-  epochs: 100
+  epochs: 200
   shuffle_train: true
   num_workers: 0
   gradient_clip_norm: 1.0      # null disables clipping.
-  early_stopping_patience: 15
-  min_epochs: 30
+  early_stopping_patience: 30
+  min_epochs: 10
 
 checkpoint:
   monitor: validation_mse

@@ -4,5 +4,5 @@ model:
   name: shared_trunk_cnn
   hidden_channels: 32
   latent_channels: 2
-  output_softplus_beta: 10.0
-  output_bias: -0.3
+  output_softplus_beta: 1.0    # was 10.0; lower beta avoids gradient vanishing at low power
+  output_bias: 0.0             # was -0.3; near-zero init avoids dead softplus zone
