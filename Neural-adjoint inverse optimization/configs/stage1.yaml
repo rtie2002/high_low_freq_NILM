@@ -3,7 +3,7 @@
 
 run:
   root: ../runs
-  name: forward_cnn
+  name: e2_appliance_specific_cnn
   seed: 2026
   device: auto                 # auto selects CUDA when available, otherwise CPU.
   deterministic: false         # true trades speed for more repeatable CUDA kernels.

@@ -11,28 +11,30 @@
     6. Streams stdout / stderr logs back to this terminal in real time.
     7. Prints the final metrics summary when the task finishes.
 
+.PARAMETER Name
+    Custom experiment name (e.g. "baseline", "paper1_e1", "adam_150_steps").
+    Result will be stored in runs\<Name>.
+
 .PARAMETER Smoke
     Run a quick smoke test (1 epoch, 2 windows, 2 inverse steps).
 
 .PARAMETER RunDir
-    Custom output directory on the REMOTE machine.
-    Default: D:\Raymond\high_low_freq_NILM\Neural-adjoint inverse optimization\runs\pipeline_<timestamp>
+    Exact custom output directory on the REMOTE machine (overrides -Name).
+    Default: D:\Raymond\high_low_freq_NILM\Neural-adjoint inverse optimization\runs\<Name>
 
 .PARAMETER Overwrite
     Pass --overwrite to pipeline.py (allow reusing an existing run-dir).
 
 .EXAMPLE
-    # Full pipeline (double-click or press the IDE Run button):
-    .\run_pipeline.ps1
+    # Name your experiment nicely:
+    .\run_pipeline.ps1 -Name "e1_baseline"
 
-    # Quick smoke test:
-    .\run_pipeline.ps1 -Smoke
-
-    # Custom run directory:
-    .\run_pipeline.ps1 -RunDir "D:\Raymond\...\runs\my_experiment"
+    # Quick smoke test with a custom name:
+    .\run_pipeline.ps1 -Name "smoke_check" -Smoke
 #>
 
 param(
+    [string]$Name     = "",
     [switch]$Smoke,
     [string]$RunDir   = "",
     [switch]$Overwrite
@@ -63,19 +65,30 @@ $RemoteRoot  = "D:\Raymond\high_low_freq_NILM"
 $RemoteProj  = "$RemoteRoot\Neural-adjoint inverse optimization"
 $RemotePy    = "C:\Users\PC\anaconda3\envs\nilm\python.exe"
 $LogDir      = "$RemoteRoot\runs\_logs"
-$Timestamp   = (Get-Date -Format "yyyyMMdd_HHmmss")
-$TaskName    = "NeuralAdjointPipeline_$Timestamp"
+# ── Resolve experiment name from configs\stage1.yaml if not explicitly set ──
+$cfgFile = "$LocalRoot\Neural-adjoint inverse optimization\configs\stage1.yaml"
+if ($Name -eq "" -and $RunDir -eq "" -and (Test-Path $cfgFile)) {
+    $matched = Select-String -Path $cfgFile -Pattern '^\s*name:\s*([^\s#]+)'
+    if ($matched) {
+        $Name = $matched.Matches[0].Groups[1].Value.Trim()
+    }
+}
+if ($Name -eq "") { $Name = "forward_cnn" }
+
+$suffix    = if ($Smoke) { "_smoke" } else { "" }
+$cleanName = "$Name$suffix"
+$TaskName  = "NA_$cleanName"
 
 # ── Resolve pipeline arguments ────────────────────────────────────────────────
 $PipelineArgs = ""
 if ($Smoke)     { $PipelineArgs += " --smoke" }
 if ($Overwrite) { $PipelineArgs += " --overwrite" }
+
 if ($RunDir -ne "") {
     $PipelineArgs += " --run-dir `"$RunDir`""
 } else {
-    $suffix   = if ($Smoke) { "_smoke" } else { "" }
-    $RunDir   = "$RemoteProj\runs\pipeline_$Timestamp$suffix"
-    $PipelineArgs += " --run-dir `"$RunDir`""
+    $RunDir = "$RemoteProj\runs\$cleanName"
+    $PipelineArgs += " --name `"$cleanName`""
 }
 
 $StdoutLog = "$LogDir\$TaskName.stdout.log"

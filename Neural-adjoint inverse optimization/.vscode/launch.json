@@ -2,7 +2,20 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "▶ Run Full Pipeline (remote GPU)",
+      "name": "▶ Run Pipeline (Custom Name prompt)",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-ExecutionPolicy", "Bypass",
+        "-File", "${workspaceFolder}/run_pipeline.ps1",
+        "-Name", "${input:experimentName}"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "▶ Run Full Pipeline (auto-timestamp)",
       "type": "node",
       "request": "launch",
       "runtimeExecutable": "powershell",
@@ -26,6 +39,13 @@
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
     }
+  ],
+  "inputs": [
+    {
+      "id": "experimentName",
+      "type": "promptString",
+      "description": "Enter custom experiment name (e.g. baseline, e1_shared_cnn):",
+      "default": "baseline_run"
+    }
   ]
 }
-

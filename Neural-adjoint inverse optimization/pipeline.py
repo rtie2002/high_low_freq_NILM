@@ -719,10 +719,16 @@ def main() -> None:
         help="Stage-1 config YAML (default: configs/stage1.yaml).",
     )
     parser.add_argument(
+        "--name", "-n",
+        type=str,
+        default=None,
+        help="Experiment name (e.g. 'baseline', 'e1_shared_cnn'). Stored under runs/<name>.",
+    )
+    parser.add_argument(
         "--run-dir",
         type=Path,
         default=None,
-        help="Output root directory. Auto-named with a timestamp if omitted.",
+        help="Exact output root directory. Overrides --name.",
     )
     parser.add_argument(
         "--overwrite",
@@ -740,9 +746,25 @@ def main() -> None:
     if not config_path.exists():
         parser.error(f"Config not found: {config_path}")
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    suffix    = "_smoke" if args.smoke else ""
-    run_dir   = (args.run_dir or config_path.parent.parent / "runs" / f"pipeline_{timestamp}{suffix}").resolve()
+    from utils.config import load_yaml
+    cfg_raw = load_yaml(config_path)
+    cfg_run = cfg_raw.get("run", {})
+    cfg_root = (config_path.parent / cfg_run.get("root", "../runs")).resolve()
+    cfg_name = str(cfg_run.get("name", "pipeline")).strip()
+
+    if args.run_dir:
+        run_dir = args.run_dir.resolve()
+    elif args.name:
+        run_name = args.name.strip()
+        if args.smoke and not run_name.endswith("_smoke"):
+            run_name += "_smoke"
+        run_dir = (cfg_root / run_name).resolve()
+    else:
+        # Directly use name from configs/stage1.yaml (clean, no ugly timestamp)
+        run_name = cfg_name
+        if args.smoke and not run_name.endswith("_smoke"):
+            run_name += "_smoke"
+        run_dir = (cfg_root / run_name).resolve()
 
     args_dict = {
         "config"   : str(config_path),

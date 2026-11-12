@@ -21,14 +21,16 @@ def main() -> None:
     length = int(config["data"]["window_length"])
     total = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     latent = (length + model.DOWNSAMPLE - 1) // model.DOWNSAMPLE
+    encoder_summary = model.encoder if hasattr(model, "encoder") else f"5 independent encoders:\n{model.encoders}"
+    decoder_summary = model.decoder if hasattr(model, "decoder") else f"5 independent decoders:\n{model.decoders}"
     text = f"""# CNN architecture report
 
-Generated from `{args.config.name}`.
+Generated from `{args.config.name}`. Model: `{config['model']['name']}`.
 
 | Item | Value |
 | --- | --- |
+| Model type | `{model.__class__.__name__}` |
 | Input power | `[B, 5, {length}]` |
-| Encoder single-trace input | `[B, 1, {length}]` |
 | Latent code | `[B, 5, {model.latent_channels}, {latent}]` |
 | Decoder output | `[B, 5, {length}]` |
 | Downsampling factor | {model.DOWNSAMPLE} |
@@ -36,13 +38,11 @@ Generated from `{args.config.name}`.
 
 ## Encoder
 
-`{model.encoder}`
+`{encoder_summary}`
 
 ## Decoder
 
-`{model.decoder}`
-
-The shared conditional decoder concatenates one fixed five-dimensional appliance identity vector to each latent code before decoding. The final Softplus enforces nonnegative power.
+`{decoder_summary}`
 """
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(text, encoding="utf-8")
