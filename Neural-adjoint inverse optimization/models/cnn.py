@@ -171,6 +171,117 @@ class ApplianceSpecificCNN(nn.Module):
         return reconstructed, reconstructed.sum(dim=1)
 
 
+class SharedTrunkCNN(nn.Module):
+    """Shared Encoder + Shared Decoder Trunk + five Appliance-Specific Output Heads (E3).
+
+    Each appliance trace goes through the same encoder and the same decoder
+    trunk. The trunk produces an intermediate feature map, and then each
+    appliance feeds its feature map into its own one-layer convolutional head.
+    This lets every head learn its own output amplitude and bias independently,
+    without the negative-transfer risk of sharing the final projection weights.
+
+    Data flow (per appliance i):
+        P_i  [B, 1, T]  --encoder-->  z_i  [B, Z, L]
+        z_i             --trunk  -->  h_i  [B, H, T']     (H = hidden_channels)
+        h_i             --head_i -->  P_hat_i [B, 1, T]   (softplus, nonneg)
+
+    The public interface is identical to ApplianceConditionedCNN so Stage 2
+    inverse optimisation requires no changes.
+
+    Parameter budget (defaults: hidden=32, latent=2):
+        encoder:  shared Conv stack         ~5,440 params
+        trunk  :  shared ConvTranspose stack ~8,320 params
+        heads  :  5 x ConvTranspose1d(32->1, k=4)  ~980 params
+        total  : ~14,740 params
+    """
+
+    APPLIANCES = ApplianceConditionedCNN.APPLIANCES
+    DOWNSAMPLE = ApplianceConditionedCNN.DOWNSAMPLE
+
+    def __init__(
+        self,
+        hidden_channels: int = 32,
+        latent_channels: int = 2,
+        output_softplus_beta: float = 10.0,
+        output_bias: float = -0.3,
+    ):
+        super().__init__()
+        self.latent_channels = latent_channels
+        self.output_softplus_beta = float(output_softplus_beta)
+
+        # -- Shared encoder (same weights for every appliance) ----------------
+        self.encoder = nn.Sequential(
+            nn.Conv1d(1, hidden_channels, kernel_size=4, stride=2, padding=1),
+            nn.GELU(),
+            nn.Conv1d(hidden_channels, hidden_channels, kernel_size=4, stride=2, padding=1),
+            nn.GELU(),
+            nn.Conv1d(hidden_channels, latent_channels, kernel_size=4, stride=2, padding=1),
+        )
+
+        # -- Shared decoder trunk (same weights for every appliance) ----------
+        # Upsamples latent codes back toward original resolution and produces a
+        # hidden feature map [B*5, hidden_channels, T'] for the per-head step.
+        self.decoder_trunk = nn.Sequential(
+            nn.ConvTranspose1d(latent_channels, hidden_channels, 4, stride=2, padding=1),
+            nn.GELU(),
+            nn.ConvTranspose1d(hidden_channels, hidden_channels, 4, stride=2, padding=1),
+            nn.GELU(),
+        )
+
+        # -- Five appliance-specific output heads -----------------------------
+        # One ConvTranspose1d per appliance: hidden_channels -> 1.
+        # Each head learns its own kernel, bias, and implicitly its own output
+        # amplitude -- the main hypothesis behind E3.
+        self.heads = nn.ModuleList([
+            nn.ConvTranspose1d(hidden_channels, 1, 4, stride=2, padding=1)
+            for _ in self.APPLIANCES
+        ])
+        for head in self.heads:
+            nn.init.constant_(head.bias, float(output_bias))
+
+    def encode(self, appliance_power: Tensor) -> Tensor:
+        """Map [B, 5, T] to [B, 5, Z, ceil(T / 8)] via the shared encoder."""
+        if (
+            appliance_power.ndim != 3
+            or appliance_power.shape[1] != len(self.APPLIANCES)
+            or appliance_power.shape[-1] < 1
+        ):
+            raise ValueError("appliance_power must have shape [B, 5, T] with T > 0.")
+        batch, appliances, time = appliance_power.shape
+        pad_right = (-time) % self.DOWNSAMPLE
+        # Flatten appliance axis into batch so the shared Conv1d sees B*5 traces.
+        traces = F.pad(appliance_power.reshape(batch * appliances, 1, time), (0, pad_right))
+        codes = self.encoder(traces)                          # [B*5, Z, L]
+        return codes.reshape(batch, appliances, self.latent_channels, codes.shape[-1])
+
+    def decode(self, codes: Tensor, output_length: int) -> Tensor:
+        """Map [B, 5, Z, ceil(T/8)] to [B, 5, T] via shared trunk + heads."""
+        appliances = len(self.APPLIANCES)
+        expected_latent_time = (output_length + self.DOWNSAMPLE - 1) // self.DOWNSAMPLE
+        if (
+            codes.ndim != 4
+            or codes.shape[1:3] != (appliances, self.latent_channels)
+            or codes.shape[-1] != expected_latent_time
+        ):
+            raise ValueError("codes must have shape [B, 5, latent_channels, ceil(T / 8)].")
+        batch = codes.shape[0]
+        # Transpose to [5, B, Z, L] before flattening so that after flatten(0,1)
+        # row i*B..(i+1)*B contains all batch items for appliance i.
+        # This lets each head slice exactly its own appliance's features.
+        features = self.decoder_trunk(codes.transpose(0, 1).flatten(0, 1))  # [5*B, H, T']
+        traces = []
+        for i, head in enumerate(self.heads):
+            feat_i = features[i * batch : (i + 1) * batch]        # [B, H, T']
+            power_i = F.softplus(head(feat_i), beta=self.output_softplus_beta)
+            traces.append(power_i[..., :output_length])            # [B, 1, T]
+        return torch.cat(traces, dim=1)                            # [B, 5, T]
+
+    def forward(self, appliance_power: Tensor) -> tuple[Tensor, Tensor]:
+        codes = self.encode(appliance_power)
+        reconstructed = self.decode(codes, output_length=appliance_power.shape[-1])
+        return reconstructed, reconstructed.sum(dim=1)
+
+
 def build_forward_model(model_config: dict[str, object]) -> nn.Module:
     """Create one ablation model from the checkpoint/YAML model mapping."""
     config = dict(model_config)
@@ -178,5 +289,6 @@ def build_forward_model(model_config: dict[str, object]) -> nn.Module:
     models = {
         "appliance_conditioned_cnn": ApplianceConditionedCNN,
         "appliance_specific_cnn": ApplianceSpecificCNN,
+        "shared_trunk_cnn": SharedTrunkCNN,
     }
     return models[name](**config)

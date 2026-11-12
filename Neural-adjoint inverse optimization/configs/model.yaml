@@ -1,7 +1,7 @@
 # CNN-only configuration. Copy these values into a new checkpoint experiment
 # only when you intentionally accept that old checkpoints may not load.
 model:
-  name: appliance_specific_cnn
+  name: shared_trunk_cnn
   hidden_channels: 32
   latent_channels: 2
   output_softplus_beta: 10.0

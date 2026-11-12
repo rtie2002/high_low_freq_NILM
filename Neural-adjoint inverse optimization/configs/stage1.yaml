@@ -3,7 +3,7 @@
 
 run:
   root: ../runs
-  name: e2_appliance_specific_cnn
+  name: e3_shared_trunk_cnn
   seed: 2026
   device: auto                 # auto selects CUDA when available, otherwise CPU.
   deterministic: false         # true trades speed for more repeatable CUDA kernels.
