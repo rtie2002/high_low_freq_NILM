@@ -7,31 +7,27 @@ Runs the full two-stage workflow described in
 Stages
 ------
 1. Train the appliance-conditioned CNN forward model (Stage 1).
-2. Freeze the decoder; run latent inverse optimisation on the validation
-   split (Stage 2 — validation).
-3. Run Stage-2 inference on two held-out test houses in parallel:
-     • REFIT House 20
-     • UK-DALE House 2
-
-Everything is timed, logged to the terminal with rich progress banners, and
-summarised in a JSON + markdown pipeline report.
+   - Generates loss curves, best checkpoint, validation reconstruction waveforms,
+     and reconstruction metrics.
+   - Outputs saved to: <run-dir>/forward/
+2. Freeze the decoder; run latent inverse optimisation:
+   - Stage 2 Validation split.
+   - Stage 2 UK-DALE House 2 test scenario.
+   - Stage 2 REFIT House 20 test scenario.
+   - Outputs saved to: <run-dir>/inverse/
+   - Generates high-resolution PNG comparison table for the two test houses
+     matching publication benchmark standards.
 
 Usage
 -----
   python pipeline.py [--config configs/stage1.yaml] [--run-dir runs/pipeline_<timestamp>]
                      [--overwrite] [--smoke]
-
-Flags
------
-  --config     Stage-1 config path (default: configs/stage1.yaml).
-  --run-dir    Output root; subdirectories are created for each stage.
-  --overwrite  Allow reusing an existing run directory.
-  --smoke      One epoch, two batches, two inverse steps — fast sanity check.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import os
@@ -43,8 +39,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# Guarantee project root is in sys.path regardless of execution working directory
+_PROJECT_ROOT = Path(__file__).resolve().parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 import numpy as np
+import pandas as pd
 import torch
+
+from utils.plot_table import plot_benchmark_table_png
 
 # ─── pretty terminal helpers ──────────────────────────────────────────────────
 
@@ -90,8 +94,6 @@ def fmt_bytes(n: int) -> str:
     return f"{n:.1f} TB"
 
 
-# ─── model-size helpers ───────────────────────────────────────────────────────
-
 def count_parameters(model: torch.nn.Module) -> int:
     return sum(p.numel() for p in model.parameters())
 
@@ -100,59 +102,159 @@ def checkpoint_size_bytes(path: Path) -> int:
     return path.stat().st_size
 
 
-# ─── stage 1 ─────────────────────────────────────────────────────────────────
+# ─── stage 1: forward model training & waveform reconstruction ────────────────
 
 def run_stage1(
     config_path: Path,
-    run_dir: Path,
+    forward_dir: Path,
     *,
     smoke: bool,
     overwrite: bool,
 ) -> dict[str, Any]:
-    """Train the forward model and return timing + metric info."""
-    banner("STAGE 1 — Forward model training", CYAN)
-    info(f"Config : {config_path}")
-    info(f"Run dir: {run_dir}")
-    info(f"Smoke  : {smoke}")
+    """Train forward model, then reconstruct and plot validation waveforms."""
+    banner("STAGE 1 — Forward model training & waveform reconstruction", CYAN)
+    info(f"Config      : {config_path}")
+    info(f"Forward dir : {forward_dir}")
+    info(f"Smoke       : {smoke}")
 
-    # Import lazily so the script can at least print the banner even if
-    # a dependency is missing.
     from stage1_forward.train import train as train_forward
+    from models.cnn import build_forward_model
+    from utils.config import load_yaml
+    from utils.protocol import load_protocol
+    from utils.waveform_capture import save_appliance_on_waveforms
+    from utils.metrics import evaluate_bundle
+    from utils.output_format import save_result_table
+    from utils.prediction import PredictionBundle
 
     t0 = time.perf_counter()
-    output_dir = train_forward(config_path, run_dir=run_dir, smoke=smoke, overwrite=overwrite)
-    elapsed = time.perf_counter() - t0
+    output_dir = train_forward(config_path, run_dir=forward_dir, smoke=smoke, overwrite=overwrite)
+    train_elapsed = time.perf_counter() - t0
 
     checkpoint = output_dir / "best.pt"
     manifest_path = output_dir / "run_manifest.json"
     with manifest_path.open(encoding="utf-8") as fh:
         manifest = json.load(fh)
 
+    config = load_yaml(config_path)
     ckpt = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    from models.cnn import build_forward_model
-    model_tmp = build_forward_model(ckpt["model_config"])
-    n_params = count_parameters(model_tmp)
-    del model_tmp
-
+    model = build_forward_model(ckpt["model_config"])
+    model.load_state_dict(ckpt["model_state_dict"])
+    n_params = count_parameters(model)
     ckpt_bytes = checkpoint_size_bytes(checkpoint)
 
-    ok(f"Forward training finished in {fmt_seconds(elapsed)}")
+    ok(f"Forward training finished in {fmt_seconds(train_elapsed)}")
     ok(f"Best epoch : {manifest['best_epoch']}  |  "
        f"Val MSE : {manifest['best_validation_mse']:.6g}")
-    ok(f"Parameters : {n_params:,}")
-    ok(f"Checkpoint : {fmt_bytes(ckpt_bytes)}  ({checkpoint})")
+    ok(f"Parameters : {n_params:,}  |  Checkpoint : {fmt_bytes(ckpt_bytes)}")
 
+    # ── Evaluate and plot Stage 1 reconstructed waveforms ──────────────────────
+    banner("  Stage 1 — Reconstructing and plotting waveforms", YELLOW)
+    device_name = str(config.get("run", {}).get("device", "auto"))
+    if device_name == "auto":
+        device_name = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(device_name)
+    model = model.to(device).eval()
+
+    length = int(manifest["window_length"])
+    stride = int(manifest["window_stride"])
+    scale = float(manifest["power_scale_watts"])
+    seed = int(config.get("run", {}).get("seed", 2026))
+
+    protocol = load_protocol(
+        experiment_path=config_path,
+        window_length=length,
+        stride=stride,
+        batch_size=int(config.get("training", {}).get("batch_size", 64)),
+    )
+    val_raw = protocol.loader.get_split("validation")
+    val_dataset = protocol.loader.build_dataset("validation")
+    starts = val_dataset.indices if not smoke else val_dataset.indices[:4]
+
+    info(f"Reconstructing {len(starts)} validation windows through forward model...")
+    reconstructed_windows = []
+    offsets = np.arange(length)
+    batch_size = 64
+    with torch.no_grad():
+        for off in range(0, len(starts), batch_size):
+            rows = starts[off : off + batch_size, None] + offsets
+            batch_targets = torch.as_tensor(
+                val_raw.targets[rows] / scale, device=device, dtype=torch.float32
+            ).transpose(1, 2)
+            reconstructed, _ = model(batch_targets)
+            # [B, 5, length] -> [B, length, 5] scaled back to Watts
+            reconstructed_windows.append(
+                reconstructed.transpose(1, 2).cpu().numpy() * scale
+            )
+
+    merged_val, covered_rows = protocol.loader.reconstruct_timeline_from_windows(
+        "validation", np.concatenate(reconstructed_windows)
+    )
+
+    # Save waveform reconstructions (.png)
+    waveforms_dir = output_dir / "waveforms"
+    waveform_periods = int(config.get("evaluation", {}).get("on_periods", 5))
+    waveform_dpi = int(config.get("evaluation", {}).get("dpi", 300))
+
+    pred_on = (merged_val >= protocol.thresholds_watts[None, :]).astype(np.int32)
+    save_appliance_on_waveforms(
+        waveforms_dir,
+        appliances=protocol.appliances,
+        y_true_watts=val_raw.targets[covered_rows],
+        y_pred_watts=merged_val,
+        y_true_on=val_raw.states[covered_rows].astype(np.int32),
+        y_pred_on=pred_on,
+        state_label_source="csv",
+        aggregate=val_raw.inputs[covered_rows],
+        csv_timesteps=covered_rows,
+        segment_ids=val_raw.segment_ids[covered_rows],
+        n_periods=waveform_periods,
+        dpi=waveform_dpi,
+        context_scale=10.0,
+        title_prefix="Forward Stage 1 Reconstruction — ",
+        rng=np.random.default_rng(seed),
+    )
+    ok(f"Saved Stage-1 validation waveform figures to: {waveforms_dir}")
+
+    # Compute and save Stage 1 reconstruction metrics
+    bundle = PredictionBundle(
+        experiment_id=str(protocol.experiment.get("dataset_id", "stage1_reconstruction")),
+        model_name="forward_cnn_reconstruction",
+        split="validation",
+        appliances=protocol.appliances,
+        sample_index=np.arange(len(covered_rows), dtype=np.int64),
+        y_true_watts=val_raw.targets[covered_rows],
+        y_pred_watts=merged_val * pred_on,
+        y_true_on=val_raw.states[covered_rows].astype(np.int32),
+        y_pred_on=pred_on,
+        y_pred_state_prob=None,
+        csv_timesteps=covered_rows,
+        segment_ids=val_raw.segment_ids[covered_rows],
+    )
+    bundle.save(output_dir / "reconstruction.npz")
+    metrics_df = evaluate_bundle(
+        bundle,
+        on_threshold_watts=protocol.thresholds_watts,
+        state_label_source="csv",
+        sample_seconds=float(protocol.experiment.get("csv", {}).get("sample_seconds", 8.0)),
+        state_scores=merged_val,
+    )
+    save_result_table(metrics_df, output_dir / "reconstruction_metrics.csv")
+    ok(f"Saved Stage-1 reconstruction metrics to: {output_dir / 'reconstruction_metrics.csv'}")
+
+    total_stage1_elapsed = time.perf_counter() - t0
     return {
         "stage": "stage1_forward",
         "run_dir": str(output_dir),
         "checkpoint": str(checkpoint),
-        "elapsed_seconds": elapsed,
+        "elapsed_seconds": total_stage1_elapsed,
+        "train_seconds": train_elapsed,
         "best_epoch": manifest["best_epoch"],
         "best_validation_mse": manifest["best_validation_mse"],
         "train_windows": manifest["train_windows"],
         "validation_windows": manifest["validation_windows"],
         "parameter_count": n_params,
         "checkpoint_bytes": ckpt_bytes,
+        "waveforms_dir": str(waveforms_dir),
     }
 
 
@@ -177,7 +279,6 @@ def _run_one_inverse(
     """Run Stage-2 inverse optimisation for one split and return timing + metrics."""
     from utils.config import load_yaml
 
-    # Merge stage2 defaults with any overrides.
     config = load_yaml(config_path)
     if "stage1_config" in config:
         stage1_path = config_path.parent / config["stage1_config"]
@@ -192,7 +293,7 @@ def _run_one_inverse(
     resolved_steps        = steps         if steps         is not None else int(settings["steps"])
     resolved_lr           = learning_rate if learning_rate is not None else float(settings["learning_rate"])
     resolved_batch        = batch_size    if batch_size    is not None else int(settings["batch_size"])
-    resolved_init         = train_mean_init if train_mean_init is not None else bool(settings.get("train_mean_init", False))
+    resolved_init         = train_mean_init if train_mean_init is not None else bool(settings.get("train_mean_init", True))
     resolved_prior        = prior_weight  if prior_weight  is not None else float(settings.get("prior_weight", 0.0))
     resolved_device_name  = device        if device        is not None else str(settings.get("device", "auto"))
 
@@ -205,7 +306,6 @@ def _run_one_inverse(
         resolved_device_name = "cuda" if torch.cuda.is_available() else "cpu"
     dev = torch.device(resolved_device_name)
 
-    import math as _math
     seed = int(config["run"]["seed"])
     gen  = torch.Generator(device=dev).manual_seed(seed)
 
@@ -217,7 +317,7 @@ def _run_one_inverse(
     length = int(ckpt["window_length"])
     stride = int(config["data"]["window_stride"])
 
-    # Freeze decoder weights — Stage-2 optimises only the latent codes z.
+    # Freeze decoder weights — Stage 2 optimizes only latent codes
     model.eval().requires_grad_(False)
 
     from utils.protocol import load_protocol, save_inverse_evaluation
@@ -231,7 +331,6 @@ def _run_one_inverse(
         batch_size=resolved_batch,
     )
 
-    # Build train-mean initial code if requested.
     initial_code_center = None
     latent_prior        = None
     prior_starts        = []
@@ -257,7 +356,7 @@ def _run_one_inverse(
     mains_watts = protocol.loader.get_split(split).inputs
     starts      = dataset.indices[:max_windows]
 
-    info(f"  Split: {split}  |  Windows: {len(starts)}  |  Steps: {resolved_steps}  |  "
+    info(f"Split: {split}  |  Windows: {len(starts)}  |  Steps: {resolved_steps}  |  "
          f"LR: {resolved_lr}  |  Device: {resolved_device_name}")
 
     offsets        = np.arange(length)
@@ -271,7 +370,7 @@ def _run_one_inverse(
         rows   = starts[offset : offset + resolved_batch, None] + offsets
         meter  = torch.as_tensor(mains_watts[rows] / scale, device=dev, dtype=torch.float32)
         init_c = (
-            initial_code_center.expand(len(rows), -1, -1, _math.ceil(length / model.DOWNSAMPLE))
+            initial_code_center.expand(len(rows), -1, -1, math.ceil(length / model.DOWNSAMPLE))
             if resolved_init else None
         )
         power, background, initial_mse, best_mse = solve_windows(
@@ -289,7 +388,6 @@ def _run_one_inverse(
         initial_losses.append(initial_mse.cpu().numpy())
         best_losses.append(best_mse.cpu().numpy())
 
-        # Progress bar: print every 10 % (or every batch for small runs).
         report_every = max(1, n_batches // 10)
         if (batch_idx + 1) % report_every == 0 or batch_idx + 1 == n_batches:
             pct    = 100 * (batch_idx + 1) / n_batches
@@ -363,22 +461,21 @@ def _run_one_inverse(
         raw_appliance_watts=appliances_watts,
     )
 
-    # Read the saved macro metrics for the summary table.
     metrics_csv = run_dir / "metrics.csv"
     macro_metrics: dict[str, float] = {}
     if metrics_csv.exists():
-        import csv as _csv
         with metrics_csv.open(encoding="utf-8") as fh:
-            reader = _csv.DictReader(fh)
+            reader = csv.DictReader(fh)
             for mrow in reader:
-                if mrow.get("appliance", "").lower() == "macro":
+                app_name = mrow.get("appliance", "").lower()
+                if app_name in ("macro", "overall"):
                     for k, v in mrow.items():
                         try:
                             macro_metrics[k] = float(v)
                         except (ValueError, TypeError):
                             pass
 
-    ok(f"[{split}] Inverse done in {fmt_seconds(elapsed)}  |  "
+    ok(f"[{split}] Inverse complete in {fmt_seconds(elapsed)}  |  "
        f"AggMAE {agg_mae:.1f} W  |  "
        f"InitRMSE {init_rmse:.1f} W → BestRMSE {best_rmse:.1f} W")
 
@@ -396,32 +493,33 @@ def _run_one_inverse(
     }
 
 
-# ─── stage 2 dispatcher ───────────────────────────────────────────────────────
+# ─── stage 2 dispatcher: all inverse results in inverse/ ───────────────────────
 
 def run_stage2(
     config_path: Path,
     checkpoint: Path,
-    base_run_dir: Path,
+    inverse_root_dir: Path,
     *,
     smoke: bool,
     overwrite: bool,
 ) -> list[dict[str, Any]]:
-    """Run Stage-2 inverse optimisation on validation and both test houses."""
-    banner("STAGE 2 — Frozen-decoder inverse optimisation", CYAN)
+    """Run Stage-2 inverse optimisation: validation and two held-out test houses.
+    
+    All results are placed inside inverse_root_dir (e.g. <run_dir>/inverse/).
+    Generates a high-resolution comparison table PNG of the test houses.
+    """
+    banner("STAGE 2 — Frozen-decoder inverse optimisation (all into inverse/)", CYAN)
+    info(f"Inverse root dir: {inverse_root_dir}")
 
     from utils.config import load_yaml
     stage2_config = config_path.parent / "stage2.yaml"
     if not stage2_config.exists():
-        stage2_config = config_path  # Fallback: use stage1 config directly.
+        stage2_config = config_path
 
-    # Splits: validation first, then both test houses (use their scenario IDs).
-    # The two test houses are: refit_house20, ukdale_house2.
-    # 'validation' always uses the standard validation split.
-    # 'test' uses the combined test file. We also evaluate per-house scenarios.
     splits_to_run = [
-        ("validation",    base_run_dir / "stage2_validation"),
-        ("refit_house20", base_run_dir / "stage2_test_refit_house20"),
-        ("ukdale_house2", base_run_dir / "stage2_test_ukdale_house2"),
+        ("validation",    inverse_root_dir / "validation"),
+        ("ukdale_house2", inverse_root_dir / "ukdale_house2"),
+        ("refit_house20", inverse_root_dir / "refit_house20"),
     ]
 
     results = []
@@ -436,7 +534,7 @@ def run_stage2(
                 steps=None,
                 batch_size=None,
                 learning_rate=None,
-                train_mean_init=True,   # Match the established best practice.
+                train_mean_init=True,
                 prior_weight=None,
                 max_windows=None,
                 overwrite=overwrite,
@@ -450,9 +548,18 @@ def run_stage2(
                 "stage"           : f"stage2_{split}",
                 "split"           : split,
                 "run_dir"         : str(run_dir),
-                "elapsed_seconds" : 0.0,
                 "error"           : str(exc),
             })
+
+    # ── High-resolution benchmark comparison table (PNG) ──────────────────────
+    ukdale_metrics = inverse_root_dir / "ukdale_house2" / "metrics.csv"
+    refit_metrics  = inverse_root_dir / "refit_house20" / "metrics.csv"
+    table_png_path = inverse_root_dir / "test_houses_benchmark.png"
+
+    if ukdale_metrics.exists() and refit_metrics.exists():
+        banner("  Generating publication benchmark comparison table (PNG)", CYAN)
+        plot_benchmark_table_png(ukdale_metrics, refit_metrics, table_png_path, dpi=300)
+        ok(f"Saved high-resolution benchmark table: {table_png_path}")
 
     return results
 
@@ -467,14 +574,15 @@ def print_summary(
 ) -> None:
     banner("PIPELINE SUMMARY", GREEN)
 
-    # Stage 1
     info(f"{'Stage 1 — forward training':40s}  {fmt_seconds(stage1['elapsed_seconds'])}")
     info(f"  Best epoch : {stage1['best_epoch']}   "
          f"Val MSE : {stage1['best_validation_mse']:.6g}")
     info(f"  Parameters : {stage1['parameter_count']:,}   "
          f"Checkpoint : {fmt_bytes(stage1['checkpoint_bytes'])}")
+    if "waveforms_dir" in stage1:
+        info(f"  Waveforms  : {stage1['waveforms_dir']}")
 
-    # Stage 2
+    print()
     for r in stage2_results:
         split   = r.get("split", "?")
         elapsed = r.get("elapsed_seconds", 0.0)
@@ -494,7 +602,7 @@ def print_summary(
 
     print()
     ok(f"Total pipeline time : {fmt_seconds(total_elapsed)}")
-    ok(f"Report written to   : {report_path}")
+    ok(f"Markdown report     : {report_path}")
 
 
 # ─── markdown report ──────────────────────────────────────────────────────────
@@ -505,6 +613,7 @@ def write_report(
     stage2_results: list[dict[str, Any]],
     total_elapsed: float,
     args_dict: dict[str, Any],
+    table_png_rel: str = "inverse/test_houses_benchmark.png",
 ) -> None:
     lines: list[str] = []
     ts = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -526,7 +635,6 @@ def write_report(
             "",
         ]
 
-    # Pipeline args
     lines += [
         "## Pipeline Arguments",
         "",
@@ -537,9 +645,8 @@ def write_report(
         lines.append(f"| `{k}` | `{v}` |")
     lines.append("")
 
-    # Stage 1
     lines += [
-        "## Stage 1 — Forward Model Training",
+        "## Stage 1 — Forward Model Training & Reconstruction",
         "",
         "| Metric | Value |",
         "| --- | --- |",
@@ -551,21 +658,22 @@ def write_report(
         f"| Training windows | {stage1['train_windows']:,} |",
         f"| Validation windows | {stage1['validation_windows']:,} |",
         f"| Checkpoint path | `{stage1['checkpoint']}` |",
+        f"| Waveforms directory | `{stage1.get('waveforms_dir', 'forward/waveforms')}` |",
         "",
     ]
 
-    # Stage 2
     lines += [
-        "## Stage 2 — Inverse Optimisation Results",
+        "## Stage 2 — Inverse Optimisation Results (All in `inverse/`)",
         "",
-        "| Split | Time | Windows | AggMAE (W) | MacroMAE (W) | Macro-F1 | InitRMSE→BestRMSE (W) |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| Split | Time | Windows | AggMAE (W) | MacroMAE (W) | Macro-F1 | InitRMSE→BestRMSE (W) | Output Folder |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for r in stage2_results:
         split   = r.get("split", "?")
         elapsed = fmt_seconds(r.get("elapsed_seconds", 0.0))
+        rdir    = r.get("run_dir", "?")
         if "error" in r:
-            lines.append(f"| {split} | — | — | ERROR | {r['error'][:60]} | — | — |")
+            lines.append(f"| {split} | — | — | ERROR | {r['error'][:50]} | — | — | `{rdir}` |")
             continue
         windows = r.get("evaluated_windows", "?")
         agg_mae = r.get("aggregate_mae_w", float("nan"))
@@ -576,25 +684,17 @@ def write_report(
         best_r  = r.get("best_meter_rmse_w", float("nan"))
         lines.append(
             f"| {split} | {elapsed} | {windows} | {agg_mae:.1f} | "
-            f"{mae_w:.1f} | {f1:.3f} | {init_r:.1f} → {best_r:.1f} |"
+            f"{mae_w:.1f} | {f1:.3f} | {init_r:.1f} → {best_r:.1f} | `{rdir}` |"
         )
     lines.append("")
 
-    # Per-appliance macro metrics per split
-    lines += ["## Per-Split Macro Metrics", ""]
-    for r in stage2_results:
-        if "error" in r:
-            continue
-        split = r.get("split", "?")
-        m     = r.get("macro_metrics", {})
-        if not m:
-            continue
-        lines += [f"### {split}", "", "| Metric | Value |", "| --- | --- |"]
-        for k, v in m.items():
-            lines.append(f"| {k} | {v:.4g} |")
-        lines.append("")
+    lines += [
+        "## Benchmark Comparison Table (UK-DALE House 2 vs REFIT House 20)",
+        "",
+        f"![Two-House Benchmark Comparison]({table_png_rel})",
+        "",
+    ]
 
-    # Total time
     lines += [
         "## Total Pipeline",
         "",
@@ -611,18 +711,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Neural-Adjoint NILM end-to-end pipeline.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent("""\
-            Examples
-            --------
-            # Quick smoke test (1 epoch, 2 batches, 2 inverse steps):
-              python pipeline.py --smoke
-
-            # Full pipeline with custom output directory:
-              python pipeline.py --run-dir runs/pipeline_full
-
-            # Resume / overwrite an existing directory:
-              python pipeline.py --run-dir runs/pipeline_full --overwrite
-        """),
     )
     parser.add_argument(
         "--config",
@@ -652,7 +740,6 @@ def main() -> None:
     if not config_path.exists():
         parser.error(f"Config not found: {config_path}")
 
-    # Auto-name the run directory with a timestamp.
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix    = "_smoke" if args.smoke else ""
     run_dir   = (args.run_dir or config_path.parent.parent / "runs" / f"pipeline_{timestamp}{suffix}").resolve()
@@ -681,16 +768,17 @@ def main() -> None:
 
     t_pipeline_start = time.perf_counter()
 
-    # ── Stage 1 ──────────────────────────────────────────────────────────────
-    stage1_dir = run_dir / "stage1_forward"
+    # ── Stage 1: Forward training & reconstruction waveforms → forward/ ──────
+    forward_dir = run_dir / "forward"
     stage1_result = run_stage1(
-        config_path, stage1_dir, smoke=args.smoke, overwrite=args.overwrite
+        config_path, forward_dir, smoke=args.smoke, overwrite=args.overwrite
     )
     checkpoint = Path(stage1_result["checkpoint"])
 
-    # ── Stage 2 ──────────────────────────────────────────────────────────────
+    # ── Stage 2: Inverse optimisation → inverse/ ─────────────────────────────
+    inverse_dir = run_dir / "inverse"
     stage2_results = run_stage2(
-        config_path, checkpoint, run_dir,
+        config_path, checkpoint, inverse_dir,
         smoke=args.smoke, overwrite=args.overwrite,
     )
 
@@ -700,7 +788,6 @@ def main() -> None:
     report_path = run_dir / "pipeline_report.md"
     write_report(report_path, stage1_result, stage2_results, total_elapsed, args_dict)
 
-    # Save the full machine-readable summary.
     summary = {
         "pipeline_args"   : args_dict,
         "stage1"          : stage1_result,
@@ -717,4 +804,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
