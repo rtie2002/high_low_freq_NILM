@@ -6,10 +6,6 @@ Freeze the Stage 1 decoder G. Search for five codes z_i that minimise
     b*(z)   = max(0, mean_t(y(t) - s(t; z)))
     L(z)    = mean_t((s(t; z) + b*(z) - y(t))**2).
 
-Optional priors constrain codes to training distributions. The state-conditioned
-prior uses a differentiable ON probability from each decoded eight-sample block
-to blend separately estimated OFF and ON training-code penalties.
-
 All quantities inside the loss use the same scaled power units as Stage 1.
 The constant background b* is fitted analytically for each window and each
 candidate. The solver uses the whole window; it is an offline estimator.
@@ -25,7 +21,6 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import Tensor
-from torch.nn import functional as F
 
 from forward_model.cnn import ApplianceConditionedCNN
 from utils.config import load_yaml
@@ -43,7 +38,6 @@ def solve_windows(
     initial_codes: Tensor | None = None,
     fit_background: bool = True,
     latent_prior: tuple[Tensor, Tensor] | None = None,
-    state_latent_prior: tuple[Tensor, Tensor, Tensor, float] | None = None,
     prior_weight: float = 0.0,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     """Return selected appliance traces, background, initial and selected meter MSE.
@@ -57,10 +51,8 @@ def solve_windows(
         raise ValueError("steps and learning_rate must be positive.")
     if not math.isfinite(prior_weight) or prior_weight < 0:
         raise ValueError("prior_weight must be finite and nonnegative.")
-    if prior_weight and latent_prior is None and state_latent_prior is None:
+    if prior_weight and latent_prior is None:
         raise ValueError("A positive prior weight requires training code statistics.")
-    if latent_prior is not None and state_latent_prior is not None:
-        raise ValueError("Use either a global or state-conditioned latent prior.")
     model.eval().requires_grad_(False)
     batch, length = meter.shape
     # 1. Initialise z^(0) in the decoder's expected [B, 5, Z, ceil(T/8)] shape.
@@ -97,26 +89,9 @@ def solve_windows(
             loss_per_window = meter_error.square().mean(dim=-1)
             objective = loss_per_window
             if prior_weight:
-                if state_latent_prior is None:
-                    center, spread = latent_prior
-                    # A diagonal Gaussian penalty in training-code standard deviations.
-                    penalty = ((codes - center) / spread).square().mean(dim=(1, 2, 3))
-                else:
-                    centers, spreads, thresholds, temperature = state_latent_prior
-                    # Mean candidate power in each eight-sample latent block gives a
-                    # differentiable ON probability. This chooses between training
-                    # OFF and ON code distributions without access to test labels.
-                    block_power = F.adaptive_avg_pool1d(
-                        power.flatten(0, 1), latent_time
-                    ).reshape(batch, len(model.APPLIANCES), latent_time)
-                    on_probability = torch.sigmoid(
-                        (block_power - thresholds) / temperature
-                    )
-                    distance = ((codes.unsqueeze(0) - centers) / spreads).square().mean(dim=3)
-                    penalty = (
-                        (1.0 - on_probability) * distance[0]
-                        + on_probability * distance[1]
-                    ).mean(dim=(1, 2))
+                center, spread = latent_prior
+                # A diagonal Gaussian penalty in training-code standard deviations.
+                penalty = ((codes - center) / spread).square().mean(dim=(1, 2, 3))
                 objective = objective + prior_weight * penalty
 
         with torch.no_grad():
@@ -154,15 +129,11 @@ def main() -> None:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--train-mean-init", action="store_true")
     parser.add_argument("--prior-weight", type=float, default=0.0)
-    parser.add_argument("--prior-mode", choices=("global", "state"), default="global")
-    parser.add_argument("--state-temperature-watts", type=float, default=100.0)
     args = parser.parse_args()
     if args.batch_size < 1 or (args.max_windows is not None and args.max_windows < 1):
         parser.error("--batch-size and --max-windows must be positive.")
     if not math.isfinite(args.prior_weight) or args.prior_weight < 0:
         parser.error("--prior-weight must be finite and nonnegative.")
-    if not math.isfinite(args.state_temperature_watts) or args.state_temperature_watts <= 0:
-        parser.error("--state-temperature-watts must be finite and positive.")
     if args.run_dir.exists() and any(args.run_dir.iterdir()):
         parser.error("--run-dir must be empty or new.")
 
@@ -199,10 +170,8 @@ def main() -> None:
         parser.error(f"--split must be one of {', '.join(sorted(allowed_splits))}.")
 
     latent_prior = None
-    state_latent_prior = None
     initial_code_center = None
     prior_starts = []
-    prior_state_blocks = {}
     if args.train_mean_init or args.prior_weight:
         model.eval().requires_grad_(False)
         train = protocol.loader.get_split("train")
@@ -214,31 +183,8 @@ def main() -> None:
             training_power = torch.as_tensor(train.targets[rows] / scale, device=device).transpose(1, 2)
             codes = model.encode(training_power)
             initial_code_center = codes.mean((0, 3), keepdim=True)
-            if args.prior_mode == "global":
-                latent_prior = (initial_code_center,
-                                codes.std((0, 3), correction=0, keepdim=True).clamp_min(.01))
-            else:
-                training_states = torch.as_tensor(
-                    train.states[rows], device=device, dtype=torch.float32
-                ).transpose(1, 2)
-                block_on = F.adaptive_avg_pool1d(
-                    training_states.flatten(0, 1), codes.shape[-1]
-                ).reshape_as(codes[:, :, :1]) >= 0.5
-                statistics = []
-                for is_on in (False, True):
-                    mask = block_on if is_on else ~block_on
-                    count = mask.sum(dim=(0, 3)).clamp_min(1).to(codes.dtype)
-                    center = (codes * mask).sum(dim=(0, 3)) / count
-                    variance = ((codes - center[None, :, :, None]).square() * mask).sum(dim=(0, 3)) / count
-                    statistics.append((center[None, :, :, None], variance.sqrt().clamp_min(.01)[None, :, :, None]))
-                    prior_state_blocks["on" if is_on else "off"] = [int(v) for v in count.cpu()]
-                thresholds = torch.as_tensor(protocol.thresholds_watts / scale, device=device)[None, :, None]
-                state_latent_prior = (
-                    torch.stack([statistics[0][0], statistics[1][0]]),
-                    torch.stack([statistics[0][1], statistics[1][1]]),
-                    thresholds,
-                    args.state_temperature_watts / scale,
-                )
+            latent_prior = (initial_code_center,
+                            codes.std((0, 3), correction=0, keepdim=True).clamp_min(.01))
 
     # The benchmark loader supplies aligned window indices and mains readings.
     # The solver receives only meter values. Submeters are used by the evaluator.
@@ -258,7 +204,6 @@ def main() -> None:
         power, background, initial_mse, best_mse = solve_windows(
             model, meter, steps=args.steps, learning_rate=args.learning_rate, generator=generator,
             initial_codes=initial_codes, latent_prior=latent_prior, prior_weight=args.prior_weight,
-            state_latent_prior=state_latent_prior,
         )
         # Convert back to watts and merge appliance/background traces together.
         background_trace = background[:, None, None].expand(-1, 1, length)
@@ -283,10 +228,7 @@ def main() -> None:
         "seed": seed,
         "initialisation": "train_mean" if args.train_mean_init else "random",
         "prior_weight": args.prior_weight,
-        "prior_mode": args.prior_mode if args.prior_weight else None,
-        "state_temperature_watts": args.state_temperature_watts if args.prior_weight and args.prior_mode == "state" else None,
         "prior_train_window_starts": prior_starts,
-        "prior_state_latent_block_counts": prior_state_blocks,
         "steps": args.steps,
         "learning_rate": args.learning_rate,
         "batch_size": args.batch_size,
