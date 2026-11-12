@@ -1,0 +1,13 @@
+# Stage 2 reuses the split, scale and model values from stage1.yaml.
+# Only inverse-optimisation settings belong here.
+stage1_config: stage1.yaml
+inference:
+  steps: 150
+  learning_rate: 0.05
+  batch_size: 8
+  device: auto
+  split: validation
+  train_mean_init: false
+  prior_weight: 0.0
+  center_windows: 128
+  prior_min_std: 0.01

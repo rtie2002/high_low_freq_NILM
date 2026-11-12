@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-from .config import appliance_list, load_experiment
+from .config import appliance_list, load_experiment, resolve_data_root
 
 from .data_loader import NILMDataLoader
 from .metrics import apply_power_postprocess_pair, background_fpr_table, evaluate_bundle, resolve_power_postprocess
@@ -58,9 +58,7 @@ def load_protocol(
         "training": {"batch_size": batch_size, "num_workers": 0},
         "data": {"state_label_source": "csv"},
     }
-    data_root = Path(experiment["data_root"])
-    if not data_root.is_absolute():
-        data_root = experiment_path.parent / data_root
+    data_root = resolve_data_root(experiment_path, experiment)
     loader_experiment = experiment
     if csv_sequence_only:
         # Match Stage 1 windows, which use the preprocessed sequence IDs.

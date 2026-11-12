@@ -5,6 +5,8 @@
 **Audience:** Codex and research collaborators  
 **Language:** English for unambiguous implementation handoff.
 
+**Core research topic:** Deep learning-based inverse modeling for multi-appliance NILM.
+
 > **One-sentence mission:** Develop a three-paper research program for **multi-appliance NILM as an ill-posed inverse problem**, progressing from **identifiability-aware inverse optimization**, to **structured generative source priors**, to **diffusion posterior inference**. At inference, **only household aggregate power is observed**. Do **not** silently substitute an ordinary aggregate-to-appliance supervised predictor for the intended forward-model-based inversion.
 
 ---

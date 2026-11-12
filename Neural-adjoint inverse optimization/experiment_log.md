@@ -1,5 +1,17 @@
 # Inverse NILM baseline experiments
 
+## 2026-11-12 — Readability-only two-stage refactor
+
+The runnable project was reorganised without retraining or changing the model, split, optimiser, loss formulas, inverse solver update order, background fitting, checkpoint format, or evaluation protocol. `models/cnn.py` now contains the encoder/decoder. `stage1_forward/train.py` contains the normal PyTorch training loop; `stage2_inverse/inverse.py` contains frozen-decoder latent optimisation. Root `train.py`, `inverse.py`, `cnn.py`, and `data.py` remain compatibility imports/entry points.
+
+Configuration is now separated into `configs/model.yaml`, `configs/stage1.yaml`, and `configs/stage2.yaml`. The Stage-2 configuration references Stage 1 for the shared dataset split, scale and model settings. Historical inverse-aware F1 code remains available but is not the default loss. The reference BDIMNNA source is stored under `references/`, not imported by the NILM code.
+
+Verification performed without a dataset training run: all new Python modules compiled; `python -m models.inspect_model`, `python -m stage1_forward.train --help`, `python -m stage2_inverse.inverse --help`, and legacy root entry-point help commands succeeded. The architecture report confirms the unchanged shared CNN interface `[B,5,1024] -> [B,5,2,128] -> [B,5,1024]` and 9,731 trainable parameters. A one-step synthetic frozen-decoder inverse check confirmed that autograd updates latent codes while CNN parameters receive no gradients. No numerical training or validation metrics were regenerated.
+
+The Stage-1 reconstruction, event-balanced, and optional inverse-recovery objectives now live in `stage1_forward/losses.py`; curve output lives in `stage1_forward/visualize.py`. Stage-2 meter mismatch, constant-background estimate, and optional latent-prior terms live in `stage2_inverse/losses.py`. The Stage-2 default configuration path was checked after the move. A manual shape/backward check was used because the active local Python interpreter does not provide `pytest`.
+
+> **Archive note.** This is a historical experiment record. Commands and paths in older entries may refer to the pre-simplification layout. The current runnable entry points are `stage1_forward/train.py`, `stage2_inverse/inverse.py`, `configs/stage1.yaml`, and `configs/stage2.yaml`; root `train.py` and `inverse.py` remain compatibility entry points. Do not use an old command as a current instruction without translating it first.
+
 ## 2026-11-11 — Constant-background inversion
 
 - Code: `5f0a769`. RTX 4090, seed 2026, mixed UK-DALE and REFIT house-disjoint protocol.

@@ -26,10 +26,6 @@ class ApplianceConditionedCNN(nn.Module):
         output_bias: float = -0.3,
     ):
         super().__init__()
-        if hidden_channels < 1 or not 1 <= latent_channels < self.DOWNSAMPLE:
-            raise ValueError("Use positive hidden channels and 1–7 latent channels.")
-        if output_softplus_beta <= 0:
-            raise ValueError("output_softplus_beta must be positive.")
         self.latent_channels = latent_channels
         self.output_softplus_beta = float(output_softplus_beta)
         appliance_count = len(self.APPLIANCES)
@@ -59,7 +55,7 @@ class ApplianceConditionedCNN(nn.Module):
         if (
             appliance_power.ndim != 3
             or appliance_power.shape[1] != len(self.APPLIANCES)
-            or appliance_power.shape[-1] == 0
+            or appliance_power.shape[-1] < 1
         ):
             raise ValueError("appliance_power must have shape [B, 5, T] with T > 0.")
         batch, appliances, time = appliance_power.shape
@@ -76,7 +72,7 @@ class ApplianceConditionedCNN(nn.Module):
             raise ValueError("codes must have shape [B, 5, latent_channels, latent_time].")
         batch, _, _, latent_time = codes.shape
         expected_latent_time = (output_length + self.DOWNSAMPLE - 1) // self.DOWNSAMPLE
-        if output_length <= 0 or latent_time != expected_latent_time:
+        if output_length < 1 or latent_time != expected_latent_time:
             raise ValueError("latent_time must equal ceil(output_length / 8).")
 
         # Each device has its own code and a fixed one-hot ID. The convolutional
@@ -118,10 +114,6 @@ class ApplianceSpecificCNN(nn.Module):
         output_bias: float = -0.3,
     ):
         super().__init__()
-        if hidden_channels < 1 or not 1 <= latent_channels < self.DOWNSAMPLE:
-            raise ValueError("Use positive hidden channels and 1–7 latent channels.")
-        if output_softplus_beta <= 0:
-            raise ValueError("output_softplus_beta must be positive.")
         self.latent_channels = latent_channels
         self.output_softplus_beta = float(output_softplus_beta)
         self.encoders = nn.ModuleList([
@@ -152,7 +144,7 @@ class ApplianceSpecificCNN(nn.Module):
         if (
             appliance_power.ndim != 3
             or appliance_power.shape[1] != len(self.APPLIANCES)
-            or appliance_power.shape[-1] == 0
+            or appliance_power.shape[-1] < 1
         ):
             raise ValueError("appliance_power must have shape [B, 5, T] with T > 0.")
         pad_right = (-appliance_power.shape[-1]) % self.DOWNSAMPLE
@@ -187,6 +179,4 @@ def build_forward_model(model_config: dict[str, object]) -> nn.Module:
         "appliance_conditioned_cnn": ApplianceConditionedCNN,
         "appliance_specific_cnn": ApplianceSpecificCNN,
     }
-    if name not in models:
-        raise ValueError(f"Unknown forward model {name!r}; choose one of {tuple(models)}.")
     return models[name](**config)

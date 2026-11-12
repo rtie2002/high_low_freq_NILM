@@ -22,9 +22,9 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from forward_model.cnn import ApplianceConditionedCNN, build_forward_model
+from models.cnn import ApplianceConditionedCNN, build_forward_model
+from stage2_inverse.losses import diagonal_latent_prior, estimate_constant_background, meter_mse
 from utils.config import load_yaml
-from utils.data_loader import resolve_test_scenarios
 from utils.protocol import load_protocol, save_inverse_evaluation
 
 
@@ -45,14 +45,6 @@ def solve_windows(
     meter has shape [B, T]. Appliance traces have shape [B, 5, T].
     The background and MSE outputs have one value per window.
     """
-    if meter.ndim != 2 or not meter.numel() or not torch.isfinite(meter).all():
-        raise ValueError("meter must be a finite, nonempty [B, T] tensor.")
-    if steps < 1 or not math.isfinite(learning_rate) or learning_rate <= 0:
-        raise ValueError("steps and learning_rate must be positive.")
-    if not math.isfinite(prior_weight) or prior_weight < 0:
-        raise ValueError("prior_weight must be finite and nonnegative.")
-    if prior_weight and latent_prior is None:
-        raise ValueError("A positive prior weight requires training code statistics.")
     model.eval().requires_grad_(False)
     batch, length = meter.shape
     # 1. Initialise z^(0) in the decoder's expected [B, 5, Z, ceil(T/8)] shape.
@@ -61,8 +53,6 @@ def solve_windows(
     if initial_codes is None:
         codes = torch.randn(shape, generator=generator, device=meter.device, dtype=meter.dtype)
     else:
-        if initial_codes.shape != shape or not torch.isfinite(initial_codes).all():
-            raise ValueError(f"initial_codes must be finite and have shape {shape}.")
         codes = initial_codes.detach().to(meter).clone()
     codes.requires_grad_()
     optimizer = torch.optim.Adam([codes], lr=learning_rate)
@@ -80,18 +70,17 @@ def solve_windows(
             appliance_sum = power.sum(dim=1)
 
             # 3. For fixed z, b* minimises mean_t((y - s - b)^2) over b >= 0.
-            gap = meter - appliance_sum
             # A synthetic sum of the five submeters has known b = 0.
-            background = gap.mean(dim=-1).clamp_min(0) if fit_background else meter.new_zeros(batch)
+            background = (estimate_constant_background(power, meter)
+                          if fit_background else meter.new_zeros(batch))
 
             # 4. Score each window separately. The same b* applies to all T rows.
-            meter_error = appliance_sum + background[:, None] - meter
-            loss_per_window = meter_error.square().mean(dim=-1)
+            loss_per_window = meter_mse(appliance_sum + background[:, None], meter)
             objective = loss_per_window
             if prior_weight:
                 center, spread = latent_prior
                 # A diagonal Gaussian penalty in training-code standard deviations.
-                penalty = ((codes - center) / spread).square().mean(dim=(1, 2, 3))
+                penalty = diagonal_latent_prior(codes, center, spread)
                 objective = objective + prior_weight * penalty
 
         with torch.no_grad():
@@ -110,35 +99,41 @@ def solve_windows(
             objective.sum().backward()
             optimizer.step()
 
-    if not torch.isfinite(best_loss).all():
-        raise RuntimeError("Inverse optimisation found no finite candidate for a window.")
     return best_power, best_background, initial_loss, selected_mse
 
 
 def main() -> None:
-    project_dir = Path(__file__).resolve().parent
+    project_dir = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=project_dir / "forward_training/train_forward.yaml")
+    parser.add_argument("--config", type=Path, default=project_dir / "configs/stage2.yaml")
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--run-dir", type=Path, required=True)
-    parser.add_argument("--split", default="validation")
-    parser.add_argument("--steps", type=int, default=150)
-    parser.add_argument("--learning-rate", type=float, default=0.05)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--split", default=None)
+    parser.add_argument("--steps", type=int, default=None)
+    parser.add_argument("--learning-rate", type=float, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--max-windows", type=int, help="Limit windows for a smoke check.")
-    parser.add_argument("--device", default="auto")
-    parser.add_argument("--train-mean-init", action="store_true")
-    parser.add_argument("--prior-weight", type=float, default=0.0)
+    parser.add_argument("--device", default=None)
+    parser.add_argument("--train-mean-init", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--prior-weight", type=float, default=None)
+    parser.add_argument("--overwrite", action="store_true", help="Allow replacing files in --run-dir.")
     args = parser.parse_args()
-    if args.batch_size < 1 or (args.max_windows is not None and args.max_windows < 1):
-        parser.error("--batch-size and --max-windows must be positive.")
-    if not math.isfinite(args.prior_weight) or args.prior_weight < 0:
-        parser.error("--prior-weight must be finite and nonnegative.")
-    if args.run_dir.exists() and any(args.run_dir.iterdir()):
-        parser.error("--run-dir must be empty or new.")
 
     config_path = args.config.resolve()
     config = load_yaml(config_path)
+    experiment_config_path = config_path
+    if "stage1_config" in config:
+        stage1_path = config_path.parent / config["stage1_config"]
+        stage1_config = load_yaml(stage1_path)
+        stage1_config["inference"] = config["inference"]
+        config = stage1_config
+        experiment_config_path = stage1_path
+    if args.run_dir.exists() and any(args.run_dir.iterdir()) and not args.overwrite:
+        parser.error("--run-dir already contains files; choose a new directory or pass --overwrite intentionally.")
+    settings = config["inference"]
+    for name in ("split", "steps", "learning_rate", "batch_size", "device", "train_mean_init", "prior_weight"):
+        if getattr(args, name) is None:
+            setattr(args, name, settings[name])
     device_name = args.device
     if device_name == "auto":
         device_name = "cuda" if torch.cuda.is_available() else "cpu"
@@ -150,22 +145,12 @@ def main() -> None:
     model.load_state_dict(checkpoint["model_state_dict"])
     scale = float(checkpoint["power_scale_watts"])
     length = int(checkpoint["window_length"])
-    if not math.isfinite(scale) or scale <= 0:
-        raise ValueError("Checkpoint power_scale_watts must be positive and finite.")
-    if scale != float(config["data"]["power_scale_watts"]) or length != int(config["data"]["window_length"]):
-        raise ValueError("The config and checkpoint must use the same power scale and window length.")
 
     stride = int(config["data"]["window_stride"])
     protocol = load_protocol(
-        experiment_path=config_path.parent / config["experiment"],
+        experiment_path=experiment_config_path,
         window_length=length, stride=stride, batch_size=args.batch_size,
     )
-    if list(model.APPLIANCES) != protocol.appliances or checkpoint["appliances"] != protocol.appliances:
-        raise ValueError("Appliance channel order must match the checkpoint and experiment.")
-    allowed_splits = {"validation", "test", *resolve_test_scenarios(protocol.experiment)}
-    if args.split not in allowed_splits:
-        parser.error(f"--split must be one of {', '.join(sorted(allowed_splits))}.")
-
     latent_prior = None
     initial_code_center = None
     prior_starts = []
@@ -173,15 +158,16 @@ def main() -> None:
         model.eval().requires_grad_(False)
         train = protocol.loader.get_split("train")
         all_starts = protocol.loader.build_dataset("train").indices
-        picks = np.linspace(0, len(all_starts) - 1, min(128, len(all_starts)), dtype=int)
+        count = min(int(settings["center_windows"]), len(all_starts))
+        picks = np.linspace(0, len(all_starts) - 1, count, dtype=int)
         prior_starts = all_starts[picks].tolist()
         with torch.no_grad():
             rows = all_starts[picks, None] + np.arange(length)
             training_power = torch.as_tensor(train.targets[rows] / scale, device=device).transpose(1, 2)
             codes = model.encode(training_power)
             initial_code_center = codes.mean((0, 3), keepdim=True)
-            latent_prior = (initial_code_center,
-                            codes.std((0, 3), correction=0, keepdim=True).clamp_min(.01))
+            spread = codes.std((0, 3), correction=0, keepdim=True)
+            latent_prior = (initial_code_center, spread.clamp_min(float(settings["prior_min_std"])))
 
     # The benchmark loader supplies aligned window indices and mains readings.
     # The solver receives only meter values. Submeters are used by the evaluator.
@@ -248,6 +234,8 @@ def main() -> None:
         model_name="appliance_conditioned_cnn_inverse",
         csv_timesteps=rows, predicted_appliance_watts=appliances_watts,
         manifest=manifest, random_seed=seed,
+        waveform_periods=int(config.get("evaluation", {}).get("on_periods", 5)),
+        waveform_dpi=int(config.get("evaluation", {}).get("dpi", 300)),
     )
     np.savez_compressed(
         args.run_dir / "meter_diagnostics.npz", csv_timesteps=rows,
