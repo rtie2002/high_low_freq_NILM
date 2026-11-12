@@ -35,8 +35,12 @@ def solve_windows(
     steps: int,
     learning_rate: float,
     generator: torch.Generator,
+    initial_codes: Tensor | None = None,
+    fit_background: bool = True,
+    latent_prior: tuple[Tensor, Tensor] | None = None,
+    prior_weight: float = 0.0,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Return best appliance traces, background, initial MSE and best MSE.
+    """Return selected appliance traces, background, initial and selected meter MSE.
 
     meter has shape [B, T]. Appliance traces have shape [B, 5, T].
     The background and MSE outputs have one value per window.
@@ -45,17 +49,24 @@ def solve_windows(
         raise ValueError("meter must be a finite, nonempty [B, T] tensor.")
     if steps < 1 or not math.isfinite(learning_rate) or learning_rate <= 0:
         raise ValueError("steps and learning_rate must be positive.")
+    if not math.isfinite(prior_weight) or prior_weight < 0 or (prior_weight and latent_prior is None):
+        raise ValueError("A positive finite prior weight requires training code statistics.")
     model.eval().requires_grad_(False)
     batch, length = meter.shape
     # 1. Initialise z^(0) in the decoder's expected [B, 5, Z, ceil(T/8)] shape.
     latent_time = math.ceil(length / model.DOWNSAMPLE)
-    codes = torch.randn(
-        (batch, len(model.APPLIANCES), model.latent_channels, latent_time),
-        generator=generator, device=meter.device, dtype=meter.dtype,
-    ).requires_grad_()
+    shape = (batch, len(model.APPLIANCES), model.latent_channels, latent_time)
+    if initial_codes is None:
+        codes = torch.randn(shape, generator=generator, device=meter.device, dtype=meter.dtype)
+    else:
+        if initial_codes.shape != shape or not torch.isfinite(initial_codes).all():
+            raise ValueError(f"initial_codes must be finite and have shape {shape}.")
+        codes = initial_codes.detach().to(meter).clone()
+    codes.requires_grad_()
     optimizer = torch.optim.Adam([codes], lr=learning_rate)
 
     best_loss = meter.new_full((batch,), float("inf"))
+    selected_mse = best_loss.clone()
     best_power = meter.new_zeros((batch, len(model.APPLIANCES), length))
     best_background = meter.new_zeros(batch)
 
@@ -68,17 +79,25 @@ def solve_windows(
 
             # 3. For fixed z, b* minimises mean_t((y - s - b)^2) over b >= 0.
             gap = meter - appliance_sum
-            background = gap.mean(dim=-1).clamp_min(0)
+            # A synthetic sum of the five submeters has known b = 0.
+            background = gap.mean(dim=-1).clamp_min(0) if fit_background else meter.new_zeros(batch)
 
             # 4. Score each window separately. The same b* applies to all T rows.
             meter_error = appliance_sum + background[:, None] - meter
             loss_per_window = meter_error.square().mean(dim=-1)
+            objective = loss_per_window
+            if prior_weight:
+                center, spread = latent_prior
+                # A diagonal Gaussian penalty in training-code standard deviations.
+                penalty = ((codes - center) / spread).square().mean(dim=(1, 2, 3))
+                objective = objective + prior_weight * penalty
 
         with torch.no_grad():
             if iteration == 0:
                 initial_loss = loss_per_window.detach()
-            improved = loss_per_window < best_loss
-            best_loss = torch.where(improved, loss_per_window, best_loss)
+            improved = objective < best_loss
+            best_loss = torch.where(improved, objective, best_loss)
+            selected_mse = torch.where(improved, loss_per_window, selected_mse)
             best_power = torch.where(improved[:, None, None], power, best_power)
             best_background = torch.where(improved, background, best_background)
 
@@ -86,12 +105,12 @@ def solve_windows(
             # 5. Backpropagate dL/dz through the decoder and update only z.
             # Sum independent window losses to keep each gradient batch-size invariant.
             optimizer.zero_grad(set_to_none=True)
-            loss_per_window.sum().backward()
+            objective.sum().backward()
             optimizer.step()
 
     if not torch.isfinite(best_loss).all():
         raise RuntimeError("Inverse optimisation found no finite candidate for a window.")
-    return best_power, best_background, initial_loss, best_loss
+    return best_power, best_background, initial_loss, selected_mse
 
 
 def main() -> None:
@@ -106,9 +125,13 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-windows", type=int, help="Limit windows for a smoke check.")
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--train-mean-init", action="store_true")
+    parser.add_argument("--prior-weight", type=float, default=0.0)
     args = parser.parse_args()
     if args.batch_size < 1 or (args.max_windows is not None and args.max_windows < 1):
         parser.error("--batch-size and --max-windows must be positive.")
+    if not math.isfinite(args.prior_weight) or args.prior_weight < 0:
+        parser.error("--prior-weight must be finite and nonnegative.")
     if args.run_dir.exists() and any(args.run_dir.iterdir()):
         parser.error("--run-dir must be empty or new.")
 
@@ -144,6 +167,21 @@ def main() -> None:
     if args.split not in allowed_splits:
         parser.error(f"--split must be one of {', '.join(sorted(allowed_splits))}.")
 
+    latent_prior = None
+    prior_starts = []
+    if args.train_mean_init or args.prior_weight:
+        model.eval().requires_grad_(False)
+        train = protocol.loader.get_split("train")
+        all_starts = protocol.loader.build_dataset("train").indices
+        picks = np.linspace(0, len(all_starts) - 1, min(128, len(all_starts)), dtype=int)
+        prior_starts = all_starts[picks].tolist()
+        with torch.no_grad():
+            rows = all_starts[picks, None] + np.arange(length)
+            training_power = torch.as_tensor(train.targets[rows] / scale, device=device).transpose(1, 2)
+            codes = model.encode(training_power)
+            latent_prior = (codes.mean((0, 3), keepdim=True),
+                            codes.std((0, 3), correction=0, keepdim=True).clamp_min(.01))
+
     # The benchmark loader supplies aligned window indices and mains readings.
     # The solver receives only meter values. Submeters are used by the evaluator.
     dataset = protocol.loader.build_dataset(args.split)
@@ -157,8 +195,11 @@ def main() -> None:
     for offset in range(0, len(starts), args.batch_size):
         rows = starts[offset:offset + args.batch_size, None] + offsets
         meter = torch.as_tensor(mains_watts[rows] / scale, device=device, dtype=torch.float32)
+        initial_codes = (latent_prior[0].expand(len(rows), -1, -1, math.ceil(length / model.DOWNSAMPLE))
+                         if args.train_mean_init else None)
         power, background, initial_mse, best_mse = solve_windows(
             model, meter, steps=args.steps, learning_rate=args.learning_rate, generator=generator,
+            initial_codes=initial_codes, latent_prior=latent_prior, prior_weight=args.prior_weight,
         )
         # Convert back to watts and merge appliance/background traces together.
         background_trace = background[:, None, None].expand(-1, 1, length)
@@ -181,6 +222,9 @@ def main() -> None:
         "split": args.split,
         "device": str(device),
         "seed": seed,
+        "initialisation": "train_mean" if args.train_mean_init else "random",
+        "prior_weight": args.prior_weight,
+        "prior_train_window_starts": prior_starts,
         "steps": args.steps,
         "learning_rate": args.learning_rate,
         "batch_size": args.batch_size,
@@ -194,6 +238,7 @@ def main() -> None:
         "available_rows": len(mains_watts),
         "initial_window_meter_mse_watts2": float(np.concatenate(initial_losses).mean() * scale**2),
         "best_window_meter_mse_watts2": float(np.concatenate(best_losses).mean() * scale**2),
+        "selected_window_meter_mse_watts2": float(np.concatenate(best_losses).mean() * scale**2),
         "aggregate_reconstruction_mae_watts": float(np.abs(meter_fit_watts - observed_watts).mean()),
         "inference_seconds": elapsed,
     }
