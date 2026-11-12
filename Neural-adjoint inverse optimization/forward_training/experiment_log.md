@@ -98,3 +98,103 @@ where each `d` is squared latent-code distance in the matching training-state st
 | 0.01 | 50.604 | 564.312 | 0.073 | 0.162 | 45.591 | 131.686 |
 
 All three weights reduced ON MAE while degrading state attribution. At 0.01, fridge, dishwasher, and washing-machine F1 fell to 0.019, 0.003, and 0.004. The high weight effectively suppresses these appliances to obtain low overall MAE from abundant OFF rows. The lowest state weight also lowers Macro-F1. This simple differentiable state gate therefore does not solve the source-allocation problem. It confirms that a per-block diagonal Gaussian prior and candidate-power-derived state gate are insufficient to capture multi-modal appliance waveforms. No held-out test score was produced.
+
+## 2026-11-12 — Frozen source-attribution diagnostics
+
+Validation only, UK-DALE 5 and REFIT 2, from the mixed house-disjoint split. CPU, epoch-83 checkpoint from `rerun_20261111_8889037/forward/best.pt`, 1024/512 window/stride and 4000 W scaling. The saved zero-background manifest supplies seed 2026 and the original 48 starts. C uses deterministic chronological sampling and two deterministic initial codes. No model or inference interface edits.
+
+From the inverse project directory, the exact local run was:
+
+```powershell
+$root="$env:TEMP/rerun_20261111_8889037"
+& "$env:USERPROFILE/anaconda3/python.exe" -u diagnose_source_attribution.py $root "$root/source_attribution_verified"
+```
+
+**A. Saved Stage 1 reconstruction.** Read the original validation reconstruction NPZ copied from the training machine and reuse its power metrics, covering 558,592 rows. Derive raw threshold F1 and one-to-one onset recall using the benchmark's ±16 s tolerance, without predicted duration filtering or power gating.
+
+| Appliance | MAE (W) | ON MAE (W) | OFF MAE (W) | F1 | Onset recall |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Kettle | 5.378 | 213.350 | 2.676 | 0.911 | 0.872 |
+| Fridge | 21.927 | 19.396 | 23.581 | 0.992 | 0.930 |
+| Dishwasher | 8.496 | 44.926 | 5.331 | 0.432 | 0.094 |
+| Washing machine | 10.415 | 59.899 | 7.489 | 0.591 | 0.149 |
+| Microwave | 7.514 | 274.863 | 6.690 | 0.918 | 0.925 |
+
+Fridge true-OFF mean prediction is 24.524 W. True-ON average is 89.614 W measured versus 70.637 W reconstructed. High state F1 coexists with a power bias. The microwave example retains a sustained activation and attenuates two single-sample spikes. See `reconstruction/validation/waveforms/microwave/on_01_t507674.png` and its context10x companion under the archive root. The mechanism of the fridge bias was not isolated.
+
+**B. Oracle trajectory.** Reuse both previous three-initialisation comparisons. Replay only the original zero-background oracle with an Adam post-step observer because prior outputs did not save the intermediate codes. Adam 150 steps at 0.05, batches of eight, seed 2026, no prior. The table tracks current iterations, while the previous report selected each window's best meter-loss iteration.
+
+| Step | Meter RMSE (W) | MAE (W) | ON MAE (W) | Macro-F1 | Mean appliance latent RMS movement |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 72.705 | 10.739 | 111.691 | 0.774 | 0 |
+| 3 | 59.272 | 7.852 | 103.426 | 0.850 | 0.105 |
+| 25 | 39.459 | 6.463 | 116.231 | 0.725 | 0.320 |
+| 50 | 28.901 | 7.111 | 133.229 | 0.682 | 0.381 |
+| 150 | 18.539 | 9.143 | 183.862 | 0.592 | 0.491 |
+
+Peak F1 and minimum ON MAE occurred at step 3 in this label-assisted replay. This does not establish a deployable stopping rule. At step 150 the microwave had the largest F1 drop (0.965 to 0.414), followed by kettle (0.886 to 0.603). Overall MAE was still lower than at initialization, so the decline is specific to ON accuracy and attribution metrics. The saved real-meter oracle comparison shows the same direction (meter RMSE 745.292 to 108.556 W, ON MAE 111.691 to 255.322 W, F1 0.774 to 0.463). See `B_oracle_convergence.png`, `B_oracle_trajectory.csv`, `B_per_appliance.csv`, and the prior `measured_mains_final/largest_mae_increase.png` waveform.
+
+**C. Cross-appliance fit.** For each source, use 24 nonoverlapping validation windows with a labeled onset and at least two above-threshold ON samples. Pass the same isolated target to each appliance identity of the shared decoder. Optimize each code independently against target-waveform MSE, with no latent constraint or prior, using 150 Adam steps at 0.05 from each of two identical cross-identity starts (zero and the target's shared-encoder code). Select the lowest full-window MSE. The encoded start is only an offline fit diagnostic. Medians of per-window ON RMSE in W:
+
+| True appliance | Kettle ID | Fridge ID | Dishwasher ID | Washer ID | Microwave ID |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Kettle | 185.8 | 189.8 | 186.6 | 186.8 | 185.0 |
+| Fridge | 9.5 | 3.9 | 7.2 | 5.5 | 7.4 |
+| Dishwasher | 43.4 | 43.0 | 41.2 | 40.3 | 41.6 |
+| Washing machine | 54.9 | 54.6 | 53.8 | 53.8 | 54.0 |
+| Microwave | 259.6 | 260.6 | 257.4 | 257.7 | 256.9 |
+
+For microwave, kettle and correct identities have median full-window RMSE 32.67 and 32.66 W. Kettle ON RMSE is at most 110% of correct-ID ON RMSE in all 24 microwave windows. Their median ON errors normalized by measured ON RMS are 0.241 and 0.240. Fridge shows the clearest identity advantage. Good wrong-ID fits directly establish overlap in the decoder's accessible output space on these samples. Near ties where both fits have substantial absolute error can also reflect shared reconstruction limitations. Two starts and a fixed finite budget do not certify global optima, and isolated-window fitting does not establish physical identifiability or full-cycle overlap. See `C_confusability.png`, `C_waveform_examples.png`, `C_normalized_on_rmse.csv`, `C_relative_to_correct.csv` and `C_window_errors.csv` in the output folder.
+
+**Interpretation.** H1 is supported for specific signatures (e.g. short microwave pulses and fridge amplitude), H2 is directly supported by the late oracle degradation even without background, and H3 is supported by overlapping decoder fits. The diagnostics do not quantify how much each contributes to held-out performance.
+
+## 2026-11-12 — D1–D3 frozen source-identifiability diagnostics
+
+**Scope and reproducibility.** Validation only, using the same UK-DALE 5 and REFIT 2 validation partition, the frozen epoch-83 checkpoint at `rerun_20261111_8889037/forward/best.pt`, 1024-sample windows and 4000 W scale. No decoder training, no new prior, no change to the inverse objective, and no held-out test evaluation occurred. Outputs are under `C:/Users/Raymond Tie/AppData/Local/Temp/rerun_20261111_8889037/identifiability_diagnostics`.
+
+```powershell
+$root="$env:TEMP/rerun_20261111_8889037"
+& "$env:USERPROFILE/anaconda3/python.exe" -u diagnose_identifiability.py $root "$root/identifiability_diagnostics"
+```
+
+The script uses 24 deterministic, non-overlapping validation ON-event windows per appliance, as in C. D2 uses 40 valid codes (eight per appliance) and 16 random normalized latent probes per code/identity. It calculates Jacobian-vector products (JVPs), not dense `1024 x 256` Jacobian matrices. QR bases of the JVP waveforms approximate each decoder identity's local tangent space. The maximum singular value of the two bases is their closest tangent cosine; `sqrt(1-cosine^2)` is the residual of the best two-source cancellation in the sampled subspaces. This is a finite-probe local diagnostic, not a formal rank or identifiability proof.
+
+### D1 — Fixed-code appliance-ID sensitivity
+
+For each valid code `z` encoded from an actual appliance waveform, hold `z` fixed and compare `G(z, origin-ID)` with `G(z, substituted-ID)`. The entries below are the median normalized waveform difference `||p_origin-p_substitute||/(||p_origin||+||p_substitute||)`. Row is the waveform/code origin; column is the substituted decoder identity.
+
+| Origin \ ID | Kettle | Fridge | Dishwasher | Washer | Microwave |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Kettle | 0.000 | 0.044 | 0.015 | 0.024 | 0.013 |
+| Fridge | 0.784 | 0.000 | 0.559 | 0.436 | 0.639 |
+| Dishwasher | 0.011 | 0.023 | 0.000 | 0.005 | 0.004 |
+| Washing machine | 0.018 | 0.026 | 0.007 | 0.000 | 0.010 |
+| Microwave | 0.027 | 0.102 | 0.013 | 0.032 | 0.000 |
+
+The shared decoder **does use identity strongly for refrigerator codes**: switching an encoded fridge trace to kettle has median 41.95 W RMS difference. For kettle, dishwasher, washing-machine and microwave codes, most substitutions change the output only by roughly 3–30 W RMS and normalized differences remain near zero. Thus the problem is not simply that ID is ignored everywhere. Identity conditioning is highly uneven, and is weak exactly for several sparse/event-like sources. See `D1_identity_sensitivity_normalized.csv`, `D1_identity_sensitivity_rms_w.csv`, and `D1_identity_sensitivity.png`.
+
+### D2 — Jacobian confusability
+
+Median closest tangent cosine is high for several pairs: kettle–microwave 0.943 (best sampled cancellation residual 0.333), kettle–dishwasher 0.940 (0.339), dishwasher–microwave 0.924 (0.382), and washing machine–microwave 0.900 (0.435). Fridge pairs are materially less aligned: 0.709–0.745 with residuals 0.665–0.706. Therefore, under the sampled local codes, there are measurable directions whose two appliance updates can partly cancel in the aggregate while individually changing decoded waveforms. This supports near-null/source-ambiguous directions, particularly among non-fridge sources. It does **not** establish that every actual inverse update follows such a direction, nor that a particular cosine threshold separates identifiable and non-identifiable cases. See `D2_jacobian_pair_samples.csv`, `D2_jacobian_pair_summary.csv`, `D2_jacobian_alignment.png`, and `D2_runtime.json` (18.34 seconds CPU for 3,200 JVPs).
+
+### D3 — latent-space validity along unchanged oracle Adam updates
+
+The oracle replay starts from encoder codes of the true validation submeters solely to diagnose the frozen objective. The deployment row is separate: the existing Stage-2 train-mean initialisation. Training support is represented by 128 evenly sampled training windows per appliance. Nearest-code distance is therefore a **sampled-reference statistic**, not a likelihood or proof that a code is invalid.
+
+| Stage | Median nearest sampled-training-code distance | Median movement from oracle initial code (RMS) | Median decoded change from oracle initial (W RMS) |
+| --- | ---: | ---: | ---: |
+| Oracle initial, step 0 | 0.000 | 0.000 | 0.000 |
+| Oracle step 3 | 1.832 | 0.106 | 4.744 |
+| Oracle step 25 | 5.528 | 0.335 | 12.772 |
+| Oracle step 150 | 6.456 | 0.401 | 22.278 |
+| Deployment train-mean start | 0.811 | 0.069 | 9.167 |
+
+The unchanged meter-only optimizer rapidly leaves the sampled encoder-code neighbourhood while its decoded power changes. This is compatible with, but does not by itself prove, unsupported latent exploration. Association with per-window ON MAE is mixed and underpowered for rare sources. At step 150 the Spearman distance–ON-MAE association is 0.322 for fridge, 0.548 for washing machine, 0.200 for dishwasher, -0.253 for kettle and -0.700 for only five microwave ON windows. We therefore **cannot claim** a robust monotone relationship between distance and source error from this experiment. See `D3_latent_validity_per_window.csv`, `D3_latent_validity_summary.csv`, `D3_on_error_correlations.csv`, and `D3_latent_support_distance.png`.
+
+### D1–D3 conclusion
+
+1. The decoder uses appliance ID strongly for fridge but weakly for several other appliance codes.
+2. The accessible decoder spaces overlap in C, and D2 independently finds strongly aligned local response directions for multiple non-fridge pairs.
+3. Meter-only latent optimisation moves well beyond sampled encoded training codes, though sampled distance alone is not an invalidity certificate.
+4. The evidence now favours **source ambiguity / weak appliance-specific representation** as the first Paper 1 problem, with Jacobian-aware inverse updates as the linked second problem.
+5. The next algorithm should first improve or explicitly measure appliance discriminability in the forward representation. A solver-only penalty cannot recover attribution information absent from the representation. Any subsequent identifiability-aware solver should be tested against the unchanged Adam baseline and should not ban genuine simultaneous use.

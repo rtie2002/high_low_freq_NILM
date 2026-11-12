@@ -15,7 +15,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if __package__ in (None, ""):
     sys.path.insert(0, str(PROJECT_DIR))
 
-from forward_model.cnn import ApplianceConditionedCNN
+from forward_model.cnn import ApplianceConditionedCNN, build_forward_model
 from utils.config import load_yaml
 from utils.output_format import save_result_json, save_result_table
 from utils.protocol import load_protocol
@@ -75,10 +75,7 @@ def main() -> None:
         device_name = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device_name)
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
-    model_cfg = dict(checkpoint["model_config"])
-    if model_cfg.pop("name") != "appliance_conditioned_cnn":
-        raise ValueError("Expected an ApplianceConditionedCNN checkpoint.")
-    model = ApplianceConditionedCNN(**model_cfg).to(device).eval()
+    model = build_forward_model(checkpoint["model_config"]).to(device).eval()
     model.load_state_dict(checkpoint["model_state_dict"])
     length = int(checkpoint["window_length"])
     scale = float(checkpoint["power_scale_watts"])

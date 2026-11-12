@@ -32,14 +32,13 @@ from typing import Any
 import numpy as np
 import torch
 from torch import Tensor
-from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
 
 # Allow direct execution from forward_training/ using sibling project modules.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from forward_model.cnn import ApplianceConditionedCNN
+from forward_model.cnn import ApplianceConditionedCNN, build_forward_model
 from utils.config import load_experiment, load_yaml
 from utils.data_loader import NILMDataLoader
 
@@ -157,20 +156,35 @@ def _build_loader(
 
 
 def _run_epoch(
-    model: ApplianceConditionedCNN,
+    model: torch.nn.Module,
     loader: DataLoader[Tensor],
     *,
     device: torch.device,
     optimizer: torch.optim.Optimizer | None,
     gradient_clip_norm: float | None,
+    loss_name: str,
+    on_thresholds_scaled: Tensor | None,
     max_batches: int | None = None,
-) -> tuple[float, float]:
-    """Return average scaled MSE and scaled MAE across all examples and samples."""
+) -> tuple[float, float, float]:
+    """Return raw MSE, MAE and the optimized objective, averaged over samples.
+
+    ``event_balanced_mse`` is used only while training.  Let ``m[b,i,t]`` be
+    whether target power exceeds the fixed training threshold for appliance i.
+    For each appliance, the objective is
+
+        .5 mean_{m=1}(error**2) + .5 mean_{m=0}(error**2).
+
+    Thus abundant OFF samples cannot dominate the training risk.  Empty ON or
+    OFF groups in a mini-batch are omitted for that appliance; validation and
+    checkpoint selection always use ordinary unweighted MSE.
+    """
     training = optimizer is not None
     model.train(training)
     squared_error_sum = 0.0
     absolute_error_sum = 0.0
     value_count = 0
+    objective_sum = 0.0
+    objective_batches = 0
 
     for batch_index, appliance_power in enumerate(loader):
         # x[b,i,t] = p_watts[b,i,t] / S. Each trace is its own target.
@@ -178,8 +192,25 @@ def _run_epoch(
         with torch.set_grad_enabled(training):
             # z_i = E_psi(x_i), x_hat_i = G_theta(z_i, i).
             reconstructed, _ = model(target)
-            # L_train = sum_{b,i,t} (x_hat - x)^2 / (B * 5 * T).
-            loss = F.mse_loss(reconstructed, target)
+            squared_error = (reconstructed - target).square()
+            if training and loss_name == "event_balanced_mse":
+                if on_thresholds_scaled is None:
+                    raise ValueError("event_balanced_mse requires training thresholds.")
+                on_mask = target >= on_thresholds_scaled[None, :, None]
+                appliance_terms = []
+                for appliance in range(target.shape[1]):
+                    appliance_error = squared_error[:, appliance]
+                    on = on_mask[:, appliance]
+                    terms = []
+                    if bool(on.any()):
+                        terms.append(appliance_error[on].mean())
+                    if bool((~on).any()):
+                        terms.append(appliance_error[~on].mean())
+                    appliance_terms.append(torch.stack(terms).mean())
+                loss = torch.stack(appliance_terms).mean()
+            else:
+                # L_mse = mean_{b,i,t} (p_hat[b,i,t] - p[b,i,t])^2.
+                loss = squared_error.mean()
             if training:
                 # Stage 1 updates encoder and decoder weights (psi, theta).
                 optimizer.zero_grad(set_to_none=True)
@@ -192,10 +223,12 @@ def _run_epoch(
         squared_error_sum += float(error.square().sum().item())
         absolute_error_sum += float(error.abs().sum().item())
         value_count += error.numel()
+        objective_sum += float(loss.detach())
+        objective_batches += 1
         if max_batches is not None and batch_index + 1 >= max_batches:
             break
 
-    return squared_error_sum / value_count, absolute_error_sum / value_count
+    return squared_error_sum / value_count, absolute_error_sum / value_count, objective_sum / objective_batches
 
 
 def _save_curve(history: list[dict[str, float]], destination: Path) -> None:
@@ -234,10 +267,10 @@ def train(config_path: Path, *, run_dir: Path | None, overwrite: bool, smoke: bo
     model_cfg = config["model"]
     optimizer_cfg = config["optimizer"]
     checkpoint_cfg = config["checkpoint"]
-    if model_cfg["name"] != "appliance_conditioned_cnn":
-        raise ValueError("Stage 1 currently supports model.name=appliance_conditioned_cnn only.")
-    if config["loss"]["name"] != "mse":
-        raise ValueError("Stage 1 currently supports loss.name=mse only.")
+    if model_cfg["name"] not in {"appliance_conditioned_cnn", "appliance_specific_cnn"}:
+        raise ValueError("Unsupported forward-model name.")
+    if config["loss"]["name"] not in {"mse", "event_balanced_mse"}:
+        raise ValueError("loss.name must be mse or event_balanced_mse.")
     if optimizer_cfg["name"].lower() != "adam":
         raise ValueError("Stage 1 currently supports optimizer.name=adam only.")
     if checkpoint_cfg["monitor"] != "validation_mse" or checkpoint_cfg["mode"] != "min":
@@ -310,18 +343,17 @@ def train(config_path: Path, *, run_dir: Path | None, overwrite: bool, smoke: bo
         pin_memory=device.type == "cuda",
     )
 
-    model = ApplianceConditionedCNN(
-        hidden_channels=int(model_cfg["hidden_channels"]),
-        latent_channels=int(model_cfg["latent_channels"]),
-        output_softplus_beta=float(model_cfg["output_softplus_beta"]),
-        output_bias=float(model_cfg["output_bias"]),
-    ).to(device)
+    model = build_forward_model(model_cfg).to(device)
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=float(optimizer_cfg["learning_rate"]),
         weight_decay=float(optimizer_cfg["weight_decay"]),
     )
     parameter_count = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    thresholds_watts = np.asarray(
+        [experiment["evaluation"]["on_thresholds_watts"][app] for app in expected_order], dtype=np.float32,
+    )
+    on_thresholds_scaled = torch.as_tensor(thresholds_watts / power_scale_watts, device=device)
 
     max_epochs = 1 if smoke else int(training_cfg["epochs"])
     max_batches = 2 if smoke else None
@@ -336,26 +368,31 @@ def train(config_path: Path, *, run_dir: Path | None, overwrite: bool, smoke: bo
     started = time.perf_counter()
 
     for epoch in range(1, max_epochs + 1):
-        train_mse, train_mae = _run_epoch(
+        train_mse, train_mae, train_objective = _run_epoch(
             model,
             train_loader,
             device=device,
             optimizer=optimizer,
             gradient_clip_norm=clip,
+            loss_name=str(config["loss"]["name"]),
+            on_thresholds_scaled=on_thresholds_scaled,
             max_batches=max_batches,
         )
         with torch.no_grad():
-            val_mse, val_mae = _run_epoch(
+            val_mse, val_mae, _ = _run_epoch(
                 model,
                 validation_loader,
                 device=device,
                 optimizer=None,
                 gradient_clip_norm=None,
+                loss_name="mse",
+                on_thresholds_scaled=None,
                 max_batches=max_batches,
             )
         row = {
             "epoch": float(epoch),
             "train_mse": train_mse,
+            "train_objective": train_objective,
             "train_mae_scaled": train_mae,
             "val_mse": val_mse,
             "val_mae_scaled": val_mae,
@@ -405,6 +442,8 @@ def train(config_path: Path, *, run_dir: Path | None, overwrite: bool, smoke: bo
         "appliances": expected_order,
         "residual_input": False,
         "on_off_input": False,
+        "training_loss": str(config["loss"]["name"]),
+        "event_balance_thresholds_watts": dict(zip(expected_order, thresholds_watts.tolist())),
         "power_scale_watts": power_scale_watts,
         "window_length": length,
         "window_stride": stride,

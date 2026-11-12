@@ -22,7 +22,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from forward_model.cnn import ApplianceConditionedCNN
+from forward_model.cnn import ApplianceConditionedCNN, build_forward_model
 from utils.config import load_yaml
 from utils.data_loader import resolve_test_scenarios
 from utils.protocol import load_protocol, save_inverse_evaluation
@@ -146,10 +146,7 @@ def main() -> None:
     seed = int(config["run"]["seed"])
     generator = torch.Generator(device=device).manual_seed(seed)
     checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=True)
-    model_config = dict(checkpoint["model_config"])
-    if model_config.pop("name") != "appliance_conditioned_cnn":
-        raise ValueError("The checkpoint must contain an ApplianceConditionedCNN.")
-    model = ApplianceConditionedCNN(**model_config).to(device)
+    model = build_forward_model(checkpoint["model_config"]).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     scale = float(checkpoint["power_scale_watts"])
     length = int(checkpoint["window_length"])
