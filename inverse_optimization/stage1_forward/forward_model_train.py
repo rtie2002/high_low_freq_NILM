@@ -1,6 +1,7 @@
 """Train the Stage 1 model on five appliance traces and total-meter targets."""
 
 import argparse 
+import sys
 from datetime import datetime
 from itertools import islice
 from pathlib import Path
@@ -12,8 +13,17 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from ..data_loader import APPLIANCES, config, load_random_continuous_interval, load_windows
-from ..model import build_model
+# Support both `python -m inverse_optimization...` and an IDE Run button that
+# executes this file directly. Direct execution has no package context, so add
+# the project directory to Python's import path before using absolute imports.
+if __package__:
+    from ..data_loader import APPLIANCES, config, load_random_continuous_interval, load_windows
+    from ..model import build_model
+else:
+    project_dir = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(project_dir))
+    from data_loader import APPLIANCES, config, load_random_continuous_interval, load_windows
+    from model import build_model
 
 
 def plot_loss_curve(validation_losses, test_mse, best_epoch, run_dir):
