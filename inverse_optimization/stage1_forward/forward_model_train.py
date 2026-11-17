@@ -217,10 +217,15 @@ def main():
         )
 
         # Predict the selected week, then convert predictions from normalized
-        # values back to real aggregate power in watts.
+        # values back to real aggregate power in watts. The LSTM is trained
+        # on fixed-length windows, so predict the long plotting interval in
+        # consecutive windows rather than giving cuDNN a 7-day sequence.
         with torch.no_grad():
             week_input = (torch.from_numpy(week_power[None]) - x_mean) / x_std
-            predicted_normalized = model(week_input.to(device)).squeeze(0).cpu()
+            predicted_normalized = torch.cat([
+                model(chunk.contiguous().to(device)).cpu()
+                for chunk in week_input.split(config["data"]["window_length"], dim=1)
+            ], dim=1).squeeze(0)
         week_prediction = (predicted_normalized * y_std + y_mean).numpy()
 
         for waveform_path in plot_aggregate_predictions(
