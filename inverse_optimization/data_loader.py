@@ -132,6 +132,37 @@ def load_random_continuous_interval(split_name: str, length: int, seed: int):
     )
 
 
+def load_random_appliance_event_windows(split_name: str, length: int, seed: int):
+    """Return one continuous window centred on an ON event for each appliance."""
+    data = pd.read_csv(SPLIT_FILES[split_name]).sort_values(
+        ["dataset", "house", "sequence_id", "unix_time"]
+    )
+    groups = data.groupby(["dataset", "house", "sequence_id"], sort=False)
+    rng = np.random.default_rng(seed)
+    examples = {}
+
+    for appliance, state_column in zip(APPLIANCES, STATE_COLUMNS):
+        eligible_names = [
+            group_name
+            for group_name, one_sequence in groups
+            if len(one_sequence) >= length and one_sequence[state_column].any()
+        ]
+        if not eligible_names:
+            raise ValueError(f"No {split_name} window contains an ON event for {appliance}.")
+
+        one_sequence = groups.get_group(eligible_names[rng.integers(len(eligible_names))])
+        on_samples = np.flatnonzero(one_sequence[state_column].to_numpy())
+        center = int(on_samples[rng.integers(len(on_samples))])
+        start = min(max(center - length // 2, 0), len(one_sequence) - length)
+        interval = one_sequence.iloc[start:start + length]
+        examples[appliance] = (
+            interval[POWER_COLUMNS].to_numpy(dtype=np.float32),
+            interval["aggregate"].to_numpy(dtype=np.float32),
+        )
+
+    return examples
+
+
 if __name__ == "__main__":
     # This block runs only for: python data_loader.py
     # It does not run when train_forward.py imports load_windows.

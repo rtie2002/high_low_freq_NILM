@@ -17,12 +17,24 @@ from torch.utils.data import DataLoader, TensorDataset
 # executes this file directly. Direct execution has no package context, so add
 # the project directory to Python's import path before using absolute imports.
 if __package__:
-    from ..data_loader import APPLIANCES, config, load_random_continuous_interval, load_windows
+    from ..data_loader import (
+        APPLIANCES,
+        config,
+        load_random_appliance_event_windows,
+        load_random_continuous_interval,
+        load_windows,
+    )
     from ..model import build_model
 else:
     project_dir = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(project_dir))
-    from data_loader import APPLIANCES, config, load_random_continuous_interval, load_windows
+    from data_loader import (
+        APPLIANCES,
+        config,
+        load_random_appliance_event_windows,
+        load_random_continuous_interval,
+        load_windows,
+    )
     from model import build_model
 
 
@@ -73,6 +85,35 @@ def plot_aggregate_predictions(week_aggregate, week_prediction, seed, run_dir):
         plt.savefig(waveform_path, dpi=150)
         plt.close()
         plot_paths.append(waveform_path)
+
+    return plot_paths
+
+
+def plot_appliance_scenarios(examples, predictions, run_dir):
+    """Save one real-versus-predicted aggregate plot for each active appliance."""
+    plot_paths = []
+    for appliance, (power, aggregate) in examples.items():
+        appliance_index = APPLIANCES.index(appliance)
+        plot_path = run_dir / f"test_aggregate_prediction_{appliance}.png"
+        figure, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
+
+        axes[0].plot(aggregate, label="Real aggregate power", linewidth=1)
+        axes[0].plot(predictions[appliance], label="Predicted aggregate power", linewidth=1)
+        axes[0].set_ylabel("Aggregate power (W)")
+        axes[0].set_title(f"{appliance.capitalize()} ON scenario: Real vs. Predicted Aggregate")
+        axes[0].grid(True, alpha=0.3)
+        axes[0].legend()
+
+        axes[1].plot(power[:, appliance_index], color="tab:green", label=f"{appliance} power")
+        axes[1].set_xlabel("Time step (8 seconds per step)")
+        axes[1].set_ylabel("Appliance power (W)")
+        axes[1].grid(True, alpha=0.3)
+        axes[1].legend()
+
+        figure.tight_layout()
+        figure.savefig(plot_path, dpi=150)
+        plt.close(figure)
+        plot_paths.append(plot_path)
 
     return plot_paths
 
@@ -238,6 +279,20 @@ def main():
             week_aggregate, week_prediction, settings["seed"], run_dir
         ):
             print(f"Aggregate prediction plot: {waveform_path}")
+
+        # Select one 1,024-sample test window for each appliance where its
+        # ground-truth ON label is active, then plot that appliance's scenario.
+        event_examples = load_random_appliance_event_windows("testing", 1024, settings["seed"])
+        event_power = np.stack([event_examples[appliance][0] for appliance in APPLIANCES])
+        with torch.no_grad():
+            event_input = (torch.from_numpy(event_power) - x_mean) / x_std
+            event_prediction = model(event_input.to(device)).cpu()
+        event_predictions = {
+            appliance: (event_prediction[index] * y_std + y_mean).numpy()
+            for index, appliance in enumerate(APPLIANCES)
+        }
+        for plot_path in plot_appliance_scenarios(event_examples, event_predictions, run_dir):
+            print(f"Appliance scenario plot: {plot_path}")
 
     print(f"Elapsed time: {perf_counter() - started:.1f} s")
 
