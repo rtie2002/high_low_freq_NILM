@@ -1,0 +1,6 @@
+input_size: 5
+hidden_size: 32
+num_layers: 3
+batch_first: true
+bidirectional: false
+dropout: 0.0

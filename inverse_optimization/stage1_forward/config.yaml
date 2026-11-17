@@ -1,0 +1,19 @@
+# Sliding Windows
+
+data:
+  window_length: 512
+  stride: 256
+
+# Stage-1 forward model:
+# five appliance powers -> LSTM -> predicted aggregate power.
+model:
+  name: lstm
+
+training:
+  # Change this name for each experiment. It becomes part of the result folder.
+  experiment_name: forward_lstm_baseline
+  seed: 2026
+  batch_size: 16
+  epochs: 100
+  learning_rate: 0.001
+
