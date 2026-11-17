@@ -7,12 +7,63 @@ from pathlib import Path
 from time import perf_counter
 
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from ..data_loader import APPLIANCES, config, load_windows
+from ..data_loader import APPLIANCES, config, load_random_continuous_interval, load_windows
 from ..model import build_model
+
+
+def plot_loss_curve(validation_losses, test_mse, best_epoch, run_dir):
+    """Save validation loss per epoch and one final test-loss point."""
+    plot_path = run_dir / "loss_curve.png"
+    plt.figure(figsize=(8, 5))
+    plt.plot(range(1, len(validation_losses) + 1), validation_losses, label="Validation MSE")
+    plt.scatter(best_epoch, test_mse, color="red", label="Test MSE (best epoch)")
+    plt.xlabel("Epoch")
+    plt.ylabel("Normalized MSE")
+    plt.title("Validation and Test Loss")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(plot_path, dpi=150)
+    plt.close()
+    return plot_path
+
+
+def plot_aggregate_predictions(week_aggregate, week_prediction, seed, run_dir):
+    """Save 1,024-sample, one-day, and one-week waveform comparisons."""
+    sample_seconds = 8
+    week_samples = len(week_aggregate)
+    plot_lengths = {
+        "1024_samples": 1024,
+        "one_day": 24 * 60 * 60 // sample_seconds,
+        "one_week": week_samples,
+    }
+    rng = np.random.default_rng(seed)
+    plot_paths = []
+
+    for plot_name, length in plot_lengths.items():
+        start = rng.integers(week_samples - length + 1)
+        end = start + length
+        waveform_path = run_dir / f"test_aggregate_prediction_{plot_name}.png"
+
+        plt.figure(figsize=(12, 5))
+        plt.plot(week_aggregate[start:end], label="Real aggregate power", linewidth=1)
+        plt.plot(week_prediction[start:end], label="Predicted aggregate power", linewidth=1)
+        plt.xlabel("Time step (8 seconds per step)")
+        plt.ylabel("Power (W)")
+        plt.title(f"Test Aggregate Power: Real vs. Predicted ({plot_name})")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(waveform_path, dpi=150)
+        plt.close()
+        plot_paths.append(waveform_path)
+
+    return plot_paths
 
 
 def main():
@@ -142,21 +193,30 @@ def main():
         test_mse = test_error / test_points
         print(f"Best epoch {best_epoch:02d} | test MSE {test_mse:.5f}")
 
-        # The validation curve has one value per epoch. Test MSE is a single
-        # point because the test set is evaluated only for the best checkpoint.
-        plot_path = run_dir / "loss_curve.png"
-        plt.figure(figsize=(8, 5))
-        plt.plot(range(1, epochs + 1), validation_losses, label="Validation MSE")
-        plt.scatter(best_epoch, test_mse, color="red", label="Test MSE (best epoch)")
-        plt.xlabel("Epoch")
-        plt.ylabel("Normalized MSE")
-        plt.title("Validation and Test Loss")
-        plt.grid(True, alpha=0.3)
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(plot_path, dpi=150)
-        plt.close()
+        # Test MSE is a single point because the test split is evaluated only
+        # for the checkpoint selected using validation loss.
+        plot_path = plot_loss_curve(validation_losses, test_mse, best_epoch, run_dir)
         print(f"Loss plot: {plot_path}")
+
+        # Select one continuous random week. The same week's shorter portions
+        # are used for the 1,024-sample and one-day plots.
+        sample_seconds = 8
+        week_samples = 7 * 24 * 60 * 60 // sample_seconds
+        week_power, week_aggregate = load_random_continuous_interval(
+            "testing", week_samples, settings["seed"]
+        )
+
+        # Predict the selected week, then convert predictions from normalized
+        # values back to real aggregate power in watts.
+        with torch.no_grad():
+            week_input = (torch.from_numpy(week_power[None]) - x_mean) / x_std
+            predicted_normalized = model(week_input.to(device)).squeeze(0).cpu()
+        week_prediction = (predicted_normalized * y_std + y_mean).numpy()
+
+        for waveform_path in plot_aggregate_predictions(
+            week_aggregate, week_prediction, settings["seed"], run_dir
+        ):
+            print(f"Aggregate prediction plot: {waveform_path}")
 
     print(f"Elapsed time: {perf_counter() - started:.1f} s")
 

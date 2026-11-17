@@ -104,6 +104,34 @@ def load_windows(split_name: str):
     )
 
 
+def load_random_continuous_interval(split_name: str, length: int, seed: int):
+    """Return one reproducibly random interval that has no time gaps.
+
+    The interval is selected from one dataset/house/sequence_id group, so it
+    can safely be used for long waveform plots such as a day or a week.
+    """
+    data = pd.read_csv(SPLIT_FILES[split_name]).sort_values(
+        ["dataset", "house", "sequence_id", "unix_time"]
+    )
+    groups = data.groupby(["dataset", "house", "sequence_id"], sort=False)
+    eligible_groups = groups.size()
+    eligible_groups = eligible_groups[eligible_groups >= length]
+    if eligible_groups.empty:
+        raise ValueError(
+            f"No continuous {split_name} sequence contains {length} samples."
+        )
+
+    rng = np.random.default_rng(seed)
+    group_name = eligible_groups.index[rng.integers(len(eligible_groups))]
+    one_sequence = groups.get_group(group_name)
+    start = rng.integers(len(one_sequence) - length + 1)
+    interval = one_sequence.iloc[start:start + length]
+    return (
+        interval[POWER_COLUMNS].to_numpy(dtype=np.float32),
+        interval["aggregate"].to_numpy(dtype=np.float32),
+    )
+
+
 if __name__ == "__main__":
     # This block runs only for: python data_loader.py
     # It does not run when train_forward.py imports load_windows.
