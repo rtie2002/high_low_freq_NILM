@@ -26,10 +26,11 @@ else:
     from model import build_model
 
 
-def plot_loss_curve(validation_losses, test_mse, best_epoch, run_dir):
-    """Save validation loss per epoch and one final test-loss point."""
+def plot_loss_curve(training_losses, validation_losses, test_mse, best_epoch, run_dir):
+    """Save training and validation loss per epoch plus one final test point."""
     plot_path = run_dir / "loss_curve.png"
     plt.figure(figsize=(8, 5))
+    plt.plot(range(1, len(training_losses) + 1), training_losses, label="Training MSE")
     plt.plot(range(1, len(validation_losses) + 1), validation_losses, label="Validation MSE")
     plt.scatter(best_epoch, test_mse, color="red", label="Test MSE (best epoch)")
     plt.xlabel("Epoch")
@@ -129,6 +130,7 @@ def main():
 
     best_val_mse = float("inf")
     best_epoch = 0
+    training_losses = []
     validation_losses = []
     epochs = 1 if args.smoke else settings["epochs"]
     batch_limit = 2 if args.smoke else None
@@ -156,9 +158,11 @@ def main():
                 val_error += loss_fn(model(x), y).item() * y.numel()
                 val_points += y.numel()
 
+        train_mse = train_error / train_points
         val_mse = val_error / val_points
+        training_losses.append(train_mse)
         validation_losses.append(val_mse)
-        print(f"Epoch {epoch:02d} | train MSE {train_error / train_points:.5f} | val MSE {val_mse:.5f}")
+        print(f"Epoch {epoch:02d} | train MSE {train_mse:.5f} | val MSE {val_mse:.5f}")
         if not args.smoke and val_mse < best_val_mse:
             best_val_mse = val_mse
             best_epoch = epoch
@@ -205,7 +209,9 @@ def main():
 
         # Test MSE is a single point because the test split is evaluated only
         # for the checkpoint selected using validation loss.
-        plot_path = plot_loss_curve(validation_losses, test_mse, best_epoch, run_dir)
+        plot_path = plot_loss_curve(
+            training_losses, validation_losses, test_mse, best_epoch, run_dir
+        )
         print(f"Loss plot: {plot_path}")
 
         # Select one continuous random week. The same week's shorter portions
