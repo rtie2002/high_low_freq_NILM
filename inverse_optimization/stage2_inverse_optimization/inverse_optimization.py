@@ -18,12 +18,14 @@ from torch import nn
 # Support both module execution and an IDE Run button.
 if __package__:
     from ..data_loader import APPLIANCES, load_windows
+    from ..metrics import average_precision, f1, mae, off_mae, on_mae, precision, recall, sae
     from ..model import build_model_from_checkpoint
     from .optimization_loss import inverse_optimization_loss
 else:
     project_dir = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(project_dir))
     from data_loader import APPLIANCES, load_windows
+    from metrics import average_precision, f1, mae, off_mae, on_mae, precision, recall, sae
     from model import build_model_from_checkpoint
     from stage2_inverse_optimization.optimization_loss import inverse_optimization_loss
 
@@ -92,6 +94,55 @@ def plot_inverse_result(
     return plot_path
 
 
+def plot_metrics_table(metric_values, split, window_index, run_dir):
+    """Save a per-appliance NILM metric table as a PNG image."""
+    rows = [
+        ("MAE (W)", "mae", 2),
+        ("SAE", "sae", 3),
+        ("ON MAE (W)", "on_mae", 2),
+        ("OFF MAE (W)", "off_mae", 2),
+        ("AP", "average_precision", 3),
+        ("Precision", "precision", 3),
+        ("Recall", "recall", 3),
+        ("F1", "f1", 3),
+    ]
+    table_rows = []
+    for label, key, decimals in rows:
+        values = metric_values[key].detach().cpu()
+        cells = [f"{value:.{decimals}f}" for value in values]
+        table_rows.append([label, *cells, f"{torch.nanmean(values):.{decimals}f}"])
+
+    table_path = run_dir / "inverse_metrics.png"
+    figure, axis = plt.subplots(figsize=(14, 5))
+    axis.axis("off")
+    table = axis.table(
+        cellText=table_rows,
+        colLabels=["Metric", *[name.capitalize() for name in APPLIANCES], "Avg."],
+        cellLoc="center",
+        loc="center",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1, 1.7)
+
+    last_column = len(APPLIANCES) + 1
+    for (row, column), cell in table.get_celld().items():
+        if row == 0:
+            cell.set_facecolor("#1f3b63")
+            cell.set_text_props(color="white", weight="bold")
+        elif row % 2 == 0:
+            cell.set_facecolor("#edf2f7")
+        if column == last_column and row > 0:
+            cell.set_facecolor("#dbe8f5")
+            cell.set_text_props(weight="bold")
+
+    axis.set_title(f"Stage-2 NILM Metrics · {split} split · window {window_index}", weight="bold", pad=18)
+    figure.tight_layout()
+    figure.savefig(table_path, dpi=200, bbox_inches="tight")
+    plt.close(figure)
+    return table_path
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -125,7 +176,7 @@ def main():
     model = build_model_from_checkpoint(checkpoint).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
-    # STEP 2: Freeze every LSTM weight.
+    # STEP 2: Freeze every model weight.
     # Autograd will pass through the model, but Adam will update only the
     # candidate input created in STEP 6. cuDNN requires an LSTM to be in
     # training mode when backpropagating to its input. Only recurrent modules
@@ -143,10 +194,11 @@ def main():
 
     # STEP 3: Load one observed aggregate window from the configured split.
     # Ground-truth appliance powers are retained only for final evaluation.
-    appliance_windows, aggregate_windows, _ = load_windows(settings["split"])
+    appliance_windows, aggregate_windows, state_windows = load_windows(settings["split"])
     window_index = settings["window_index"]
     true_appliance = torch.from_numpy(appliance_windows[window_index]).to(device)
     observed_aggregate = torch.from_numpy(aggregate_windows[window_index]).to(device)
+    true_state = torch.from_numpy(state_windows[window_index]).to(device)
 
     # STEP 4: Reuse the Stage-1 training statistics exactly.
     # The frozen LSTM expects normalized appliance inputs and produces a
@@ -190,7 +242,12 @@ def main():
         candidate_power = candidate_normalized * x_std + x_mean
         predicted_normalized = model(candidate_normalized)
 
-        total_loss, meter_per_restart, boundary_per_restart, total_per_restart = (
+        # L is one scalar for Adam; L_meter, L_bnd, and L_total contain one
+        # value per random restart r:
+        # L_meter[r] = aggregate reconstruction MSE,
+        # L_bnd[r] = appliance-power boundary penalty, and
+        # L_total[r] = L_meter[r] + boundary_weight * L_bnd[r].
+        L, L_meter, L_bnd, L_total = (
             inverse_optimization_loss(
                 predicted_normalized=predicted_normalized,
                 target_normalized=target_normalized,
@@ -202,23 +259,20 @@ def main():
         )
 
         optimizer.zero_grad()
-        total_loss.backward()
-        optimizer.step()
+        # Compute gradient_x L(F(x), y), then Adam updates candidate_normalized.
+        L.backward()  # calculate ∂L / ∂x
+        optimizer.step() # update x using the gradient: x_(k+1) = x_k - alpha * gradient_x L(F(x_k), y).
 
-        meter_history.append(meter_per_restart.min().item())
-        total_history.append(total_per_restart.min().item())
+        meter_history.append(L_meter.min().item())
+        total_history.append(L_total.min().item())
 
-        if (
-            step == 0
-            or (step + 1) % settings["print_every"] == 0
-            or step + 1 == steps
-        ):
-            best_restart = total_per_restart.argmin().item()
+        if (step == 0 or (step + 1) % settings["print_every"] == 0 or step + 1 == steps):
+            best_restart = L_total.argmin().item()
             print(
                 f"Step {step + 1:04d}/{steps} | "
                 f"best restart {best_restart:02d} | "
-                f"meter MSE {meter_per_restart[best_restart].item():.6f} | "
-                f"boundary {boundary_per_restart[best_restart].item():.6f}"
+                f"meter MSE {L_meter[best_restart].item():.6f} | "
+                f"boundary {L_bnd[best_restart].item():.6f}"
             )
 
     # STEP 8: Re-evaluate all restarts after the last Adam update and retain
@@ -227,7 +281,7 @@ def main():
     with torch.no_grad():
         candidate_power = candidate_normalized * x_std + x_mean
         predicted_normalized = model(candidate_normalized)
-        _, meter_per_restart, boundary_per_restart, total_per_restart = (
+        _, L_meter, L_bnd, L_total = (
             inverse_optimization_loss(
                 predicted_normalized=predicted_normalized,
                 target_normalized=target_normalized,
@@ -238,7 +292,8 @@ def main():
             )
         )
 
-        best_index = total_per_restart.argmin()
+        # Retain the restart with the smallest complete objective L_total.
+        best_index = L_total.argmin()
         estimated_appliance = candidate_power[best_index]
         predicted_aggregate = (
             predicted_normalized[best_index] * y_std + y_mean
@@ -246,7 +301,16 @@ def main():
 
     # STEP 9: Evaluate in watts. The true appliance powers are used here only;
     # they never entered the inverse objective or its gradient.
-    appliance_mae = (estimated_appliance - true_appliance).abs().mean(dim=0)
+    metric_values = {
+        "mae": mae(estimated_appliance, true_appliance),
+        "sae": sae(estimated_appliance, true_appliance),
+        "on_mae": on_mae(estimated_appliance, true_appliance, true_state),
+        "off_mae": off_mae(estimated_appliance, true_appliance, true_state),
+        "average_precision": average_precision(estimated_appliance, true_state),
+        "precision": precision(estimated_appliance, true_state, settings["on_thresholds"]),
+        "recall": recall(estimated_appliance, true_state, settings["on_thresholds"]),
+        "f1": f1(estimated_appliance, true_state, settings["on_thresholds"]),
+    }
     aggregate_mae = (predicted_aggregate - observed_aggregate).abs().mean()
 
     print()
@@ -255,8 +319,8 @@ def main():
     print(f"Checkpoint epoch: {checkpoint['epoch']}")
     print(f"Selected restart: {best_index.item()}")
     print(f"Aggregate re-simulation MAE: {aggregate_mae.item():.2f} W")
-    for appliance, mae in zip(APPLIANCES, appliance_mae):
-        print(f"{appliance:15s} MAE: {mae.item():.2f} W")
+    for appliance, value in zip(APPLIANCES, metric_values["mae"]):
+        print(f"{appliance:15s} MAE: {value.item():.2f} W")
 
     # STEP 10: Save numerical results and figures for inspection.
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -276,12 +340,13 @@ def main():
             "observed_aggregate": observed_aggregate.cpu(),
             "predicted_aggregate": predicted_aggregate.cpu(),
             "true_appliance": true_appliance.cpu(),
+            "true_state": true_state.cpu(),
             "estimated_appliance": estimated_appliance.cpu(),
-            "appliance_mae": appliance_mae.cpu(),
+            "metrics": {name: value.cpu() for name, value in metric_values.items()},
             "aggregate_mae": aggregate_mae.cpu(),
             "selected_restart": best_index.cpu(),
-            "final_meter_mse": meter_per_restart[best_index].cpu(),
-            "final_boundary_loss": boundary_per_restart[best_index].cpu(),
+            "final_meter_mse": L_meter[best_index].cpu(),
+            "final_boundary_loss": L_bnd[best_index].cpu(),
         },
         result_path,
     )
@@ -294,9 +359,13 @@ def main():
         estimated_appliance.cpu().numpy(),
         run_dir,
     )
+    metrics_plot = plot_metrics_table(
+        metric_values, settings["split"], window_index, run_dir
+    )
     print(f"Result: {result_path}")
     print(f"Loss plot: {loss_plot}")
     print(f"Waveform plot: {waveform_plot}")
+    print(f"Metrics table: {metrics_plot}")
 
 
 if __name__ == "__main__":

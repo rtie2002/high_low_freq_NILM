@@ -23,27 +23,42 @@ def inverse_optimization_loss(
     All quantities are averaged per restart. The returned scalar is the mean
     total loss across restarts, allowing Adam to update them in parallel.
     """
-    target = target_normalized.unsqueeze(0).expand_as(predicted_normalized)
-    meter_per_restart = (predicted_normalized - target).square().mean(dim=1)
+    # `y` repeats the one observed aggregate waveform for every restart, so
+    # predicted_normalized[r] is compared with exactly the same target y.
+    y = target_normalized.unsqueeze(0).expand_as(predicted_normalized)
 
-    power_range = (power_max - power_min).clamp_min(1.0)
-    below_training_range = torch.relu(
-        (power_min - candidate_power) / power_range
-    )
-    above_training_range = torch.relu(
-        (candidate_power - power_max) / power_range
-    )
-    boundary_per_restart = (
-        below_training_range.square() + above_training_range.square()
-    ).mean(dim=(1, 2))
+    # L_meter[r] = mean_t[(F(x_r)_t - y_t)^2].
+    # It measures how closely restart r reproduces the observed aggregate.
+    # Shape: [restarts].
+    L_meter = (predicted_normalized - y).square().mean(dim=1)
 
-    total_per_restart = (
-        meter_per_restart
-        + boundary_weight * boundary_per_restart
-    )
+    # `p_range` scales each appliance penalty by its observed training range.
+    # clamp_min(1.0) prevents division by zero for an appliance with no change.
+    p_range = (power_max - power_min).clamp_min(1.0)
+
+    # `low` is positive only when a candidate appliance power is below the
+    # smallest training value; `high` is positive only above the maximum.
+    low = torch.relu((power_min - candidate_power) / p_range)
+    high = torch.relu((candidate_power - power_max) / p_range)
+
+    # L_bnd[r] = mean_i,t[low^2 + high^2].
+    # This discourages physically implausible powers without clipping them,
+    # preserving gradients for the optimizer to follow. Shape: [restarts].
+    L_bnd = (low.square() + high.square()).mean(dim=(1, 2))
+
+    # L_total[r] is the complete objective for restart r.
+    # The boundary term matters only according to boundary_weight.
+    # Shape: [restarts].
+    L_total = L_meter + boundary_weight * L_bnd
+
+    # L is one scalar: mean_r[L_total(r)]. Calling L.backward() calculates
+    # gradients for all restarts, and Adam uses them to update x.
+    L = L_total.mean()
+
+    # Return: scalar optimization loss, then the three per-restart diagnostics.
     return (
-        total_per_restart.mean(),
-        meter_per_restart,
-        boundary_per_restart,
-        total_per_restart,
+        L,  # scalar used by L.backward()
+        L_meter,  # one meter loss for each restart
+        L_bnd, # one boundary penalty for each restart
+        L_total, # one complete loss for each restart
     )

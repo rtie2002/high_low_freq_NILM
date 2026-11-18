@@ -9,11 +9,15 @@ inverse:
   # Neural-Adjoint search settings.
   seed: 2026
   restarts: 16
-  steps: 500
+  steps: 500 #Epochs
   learning_rate: 0.01
 
   # Weight of the training-domain boundary loss.
   boundary_weight: 1.0
+
+  # Predicted power (W) at or above these values is classified as ON.
+  # Order: kettle, fridge, dishwasher, washingmachine, microwave.
+  on_thresholds: [200, 50, 50, 20, 200]
 
   # Console progress interval in optimisation steps.
   print_every: 50
