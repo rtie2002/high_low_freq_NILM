@@ -122,13 +122,16 @@ def main():
 
     model = LSTM_NILM(**checkpoint["model_settings"]).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
 
     # STEP 2: Freeze every LSTM weight.
     # Autograd will pass through the model, but Adam will update only the
-    # candidate input created in STEP 6.
+    # candidate input created in STEP 6. cuDNN requires an LSTM to be in
+    # training mode when backpropagating to its input. The model has no active
+    # dropout, so this changes no values and does not unfreeze its weights.
     for parameter in model.parameters():
         parameter.requires_grad_(False)
+    assert model.lstm.dropout == 0.0
+    model.train()
 
     # STEP 3: Load one observed aggregate window from the configured split.
     # Ground-truth appliance powers are retained only for final evaluation.
@@ -212,6 +215,7 @@ def main():
 
     # STEP 8: Re-evaluate all restarts after the last Adam update and retain
     # the candidate with the smallest complete inverse objective.
+    model.eval()
     with torch.no_grad():
         candidate_power = candidate_normalized * x_std + x_mean
         predicted_normalized = model(candidate_normalized)
