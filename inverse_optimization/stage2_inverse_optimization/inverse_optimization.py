@@ -18,13 +18,13 @@ from torch import nn
 # Support both module execution and an IDE Run button.
 if __package__:
     from ..data_loader import APPLIANCES, load_windows
-    from ..model.lstm import LSTM_NILM
+    from ..model import build_model_from_checkpoint
     from .optimization_loss import inverse_optimization_loss
 else:
     project_dir = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(project_dir))
     from data_loader import APPLIANCES, load_windows
-    from model.lstm import LSTM_NILM
+    from model import build_model_from_checkpoint
     from stage2_inverse_optimization.optimization_loss import inverse_optimization_loss
 
 
@@ -120,18 +120,26 @@ def main():
     )
     assert list(checkpoint["appliances"]) == APPLIANCES
 
-    model = LSTM_NILM(**checkpoint["model_settings"]).to(device)
+    # checkpoint["model"] chooses the registered model class. The matching
+    # checkpoint["model_settings"] reconstructs the exact trained structure.
+    model = build_model_from_checkpoint(checkpoint).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
     # STEP 2: Freeze every LSTM weight.
     # Autograd will pass through the model, but Adam will update only the
     # candidate input created in STEP 6. cuDNN requires an LSTM to be in
-    # training mode when backpropagating to its input. The model has no active
-    # dropout, so this changes no values and does not unfreeze its weights.
+    # training mode when backpropagating to its input. Only recurrent modules
+    # are switched, while the complete model otherwise remains in eval mode.
     for parameter in model.parameters():
         parameter.requires_grad_(False)
-    assert model.lstm.dropout == 0.0
-    model.train()
+    model.eval()
+    for module in model.modules():
+        if isinstance(module, nn.RNNBase):
+            # eval mode normally disables recurrent dropout. cuDNN requires
+            # train mode for input gradients, so set dropout to zero directly
+            # before enabling that computation mode.
+            module.dropout = 0.0
+            module.train()
 
     # STEP 3: Load one observed aggregate window from the configured split.
     # Ground-truth appliance powers are retained only for final evaluation.
@@ -243,6 +251,7 @@ def main():
 
     print()
     print(f"Device: {device}")
+    print(f"Forward model: {checkpoint['model']}")
     print(f"Checkpoint epoch: {checkpoint['epoch']}")
     print(f"Selected restart: {best_index.item()}")
     print(f"Aggregate re-simulation MAE: {aggregate_mae.item():.2f} W")

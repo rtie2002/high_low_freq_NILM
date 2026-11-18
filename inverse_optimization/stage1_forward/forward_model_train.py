@@ -209,15 +209,8 @@ def main():
             best_epoch = epoch
             torch.save({
                 "model_state_dict": model.state_dict(),
-                "model": config["model"]["name"],
-                "model_settings": {
-                    "input_size": model.lstm.input_size,
-                    "hidden_size": model.lstm.hidden_size,
-                    "num_layers": model.lstm.num_layers,
-                    "batch_first": model.lstm.batch_first,
-                    "bidirectional": model.lstm.bidirectional,
-                    "dropout": model.lstm.dropout,
-                },
+                "model": model.model_name,
+                "model_settings": model.model_settings,
                 "appliances": APPLIANCES,
                 "x_mean": x_mean, "x_std": x_std,
                 "y_mean": y_mean, "y_std": y_std,
