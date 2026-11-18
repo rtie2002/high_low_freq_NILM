@@ -1,0 +1,19 @@
+inverse:
+  # Name used for results/<experiment_name>_<timestamp>/.
+  experiment_name: neural_adjoint_baseline
+
+  # Use validation while developing Stage 2. Test remains report-only.
+  split: validating
+  window_index: 0
+
+  # Neural-Adjoint search settings.
+  seed: 2026
+  restarts: 16
+  steps: 500
+  learning_rate: 0.01
+
+  # Weight of the training-domain boundary loss.
+  boundary_weight: 1.0
+
+  # Console progress interval in optimisation steps.
+  print_every: 50
