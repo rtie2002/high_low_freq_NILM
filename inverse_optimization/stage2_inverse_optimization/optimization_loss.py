@@ -25,7 +25,7 @@ def inverse_optimization_loss(
     """
     # `y` repeats the one observed aggregate waveform for every restart, so
     # predicted_normalized[r] is compared with exactly the same target y.
-    y = target_normalized.unsqueeze(0).expand_as(predicted_normalized)
+    y = target_normalized.unsqueeze(0).expand_as(predicted_normalized) if target_normalized.ndim == 1 else target_normalized
 
     # L_meter[r] = mean_t[(F(x_r)_t - y_t)^2].
     # It measures how closely restart r reproduces the observed aggregate.

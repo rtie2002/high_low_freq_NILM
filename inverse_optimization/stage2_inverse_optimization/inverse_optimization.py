@@ -306,14 +306,23 @@ def main():
     )
     run_dir.mkdir(parents=True)
     rows = []
-    for position, window_index in enumerate(window_indices, start=1):
-        print(f"\nWindow {window_index} ({position}/{count})", flush=True)
-        rows.append(solve_window(
-            window_index, appliance_windows, aggregate_windows, state_windows,
-            training_power, model, checkpoint, checkpoint_path, settings, args.smoke,
-            device, x_mean, x_std, y_mean, y_std, power_min, power_max,
-            run_dir, save_plots=(window_index == plot_index),
-        ))
+    batch_size = 1 if args.smoke else settings["batch_windows"]
+    for offset in range(0, count, batch_size):
+        batch_indices = window_indices[offset:offset + batch_size]
+        print(f"\nBatch {offset // batch_size + 1}: windows {batch_indices.tolist()}", flush=True)
+        candidates, histories, best_restarts = optimize_batch(
+            batch_indices, aggregate_windows, training_power, model, settings,
+            args.smoke, device, x_mean, x_std, y_mean, y_std, power_min, power_max,
+        )
+        for position, window_index in enumerate(batch_indices):
+            rows.append(solve_window(
+                int(window_index), appliance_windows, aggregate_windows, state_windows,
+                training_power, model, checkpoint, checkpoint_path, settings, args.smoke,
+                device, x_mean, x_std, y_mean, y_std, power_min, power_max,
+                run_dir, save_plots=(window_index == plot_index),
+                candidate_override=candidates[position], history_override=histories[position],
+                restart_override=best_restarts[position],
+            ))
         if args.smoke:
             break
 
@@ -338,11 +347,64 @@ def main():
     print("These rows overlap in time; they are not full-timeline metrics.")
 
 
+def optimize_batch(
+    indices, aggregate_windows, training_power, model, settings, smoke,
+    device, x_mean, x_std, y_mean, y_std, power_min, power_max,
+):
+    """Optimize B independent windows with R random restarts each in one GPU batch."""
+    for module in model.modules():
+        if isinstance(module, nn.RNNBase):
+            module.train()
+    batch_count = len(indices)
+    restarts = 2 if smoke else settings["restarts"]
+    steps = 3 if smoke else settings["steps"]
+    observed = torch.from_numpy(aggregate_windows[indices]).to(device)
+    target = ((observed - y_mean) / y_std).repeat_interleave(restarts, dim=0)
+    initial_indices = torch.randint(len(training_power), (batch_count, restarts))
+    initial_power = training_power[initial_indices].to(device)
+    candidate = nn.Parameter(((initial_power - x_mean) / x_std).reshape(
+        -1, initial_power.shape[2], initial_power.shape[3]
+    ).clone())
+    optimizer = torch.optim.Adam([candidate], lr=settings["learning_rate"])
+    histories = [[[], []] for _ in range(batch_count)]
+    for step in range(steps):
+        prediction = model(candidate)
+        power = candidate * x_std + x_mean
+        L, L_meter, _, L_total = inverse_optimization_loss(
+            prediction, target, power, power_min, power_max,
+            settings["boundary_weight"],
+        )
+        optimizer.zero_grad()
+        L.backward()
+        optimizer.step()
+        meter_values = L_meter.detach().reshape(batch_count, restarts).min(dim=1).values.cpu().tolist()
+        total_values = L_total.detach().reshape(batch_count, restarts).min(dim=1).values.cpu().tolist()
+        for index in range(batch_count):
+            histories[index][0].append(meter_values[index])
+            histories[index][1].append(total_values[index])
+        if step == 0 or (step + 1) % settings["print_every"] == 0 or step + 1 == steps:
+            print(f"Step {step + 1:04d}/{steps} | mean best meter MSE "
+                  f"{np.mean(meter_values):.6f}", flush=True)
+
+    with torch.no_grad():
+        prediction = model(candidate)
+        _, _, _, L_total = inverse_optimization_loss(
+            prediction, target, candidate * x_std + x_mean,
+            power_min, power_max, settings["boundary_weight"],
+        )
+        best = L_total.reshape(batch_count, restarts).argmin(dim=1)
+        selected = candidate.reshape(batch_count, restarts, *candidate.shape[1:])[
+            torch.arange(batch_count, device=device), best
+        ].detach()
+    return selected, histories, best.cpu().tolist()
+
+
 def solve_window(
     window_index, appliance_windows, aggregate_windows, state_windows,
     training_power, model, checkpoint, checkpoint_path, settings, smoke,
     device, x_mean, x_std, y_mean, y_std, power_min, power_max,
-    run_dir, save_plots,
+    run_dir, save_plots, candidate_override=None, history_override=None,
+    restart_override=None,
 ):
     # cuDNN LSTM input gradients require train mode; all model weights are frozen.
     for module in model.modules():
@@ -364,10 +426,13 @@ def solve_window(
 
     # STEP 5: Load training appliance windows for two training-only purposes:
     # random initial candidates and the boundary-loss power range.
-    restarts = 2 if smoke else settings["restarts"]
-    steps = 3 if smoke else settings["steps"]
+    restarts = 1 if candidate_override is not None else (2 if smoke else settings["restarts"])
+    steps = 0 if candidate_override is not None else (3 if smoke else settings["steps"])
     initial_indices = torch.randint(len(training_power), (restarts,))
-    initial_power = training_power[initial_indices].to(device)
+    initial_power = (
+        candidate_override.unsqueeze(0) * x_std + x_mean
+        if candidate_override is not None else training_power[initial_indices].to(device)
+    )
 
     # STEP 6: Create the variables that Stage 2 will optimise.
     # We optimise normalized candidates because that is the coordinate system
@@ -380,8 +445,7 @@ def solve_window(
         lr=settings["learning_rate"],
     )
 
-    meter_history = []
-    total_history = []
+    meter_history, total_history = history_override if history_override is not None else ([], [])
 
     # STEP 7: Neural-Adjoint inverse optimisation.
     # Paper Eq. (4): x_(k+1) = x_k - alpha * gradient_x L(F(x_k), y).
@@ -472,7 +536,7 @@ def solve_window(
     print(f"Device: {device}")
     print(f"Forward model: {checkpoint['model']}")
     print(f"Checkpoint epoch: {checkpoint['epoch']}")
-    print(f"Selected restart: {best_index.item()}")
+    print(f"Selected restart: {restart_override if restart_override is not None else best_index.item()}")
     print(f"Aggregate re-simulation MAE: {aggregate_mae.item():.2f} W")
     print(f"Forward MAE with true appliance inputs: {oracle_mae.item():.2f} W")
     for appliance, value in zip(APPLIANCES, metric_values["mae"]):
@@ -493,7 +557,7 @@ def solve_window(
             "metrics": {name: value.cpu() for name, value in metric_values.items()},
             "aggregate_mae": aggregate_mae.cpu(),
             "forward_oracle_mae": oracle_mae.cpu(),
-            "selected_restart": best_index.cpu(),
+            "selected_restart": restart_override if restart_override is not None else best_index.cpu(),
             "final_meter_mse": L_meter[best_index].cpu(),
             "final_boundary_loss": L_bnd[best_index].cpu(),
         },
@@ -521,7 +585,7 @@ def solve_window(
     print(f"Result: {result_path}")
     row = {
         "split": settings["split"], "window_index": window_index,
-        "selected_restart": best_index.item(),
+        "selected_restart": restart_override if restart_override is not None else best_index.item(),
         "aggregate_mae_w": aggregate_mae.item(),
         "forward_oracle_mae_w": oracle_mae.item(),
     }
