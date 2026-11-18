@@ -80,8 +80,8 @@ def plot_inverse_result(
             linewidth=1,
         )
         axis.plot(
-            estimated_appliance[:, appliance_index],
-            label="Inverse estimate",
+            np.maximum(estimated_appliance[:, appliance_index], 0),
+            label="Inverse estimate (clipped at 0 W for display)",
             linewidth=1,
         )
         axis.set_ylabel("Power (W)")
@@ -170,54 +170,67 @@ def plot_appliance_on_events(
     on_thresholds,
     margin_samples,
     min_on_samples,
-    seed,
     run_dir,
+    appliance_indices=None,
+    observed_aggregate=None,
+    window_index=None,
 ):
-    """Save one full true-ON event plus OFF context for each appliance."""
-    rng = np.random.default_rng(seed)
+    """Save a focused ON event and its full-window context for each selected appliance."""
     plot_paths = []
     total_steps = len(true_appliance)
 
-    for appliance_index, appliance in enumerate(APPLIANCES):
+    if appliance_indices is None:
+        appliance_indices = range(len(APPLIANCES))
+    for appliance_index in appliance_indices:
+        appliance = APPLIANCES[appliance_index]
         state = true_state[:, appliance_index].astype(bool)
         events = _state_events(state, min_on_samples)
-        plot_path = run_dir / f"inverse_{appliance}_on_event.png"
-        figure, axis = plt.subplots(figsize=(10, 4))
-
         if not events:
-            axis.text(0.5, 0.5, "No complete ON event in this inverse window", ha="center", va="center")
-            axis.set_axis_off()
-        else:
-            # Use a random complete ON event; retain the full event and add
-            # OFF context on both sides, rather than selecting one ON sample.
-            event_start, event_end = events[rng.integers(len(events))]
-            event_length = event_end - event_start + 1
-            margin = max(margin_samples, int(round(0.08 * event_length)))
-            start = max(0, event_start - margin)
-            end = min(total_steps, event_end + margin + 1)
-            time = np.arange(start, end) - start
+            continue
+        # Prefer an event with OFF samples on both sides inside this window.
+        complete = [(start, end) for start, end in events if start > 0 and end < total_steps - 1]
+        event_start, event_end = max(complete or events, key=lambda event: event[1] - event[0])
+        event_length = event_end - event_start + 1
+        margin = max(margin_samples, int(round(0.08 * event_length)))
+        focus_start = max(0, event_start - margin)
+        focus_end = min(total_steps, event_end + margin + 1)
+
+        for start, end, suffix, width in (
+            (focus_start, focus_end, "on_event", 10),
+            (0, total_steps, "on_event_context", 16),
+        ):
+            plot_path = run_dir / f"inverse_{appliance}_{suffix}.png"
+            figure, axis = plt.subplots(figsize=(width, 4))
+            time = np.arange(start, end)
             true_view = true_appliance[start:end, appliance_index]
             estimated_view = estimated_appliance[start:end, appliance_index]
             true_on_view = state[start:end]
             predicted_on_view = estimated_view >= on_thresholds[appliance_index]
 
-            # MART-NILM-style state bands: true-only, predicted-only, overlap.
-            _shade_state(axis, true_on_view & ~predicted_on_view, "#6baed6", "True ON only")
-            _shade_state(axis, predicted_on_view & ~true_on_view, "#7ad66d", "Predicted ON only")
-            _shade_state(axis, true_on_view & predicted_on_view, "#9b59b6", "ON overlap")
-            axis.plot(time, true_view, color="#1f77b4", linewidth=1.8, label="Ground truth")
-            axis.plot(time, estimated_view, color="#d62728", linewidth=1.5, label="Inverse estimate")
-            axis.set_xlabel("Time step (8 seconds per step)")
+            # State bands use the CSV truth; the red line uses clipped power
+            # for display, as in MART-NILM. Metrics and saved values stay raw.
+            for local_start, local_end in _state_events(true_on_view & ~predicted_on_view, 1):
+                axis.axvspan(start + local_start, start + local_end + 1, color="#6baed6", alpha=0.18)
+            for local_start, local_end in _state_events(predicted_on_view & ~true_on_view, 1):
+                axis.axvspan(start + local_start, start + local_end + 1, color="#7ad66d", alpha=0.18)
+            for local_start, local_end in _state_events(true_on_view & predicted_on_view, 1):
+                axis.axvspan(start + local_start, start + local_end + 1, color="#9b59b6", alpha=0.18)
+            if observed_aggregate is not None:
+                axis.plot(time, observed_aggregate[start:end], color="0.7", linewidth=0.8, label="Aggregate")
+            axis.plot(time, true_view, color="#1f77b4", linewidth=1.5, label="True power")
+            axis.plot(time, np.maximum(estimated_view, 0), color="#d62728", linewidth=1.3,
+                      label="Inverse estimate (clipped at 0 W for display)")
+            axis.set_xlim(start, end - 1)
+            axis.set_xlabel("Sample within window (8 seconds per sample)")
             axis.set_ylabel("Appliance power (W)")
-            axis.set_title(f"ON event [{event_start}:{event_end}] with OFF context")
+            axis.set_title(f"{appliance.capitalize()} | window {window_index} | ON event [{event_start}:{event_end}]"
+                           + (" | full window" if suffix.endswith("context") else " | focus with OFF context"))
             axis.grid(True, alpha=0.3)
             axis.legend(fontsize=8)
-
-        figure.suptitle(f"{appliance.capitalize()}: Inverse Estimate Around a True ON Event", weight="bold")
-        figure.tight_layout()
-        figure.savefig(plot_path, dpi=200)
-        plt.close(figure)
-        plot_paths.append(plot_path)
+            figure.tight_layout()
+            figure.savefig(plot_path, dpi=200)
+            plt.close(figure)
+            plot_paths.append(plot_path)
 
     return plot_paths
 
@@ -297,7 +310,12 @@ def main():
     start = settings["window_index"]
     available = len(aggregate_windows) - start
     count = available if settings["num_windows"] is None else min(settings["num_windows"], available)
+    if count <= 0:
+        raise ValueError("No inverse windows selected; check window_index and num_windows")
     window_indices = np.linspace(start, len(aggregate_windows) - 1, count, dtype=int)
+    if args.smoke:
+        window_indices = window_indices[:1]
+        count = 1
     # Labels choose a useful example figure only; the inverse solver never sees them.
     active_counts = (state_windows[window_indices].sum(axis=1) > 0).sum(axis=1)
     plot_index = int(window_indices[active_counts.argmax()])
@@ -305,6 +323,14 @@ def main():
         f"{settings['experiment_name']}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
     )
     run_dir.mkdir(parents=True)
+    # One disk-backed array holds every estimated window. This avoids one .pt
+    # file per window and keeps memory usage steady for a full split.
+    prediction_path = run_dir / "estimated_appliances.npy"
+    predictions = np.lib.format.open_memmap(
+        prediction_path, mode="w+", dtype=np.float32,
+        shape=(count, appliance_windows.shape[1], appliance_windows.shape[2]),
+    )
+    np.save(run_dir / "window_indices.npy", window_indices)
     rows = []
     batch_size = 1 if args.smoke else settings["batch_windows"]
     for offset in range(0, count, batch_size):
@@ -315,16 +341,46 @@ def main():
             args.smoke, device, x_mean, x_std, y_mean, y_std, power_min, power_max,
         )
         for position, window_index in enumerate(batch_indices):
-            rows.append(solve_window(
+            row, estimated = solve_window(
                 int(window_index), appliance_windows, aggregate_windows, state_windows,
                 training_power, model, checkpoint, checkpoint_path, settings, args.smoke,
                 device, x_mean, x_std, y_mean, y_std, power_min, power_max,
                 run_dir, save_plots=(window_index == plot_index),
                 candidate_override=candidates[position], history_override=histories[position],
                 restart_override=best_restarts[position],
-            ))
+            )
+            rows.append(row)
+            predictions[offset + position] = estimated
+        predictions.flush()
         if args.smoke:
             break
+
+    # Choose a separate window with a real ON event for each appliance.
+    # A single representative window often contains only fridge activity.
+    for appliance_index, appliance in enumerate(APPLIANCES):
+        best_position = None
+        best_length = 0
+        for position, window_index in enumerate(window_indices):
+            state = state_windows[window_index, :, appliance_index]
+            events = _state_events(state, settings["scenario_min_on_samples"])
+            complete = [(a, b) for a, b in events if a > 0 and b < len(state) - 1]
+            if complete:
+                length = max(b - a + 1 for a, b in complete)
+                if length > best_length:
+                    best_position, best_length = position, length
+        if best_position is None:
+            print(f"No complete ON event for {appliance} in selected windows")
+            continue
+        window_index = int(window_indices[best_position])
+        paths = plot_appliance_on_events(
+            appliance_windows[window_index], predictions[best_position],
+            state_windows[window_index], settings["on_thresholds"],
+            settings["scenario_margin_samples"], settings["scenario_min_on_samples"],
+            run_dir, appliance_indices=[appliance_index],
+            observed_aggregate=aggregate_windows[window_index], window_index=window_index,
+        )
+        for path in paths:
+            print(f"ON-event waveform plot: {path}")
 
     summary_path = run_dir / "window_metrics.csv"
     with summary_path.open("w", newline="", encoding="utf-8") as file:
@@ -344,6 +400,7 @@ def main():
             writer.writerow([name, float(valid.mean()) if len(valid) else "", len(valid)])
     print(f"Window-level diagnostics: {summary_path}")
     print(f"Window averages: {average_path}")
+    print(f"All estimated windows: {prediction_path}")
     print("These rows overlap in time; they are not full-timeline metrics.")
 
 
@@ -542,28 +599,6 @@ def solve_window(
     for appliance, value in zip(APPLIANCES, metric_values["mae"]):
         print(f"{appliance:15s} MAE: {value.item():.2f} W")
 
-    # Each window has a separate saved candidate; plots use the first window.
-    result_path = run_dir / f"inverse_window_{window_index:05d}.pt"
-    torch.save(
-        {
-            "checkpoint": str(checkpoint_path),
-            "config": config,
-            "window_index": window_index,
-            "observed_aggregate": observed_aggregate.cpu(),
-            "predicted_aggregate": predicted_aggregate.cpu(),
-            "true_appliance": true_appliance.cpu(),
-            "true_state": true_state.cpu(),
-            "estimated_appliance": estimated_appliance.cpu(),
-            "metrics": {name: value.cpu() for name, value in metric_values.items()},
-            "aggregate_mae": aggregate_mae.cpu(),
-            "forward_oracle_mae": oracle_mae.cpu(),
-            "selected_restart": restart_override if restart_override is not None else best_index.cpu(),
-            "final_meter_mse": L_meter[best_index].cpu(),
-            "final_boundary_loss": L_bnd[best_index].cpu(),
-        },
-        result_path,
-    )
-
     if save_plots:
         loss_plot = plot_loss_curve(meter_history, total_history, run_dir)
         waveform_plot = plot_inverse_result(
@@ -571,18 +606,9 @@ def solve_window(
             true_appliance.cpu().numpy(), estimated_appliance.cpu().numpy(), run_dir,
         )
         metrics_plot = plot_metrics_table(metric_values, settings["split"], window_index, run_dir)
-        scenario_plots = plot_appliance_on_events(
-            true_appliance.cpu().numpy(), estimated_appliance.cpu().numpy(),
-            true_state.cpu().numpy(), settings["on_thresholds"],
-            settings["scenario_margin_samples"], settings["scenario_min_on_samples"],
-            settings["seed"], run_dir,
-        )
         print(f"Loss plot: {loss_plot}")
         print(f"Waveform plot: {waveform_plot}")
         print(f"Metrics table: {metrics_plot}")
-        for plot_path in scenario_plots:
-            print(f"ON-event waveform plot: {plot_path}")
-    print(f"Result: {result_path}")
     row = {
         "split": settings["split"], "window_index": window_index,
         "selected_restart": restart_override if restart_override is not None else best_index.item(),
@@ -592,7 +618,7 @@ def solve_window(
     for name, values in metric_values.items():
         for appliance, value in zip(APPLIANCES, values):
             row[f"{appliance}_{name}"] = value.item()
-    return row
+    return row, estimated_appliance.cpu().numpy()
 
 
 if __name__ == "__main__":

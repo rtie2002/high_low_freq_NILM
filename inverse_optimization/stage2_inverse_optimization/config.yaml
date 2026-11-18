@@ -19,7 +19,7 @@ inverse:
   seed: 2026
   restarts: 32
   # Number of independent meter windows optimized together on the GPU.
-  batch_windows: 16
+  batch_windows: 32
   steps: 500 #Epochs
   learning_rate: 0.01
 
