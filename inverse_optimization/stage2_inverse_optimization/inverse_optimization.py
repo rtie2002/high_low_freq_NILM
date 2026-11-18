@@ -5,6 +5,7 @@ candidate appliance-power input instead of the LSTM weights.
 """
 
 import argparse
+import csv
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -283,10 +284,73 @@ def main():
             module.dropout = 0.0
             module.train()
 
+    appliance_windows, aggregate_windows, state_windows = load_windows(settings["split"])
+    training_power, _, _ = load_windows("training")
+    training_power = torch.from_numpy(training_power)
+    x_mean = checkpoint["x_mean"].to(device)
+    x_std = checkpoint["x_std"].to(device)
+    y_mean = checkpoint["y_mean"].to(device)
+    y_std = checkpoint["y_std"].to(device)
+    power_min = training_power.amin(dim=(0, 1)).to(device)
+    power_max = training_power.amax(dim=(0, 1)).to(device)
+
+    start = settings["window_index"]
+    available = len(aggregate_windows) - start
+    count = available if settings["num_windows"] is None else min(settings["num_windows"], available)
+    window_indices = np.linspace(start, len(aggregate_windows) - 1, count, dtype=int)
+    # Labels choose a useful example figure only; the inverse solver never sees them.
+    active_counts = (state_windows[window_indices].sum(axis=1) > 0).sum(axis=1)
+    plot_index = int(window_indices[active_counts.argmax()])
+    run_dir = Path(__file__).resolve().parents[1] / "results" / (
+        f"{settings['experiment_name']}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+    )
+    run_dir.mkdir(parents=True)
+    rows = []
+    for position, window_index in enumerate(window_indices, start=1):
+        print(f"\nWindow {window_index} ({position}/{count})", flush=True)
+        rows.append(solve_window(
+            window_index, appliance_windows, aggregate_windows, state_windows,
+            training_power, model, checkpoint, checkpoint_path, settings, args.smoke,
+            device, x_mean, x_std, y_mean, y_std, power_min, power_max,
+            run_dir, save_plots=(window_index == plot_index),
+        ))
+        if args.smoke:
+            break
+
+    summary_path = run_dir / "window_metrics.csv"
+    with summary_path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+    # Equal-window averages are diagnostics; overlapping samples are counted
+    # more than once and must not be presented as full-timeline scores.
+    average_path = run_dir / "window_averages.csv"
+    metric_names = list(rows[0].keys())[3:]
+    with average_path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(["metric", "mean_over_windows", "valid_windows"])
+        for name in metric_names:
+            values = np.asarray([row[name] for row in rows], dtype=float)
+            valid = values[np.isfinite(values)]
+            writer.writerow([name, float(valid.mean()) if len(valid) else "", len(valid)])
+    print(f"Window-level diagnostics: {summary_path}")
+    print(f"Window averages: {average_path}")
+    print("These rows overlap in time; they are not full-timeline metrics.")
+
+
+def solve_window(
+    window_index, appliance_windows, aggregate_windows, state_windows,
+    training_power, model, checkpoint, checkpoint_path, settings, smoke,
+    device, x_mean, x_std, y_mean, y_std, power_min, power_max,
+    run_dir, save_plots,
+):
+    # cuDNN LSTM input gradients require train mode; all model weights are frozen.
+    for module in model.modules():
+        if isinstance(module, nn.RNNBase):
+            module.train()
+
     # STEP 3: Load one observed aggregate window from the configured split.
     # Ground-truth appliance powers are retained only for final evaluation.
-    appliance_windows, aggregate_windows, state_windows = load_windows(settings["split"])
-    window_index = settings["window_index"]
     true_appliance = torch.from_numpy(appliance_windows[window_index]).to(device)
     observed_aggregate = torch.from_numpy(aggregate_windows[window_index]).to(device)
     true_state = torch.from_numpy(state_windows[window_index]).to(device)
@@ -296,21 +360,12 @@ def main():
     # STEP 4: Reuse the Stage-1 training statistics exactly.
     # The frozen LSTM expects normalized appliance inputs and produces a
     # normalized aggregate output.
-    x_mean = checkpoint["x_mean"].to(device)
-    x_std = checkpoint["x_std"].to(device)
-    y_mean = checkpoint["y_mean"].to(device)
-    y_std = checkpoint["y_std"].to(device)
     target_normalized = (observed_aggregate - y_mean) / y_std
 
     # STEP 5: Load training appliance windows for two training-only purposes:
     # random initial candidates and the boundary-loss power range.
-    training_power, _, _ = load_windows("training")
-    training_power = torch.from_numpy(training_power)
-    power_min = training_power.amin(dim=(0, 1)).to(device)
-    power_max = training_power.amax(dim=(0, 1)).to(device)
-
-    restarts = 2 if args.smoke else settings["restarts"]
-    steps = 3 if args.smoke else settings["steps"]
+    restarts = 2 if smoke else settings["restarts"]
+    steps = 3 if smoke else settings["steps"]
     initial_indices = torch.randint(len(training_power), (restarts,))
     initial_power = training_power[initial_indices].to(device)
 
@@ -359,7 +414,7 @@ def main():
         meter_history.append(L_meter.min().item())
         total_history.append(L_total.min().item())
 
-        if (step == 0 or (step + 1) % settings["print_every"] == 0 or step + 1 == steps):
+        if save_plots and (step == 0 or (step + 1) % settings["print_every"] == 0 or step + 1 == steps):
             best_restart = L_total.argmin().item()
             print(
                 f"Step {step + 1:04d}/{steps} | "
@@ -423,16 +478,8 @@ def main():
     for appliance, value in zip(APPLIANCES, metric_values["mae"]):
         print(f"{appliance:15s} MAE: {value.item():.2f} W")
 
-    # STEP 10: Save numerical results and figures for inspection.
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    run_dir = (
-        Path(__file__).resolve().parents[1]
-        / "results"
-        / f"{settings['experiment_name']}_{timestamp}"
-    )
-    run_dir.mkdir(parents=True)
-
-    result_path = run_dir / "inverse_result.pt"
+    # Each window has a separate saved candidate; plots use the first window.
+    result_path = run_dir / f"inverse_window_{window_index:05d}.pt"
     torch.save(
         {
             "checkpoint": str(checkpoint_path),
@@ -453,33 +500,35 @@ def main():
         result_path,
     )
 
-    loss_plot = plot_loss_curve(meter_history, total_history, run_dir)
-    waveform_plot = plot_inverse_result(
-        observed_aggregate.cpu().numpy(),
-        predicted_aggregate.cpu().numpy(),
-        true_appliance.cpu().numpy(),
-        estimated_appliance.cpu().numpy(),
-        run_dir,
-    )
-    metrics_plot = plot_metrics_table(
-        metric_values, settings["split"], window_index, run_dir
-    )
-    scenario_plots = plot_appliance_on_events(
-        true_appliance.cpu().numpy(),
-        estimated_appliance.cpu().numpy(),
-        true_state.cpu().numpy(),
-        settings["on_thresholds"],
-        settings["scenario_margin_samples"],
-        settings["scenario_min_on_samples"],
-        settings["seed"],
-        run_dir,
-    )
+    if save_plots:
+        loss_plot = plot_loss_curve(meter_history, total_history, run_dir)
+        waveform_plot = plot_inverse_result(
+            observed_aggregate.cpu().numpy(), predicted_aggregate.cpu().numpy(),
+            true_appliance.cpu().numpy(), estimated_appliance.cpu().numpy(), run_dir,
+        )
+        metrics_plot = plot_metrics_table(metric_values, settings["split"], window_index, run_dir)
+        scenario_plots = plot_appliance_on_events(
+            true_appliance.cpu().numpy(), estimated_appliance.cpu().numpy(),
+            true_state.cpu().numpy(), settings["on_thresholds"],
+            settings["scenario_margin_samples"], settings["scenario_min_on_samples"],
+            settings["seed"], run_dir,
+        )
+        print(f"Loss plot: {loss_plot}")
+        print(f"Waveform plot: {waveform_plot}")
+        print(f"Metrics table: {metrics_plot}")
+        for plot_path in scenario_plots:
+            print(f"ON-event waveform plot: {plot_path}")
     print(f"Result: {result_path}")
-    print(f"Loss plot: {loss_plot}")
-    print(f"Waveform plot: {waveform_plot}")
-    print(f"Metrics table: {metrics_plot}")
-    for plot_path in scenario_plots:
-        print(f"ON-event waveform plot: {plot_path}")
+    row = {
+        "split": settings["split"], "window_index": window_index,
+        "selected_restart": best_index.item(),
+        "aggregate_mae_w": aggregate_mae.item(),
+        "forward_oracle_mae_w": oracle_mae.item(),
+    }
+    for name, values in metric_values.items():
+        for appliance, value in zip(APPLIANCES, values):
+            row[f"{appliance}_{name}"] = value.item()
+    return row
 
 
 if __name__ == "__main__":

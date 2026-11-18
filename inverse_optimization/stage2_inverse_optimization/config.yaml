@@ -9,10 +9,15 @@ inverse:
   # Use validation while developing Stage 2. Test remains report-only.
   split: validating
   window_index: 0
+  # Process every validation window from window_index onward. This includes
+  # the many all-OFF windows and rare appliance-ON windows; do not discard
+  # sparse events by evaluating only a small sample.
+  # Set an integer here only for a shorter diagnostic run.
+  num_windows: null
 
   # Neural-Adjoint search settings.
   seed: 2026
-  restarts: 16
+  restarts: 32
   steps: 500 #Epochs
   learning_rate: 0.01
 
