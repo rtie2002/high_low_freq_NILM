@@ -2,6 +2,10 @@ inverse:
   # Name used for results/<experiment_name>_<timestamp>/.
   experiment_name: neural_adjoint_baseline
 
+  # Stage-1 checkpoint to invert. This path is relative to this config file.
+  # Replace REPLACE_WITH_FORWARD_RUN with the chosen Stage-1 result folder.
+  checkpoint_path: "../results/forward_lstm_baseline_20261117_225146_155830/best.pt"
+
   # Use validation while developing Stage 2. Test remains report-only.
   split: validating
   window_index: 0
@@ -18,6 +22,9 @@ inverse:
   # Predicted power (W) at or above these values is classified as ON.
   # Order: kettle, fridge, dishwasher, washingmachine, microwave.
   on_thresholds: [200, 50, 50, 20, 200]
+
+  # Number of 8-second samples shown in each ON/OFF appliance scenario panel.
+  scenario_samples: 128
 
   # Console progress interval in optimisation steps.
   print_every: 50

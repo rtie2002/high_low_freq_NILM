@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import yaml
 from torch import nn
@@ -143,13 +144,54 @@ def plot_metrics_table(metric_values, split, window_index, run_dir):
     return table_path
 
 
+def plot_on_off_scenarios(true_appliance, estimated_appliance, true_state, samples, seed, run_dir):
+    """Save one ON-focused and one OFF-focused waveform image per appliance."""
+    rng = np.random.default_rng(seed)
+    plot_paths = []
+    total_steps = len(true_appliance)
+
+    for appliance_index, appliance in enumerate(APPLIANCES):
+        figure, axes = plt.subplots(1, 2, figsize=(14, 4), sharey=True)
+        state = true_state[:, appliance_index].astype(bool)
+
+        for axis, is_on, label in zip(axes, (True, False), ("ON", "OFF")):
+            eligible_steps = np.flatnonzero(state == is_on)
+            if len(eligible_steps) == 0:
+                axis.text(0.5, 0.5, f"No {label} samples\nin this window", ha="center", va="center")
+                axis.set_title(f"{label}-focused segment")
+                axis.axis("off")
+                continue
+
+            center = int(rng.choice(eligible_steps))
+            start = min(max(center - samples // 2, 0), max(total_steps - samples, 0))
+            end = min(start + samples, total_steps)
+            time = np.arange(start, end) - start
+            axis.plot(time, true_appliance[start:end, appliance_index], label="Ground truth")
+            axis.plot(time, estimated_appliance[start:end, appliance_index], label="Inverse estimate")
+            axis.axvline(center - start, color="black", linestyle="--", linewidth=1, label=f"Selected {label} sample")
+            axis.set_title(f"{label}-focused segment")
+            axis.set_xlabel("Time step (8 seconds per step)")
+            axis.grid(True, alpha=0.3)
+            axis.legend(fontsize=8)
+
+        axes[0].set_ylabel("Appliance power (W)")
+        figure.suptitle(f"{appliance.capitalize()}: Inverse Estimate During ON and OFF States", weight="bold")
+        figure.tight_layout()
+        plot_path = run_dir / f"inverse_{appliance}_on_off.png"
+        figure.savefig(plot_path, dpi=200)
+        plt.close(figure)
+        plot_paths.append(plot_path)
+
+    return plot_paths
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--checkpoint",
         type=Path,
-        required=True,
-        help="Path to the Stage-1 best.pt checkpoint.",
+        default=None,
+        help="Optional Stage-1 checkpoint path that overrides inverse.checkpoint_path.",
     )
     parser.add_argument(
         "--smoke",
@@ -162,10 +204,23 @@ def main():
     torch.manual_seed(settings["seed"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # The config path is relative to stage2_inverse_optimization/config.yaml.
+    # A command-line --checkpoint path, when supplied, takes priority.
+    if args.checkpoint is None:
+        checkpoint_path = STAGE2_DIR / settings["checkpoint_path"]
+    else:
+        checkpoint_path = args.checkpoint
+    checkpoint_path = checkpoint_path.expanduser().resolve()
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(
+            f"Stage-1 checkpoint not found: {checkpoint_path}. "
+            "Set inverse.checkpoint_path in stage2_inverse_optimization/config.yaml."
+        )
+
     # STEP 1: Load the trained Stage-1 forward model.
     # The checkpoint also contains the training-only normalization statistics.
     checkpoint = torch.load(
-        args.checkpoint,
+        checkpoint_path,
         map_location=device,
         weights_only=True,
     )
@@ -334,7 +389,7 @@ def main():
     result_path = run_dir / "inverse_result.pt"
     torch.save(
         {
-            "checkpoint": str(args.checkpoint),
+            "checkpoint": str(checkpoint_path),
             "config": config,
             "window_index": window_index,
             "observed_aggregate": observed_aggregate.cpu(),
@@ -362,10 +417,20 @@ def main():
     metrics_plot = plot_metrics_table(
         metric_values, settings["split"], window_index, run_dir
     )
+    scenario_plots = plot_on_off_scenarios(
+        true_appliance.cpu().numpy(),
+        estimated_appliance.cpu().numpy(),
+        true_state.cpu().numpy(),
+        settings["scenario_samples"],
+        settings["seed"],
+        run_dir,
+    )
     print(f"Result: {result_path}")
     print(f"Loss plot: {loss_plot}")
     print(f"Waveform plot: {waveform_plot}")
     print(f"Metrics table: {metrics_plot}")
+    for plot_path in scenario_plots:
+        print(f"ON/OFF scenario plot: {plot_path}")
 
 
 if __name__ == "__main__":
