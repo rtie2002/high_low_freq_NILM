@@ -144,40 +144,76 @@ def plot_metrics_table(metric_values, split, window_index, run_dir):
     return table_path
 
 
-def plot_on_off_scenarios(true_appliance, estimated_appliance, true_state, samples, seed, run_dir):
-    """Save one ON-focused and one OFF-focused waveform image per appliance."""
+def _state_events(state, min_samples):
+    """Return inclusive start/end indices for contiguous ON events."""
+    state = np.asarray(state, dtype=bool)
+    starts = np.flatnonzero(state & np.r_[True, ~state[:-1]])
+    ends = np.flatnonzero(state & np.r_[~state[1:], True])
+    return [
+        (int(start), int(end))
+        for start, end in zip(starts, ends)
+        if end - start + 1 >= min_samples
+    ]
+
+
+def _shade_state(axis, state, color, label):
+    """Shade every contiguous ON run in a waveform plot."""
+    for index, (start, end) in enumerate(_state_events(state, min_samples=1)):
+        axis.axvspan(start, end + 1, color=color, alpha=0.18, label=label if index == 0 else None)
+
+
+def plot_appliance_on_events(
+    true_appliance,
+    estimated_appliance,
+    true_state,
+    on_thresholds,
+    margin_samples,
+    min_on_samples,
+    seed,
+    run_dir,
+):
+    """Save one full true-ON event plus OFF context for each appliance."""
     rng = np.random.default_rng(seed)
     plot_paths = []
     total_steps = len(true_appliance)
 
     for appliance_index, appliance in enumerate(APPLIANCES):
-        figure, axes = plt.subplots(1, 2, figsize=(14, 4), sharey=True)
         state = true_state[:, appliance_index].astype(bool)
+        events = _state_events(state, min_on_samples)
+        plot_path = run_dir / f"inverse_{appliance}_on_event.png"
+        figure, axis = plt.subplots(figsize=(10, 4))
 
-        for axis, is_on, label in zip(axes, (True, False), ("ON", "OFF")):
-            eligible_steps = np.flatnonzero(state == is_on)
-            if len(eligible_steps) == 0:
-                axis.text(0.5, 0.5, f"No {label} samples\nin this window", ha="center", va="center")
-                axis.set_title(f"{label}-focused segment")
-                axis.axis("off")
-                continue
-
-            center = int(rng.choice(eligible_steps))
-            start = min(max(center - samples // 2, 0), max(total_steps - samples, 0))
-            end = min(start + samples, total_steps)
+        if not events:
+            axis.text(0.5, 0.5, "No complete ON event in this inverse window", ha="center", va="center")
+            axis.set_axis_off()
+        else:
+            # Use a random complete ON event; retain the full event and add
+            # OFF context on both sides, rather than selecting one ON sample.
+            event_start, event_end = events[rng.integers(len(events))]
+            event_length = event_end - event_start + 1
+            margin = max(margin_samples, int(round(0.08 * event_length)))
+            start = max(0, event_start - margin)
+            end = min(total_steps, event_end + margin + 1)
             time = np.arange(start, end) - start
-            axis.plot(time, true_appliance[start:end, appliance_index], label="Ground truth")
-            axis.plot(time, estimated_appliance[start:end, appliance_index], label="Inverse estimate")
-            axis.axvline(center - start, color="black", linestyle="--", linewidth=1, label=f"Selected {label} sample")
-            axis.set_title(f"{label}-focused segment")
+            true_view = true_appliance[start:end, appliance_index]
+            estimated_view = estimated_appliance[start:end, appliance_index]
+            true_on_view = state[start:end]
+            predicted_on_view = estimated_view >= on_thresholds[appliance_index]
+
+            # MART-NILM-style state bands: true-only, predicted-only, overlap.
+            _shade_state(axis, true_on_view & ~predicted_on_view, "#6baed6", "True ON only")
+            _shade_state(axis, predicted_on_view & ~true_on_view, "#7ad66d", "Predicted ON only")
+            _shade_state(axis, true_on_view & predicted_on_view, "#9b59b6", "ON overlap")
+            axis.plot(time, true_view, color="#1f77b4", linewidth=1.8, label="Ground truth")
+            axis.plot(time, estimated_view, color="#d62728", linewidth=1.5, label="Inverse estimate")
             axis.set_xlabel("Time step (8 seconds per step)")
+            axis.set_ylabel("Appliance power (W)")
+            axis.set_title(f"ON event [{event_start}:{event_end}] with OFF context")
             axis.grid(True, alpha=0.3)
             axis.legend(fontsize=8)
 
-        axes[0].set_ylabel("Appliance power (W)")
-        figure.suptitle(f"{appliance.capitalize()}: Inverse Estimate During ON and OFF States", weight="bold")
+        figure.suptitle(f"{appliance.capitalize()}: Inverse Estimate Around a True ON Event", weight="bold")
         figure.tight_layout()
-        plot_path = run_dir / f"inverse_{appliance}_on_off.png"
         figure.savefig(plot_path, dpi=200)
         plt.close(figure)
         plot_paths.append(plot_path)
@@ -254,6 +290,8 @@ def main():
     true_appliance = torch.from_numpy(appliance_windows[window_index]).to(device)
     observed_aggregate = torch.from_numpy(aggregate_windows[window_index]).to(device)
     true_state = torch.from_numpy(state_windows[window_index]).to(device)
+    print(f"Evaluating {settings['split']} window {window_index} of {len(aggregate_windows)}")
+    print("ON samples:", dict(zip(APPLIANCES, true_state.sum(dim=0).tolist())))
 
     # STEP 4: Reuse the Stage-1 training statistics exactly.
     # The frozen LSTM expects normalized appliance inputs and produces a
@@ -367,6 +405,13 @@ def main():
         "f1": f1(estimated_appliance, true_state, settings["on_thresholds"]),
     }
     aggregate_mae = (predicted_aggregate - observed_aggregate).abs().mean()
+    # Diagnostic only: the true appliance signals never enter the inverse
+    # objective. If the frozen forward model cannot fit these perfect inputs,
+    # reducing inverse meter loss cannot guarantee correct appliance estimates.
+    with torch.no_grad():
+        oracle_aggregate = model(((true_appliance - x_mean) / x_std).unsqueeze(0))[0]
+        oracle_aggregate = oracle_aggregate * y_std + y_mean
+        oracle_mae = (oracle_aggregate - observed_aggregate).abs().mean()
 
     print()
     print(f"Device: {device}")
@@ -374,6 +419,7 @@ def main():
     print(f"Checkpoint epoch: {checkpoint['epoch']}")
     print(f"Selected restart: {best_index.item()}")
     print(f"Aggregate re-simulation MAE: {aggregate_mae.item():.2f} W")
+    print(f"Forward MAE with true appliance inputs: {oracle_mae.item():.2f} W")
     for appliance, value in zip(APPLIANCES, metric_values["mae"]):
         print(f"{appliance:15s} MAE: {value.item():.2f} W")
 
@@ -399,6 +445,7 @@ def main():
             "estimated_appliance": estimated_appliance.cpu(),
             "metrics": {name: value.cpu() for name, value in metric_values.items()},
             "aggregate_mae": aggregate_mae.cpu(),
+            "forward_oracle_mae": oracle_mae.cpu(),
             "selected_restart": best_index.cpu(),
             "final_meter_mse": L_meter[best_index].cpu(),
             "final_boundary_loss": L_bnd[best_index].cpu(),
@@ -417,11 +464,13 @@ def main():
     metrics_plot = plot_metrics_table(
         metric_values, settings["split"], window_index, run_dir
     )
-    scenario_plots = plot_on_off_scenarios(
+    scenario_plots = plot_appliance_on_events(
         true_appliance.cpu().numpy(),
         estimated_appliance.cpu().numpy(),
         true_state.cpu().numpy(),
-        settings["scenario_samples"],
+        settings["on_thresholds"],
+        settings["scenario_margin_samples"],
+        settings["scenario_min_on_samples"],
         settings["seed"],
         run_dir,
     )
@@ -430,7 +479,7 @@ def main():
     print(f"Waveform plot: {waveform_plot}")
     print(f"Metrics table: {metrics_plot}")
     for plot_path in scenario_plots:
-        print(f"ON/OFF scenario plot: {plot_path}")
+        print(f"ON-event waveform plot: {plot_path}")
 
 
 if __name__ == "__main__":

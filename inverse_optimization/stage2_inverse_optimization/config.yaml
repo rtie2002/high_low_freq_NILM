@@ -23,8 +23,10 @@ inverse:
   # Order: kettle, fridge, dishwasher, washingmachine, microwave.
   on_thresholds: [200, 50, 50, 20, 200]
 
-  # Number of 8-second samples shown in each ON/OFF appliance scenario panel.
-  scenario_samples: 128
+  # ON-event plotting: show each selected ON event with OFF context before and
+  # after it, following the MART-NILM waveform-selection idea.
+  scenario_margin_samples: 40
+  scenario_min_on_samples: 2
 
   # Console progress interval in optimisation steps.
   print_every: 50
