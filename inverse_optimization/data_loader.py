@@ -139,7 +139,7 @@ def load_random_continuous_interval(split_name: str, length: int, seed: int):
 
 
 def load_random_appliance_event_windows(split_name: str, length: int, seed: int):
-    """Return one continuous window centred on an ON event for each appliance."""
+    """Return one continuous ON-event interval and CSV ON/OFF labels per appliance."""
     data = pd.read_csv(SPLIT_FILES[split_name]).sort_values(
         ["dataset", "house", "sequence_id", "unix_time"]
     )
@@ -157,13 +157,17 @@ def load_random_appliance_event_windows(split_name: str, length: int, seed: int)
             raise ValueError(f"No {split_name} window contains an ON event for {appliance}.")
 
         one_sequence = groups.get_group(eligible_names[rng.integers(len(eligible_names))])
-        on_samples = np.flatnonzero(one_sequence[state_column].to_numpy())
-        center = int(on_samples[rng.integers(len(on_samples))])
+        state = one_sequence[state_column].to_numpy(dtype=np.int64)
+        starts = np.flatnonzero(state.astype(bool) & np.r_[True, ~state[:-1].astype(bool)])
+        ends = np.flatnonzero(state.astype(bool) & np.r_[~state[1:].astype(bool), True])
+        event_start, event_end = list(zip(starts, ends))[rng.integers(len(starts))]
+        center = (int(event_start) + int(event_end)) // 2
         start = min(max(center - length // 2, 0), len(one_sequence) - length)
         interval = one_sequence.iloc[start:start + length]
         examples[appliance] = (
             interval[POWER_COLUMNS].to_numpy(dtype=np.float32),
             interval["aggregate"].to_numpy(dtype=np.float32),
+            interval[STATE_COLUMNS].to_numpy(dtype=np.int64),
         )
 
     return examples

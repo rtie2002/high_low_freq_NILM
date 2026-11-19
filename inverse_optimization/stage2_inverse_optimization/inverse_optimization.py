@@ -22,6 +22,7 @@ if __package__:
     from ..data_loader import APPLIANCES, load_windows
     from ..metrics import average_precision, f1, mae, off_mae, on_mae, precision, recall, sae
     from ..model import build_model_from_checkpoint
+    from ..waveform_plots import save_appliance_event_waveforms
     from .optimization_loss import inverse_optimization_loss
 else:
     project_dir = Path(__file__).resolve().parents[1]
@@ -29,6 +30,7 @@ else:
     from data_loader import APPLIANCES, load_windows
     from metrics import average_precision, f1, mae, off_mae, on_mae, precision, recall, sae
     from model import build_model_from_checkpoint
+    from waveform_plots import save_appliance_event_waveforms
     from stage2_inverse_optimization.optimization_loss import inverse_optimization_loss
 
 
@@ -39,7 +41,8 @@ with (STAGE2_DIR / "config.yaml").open(encoding="utf-8") as file:
 
 def plot_loss_curve(meter_history, total_history, run_dir):
     """Save the best restart's loss during inverse optimisation."""
-    plot_path = run_dir / "inverse_loss_curve.png"
+    plot_path = run_dir / "figures" / "loss" / "inverse_loss_curve.png"
+    plot_path.parent.mkdir(parents=True, exist_ok=True)
     plt.figure(figsize=(8, 5))
     plt.plot(meter_history, label="Best meter MSE")
     plt.plot(total_history, label="Best total loss")
@@ -49,7 +52,7 @@ def plot_loss_curve(meter_history, total_history, run_dir):
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(plot_path, dpi=200)
+    plt.savefig(plot_path, dpi=300)
     plt.close()
     return plot_path
 
@@ -62,7 +65,8 @@ def plot_inverse_result(
     run_dir,
 ):
     """Plot the aggregate fit and all five recovered appliance waveforms."""
-    plot_path = run_dir / "inverse_waveforms.png"
+    plot_path = run_dir / "figures" / "overview" / "inverse_waveforms.png"
+    plot_path.parent.mkdir(parents=True, exist_ok=True)
     figure, axes = plt.subplots(6, 1, figsize=(14, 14), sharex=True)
 
     axes[0].plot(observed_aggregate, label="Observed aggregate", linewidth=1)
@@ -91,7 +95,7 @@ def plot_inverse_result(
 
     axes[-1].set_xlabel("Time step (8 seconds per step)")
     figure.tight_layout()
-    figure.savefig(plot_path, dpi=200)
+    figure.savefig(plot_path, dpi=300)
     plt.close(figure)
     return plot_path
 
@@ -114,7 +118,8 @@ def plot_metrics_table(metric_values, split, window_index, run_dir):
         cells = [f"{value:.{decimals}f}" for value in values]
         table_rows.append([label, *cells, f"{torch.nanmean(values):.{decimals}f}"])
 
-    table_path = run_dir / "inverse_metrics.png"
+    table_path = run_dir / "figures" / "metrics" / "inverse_metrics.png"
+    table_path.parent.mkdir(parents=True, exist_ok=True)
     figure, axis = plt.subplots(figsize=(14, 5))
     axis.axis("off")
     table = axis.table(
@@ -140,7 +145,7 @@ def plot_metrics_table(metric_values, split, window_index, run_dir):
 
     axis.set_title(f"Stage-2 NILM Metrics · {split} split · window {window_index}", weight="bold", pad=18)
     figure.tight_layout()
-    figure.savefig(table_path, dpi=200, bbox_inches="tight")
+    figure.savefig(table_path, dpi=300, bbox_inches="tight")
     plt.close(figure)
     return table_path
 
@@ -175,64 +180,23 @@ def plot_appliance_on_events(
     observed_aggregate=None,
     window_index=None,
 ):
-    """Save a focused ON event and its full-window context for each selected appliance."""
-    plot_paths = []
-    total_steps = len(true_appliance)
-
-    if appliance_indices is None:
-        appliance_indices = range(len(APPLIANCES))
-    for appliance_index in appliance_indices:
-        appliance = APPLIANCES[appliance_index]
-        state = true_state[:, appliance_index].astype(bool)
-        events = _state_events(state, min_on_samples)
-        if not events:
-            continue
-        # Prefer an event with OFF samples on both sides inside this window.
-        complete = [(start, end) for start, end in events if start > 0 and end < total_steps - 1]
-        event_start, event_end = max(complete or events, key=lambda event: event[1] - event[0])
-        event_length = event_end - event_start + 1
-        margin = max(margin_samples, int(round(0.08 * event_length)))
-        focus_start = max(0, event_start - margin)
-        focus_end = min(total_steps, event_end + margin + 1)
-
-        for start, end, suffix, width in (
-            (focus_start, focus_end, "on_event", 10),
-            (0, total_steps, "on_event_context", 16),
-        ):
-            plot_path = run_dir / f"inverse_{appliance}_{suffix}.png"
-            figure, axis = plt.subplots(figsize=(width, 4))
-            time = np.arange(start, end)
-            true_view = true_appliance[start:end, appliance_index]
-            estimated_view = estimated_appliance[start:end, appliance_index]
-            true_on_view = state[start:end]
-            predicted_on_view = estimated_view >= on_thresholds[appliance_index]
-
-            # State bands use the CSV truth; the red line uses clipped power
-            # for display, as in MART-NILM. Metrics and saved values stay raw.
-            for local_start, local_end in _state_events(true_on_view & ~predicted_on_view, 1):
-                axis.axvspan(start + local_start, start + local_end + 1, color="#6baed6", alpha=0.18)
-            for local_start, local_end in _state_events(predicted_on_view & ~true_on_view, 1):
-                axis.axvspan(start + local_start, start + local_end + 1, color="#7ad66d", alpha=0.18)
-            for local_start, local_end in _state_events(true_on_view & predicted_on_view, 1):
-                axis.axvspan(start + local_start, start + local_end + 1, color="#9b59b6", alpha=0.18)
-            if observed_aggregate is not None:
-                axis.plot(time, observed_aggregate[start:end], color="0.7", linewidth=0.8, label="Aggregate")
-            axis.plot(time, true_view, color="#1f77b4", linewidth=1.5, label="True power")
-            axis.plot(time, np.maximum(estimated_view, 0), color="#d62728", linewidth=1.3,
-                      label="Inverse estimate (clipped at 0 W for display)")
-            axis.set_xlim(start, end - 1)
-            axis.set_xlabel("Sample within window (8 seconds per sample)")
-            axis.set_ylabel("Appliance power (W)")
-            axis.set_title(f"{appliance.capitalize()} | window {window_index} | ON event [{event_start}:{event_end}]"
-                           + (" | full window" if suffix.endswith("context") else " | focus with OFF context"))
-            axis.grid(True, alpha=0.3)
-            axis.legend(fontsize=8)
-            figure.tight_layout()
-            figure.savefig(plot_path, dpi=200)
-            plt.close(figure)
-            plot_paths.append(plot_path)
-
-    return plot_paths
+    """Save the same focused ON-event and 10x-context layout as MART-NILM."""
+    indices = list(range(len(APPLIANCES))) if appliance_indices is None else appliance_indices
+    names = [APPLIANCES[index] for index in indices]
+    return save_appliance_event_waveforms(
+        run_dir / "figures" / "waveforms" / config["inverse"]["split"],
+        appliances=names,
+        true_power=true_appliance[:, indices],
+        predicted_power=estimated_appliance[:, indices],
+        true_state=true_state[:, indices],
+        thresholds=[on_thresholds[index] for index in indices],
+        aggregate=observed_aggregate,
+        seed=config["inverse"]["seed"] + (window_index or 0),
+        file_prefix="inverse",
+        title_prefix=f"Inverse optimisation | window {window_index} | ",
+        min_duration=min_on_samples,
+        margin_min=margin_samples,
+    )
 
 
 def main():
@@ -329,7 +293,7 @@ def main():
     plot_index = int(window_indices[active_counts.argmax()])
 
     run_dir = Path(__file__).resolve().parents[1] / "results" / (
-        f"${settings['experiment_name']}_${datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+        f"{settings['experiment_name']}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
     )
     run_dir.mkdir(parents=True)
 
@@ -365,7 +329,7 @@ def main():
         batch_indices = window_indices[offset:offset + batch_size]
         batch_count = len(batch_indices)
         print(
-            f"\nBatch ${offset // batch_size + 1}: windows ${batch_indices.tolist()}",
+            f"\nBatch {offset // batch_size + 1}: windows {batch_indices.tolist()}",
             flush=True,
         )
 
@@ -494,8 +458,8 @@ def main():
                 or step + 1 == steps
             ):
                 print(
-                    f"Step ${step + 1:04d}/${steps} | "
-                    f"mean best meter MSE ${np.mean(meter_values):.6f}",
+                    f"Step {step + 1:04d}/{steps} | "
+                    f"mean best meter MSE {np.mean(meter_values):.6f}",
                     flush=True,
                 )
 
@@ -594,8 +558,8 @@ def main():
             oracle_mae = (oracle_aggregate - observed_aggregate).abs().mean()
 
             print(
-                f"Window ${window_index} | restart ${selected_restart:02d} | "
-                f"aggregate MAE ${aggregate_mae.item():.2f} W",
+                f"Window {window_index} | restart {selected_restart:02d} | "
+                f"aggregate MAE {aggregate_mae.item():.2f} W",
                 flush=True,
             )
 
@@ -613,9 +577,9 @@ def main():
                 metrics_plot = plot_metrics_table(
                     metric_values, settings["split"], window_index, run_dir
                 )
-                print(f"Loss plot: ${loss_plot}")
-                print(f"Waveform plot: ${waveform_plot}")
-                print(f"Metrics table: ${metrics_plot}")
+                print(f"Loss plot: {loss_plot}")
+                print(f"Waveform plot: {waveform_plot}")
+                print(f"Metrics table: {metrics_plot}")
 
             row = {
                 "split": settings["split"],
@@ -626,7 +590,7 @@ def main():
             }
             for name, values in metric_values.items():
                 for appliance, value in zip(APPLIANCES, values):
-                    row[f"${appliance}_${name}"] = value.item()
+                    row[f"{appliance}_{name}"] = value.item()
 
             rows.append(row)
             predictions[offset + position] = estimated_appliance.cpu().numpy()
@@ -657,7 +621,7 @@ def main():
                 if length > best_length:
                     best_position, best_length = position, length
         if best_position is None:
-            print(f"No complete ON event for ${appliance} in selected windows")
+            print(f"No complete ON event for {appliance} in selected windows")
             continue
 
         window_index = int(window_indices[best_position])
@@ -674,7 +638,7 @@ def main():
             window_index=window_index,
         )
         for path in paths:
-            print(f"ON-event waveform plot: ${path}")
+            print(f"ON-event waveform plot: {path}")
 
     # /************************************************************
     #  * STEP 6 - Save per-window metrics
@@ -700,9 +664,9 @@ def main():
                 len(valid),
             ])
 
-    print(f"Window-level diagnostics: ${summary_path}")
-    print(f"Window averages: ${average_path}")
-    print(f"All estimated windows: ${prediction_path}")
+    print(f"Window-level diagnostics: {summary_path}")
+    print(f"Window averages: {average_path}")
+    print(f"All estimated windows: {prediction_path}")
     print("These rows overlap in time; they are not full-timeline metrics.")
 
 if __name__ == "__main__":

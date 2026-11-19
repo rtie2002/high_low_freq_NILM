@@ -23,6 +23,7 @@ if __package__:
         load_windows,
     )
     from ..model import build_model
+    from ..waveform_plots import save_forward_event_waveforms
 else:
     project_dir = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(project_dir))
@@ -34,11 +35,13 @@ else:
         load_windows,
     )
     from model import build_model
+    from waveform_plots import save_forward_event_waveforms
 
 
 def plot_loss_curve(training_losses, validation_losses, test_mse, best_epoch, run_dir):
     """Save training and validation loss per epoch plus one final test point."""
-    plot_path = run_dir / "loss_curve.png"
+    plot_path = run_dir / "figures" / "loss" / "loss_curve.png"
+    plot_path.parent.mkdir(parents=True, exist_ok=True)
     plt.figure(figsize=(8, 5))
     plt.plot(range(1, len(training_losses) + 1), training_losses, label="Training MSE")
     plt.plot(range(1, len(validation_losses) + 1), validation_losses, label="Validation MSE")
@@ -49,7 +52,7 @@ def plot_loss_curve(training_losses, validation_losses, test_mse, best_epoch, ru
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(plot_path, dpi=150)
+    plt.savefig(plot_path, dpi=300)
     plt.close()
     return plot_path
 
@@ -69,7 +72,8 @@ def plot_aggregate_predictions(week_aggregate, week_prediction, seed, run_dir):
     for plot_name, length in plot_lengths.items():
         start = rng.integers(week_samples - length + 1)
         end = start + length
-        waveform_path = run_dir / f"test_aggregate_prediction_{plot_name}.png"
+        waveform_path = run_dir / "figures" / "aggregate" / f"{plot_name}.png"
+        waveform_path.parent.mkdir(parents=True, exist_ok=True)
 
         plt.figure(figsize=(12, 5))
         plt.plot(week_aggregate[start:end], label="Real aggregate power", linewidth=1)
@@ -80,7 +84,7 @@ def plot_aggregate_predictions(week_aggregate, week_prediction, seed, run_dir):
         plt.grid(True, alpha=0.3)
         plt.legend()
         plt.tight_layout()
-        plt.savefig(waveform_path, dpi=150)
+        plt.savefig(waveform_path, dpi=300)
         plt.close()
         plot_paths.append(waveform_path)
 
@@ -88,32 +92,13 @@ def plot_aggregate_predictions(week_aggregate, week_prediction, seed, run_dir):
 
 
 def plot_appliance_scenarios(examples, predictions, run_dir):
-    """Save one real-versus-predicted aggregate plot for each active appliance."""
-    plot_paths = []
-    for appliance, (power, aggregate) in examples.items():
-        appliance_index = APPLIANCES.index(appliance)
-        plot_path = run_dir / f"test_aggregate_prediction_{appliance}.png"
-        figure, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
-
-        axes[0].plot(aggregate, label="Real aggregate power", linewidth=1)
-        axes[0].plot(predictions[appliance], label="Predicted aggregate power", linewidth=1)
-        axes[0].set_ylabel("Aggregate power (W)")
-        axes[0].set_title(f"{appliance.capitalize()} ON scenario: Real vs. Predicted Aggregate")
-        axes[0].grid(True, alpha=0.3)
-        axes[0].legend()
-
-        axes[1].plot(power[:, appliance_index], color="tab:green", label=f"{appliance} power")
-        axes[1].set_xlabel("Time step (8 seconds per step)")
-        axes[1].set_ylabel("Appliance power (W)")
-        axes[1].grid(True, alpha=0.3)
-        axes[1].legend()
-
-        figure.tight_layout()
-        figure.savefig(plot_path, dpi=150)
-        plt.close(figure)
-        plot_paths.append(plot_path)
-
-    return plot_paths
+    """Save MART-NILM-style focused and context aggregate figures by appliance."""
+    return save_forward_event_waveforms(
+        run_dir / "figures" / "waveforms" / "testing",
+        examples,
+        predictions,
+        config["training"]["seed"],
+    )
 
 
 def main():
@@ -264,13 +249,16 @@ def main():
     ):
         print(f"Aggregate prediction plot: {waveform_path}")
 
-    # Select one 1,024-sample test window for each appliance where its
-    # ground-truth ON label is active, then plot that appliance's scenario.
-    event_examples = load_random_appliance_event_windows("testing", 1024, settings["seed"])
+    # Select an 8,192-sample continuous test interval per appliance. The
+    # focused ON-event plot and its 10x context are cropped from this interval.
+    event_examples = load_random_appliance_event_windows("testing", 8192, settings["seed"])
     event_power = np.stack([event_examples[appliance][0] for appliance in APPLIANCES])
     with torch.no_grad():
         event_input = (torch.from_numpy(event_power) - x_mean) / x_std
-        event_prediction = model(event_input.to(device)).cpu()
+        event_prediction = torch.cat([
+            model(chunk.contiguous().to(device)).cpu()
+            for chunk in event_input.split(config["data"]["window_length"], dim=1)
+        ], dim=1)
     event_predictions = {
         appliance: (event_prediction[index] * y_std + y_mean).numpy()
         for index, appliance in enumerate(APPLIANCES)
