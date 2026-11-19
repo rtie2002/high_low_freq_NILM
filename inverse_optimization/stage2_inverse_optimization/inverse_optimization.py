@@ -236,6 +236,9 @@ def plot_appliance_on_events(
 
 
 def main():
+    # /************************************************************
+    #  * STEP 0 - Read config and choose the Stage-1 checkpoint
+    #  ************************************************************/
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--checkpoint",
@@ -243,152 +246,446 @@ def main():
         default=None,
         help="Optional Stage-1 checkpoint path that overrides inverse.checkpoint_path.",
     )
-    parser.add_argument(
-        "--smoke",
-        action="store_true",
-        help="Use two restarts and three optimisation steps.",
-    )
     args = parser.parse_args()
 
     settings = config["inverse"]
     torch.manual_seed(settings["seed"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # The config path is relative to stage2_inverse_optimization/config.yaml.
-    # A command-line --checkpoint path, when supplied, takes priority.
-    if args.checkpoint is None:
-        checkpoint_path = STAGE2_DIR / settings["checkpoint_path"]
-    else:
-        checkpoint_path = args.checkpoint
-    checkpoint_path = checkpoint_path.expanduser().resolve()
-    if not checkpoint_path.is_file():
-        raise FileNotFoundError(
-            f"Stage-1 checkpoint not found: {checkpoint_path}. "
-            "Set inverse.checkpoint_path in stage2_inverse_optimization/config.yaml."
-        )
-
-    # STEP 1: Load the trained Stage-1 forward model.
-    # The checkpoint also contains the training-only normalization statistics.
-    checkpoint = torch.load(
-        checkpoint_path,
-        map_location=device,
-        weights_only=True,
+    checkpoint_path = (
+        STAGE2_DIR / settings["checkpoint_path"]
+        if args.checkpoint is None else args.checkpoint
     )
+    checkpoint_path = checkpoint_path.expanduser().resolve()
+
+    # /************************************************************
+    #  * STEP 1 - Load and freeze the forward model
+    #  * $$\widehat{\mathbf y}=F_{\hat\theta}(\mathbf Z)$$
+    #  * The LSTM parameters \hat\theta never change in Stage 2.
+    #  * Autograd only calculates gradients with respect to Z.
+    #  ************************************************************/
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
     assert list(checkpoint["appliances"]) == APPLIANCES
 
-    # checkpoint["model"] chooses the registered model class. The matching
-    # checkpoint["model_settings"] reconstructs the exact trained structure.
     model = build_model_from_checkpoint(checkpoint).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
-
-    # STEP 2: Freeze every model weight.
-    # Autograd will pass through the model, but Adam will update only the
-    # candidate input created in STEP 6. cuDNN requires an LSTM to be in
-    # training mode when backpropagating to its input. Only recurrent modules
-    # are switched, while the complete model otherwise remains in eval mode.
     for parameter in model.parameters():
         parameter.requires_grad_(False)
     model.eval()
+
+    # cuDNN needs a recurrent module in train mode to obtain its input
+    # gradient. Dropout is set to zero, so this does not change its prediction.
     for module in model.modules():
         if isinstance(module, nn.RNNBase):
-            # eval mode normally disables recurrent dropout. cuDNN requires
-            # train mode for input gradients, so set dropout to zero directly
-            # before enabling that computation mode.
             module.dropout = 0.0
             module.train()
 
-    appliance_windows, aggregate_windows, state_windows = load_windows(settings["split"])
+    # /************************************************************
+    #  * STEP 2 - Load the data used in Stage 2
+    #  *
+    #  * observed aggregate: y_obs [number of windows, T]
+    #  * true appliances:   P_true[number of windows, T, 5]
+    #  *
+    #  * P_true and states are never used during optimisation.
+    #  * They are retained only for evaluation after inference.
+    #  ************************************************************/
+    appliance_windows, aggregate_windows, state_windows = load_windows(
+        settings["split"], stride=settings["window_stride"]
+    )
     training_power, _, _ = load_windows("training")
     training_power = torch.from_numpy(training_power)
+
     x_mean = checkpoint["x_mean"].to(device)
     x_std = checkpoint["x_std"].to(device)
     y_mean = checkpoint["y_mean"].to(device)
     y_std = checkpoint["y_std"].to(device)
+
+    # Training extrema are used only by the optional soft boundary loss.
     power_min = training_power.amin(dim=(0, 1)).to(device)
     power_max = training_power.amax(dim=(0, 1)).to(device)
 
+    # Adam stores Z in z-score coordinates. Convert the configured physical
+    # watt limits into that same coordinate system once.
+    appliance_min = torch.tensor(
+        settings["appliance_min_w"], dtype=x_mean.dtype, device=device
+    ).view(1, 1, -1)
+    appliance_max = torch.tensor(
+        settings["appliance_max_w"], dtype=x_mean.dtype, device=device
+    ).view(1, 1, -1)
+    # $$Z_{i,\min}=(P_{i,\min}-\mu_i)/\sigma_i$$
+    # $$Z_{i,\max}=(P_{i,\max}-\mu_i)/\sigma_i$$
+    candidate_min = (appliance_min - x_mean) / x_std
+    candidate_max = (appliance_max - x_mean) / x_std
+
     start = settings["window_index"]
     available = len(aggregate_windows) - start
-    count = available if settings["num_windows"] is None else min(settings["num_windows"], available)
-    if count <= 0:
-        raise ValueError("No inverse windows selected; check window_index and num_windows")
-    window_indices = np.linspace(start, len(aggregate_windows) - 1, count, dtype=int)
-    if args.smoke:
-        window_indices = window_indices[:1]
-        count = 1
-    # Labels choose a useful example figure only; the inverse solver never sees them.
+    count = available if settings["num_windows"] is None else min(
+        settings["num_windows"], available
+    )
+    window_indices = np.arange(start, start + count, dtype=int)
+
+    # Labels choose one useful plot only. They are not passed to the optimiser.
     active_counts = (state_windows[window_indices].sum(axis=1) > 0).sum(axis=1)
     plot_index = int(window_indices[active_counts.argmax()])
+
     run_dir = Path(__file__).resolve().parents[1] / "results" / (
-        f"{settings['experiment_name']}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+        f"${settings['experiment_name']}_${datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
     )
     run_dir.mkdir(parents=True)
-    # One disk-backed array holds every estimated window. This avoids one .pt
-    # file per window and keeps memory usage steady for a full split.
+
+    # /************************************************************
+    #  * STEP 3 - Prepare disk storage for every inferred window
+    #  *
+    #  * estimated_appliances[window, time, appliance] is in watts.
+    #  ************************************************************/
     prediction_path = run_dir / "estimated_appliances.npy"
     predictions = np.lib.format.open_memmap(
-        prediction_path, mode="w+", dtype=np.float32,
+        prediction_path,
+        mode="w+",
+        dtype=np.float32,
         shape=(count, appliance_windows.shape[1], appliance_windows.shape[2]),
     )
     np.save(run_dir / "window_indices.npy", window_indices)
     rows = []
-    batch_size = 1 if args.smoke else settings["batch_windows"]
+
+    # /************************************************************
+    #  * STEP 4 - Inverse optimisation, evaluation, and saving
+    #  *
+    #  * For each aggregate window:
+    #  * 1. Start R candidate appliance combinations from training traces.
+    #  * 2. Update every candidate for K Adam steps.
+    #  * 3. Retain the candidate with the smallest final inverse loss.
+    #  * 4. Convert it to watts and evaluate it against held-out labels.
+    #  ************************************************************/
+    batch_size = settings["batch_windows"]
+    restarts = settings["restarts"]
+    steps = settings["steps"]
+
     for offset in range(0, count, batch_size):
         batch_indices = window_indices[offset:offset + batch_size]
-        print(f"\nBatch {offset // batch_size + 1}: windows {batch_indices.tolist()}", flush=True)
-        candidates, histories, best_restarts = optimize_batch(
-            batch_indices, aggregate_windows, training_power, model, settings,
-            args.smoke, device, x_mean, x_std, y_mean, y_std, power_min, power_max,
+        batch_count = len(batch_indices)
+        print(
+            f"\nBatch ${offset // batch_size + 1}: windows ${batch_indices.tolist()}",
+            flush=True,
         )
-        for position, window_index in enumerate(batch_indices):
-            row, estimated = solve_window(
-                int(window_index), appliance_windows, aggregate_windows, state_windows,
-                training_power, model, checkpoint, checkpoint_path, settings, args.smoke,
-                device, x_mean, x_std, y_mean, y_std, power_min, power_max,
-                run_dir, save_plots=(window_index == plot_index),
-                candidate_override=candidates[position], history_override=histories[position],
-                restart_override=best_restarts[position],
-            )
-            rows.append(row)
-            predictions[offset + position] = estimated
-        predictions.flush()
-        if args.smoke:
-            break
 
-    # Choose a separate window with a real ON event for each appliance.
-    # A single representative window often contains only fridge activity.
+        # ------------------------------------------------------------
+        # STEP 4A - Read B observed aggregate windows and normalize them.
+        #
+        # observed: [B, T]
+        # target:   [B*R, T], one identical meter target for each restart.
+        #
+        # $$\widetilde{\mathbf y}_{\rm obs}=(\mathbf y_{\rm obs}-\mu_y)/\sigma_y$$
+        # ------------------------------------------------------------
+        # Read B measured aggregate windows from the selected split.
+        # observed[b, t] is y_obs,b(t) in watts. Shape: [B, T].
+        observed = torch.from_numpy(aggregate_windows[batch_indices]).to(device)
+
+        # Apply the same aggregate z-score normalization used in Stage 1,
+        # then repeat each meter trace R times: one target for each restart.
+        # target[r, t] is \tilde y_obs(t). Shape: [B*R, T].
+        target = ((observed - y_mean) / y_std).repeat_interleave(restarts, dim=0)
+
+        # ------------------------------------------------------------
+        # STEP 4B - Initialise B*R five-appliance candidates.
+        #
+        # Each restart begins as one complete five-appliance training window.
+        # candidate: [B*R, T, 5] in z-score coordinates.
+        #
+        # $$\mathbf Z^{(0)}=(\mathbf P^{(0)}-\boldsymbol\mu_x)/\boldsymbol\sigma_x$$
+        # ------------------------------------------------------------
+        # Draw B*R training-window indices. This supplies different initial
+        # appliance combinations, rather than different final answers.
+        initial_indices = torch.randint(len(training_power), (batch_count, restarts))
+        initial_power = training_power[initial_indices].to(device)
+
+        # Convert watts to the z-score coordinates expected by the frozen LSTM,
+        # then collapse [B, R, T, 5] into [B*R, T, 5].
+        # candidate is the ONLY tensor Adam is allowed to change.
+        candidate = nn.Parameter(
+            ((initial_power - x_mean) / x_std).reshape(
+                -1, initial_power.shape[2], initial_power.shape[3]
+            ).clone()
+        )
+
+        # Project the initial candidates into the physical appliance box.
+        with torch.no_grad():
+            candidate.copy_(
+                torch.maximum(torch.minimum(candidate, candidate_max), candidate_min)
+            )
+
+        # Adam holds momentum and variance estimates for candidate only.
+        # The frozen LSTM parameters are absent from this optimizer.
+        optimizer = torch.optim.Adam([candidate], lr=settings["learning_rate"])
+        histories = [[[], []] for _ in range(batch_count)]
+
+        # ------------------------------------------------------------
+        # STEP 4C - Repeatedly update candidate appliance powers.
+        #
+        # $$\widehat{\mathbf y}^{(k)}=F_{\hat\theta}(\mathbf Z^{(k)})$$
+        # $$L_{\rm meter}=T^{-1}\|\widehat{\mathbf y}^{(k)}-\widetilde{\mathbf y}_{\rm obs}\|_2^2$$
+        # $$\mathbf Z^{(k+1)}=\Pi_{\mathcal C}(\operatorname{AdamStep}(\mathbf Z^{(k)},\nabla_{\mathbf Z}L))$$
+        #
+        # F_hat's weights are frozen. optimizer.step() changes only candidate.
+        # ------------------------------------------------------------
+        for step in range(steps):
+            # (1) Forward simulation: pass every candidate appliance set
+            # Z^(k) through F_hat to obtain a predicted aggregate.
+            # prediction shape: [B*R, T].
+            # $$\widehat{\mathbf y}^{(k)}=F_{\hat\theta}(\mathbf Z^{(k)})$$
+            prediction = model(candidate)
+
+            # (2) Convert the same candidate to watts for physical penalties.
+            # This is P^(k) = Z^(k) * sigma_x + mu_x, shape [B*R, T, 5].
+            candidate_power = candidate * x_std + x_mean
+
+            # (3) Calculate the scalar objective L used for Adam.
+            # For each restart r, L_meter,r is the mean time-wise squared
+            # difference between its forward prediction and the observed meter.
+            # L is the mean of the B*R restart losses.
+            # $$L_{\rm meter,r}=T^{-1}\sum_t(\hat y_r(t)-\tilde y_{obs}(t))^2$$
+            loss, meter_loss, _, total_loss = inverse_optimization_loss(
+                prediction,
+                target,
+                candidate_power,
+                power_min,
+                power_max,
+                settings["boundary_weight"],
+            )
+
+            # (4) Delete the previous derivative dL/dZ from candidate.grad.
+            optimizer.zero_grad()
+
+            # (5) Backpropagate through the frozen LSTM.
+            # This calculates dL/dZ, not dL/dtheta, because theta has
+            # requires_grad=False. No appliance ground-truth label is used.
+            loss.backward()
+
+            # (6) Adam uses dL/dZ and its accumulated moments to propose an
+            # updated candidate, Z_tilde^(k+1). It does not change F_hat.
+            optimizer.step()
+
+            # (7) Projected Adam: clip Z_tilde^(k+1) back into C, the allowed
+            # appliance-specific watt ranges. candidate remains z-score data.
+            # $$\mathbf Z^{(k+1)}=\Pi_{\mathcal C}(\widetilde{\mathbf Z}^{(k+1)})$$
+            with torch.no_grad():
+                candidate.copy_(
+                    torch.maximum(torch.minimum(candidate, candidate_max), candidate_min)
+                )
+
+            # (8) Record the lowest loss among the R restarts for each of the
+            # B windows. This is for the loss curve only; the winning restart
+            # is selected after the final update below.
+            meter_values = (
+                meter_loss.detach().reshape(batch_count, restarts)
+                .min(dim=1).values.cpu().tolist()
+            )
+            total_values = (
+                total_loss.detach().reshape(batch_count, restarts)
+                .min(dim=1).values.cpu().tolist()
+            )
+            for position in range(batch_count):
+                histories[position][0].append(meter_values[position])
+                histories[position][1].append(total_values[position])
+
+            if (
+                step == 0
+                or (step + 1) % settings["print_every"] == 0
+                or step + 1 == steps
+            ):
+                print(
+                    f"Step ${step + 1:04d}/${steps} | "
+                    f"mean best meter MSE ${np.mean(meter_values):.6f}",
+                    flush=True,
+                )
+
+        # ------------------------------------------------------------
+        # STEP 4D - Evaluate every restart after its final update, then select
+        # the winning candidate separately for each aggregate window.
+        #
+        # $$r^*=\arg\min_{r=1,\ldots,R} L(\mathbf Z_r^{(K)})$$
+        # ------------------------------------------------------------
+        # Recompute the complete objective after the last projection. The
+        # stored loss inside the loop was measured before Adam's last update.
+        with torch.no_grad():
+            final_prediction = model(candidate)
+            _, _, _, final_total_loss = inverse_optimization_loss(
+                final_prediction,
+                target,
+                candidate * x_std + x_mean,
+                power_min,
+                power_max,
+                settings["boundary_weight"],
+            )
+            # Regroup [B*R] losses as [B, R] and retain the lowest-loss restart
+            # independently for every aggregate window.
+            best_restarts = final_total_loss.reshape(
+                batch_count, restarts
+            ).argmin(dim=1)
+            # Select its five appliance trajectories. Shape: [B, T, 5].
+            best_candidates = candidate.reshape(
+                batch_count, restarts, *candidate.shape[1:]
+            )[
+                torch.arange(batch_count, device=device), best_restarts
+            ].detach()
+
+        # ------------------------------------------------------------
+        # STEP 4E - Turn each selected candidate into final NILM output.
+        #
+        # This section does not optimize. It only converts to watts, evaluates
+        # held-out labels, optionally plots one window, and saves results.
+        # ------------------------------------------------------------
+        for position, window_index in enumerate(batch_indices):
+            # The selected candidate is the Stage-2 output in normalized form.
+            # It is not a new prediction made by the LSTM.
+            candidate_normalized = best_candidates[position]
+            selected_restart = best_restarts[position].item()
+
+            # True appliance signals and states appear only after optimization.
+            true_appliance = torch.from_numpy(
+                appliance_windows[window_index]
+            ).to(device)
+            observed_aggregate = torch.from_numpy(
+                aggregate_windows[window_index]
+            ).to(device)
+            true_state = torch.from_numpy(
+                state_windows[window_index]
+            ).to(device)
+
+            # Convert the selected candidate back to watts for NILM output:
+            # $$\widehat{\mathbf P}=\widehat{\mathbf Z}\odot\sigma_x+\mu_x$$
+            model.eval()
+            with torch.no_grad():
+                estimated_appliance = candidate_normalized * x_std + x_mean
+                predicted_normalized = model(candidate_normalized.unsqueeze(0))[0]
+                predicted_aggregate = predicted_normalized * y_std + y_mean
+
+                # Oracle diagnostic: even true appliances may not reproduce the
+                # meter accurately because unmonitored load remains in y_obs.
+                oracle_input = (true_appliance - x_mean) / x_std
+                oracle_prediction = model(oracle_input.unsqueeze(0))[0]
+                oracle_aggregate = oracle_prediction * y_std + y_mean
+
+            metric_values = {
+                "mae": mae(estimated_appliance, true_appliance),
+                "sae": sae(estimated_appliance, true_appliance),
+                "on_mae": on_mae(
+                    estimated_appliance, true_appliance, true_state
+                ),
+                "off_mae": off_mae(
+                    estimated_appliance, true_appliance, true_state
+                ),
+                "average_precision": average_precision(
+                    estimated_appliance, true_state
+                ),
+                "precision": precision(
+                    estimated_appliance, true_state, settings["on_thresholds"]
+                ),
+                "recall": recall(
+                    estimated_appliance, true_state, settings["on_thresholds"]
+                ),
+                "f1": f1(
+                    estimated_appliance, true_state, settings["on_thresholds"]
+                ),
+            }
+            aggregate_mae = (
+                predicted_aggregate - observed_aggregate
+            ).abs().mean()
+            oracle_mae = (oracle_aggregate - observed_aggregate).abs().mean()
+
+            print(
+                f"Window ${window_index} | restart ${selected_restart:02d} | "
+                f"aggregate MAE ${aggregate_mae.item():.2f} W",
+                flush=True,
+            )
+
+            if window_index == plot_index:
+                loss_plot = plot_loss_curve(
+                    histories[position][0], histories[position][1], run_dir
+                )
+                waveform_plot = plot_inverse_result(
+                    observed_aggregate.cpu().numpy(),
+                    predicted_aggregate.cpu().numpy(),
+                    true_appliance.cpu().numpy(),
+                    estimated_appliance.cpu().numpy(),
+                    run_dir,
+                )
+                metrics_plot = plot_metrics_table(
+                    metric_values, settings["split"], window_index, run_dir
+                )
+                print(f"Loss plot: ${loss_plot}")
+                print(f"Waveform plot: ${waveform_plot}")
+                print(f"Metrics table: ${metrics_plot}")
+
+            row = {
+                "split": settings["split"],
+                "window_index": int(window_index),
+                "selected_restart": selected_restart,
+                "aggregate_mae_w": aggregate_mae.item(),
+                "forward_oracle_mae_w": oracle_mae.item(),
+            }
+            for name, values in metric_values.items():
+                for appliance, value in zip(APPLIANCES, values):
+                    row[f"${appliance}_${name}"] = value.item()
+
+            rows.append(row)
+            predictions[offset + position] = estimated_appliance.cpu().numpy()
+
+        # Commit the full solved batch to estimated_appliances.npy.
+        predictions.flush()
+
+        # Re-enable the recurrent input-gradient mode before next batch.
+        for module in model.modules():
+            if isinstance(module, nn.RNNBase):
+                module.train()
+
+    # /************************************************************
+    #  * STEP 5 - Plot one representative ON event per appliance
+    #  ************************************************************/
     for appliance_index, appliance in enumerate(APPLIANCES):
         best_position = None
         best_length = 0
         for position, window_index in enumerate(window_indices):
             state = state_windows[window_index, :, appliance_index]
             events = _state_events(state, settings["scenario_min_on_samples"])
-            complete = [(a, b) for a, b in events if a > 0 and b < len(state) - 1]
+            complete = [
+                (start, end) for start, end in events
+                if start > 0 and end < len(state) - 1
+            ]
             if complete:
-                length = max(b - a + 1 for a, b in complete)
+                length = max(end - start + 1 for start, end in complete)
                 if length > best_length:
                     best_position, best_length = position, length
         if best_position is None:
-            print(f"No complete ON event for {appliance} in selected windows")
+            print(f"No complete ON event for ${appliance} in selected windows")
             continue
+
         window_index = int(window_indices[best_position])
         paths = plot_appliance_on_events(
-            appliance_windows[window_index], predictions[best_position],
-            state_windows[window_index], settings["on_thresholds"],
-            settings["scenario_margin_samples"], settings["scenario_min_on_samples"],
-            run_dir, appliance_indices=[appliance_index],
-            observed_aggregate=aggregate_windows[window_index], window_index=window_index,
+            appliance_windows[window_index],
+            predictions[best_position],
+            state_windows[window_index],
+            settings["on_thresholds"],
+            settings["scenario_margin_samples"],
+            settings["scenario_min_on_samples"],
+            run_dir,
+            appliance_indices=[appliance_index],
+            observed_aggregate=aggregate_windows[window_index],
+            window_index=window_index,
         )
         for path in paths:
-            print(f"ON-event waveform plot: {path}")
+            print(f"ON-event waveform plot: ${path}")
 
+    # /************************************************************
+    #  * STEP 6 - Save per-window metrics
+    #  ************************************************************/
     summary_path = run_dir / "window_metrics.csv"
     with summary_path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
-    # Equal-window averages are diagnostics; overlapping samples are counted
-    # more than once and must not be presented as full-timeline scores.
+
+    # These are overlapping-window diagnostics, not full-timeline metrics.
     average_path = run_dir / "window_averages.csv"
     metric_names = list(rows[0].keys())[3:]
     with average_path.open("w", newline="", encoding="utf-8") as file:
@@ -397,229 +694,16 @@ def main():
         for name in metric_names:
             values = np.asarray([row[name] for row in rows], dtype=float)
             valid = values[np.isfinite(values)]
-            writer.writerow([name, float(valid.mean()) if len(valid) else "", len(valid)])
-    print(f"Window-level diagnostics: {summary_path}")
-    print(f"Window averages: {average_path}")
-    print(f"All estimated windows: {prediction_path}")
+            writer.writerow([
+                name,
+                float(valid.mean()) if len(valid) else "",
+                len(valid),
+            ])
+
+    print(f"Window-level diagnostics: ${summary_path}")
+    print(f"Window averages: ${average_path}")
+    print(f"All estimated windows: ${prediction_path}")
     print("These rows overlap in time; they are not full-timeline metrics.")
-
-
-def optimize_batch(
-    indices, aggregate_windows, training_power, model, settings, smoke,
-    device, x_mean, x_std, y_mean, y_std, power_min, power_max,
-):
-    """Optimize B independent windows with R random restarts each in one GPU batch."""
-    for module in model.modules():
-        if isinstance(module, nn.RNNBase):
-            module.train()
-    batch_count = len(indices)
-    restarts = 2 if smoke else settings["restarts"]
-    steps = 3 if smoke else settings["steps"]
-    observed = torch.from_numpy(aggregate_windows[indices]).to(device)
-    target = ((observed - y_mean) / y_std).repeat_interleave(restarts, dim=0)
-    initial_indices = torch.randint(len(training_power), (batch_count, restarts))
-    initial_power = training_power[initial_indices].to(device)
-    candidate = nn.Parameter(((initial_power - x_mean) / x_std).reshape(
-        -1, initial_power.shape[2], initial_power.shape[3]
-    ).clone())
-    optimizer = torch.optim.Adam([candidate], lr=settings["learning_rate"])
-    histories = [[[], []] for _ in range(batch_count)]
-    for step in range(steps):
-        prediction = model(candidate)
-        power = candidate * x_std + x_mean
-        L, L_meter, _, L_total = inverse_optimization_loss(
-            prediction, target, power, power_min, power_max,
-            settings["boundary_weight"],
-        )
-        optimizer.zero_grad()
-        L.backward()
-        optimizer.step()
-        meter_values = L_meter.detach().reshape(batch_count, restarts).min(dim=1).values.cpu().tolist()
-        total_values = L_total.detach().reshape(batch_count, restarts).min(dim=1).values.cpu().tolist()
-        for index in range(batch_count):
-            histories[index][0].append(meter_values[index])
-            histories[index][1].append(total_values[index])
-        if step == 0 or (step + 1) % settings["print_every"] == 0 or step + 1 == steps:
-            print(f"Step {step + 1:04d}/{steps} | mean best meter MSE "
-                  f"{np.mean(meter_values):.6f}", flush=True)
-
-    with torch.no_grad():
-        prediction = model(candidate)
-        _, _, _, L_total = inverse_optimization_loss(
-            prediction, target, candidate * x_std + x_mean,
-            power_min, power_max, settings["boundary_weight"],
-        )
-        best = L_total.reshape(batch_count, restarts).argmin(dim=1)
-        selected = candidate.reshape(batch_count, restarts, *candidate.shape[1:])[
-            torch.arange(batch_count, device=device), best
-        ].detach()
-    return selected, histories, best.cpu().tolist()
-
-
-def solve_window(
-    window_index, appliance_windows, aggregate_windows, state_windows,
-    training_power, model, checkpoint, checkpoint_path, settings, smoke,
-    device, x_mean, x_std, y_mean, y_std, power_min, power_max,
-    run_dir, save_plots, candidate_override=None, history_override=None,
-    restart_override=None,
-):
-    # cuDNN LSTM input gradients require train mode; all model weights are frozen.
-    for module in model.modules():
-        if isinstance(module, nn.RNNBase):
-            module.train()
-
-    # STEP 3: Load one observed aggregate window from the configured split.
-    # Ground-truth appliance powers are retained only for final evaluation.
-    true_appliance = torch.from_numpy(appliance_windows[window_index]).to(device)
-    observed_aggregate = torch.from_numpy(aggregate_windows[window_index]).to(device)
-    true_state = torch.from_numpy(state_windows[window_index]).to(device)
-    print(f"Evaluating {settings['split']} window {window_index} of {len(aggregate_windows)}")
-    print("ON samples:", dict(zip(APPLIANCES, true_state.sum(dim=0).tolist())))
-
-    # STEP 4: Reuse the Stage-1 training statistics exactly.
-    # The frozen LSTM expects normalized appliance inputs and produces a
-    # normalized aggregate output.
-    target_normalized = (observed_aggregate - y_mean) / y_std
-
-    # STEP 5: Load training appliance windows for two training-only purposes:
-    # random initial candidates and the boundary-loss power range.
-    restarts = 1 if candidate_override is not None else (2 if smoke else settings["restarts"])
-    steps = 0 if candidate_override is not None else (3 if smoke else settings["steps"])
-    initial_indices = torch.randint(len(training_power), (restarts,))
-    initial_power = (
-        candidate_override.unsqueeze(0) * x_std + x_mean
-        if candidate_override is not None else training_power[initial_indices].to(device)
-    )
-
-    # STEP 6: Create the variables that Stage 2 will optimise.
-    # We optimise normalized candidates because that is the coordinate system
-    # learned by the LSTM. Raw watts are recovered whenever they are needed.
-    candidate_normalized = nn.Parameter(
-        ((initial_power - x_mean) / x_std).clone()
-    )
-    optimizer = torch.optim.Adam(
-        [candidate_normalized],
-        lr=settings["learning_rate"],
-    )
-
-    meter_history, total_history = history_override if history_override is not None else ([], [])
-
-    # STEP 7: Neural-Adjoint inverse optimisation.
-    # Paper Eq. (4): x_(k+1) = x_k - alpha * gradient_x L(F(x_k), y).
-    # The LSTM weights remain fixed. Only candidate_normalized changes.
-    for step in range(steps):
-        candidate_power = candidate_normalized * x_std + x_mean
-        predicted_normalized = model(candidate_normalized)
-
-        # L is one scalar for Adam; L_meter, L_bnd, and L_total contain one
-        # value per random restart r:
-        # L_meter[r] = aggregate reconstruction MSE,
-        # L_bnd[r] = appliance-power boundary penalty, and
-        # L_total[r] = L_meter[r] + boundary_weight * L_bnd[r].
-        L, L_meter, L_bnd, L_total = (
-            inverse_optimization_loss(
-                predicted_normalized=predicted_normalized,
-                target_normalized=target_normalized,
-                candidate_power=candidate_power,
-                power_min=power_min,
-                power_max=power_max,
-                boundary_weight=settings["boundary_weight"],
-            )
-        )
-
-        optimizer.zero_grad()
-        # Compute gradient_x L(F(x), y), then Adam updates candidate_normalized.
-        L.backward()  # calculate ∂L / ∂x
-        optimizer.step() # update x using the gradient: x_(k+1) = x_k - alpha * gradient_x L(F(x_k), y).
-
-        meter_history.append(L_meter.min().item())
-        total_history.append(L_total.min().item())
-
-        if save_plots and (step == 0 or (step + 1) % settings["print_every"] == 0 or step + 1 == steps):
-            best_restart = L_total.argmin().item()
-            print(
-                f"Step {step + 1:04d}/{steps} | "
-                f"best restart {best_restart:02d} | "
-                f"meter MSE {L_meter[best_restart].item():.6f} | "
-                f"boundary {L_bnd[best_restart].item():.6f}"
-            )
-
-    # STEP 8: Re-evaluate all restarts after the last Adam update and retain
-    # the candidate with the smallest complete inverse objective.
-    model.eval()
-    with torch.no_grad():
-        candidate_power = candidate_normalized * x_std + x_mean
-        predicted_normalized = model(candidate_normalized)
-        _, L_meter, L_bnd, L_total = (
-            inverse_optimization_loss(
-                predicted_normalized=predicted_normalized,
-                target_normalized=target_normalized,
-                candidate_power=candidate_power,
-                power_min=power_min,
-                power_max=power_max,
-                boundary_weight=settings["boundary_weight"],
-            )
-        )
-
-        # Retain the restart with the smallest complete objective L_total.
-        best_index = L_total.argmin()
-        estimated_appliance = candidate_power[best_index]
-        predicted_aggregate = (
-            predicted_normalized[best_index] * y_std + y_mean
-        )
-
-    # STEP 9: Evaluate in watts. The true appliance powers are used here only;
-    # they never entered the inverse objective or its gradient.
-    metric_values = {
-        "mae": mae(estimated_appliance, true_appliance),
-        "sae": sae(estimated_appliance, true_appliance),
-        "on_mae": on_mae(estimated_appliance, true_appliance, true_state),
-        "off_mae": off_mae(estimated_appliance, true_appliance, true_state),
-        "average_precision": average_precision(estimated_appliance, true_state),
-        "precision": precision(estimated_appliance, true_state, settings["on_thresholds"]),
-        "recall": recall(estimated_appliance, true_state, settings["on_thresholds"]),
-        "f1": f1(estimated_appliance, true_state, settings["on_thresholds"]),
-    }
-    aggregate_mae = (predicted_aggregate - observed_aggregate).abs().mean()
-    # Diagnostic only: the true appliance signals never enter the inverse
-    # objective. If the frozen forward model cannot fit these perfect inputs,
-    # reducing inverse meter loss cannot guarantee correct appliance estimates.
-    with torch.no_grad():
-        oracle_aggregate = model(((true_appliance - x_mean) / x_std).unsqueeze(0))[0]
-        oracle_aggregate = oracle_aggregate * y_std + y_mean
-        oracle_mae = (oracle_aggregate - observed_aggregate).abs().mean()
-
-    print()
-    print(f"Device: {device}")
-    print(f"Forward model: {checkpoint['model']}")
-    print(f"Checkpoint epoch: {checkpoint['epoch']}")
-    print(f"Selected restart: {restart_override if restart_override is not None else best_index.item()}")
-    print(f"Aggregate re-simulation MAE: {aggregate_mae.item():.2f} W")
-    print(f"Forward MAE with true appliance inputs: {oracle_mae.item():.2f} W")
-    for appliance, value in zip(APPLIANCES, metric_values["mae"]):
-        print(f"{appliance:15s} MAE: {value.item():.2f} W")
-
-    if save_plots:
-        loss_plot = plot_loss_curve(meter_history, total_history, run_dir)
-        waveform_plot = plot_inverse_result(
-            observed_aggregate.cpu().numpy(), predicted_aggregate.cpu().numpy(),
-            true_appliance.cpu().numpy(), estimated_appliance.cpu().numpy(), run_dir,
-        )
-        metrics_plot = plot_metrics_table(metric_values, settings["split"], window_index, run_dir)
-        print(f"Loss plot: {loss_plot}")
-        print(f"Waveform plot: {waveform_plot}")
-        print(f"Metrics table: {metrics_plot}")
-    row = {
-        "split": settings["split"], "window_index": window_index,
-        "selected_restart": restart_override if restart_override is not None else best_index.item(),
-        "aggregate_mae_w": aggregate_mae.item(),
-        "forward_oracle_mae_w": oracle_mae.item(),
-    }
-    for name, values in metric_values.items():
-        for appliance, value in zip(APPLIANCES, values):
-            row[f"{appliance}_{name}"] = value.item()
-    return row, estimated_appliance.cpu().numpy()
-
 
 if __name__ == "__main__":
     main()

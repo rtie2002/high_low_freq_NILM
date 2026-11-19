@@ -8,6 +8,11 @@ inverse:
 
   # Use validation while developing Stage 2. Test remains report-only.
   split: validating
+  # Number of 8-second samples between neighbouring Stage-2 windows.
+  # Keep window length at Stage 1's 512 samples because the saved LSTM was
+  # trained on that length. 256 repeats the Stage-1 sliding-window spacing;
+  # use a larger value such as 512 to evaluate fewer, non-overlapping windows.
+  window_stride: 256
   window_index: 0
   # Process every validation window from window_index onward. This includes
   # the many all-OFF windows and rare appliance-ON windows; do not discard
@@ -20,11 +25,19 @@ inverse:
   restarts: 32
   # Number of independent meter windows optimized together on the GPU.
   batch_windows: 32
-  steps: 500 #Epochs
+  steps: 500 # Optimisation updates per restart.
   learning_rate: 0.01
 
-  # Weight of the training-domain boundary loss.
-  boundary_weight: 1.0
+  # Stage-2 searches only within these appliance-power ranges in watts.
+  # Order: kettle, fridge, dishwasher, washingmachine, microwave.
+  # These are broad cross-dataset candidate bounds, not ON/OFF thresholds.
+  appliance_min_w: [0, 0, 0, 0, 0]
+  appliance_max_w: [4000, 1000, 2500, 2500, 3000]
+
+  # A hard projected box constraint already enforces the ranges above exactly.
+  # Keep Ren et al.'s soft training-domain boundary term off for this isolated
+  # physical-constraint experiment.
+  boundary_weight: 0.0
 
   # Predicted power (W) at or above these values is classified as ON.
   # Order: kettle, fridge, dishwasher, washingmachine, microwave.

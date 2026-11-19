@@ -1,6 +1,42 @@
-"""Loss terms used by Stage-2 Neural-Adjoint optimisation."""
+"""Loss and box-constraint operations for Stage-2 inverse optimisation."""
 
 import torch
+
+
+def training_power_bounds(training_power, device):
+    """Find the five training-data extrema once for the optional soft loss."""
+    return (
+        training_power.amin(dim=(0, 1)).to(device),
+        training_power.amax(dim=(0, 1)).to(device),
+    )
+
+
+def normalized_power_bounds(appliance_min_w, appliance_max_w, x_mean, x_std):
+    """Convert configured watt bounds into the LSTM's z-score coordinates.
+
+    The returned tensors have shape [1, 1, 5], so PyTorch applies the five
+    appliance-specific limits to every restart and every time step.
+    """
+    minimum_w = torch.tensor(
+        appliance_min_w, dtype=x_mean.dtype, device=x_mean.device
+    ).view(1, 1, -1)
+    maximum_w = torch.tensor(
+        appliance_max_w, dtype=x_mean.dtype, device=x_mean.device
+    ).view(1, 1, -1)
+    return (minimum_w - x_mean) / x_std, (maximum_w - x_mean) / x_std
+
+
+def project_candidate(candidate, candidate_min, candidate_max):
+    """Project a z-score candidate into the configured watt-space box.
+
+    This is the projected-Adam operation:
+        p_i(t) is constrained to [P_i,min, P_i,max]
+    while the optimizer continues to store and pass z-scores to the LSTM.
+    """
+    with torch.no_grad():
+        candidate.copy_(
+            torch.maximum(torch.minimum(candidate, candidate_max), candidate_min)
+        )
 
 
 def inverse_optimization_loss(

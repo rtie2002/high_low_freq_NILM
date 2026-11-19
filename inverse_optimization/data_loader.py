@@ -53,13 +53,18 @@ STATE_COLUMNS = [
 ]
 
 
-def load_windows(split_name: str):
+def load_windows(split_name: str, stride: int | None = None):
     """Load only one split and return aligned power, aggregate, and state windows.
 
     Parameters
     ----------
     split_name:
         "training", "validating", or "testing".
+    stride:
+        Number of samples between consecutive window starts. When omitted,
+        use the Stage-1 training stride from ``stage1_forward/config.yaml``.
+        Stage 2 may provide a different value because the frozen forward model
+        can evaluate any window with the same fixed ``WINDOW_LENGTH``.
 
     Returns
     -------
@@ -74,6 +79,7 @@ def load_windows(split_name: str):
         This is retained for later F1 evaluation only.
     """
     # Only the requested CSV enters memory. Training never loads the test CSV.
+    window_stride = STRIDE if stride is None else stride
     data = pd.read_csv(SPLIT_FILES[split_name])
 
     # Ensure each group is in real time order before making windows.
@@ -91,7 +97,7 @@ def load_windows(split_name: str):
         sequence_aggregate = one_sequence["aggregate"].to_numpy(dtype=np.float32)
         sequence_state = one_sequence[STATE_COLUMNS].to_numpy(dtype=np.int64)
 
-        for start in range(0, len(one_sequence) - WINDOW_LENGTH + 1, STRIDE):
+        for start in range(0, len(one_sequence) - WINDOW_LENGTH + 1, window_stride):
             end = start + WINDOW_LENGTH
             power_windows.append(sequence_power[start:end])
             aggregate_windows.append(sequence_aggregate[start:end])

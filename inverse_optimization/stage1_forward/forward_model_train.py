@@ -1,9 +1,7 @@
 """Train the Stage 1 model on five appliance traces and total-meter targets."""
 
-import argparse 
 import sys
 from datetime import datetime
-from itertools import islice
 from pathlib import Path
 from time import perf_counter
 
@@ -119,9 +117,6 @@ def plot_appliance_scenarios(examples, predictions, run_dir):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--smoke", action="store_true", help="Run two batches per split.")
-    args = parser.parse_args()
     settings = config["training"]
     torch.manual_seed(settings["seed"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -154,34 +149,31 @@ def main():
     parameter_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"{device} | {parameter_count:,} trainable parameters")
 
-    if not args.smoke:
-        # Keep every experiment under results/<experiment_name>_<timestamp>/.
-        # The timestamp prevents a second run with the same name from overwriting
-        # the earlier checkpoint.
-        experiment_name = settings["experiment_name"].strip()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        run_dir = (
-            Path(__file__).resolve().parents[1]
-            / "results"
-            / f"{experiment_name}_{timestamp}"
-        )
-        run_dir.mkdir(parents=True)
-        checkpoint_path = run_dir / "best.pt"
-        print(f"Checkpoint: {checkpoint_path}")
+    # Keep every experiment under results/<experiment_name>_<timestamp>/.
+    # The timestamp prevents a second run from overwriting an earlier checkpoint.
+    experiment_name = settings["experiment_name"].strip()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    run_dir = (
+        Path(__file__).resolve().parents[1]
+        / "results"
+        / f"{experiment_name}_{timestamp}"
+    )
+    run_dir.mkdir(parents=True)
+    checkpoint_path = run_dir / "best.pt"
+    print(f"Checkpoint: {checkpoint_path}")
 
     best_val_mse = float("inf")
     best_epoch = 0
     training_losses = []
     validation_losses = []
-    epochs = 1 if args.smoke else settings["epochs"]
-    batch_limit = 2 if args.smoke else None
+    epochs = settings["epochs"]
 
     #Training Loop
     for epoch in range(1, epochs + 1):
         # 3. Train: compare the prediction with the meter and update the weights.
         model.train()
         train_error, train_points = 0.0, 0
-        for x, y in islice(train_loader, batch_limit):
+        for x, y in train_loader:
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
             loss = loss_fn(model(x), y)
@@ -194,7 +186,7 @@ def main():
         model.eval()
         val_error, val_points = 0.0, 0
         with torch.no_grad():
-            for x, y in islice(val_loader, batch_limit):
+            for x, y in val_loader:
                 x, y = x.to(device), y.to(device)
                 val_error += loss_fn(model(x), y).item() * y.numel()
                 val_points += y.numel()
@@ -204,7 +196,7 @@ def main():
         training_losses.append(train_mse)
         validation_losses.append(val_mse)
         print(f"Epoch {epoch:02d} | train MSE {train_mse:.5f} | val MSE {val_mse:.5f}")
-        if not args.smoke and val_mse < best_val_mse:
+        if val_mse < best_val_mse:
             best_val_mse = val_mse
             best_epoch = epoch
             torch.save({
@@ -219,73 +211,72 @@ def main():
                 "parameter_count": parameter_count,
             }, checkpoint_path)
 
-    if not args.smoke:
-        # Test the checkpoint chosen by validation loss only once. This keeps
-        # the test split independent from model selection during training.
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        x_test, y_test, _ = load_windows("testing")
-        test = TensorDataset(
-            (torch.from_numpy(x_test) - x_mean) / x_std,
-            (torch.from_numpy(y_test) - y_mean) / y_std,
-        )
-        test_loader = DataLoader(test, batch_size=settings["batch_size"])
+    # Test the checkpoint chosen by validation loss only once. This keeps
+    # the test split independent from model selection during training.
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    x_test, y_test, _ = load_windows("testing")
+    test = TensorDataset(
+        (torch.from_numpy(x_test) - x_mean) / x_std,
+        (torch.from_numpy(y_test) - y_mean) / y_std,
+    )
+    test_loader = DataLoader(test, batch_size=settings["batch_size"])
 
-        model.eval()
-        test_error, test_points = 0.0, 0
-        with torch.no_grad():
-            for x, y in test_loader:
-                x, y = x.to(device), y.to(device)
-                test_error += loss_fn(model(x), y).item() * y.numel()
-                test_points += y.numel()
-        test_mse = test_error / test_points
-        print(f"Best epoch {best_epoch:02d} | test MSE {test_mse:.5f}")
+    model.eval()
+    test_error, test_points = 0.0, 0
+    with torch.no_grad():
+        for x, y in test_loader:
+            x, y = x.to(device), y.to(device)
+            test_error += loss_fn(model(x), y).item() * y.numel()
+            test_points += y.numel()
+    test_mse = test_error / test_points
+    print(f"Best epoch {best_epoch:02d} | test MSE {test_mse:.5f}")
 
-        # Test MSE is a single point because the test split is evaluated only
-        # for the checkpoint selected using validation loss.
-        plot_path = plot_loss_curve(
-            training_losses, validation_losses, test_mse, best_epoch, run_dir
-        )
-        print(f"Loss plot: {plot_path}")
+    # Test MSE is a single point because the test split is evaluated only
+    # for the checkpoint selected using validation loss.
+    plot_path = plot_loss_curve(
+        training_losses, validation_losses, test_mse, best_epoch, run_dir
+    )
+    print(f"Loss plot: {plot_path}")
 
-        # Select one continuous random week. The same week's shorter portions
-        # are used for the 1,024-sample and one-day plots.
-        sample_seconds = 8
-        week_samples = 7 * 24 * 60 * 60 // sample_seconds
-        week_power, week_aggregate = load_random_continuous_interval(
-            "testing", week_samples, settings["seed"]
-        )
+    # Select one continuous random week. The same week's shorter portions
+    # are used for the 1,024-sample and one-day plots.
+    sample_seconds = 8
+    week_samples = 7 * 24 * 60 * 60 // sample_seconds
+    week_power, week_aggregate = load_random_continuous_interval(
+        "testing", week_samples, settings["seed"]
+    )
 
-        # Predict the selected week, then convert predictions from normalized
-        # values back to real aggregate power in watts. The LSTM is trained
-        # on fixed-length windows, so predict the long plotting interval in
-        # consecutive windows rather than giving cuDNN a 7-day sequence.
-        with torch.no_grad():
-            week_input = (torch.from_numpy(week_power[None]) - x_mean) / x_std
-            predicted_normalized = torch.cat([
-                model(chunk.contiguous().to(device)).cpu()
-                for chunk in week_input.split(config["data"]["window_length"], dim=1)
-            ], dim=1).squeeze(0)
-        week_prediction = (predicted_normalized * y_std + y_mean).numpy()
+    # Predict the selected week, then convert predictions from normalized
+    # values back to real aggregate power in watts. The LSTM is trained
+    # on fixed-length windows, so predict the long plotting interval in
+    # consecutive windows rather than giving cuDNN a 7-day sequence.
+    with torch.no_grad():
+        week_input = (torch.from_numpy(week_power[None]) - x_mean) / x_std
+        predicted_normalized = torch.cat([
+            model(chunk.contiguous().to(device)).cpu()
+            for chunk in week_input.split(config["data"]["window_length"], dim=1)
+        ], dim=1).squeeze(0)
+    week_prediction = (predicted_normalized * y_std + y_mean).numpy()
 
-        for waveform_path in plot_aggregate_predictions(
-            week_aggregate, week_prediction, settings["seed"], run_dir
-        ):
-            print(f"Aggregate prediction plot: {waveform_path}")
+    for waveform_path in plot_aggregate_predictions(
+        week_aggregate, week_prediction, settings["seed"], run_dir
+    ):
+        print(f"Aggregate prediction plot: {waveform_path}")
 
-        # Select one 1,024-sample test window for each appliance where its
-        # ground-truth ON label is active, then plot that appliance's scenario.
-        event_examples = load_random_appliance_event_windows("testing", 1024, settings["seed"])
-        event_power = np.stack([event_examples[appliance][0] for appliance in APPLIANCES])
-        with torch.no_grad():
-            event_input = (torch.from_numpy(event_power) - x_mean) / x_std
-            event_prediction = model(event_input.to(device)).cpu()
-        event_predictions = {
-            appliance: (event_prediction[index] * y_std + y_mean).numpy()
-            for index, appliance in enumerate(APPLIANCES)
-        }
-        for plot_path in plot_appliance_scenarios(event_examples, event_predictions, run_dir):
-            print(f"Appliance scenario plot: {plot_path}")
+    # Select one 1,024-sample test window for each appliance where its
+    # ground-truth ON label is active, then plot that appliance's scenario.
+    event_examples = load_random_appliance_event_windows("testing", 1024, settings["seed"])
+    event_power = np.stack([event_examples[appliance][0] for appliance in APPLIANCES])
+    with torch.no_grad():
+        event_input = (torch.from_numpy(event_power) - x_mean) / x_std
+        event_prediction = model(event_input.to(device)).cpu()
+    event_predictions = {
+        appliance: (event_prediction[index] * y_std + y_mean).numpy()
+        for index, appliance in enumerate(APPLIANCES)
+    }
+    for plot_path in plot_appliance_scenarios(event_examples, event_predictions, run_dir):
+        print(f"Appliance scenario plot: {plot_path}")
 
     print(f"Elapsed time: {perf_counter() - started:.1f} s")
 
