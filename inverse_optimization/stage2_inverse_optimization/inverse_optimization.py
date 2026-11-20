@@ -179,12 +179,13 @@ def plot_appliance_on_events(
     appliance_indices=None,
     observed_aggregate=None,
     window_index=None,
+    split_name=None,
 ):
     """Save the same focused ON-event and 10x-context layout as MART-NILM."""
     indices = list(range(len(APPLIANCES))) if appliance_indices is None else appliance_indices
     names = [APPLIANCES[index] for index in indices]
     return save_appliance_event_waveforms(
-        run_dir / "figures" / "waveforms" / config["inverse"]["split"],
+        run_dir / "figures" / "waveforms" / (split_name or config["inverse"]["split"]),
         appliances=names,
         true_power=true_appliance[:, indices],
         predicted_power=estimated_appliance[:, indices],
@@ -210,9 +211,17 @@ def main():
         default=None,
         help="Optional Stage-1 checkpoint path that overrides inverse.checkpoint_path.",
     )
+    parser.add_argument("--split", choices=["validating", "testing"])
+    parser.add_argument("--dataset", help="Optional dataset filter, used for a test-house report.")
+    parser.add_argument("--house", type=int, help="Optional house filter, used for a test-house report.")
+    parser.add_argument("--window-stride", type=int, help="Optional Stage-2 stride override in samples.")
+    parser.add_argument("--num-windows", type=int, help="Optional limit for a short diagnostic run.")
     args = parser.parse_args()
 
     settings = config["inverse"]
+    split_name = args.split or settings["split"]
+    window_stride = args.window_stride or settings["window_stride"]
+    requested_windows = args.num_windows if args.num_windows is not None else settings["num_windows"]
     torch.manual_seed(settings["seed"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -254,7 +263,7 @@ def main():
     #  * They are retained only for evaluation after inference.
     #  ************************************************************/
     appliance_windows, aggregate_windows, state_windows = load_windows(
-        settings["split"], stride=settings["window_stride"]
+        split_name, stride=window_stride, dataset=args.dataset, house=args.house
     )
     training_power, _, _ = load_windows("training")
     training_power = torch.from_numpy(training_power)
@@ -283,8 +292,8 @@ def main():
 
     start = settings["window_index"]
     available = len(aggregate_windows) - start
-    count = available if settings["num_windows"] is None else min(
-        settings["num_windows"], available
+    count = available if requested_windows is None else min(
+        requested_windows, available
     )
     window_indices = np.arange(start, start + count, dtype=int)
 
@@ -575,14 +584,16 @@ def main():
                     run_dir,
                 )
                 metrics_plot = plot_metrics_table(
-                    metric_values, settings["split"], window_index, run_dir
+                    metric_values, split_name, window_index, run_dir
                 )
                 print(f"Loss plot: {loss_plot}")
                 print(f"Waveform plot: {waveform_plot}")
                 print(f"Metrics table: {metrics_plot}")
 
             row = {
-                "split": settings["split"],
+                "split": split_name,
+                "dataset": args.dataset or "all",
+                "house": args.house if args.house is not None else "all",
                 "window_index": int(window_index),
                 "selected_restart": selected_restart,
                 "aggregate_mae_w": aggregate_mae.item(),
@@ -636,6 +647,7 @@ def main():
             appliance_indices=[appliance_index],
             observed_aggregate=aggregate_windows[window_index],
             window_index=window_index,
+            split_name=split_name,
         )
         for path in paths:
             print(f"ON-event waveform plot: {path}")
@@ -651,7 +663,10 @@ def main():
 
     # These are overlapping-window diagnostics, not full-timeline metrics.
     average_path = run_dir / "window_averages.csv"
-    metric_names = list(rows[0].keys())[3:]
+    metric_names = [
+        name for name in rows[0]
+        if name not in {"split", "dataset", "house", "window_index", "selected_restart"}
+    ]
     with average_path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow(["metric", "mean_over_windows", "valid_windows"])

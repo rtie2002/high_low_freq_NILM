@@ -14,6 +14,7 @@ PROJECT_DIR = Path(__file__).resolve().parent
 RESULTS_DIR = PROJECT_DIR / "results"
 STAGE1_SCRIPT = PROJECT_DIR / "stage1_forward" / "forward_model_train.py"
 STAGE2_SCRIPT = PROJECT_DIR / "stage2_inverse_optimization" / "inverse_optimization.py"
+STAGE2_TEST_SCRIPT = PROJECT_DIR / "stage2_inverse_optimization" / "test_house_report.py"
 
 
 def saved_checkpoints():
@@ -52,6 +53,14 @@ def main():
     print("\n========== STAGE 2: INVERSE OPTIMISATION ==========")
     subprocess.run(
         [sys.executable, str(STAGE2_SCRIPT), "--checkpoint", str(checkpoint_path)],
+        cwd=PROJECT_DIR,
+        env=os.environ.copy(),
+        check=True,
+    )
+
+    print("\n========== STAGE 2: HELD-OUT TEST HOUSES ==========")
+    subprocess.run(
+        [sys.executable, str(STAGE2_TEST_SCRIPT), "--checkpoint", str(checkpoint_path)],
         cwd=PROJECT_DIR,
         env=os.environ.copy(),
         check=True,

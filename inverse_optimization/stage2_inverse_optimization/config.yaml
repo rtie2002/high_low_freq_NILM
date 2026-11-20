@@ -50,3 +50,17 @@ inverse:
 
   # Console progress interval in optimisation steps.
   print_every: 50
+
+# Final held-out reporting. These houses never influence Stage-1 weights or
+# Stage-2 settings. Use stride=512 so every test sample enters the table once.
+test:
+  split: testing
+  window_stride: 512
+  num_windows: null
+  houses:
+    - dataset: ukdale
+      house: 2
+      label: "UK-DALE · House 2"
+    - dataset: refit
+      house: 20
+      label: "REFIT · House 20"

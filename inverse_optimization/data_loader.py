@@ -53,7 +53,12 @@ STATE_COLUMNS = [
 ]
 
 
-def load_windows(split_name: str, stride: int | None = None):
+def load_windows(
+    split_name: str,
+    stride: int | None = None,
+    dataset: str | None = None,
+    house: int | None = None,
+):
     """Load only one split and return aligned power, aggregate, and state windows.
 
     Parameters
@@ -65,6 +70,9 @@ def load_windows(split_name: str, stride: int | None = None):
         use the Stage-1 training stride from ``stage1_forward/config.yaml``.
         Stage 2 may provide a different value because the frozen forward model
         can evaluate any window with the same fixed ``WINDOW_LENGTH``.
+    dataset, house:
+        Optional held-out dataset and house filter. Stage 2 uses these only
+        for reporting one test house at a time.
 
     Returns
     -------
@@ -81,6 +89,10 @@ def load_windows(split_name: str, stride: int | None = None):
     # Only the requested CSV enters memory. Training never loads the test CSV.
     window_stride = STRIDE if stride is None else stride
     data = pd.read_csv(SPLIT_FILES[split_name])
+    if dataset is not None:
+        data = data[data["dataset"] == dataset]
+    if house is not None:
+        data = data[data["house"] == house]
 
     # Ensure each group is in real time order before making windows.
     data = data.sort_values(["dataset", "house", "sequence_id", "unix_time"])
