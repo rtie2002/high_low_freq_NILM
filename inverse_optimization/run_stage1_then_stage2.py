@@ -1,8 +1,13 @@
 """Run Stage 1 training, then run Stage 2 using that new Stage-1 checkpoint."""
 
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+import torch
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -17,11 +22,24 @@ def saved_checkpoints():
 
 
 def main():
+    # Do not permit an expensive experiment to silently run on the CPU.
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "CUDA GPU 0 is required, but this Python environment cannot use CUDA. "
+            "Run this script with the NILM CUDA environment."
+        )
+    print(f"Using CUDA GPU 0: {torch.cuda.get_device_name(0)}")
+
     # Remember old checkpoints so an earlier experiment can never be selected.
     previous_checkpoints = saved_checkpoints()
 
     print("\n========== STAGE 1: FORWARD MODEL TRAINING ==========")
-    subprocess.run([sys.executable, str(STAGE1_SCRIPT)], cwd=PROJECT_DIR, check=True)
+    subprocess.run(
+        [sys.executable, str(STAGE1_SCRIPT)],
+        cwd=PROJECT_DIR,
+        env=os.environ.copy(),
+        check=True,
+    )
 
     new_checkpoints = saved_checkpoints() - previous_checkpoints
     if not new_checkpoints:
@@ -35,6 +53,7 @@ def main():
     subprocess.run(
         [sys.executable, str(STAGE2_SCRIPT), "--checkpoint", str(checkpoint_path)],
         cwd=PROJECT_DIR,
+        env=os.environ.copy(),
         check=True,
     )
 
