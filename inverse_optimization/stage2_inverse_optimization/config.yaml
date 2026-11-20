@@ -37,7 +37,7 @@ inverse:
   # A hard projected box constraint already enforces the ranges above exactly.
   # Keep Ren et al.'s soft training-domain boundary term off for this isolated
   # physical-constraint experiment.
-  boundary_weight: 0.0
+  boundary_weight: 1
 
   # Predicted power (W) at or above these values is classified as ON.
   # Order: kettle, fridge, dishwasher, washingmachine, microwave.
