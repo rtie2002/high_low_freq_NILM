@@ -37,6 +37,10 @@ def main():
             assert checkpoint.is_file(), checkpoint
             saved = yaml.safe_load((source / "config_merged.yaml").read_text(encoding="utf-8"))
             cfg = merge_configs(saved["experiment"], saved["model"])
+            # Keep representative QA plots small; prediction and metrics are unchanged.
+            plots = cfg["model"]["training"]["plots"]
+            plots["plot_on_periods"] = 1
+            plots["waveform_dpi"] = 120
             destination = args.output / variant / f"seed_{seed}"
             destination.mkdir(parents=True, exist_ok=True)
             for name in ("config_merged.yaml", "state_calibration.json"):
