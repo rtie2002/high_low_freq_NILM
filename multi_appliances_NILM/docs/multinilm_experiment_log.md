@@ -1554,3 +1554,45 @@ Next action: repair diagnostic/exit capture locally, verify and commit the
 launcher fix, deploy through the documented Git workflow, then restart the
 approved one-seed screen. Existing logs and unrelated changes were preserved;
 no remote code or task changes were made during this monitoring run.
+
+## Training-strategy test report — 2026-11-21
+
+User requested a test-house counterpart to the existing validation training-strategy
+ablation, for comparison before choosing the manuscript presentation. No training,
+checkpoint selection, threshold tuning, or manuscript-table replacement was performed.
+The frozen best.pt checkpoints and saved state_calibration.json were used for seeds
+2026/2027/2028, all four training variants, and both UK-DALE house 2 and REFIT house 20.
+All twelve saved configurations include relative-energy loss weight 0.25, matching
+the existing validation ablation rather than the newer objective in Table III.
+
+Script: scripts/evaluate_training_strategy_test.py (deployed at 3166789).
+Output: runs/paper_5w/training_strategy_test_20261121; completed with exit code 0.
+The first launcher failed because the historical mart_nilm adapter is absent from
+the current CLI registry; the script now imports its adapter directly. A subsequent
+run was stopped solely to reduce expensive QA rendering; completed metric files
+were retained and the resumed run completed all 24 variant/seed/house combinations.
+Only the number and resolution of QA plots changed, not prediction or metrics.
+
+Each metric averages the five appliances within each house, then averages the two
+houses within each seed. The table reports mean and sample SD across three seeds.
+
+| Strategy | MAE (W) | ON MAE (W) | SAE (W) | Macro-F1 |
+|---|---:|---:|---:|---:|
+| Standard joint training | 9.820 +/- 0.238 | 341.852 +/- 5.546 | 6.069 +/- 0.227 | 0.703 +/- 0.011 |
+| Focal-event mixing | 9.694 +/- 0.178 | 240.508 +/- 16.179 | 5.935 +/- 0.285 | 0.763 +/- 0.002 |
+| Appliance-wise balancing | 9.689 +/- 0.294 | 307.541 +/- 11.899 | 5.976 +/- 0.420 | 0.752 +/- 0.002 |
+| Complete | 9.124 +/- 0.140 | 242.940 +/- 5.327 | 5.584 +/- 0.173 | 0.796 +/- 0.008 |
+
+Complete has the lowest MAE/SAE and highest macro-F1; focal-event mixing alone
+has the lowest ON MAE. Both individual strategies improve all four test means
+relative to standard training; validation mixing alone worsens overall MAE.
+These are descriptive three-seed comparisons, not significance claims.
+
+Complete-model mean metrics reproduce the displayed Table V means. Fresh ON-MAE
+SD is 5.327 versus the archived 5.348 (Table V displays 5.35); small per-house
+re-evaluation differences remain and were not forced to match the archived CSV.
+The fresh test comparison retains its own internally consistent numbers.
+Inspected the generated REFIT microwave waveform for standard seed 2026; the
+example has missed activation samples and is QA evidence, not a performance estimate.
+Comparison PDF, reusable LaTeX table, provenance and seed/house CSVs are saved in
+paper/alternatives/training_strategy_test. Main manuscript remains unchanged.
