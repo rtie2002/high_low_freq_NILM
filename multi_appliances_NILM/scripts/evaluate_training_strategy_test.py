@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from config import merge_configs
-from main import get_adapter
+from model.MARTNILM import MARTNILMAdapter
 from runner import evaluate_model
 
 VARIANTS = ("standard_joint_training", "focal_event_mixing", "appliance_wise_balancing", "complete")
@@ -41,7 +41,7 @@ def main():
             destination.mkdir(parents=True, exist_ok=True)
             for name in ("config_merged.yaml", "state_calibration.json"):
                 shutil.copy2(source / name, destination / name)
-            adapter = get_adapter(cfg["model_name"], cfg, data_root=str(ROOT / cfg["data_root"]))
+            adapter = MARTNILMAdapter(cfg, data_root=str(ROOT / cfg["data_root"]))
             timing = json.loads((source / "training_time.json").read_text(encoding="utf-8"))
             provenance.append({"variant": variant, "seed": seed, "checkpoint": str(checkpoint),
                                "best_epoch": timing["best_epoch"],
