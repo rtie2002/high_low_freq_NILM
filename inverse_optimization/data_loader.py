@@ -228,6 +228,12 @@ def load_random_continuous_interval(
     )
 
 
+def max_continuous_interval_length(split_name: str):
+    """Return the length of the longest uninterrupted recording in one split."""
+    data = pd.read_csv(SPLIT_FILES[split_name], usecols=["dataset", "house", "sequence_id"])
+    return int(data.groupby(["dataset", "house", "sequence_id"]).size().max())
+
+
 def load_random_appliance_event_windows(
     split_name: str,
     length: int,

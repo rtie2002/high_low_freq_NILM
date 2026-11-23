@@ -18,6 +18,7 @@ if __package__:
     from ..data_loader import (
         APPLIANCES,
         config,
+        max_continuous_interval_length,
         load_random_appliance_event_windows,
         load_random_continuous_interval,
         load_windows,
@@ -30,6 +31,7 @@ else:
     from data_loader import (
         APPLIANCES,
         config,
+        max_continuous_interval_length,
         load_random_appliance_event_windows,
         load_random_continuous_interval,
         load_windows,
@@ -58,13 +60,15 @@ def plot_loss_curve(training_losses, validation_losses, test_mse, best_epoch, ru
 
 
 def plot_aggregate_predictions(week_aggregate, week_prediction, seed, run_dir):
-    """Save 1,024-sample, one-day, and one-week waveform comparisons."""
+    """Save short, daily, and longest-available waveform comparisons."""
     sample_seconds = 8
     week_samples = len(week_aggregate)
+    one_week_samples = 7 * 24 * 60 * 60 // sample_seconds
+    longest_name = "one_week" if week_samples == one_week_samples else "longest_available"
     plot_lengths = {
         "1024_samples": 1024,
         "one_day": 24 * 60 * 60 // sample_seconds,
-        "one_week": week_samples,
+        longest_name: week_samples,
     }
     rng = np.random.default_rng(seed)
     plot_paths = []
@@ -351,12 +355,14 @@ def main():
     )
     print(f"Loss plot: {plot_path}")
 
-    # Select one continuous random week. The same week's shorter portions
-    # are used for the 1,024-sample and one-day plots.
+    # Select one continuous random week. A within-house temporal test split
+    # may contain less than one week per final test segment, so use its longest
+    # available uninterrupted interval instead.
     sample_seconds = 8
     week_samples = 7 * 24 * 60 * 60 // sample_seconds
+    plot_samples = min(week_samples, max_continuous_interval_length("testing"))
     week_power, week_aggregate = load_random_continuous_interval(
-        "testing", week_samples, settings["seed"],
+        "testing", plot_samples, settings["seed"],
         include_calendar_features=use_calendar_features,
         include_state_features=use_state_features,
     )
