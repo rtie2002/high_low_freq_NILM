@@ -24,7 +24,7 @@ model:
 
 training:
   # Change this name for each experiment. It becomes part of the result folder.
-  experiment_name: forward_resnet_256_time_state_features
+  experiment_name: forward_resnet_innerHouse
   seed: 2026
   batch_size: 16
   epochs: 100
