@@ -5,10 +5,12 @@ from pathlib import Path
 import yaml
 
 from .lstm import LSTM_NILM
+from .resnet import ResNet_NILM
 
 
 MODEL_CLASSES = {
     "lstm": LSTM_NILM,
+    "resnet": ResNet_NILM,
 }
 
 

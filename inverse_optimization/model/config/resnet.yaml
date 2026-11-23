@@ -1,0 +1,6 @@
+# A shallow 1D residual convolutional network.
+# Every convolution has stride 1, so the output has the same time length as input.
+input_size: 5
+hidden_size: 32
+num_blocks: 3
+kernel_size: 5

@@ -11,15 +11,15 @@ data:
   background_std_multiplier: 2.0
 
 # Stage-1 forward model:
-# five appliance powers plus known calendar features -> LSTM -> aggregate power.
+# five appliance powers plus known calendar features -> forward model -> aggregate power.
 model:
-  name: lstm
+  name: resnet
   # 5 when use_calendar_features is false, 9 when it is true.
   input_size: 5
 
 training:
   # Change this name for each experiment. It becomes part of the result folder.
-  experiment_name: forward_lstm_background_normal_windows
+  experiment_name: forward_resnet_baseline
   seed: 2026
   batch_size: 16
   epochs: 100
