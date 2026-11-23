@@ -4,10 +4,10 @@ data:
   window_length: 512
   stride: 256
   # Append day_sin, day_cos, week_sin, and week_cos to the five appliance inputs.
-  use_calendar_features: true
+  use_calendar_features: false
   # Apply background cleaning only to training data.
   # Validation and testing remain raw to represent deployment data.
-  clean_background: true
+  clean_background: false
   background_std_multiplier: 2.0
 
 # Stage-1 forward model:
