@@ -1,6 +1,8 @@
 # Sliding Windows
 
 data:
+  # Existing cross-house dataset or the separate within-house temporal split.
+  dataset_name: mixed_ukdale_refit_5w_temporal_602020
   window_length: 256
   stride: 128
   # Append day_sin, day_cos, week_sin, and week_cos to the five appliance inputs.

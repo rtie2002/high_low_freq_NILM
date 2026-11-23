@@ -26,7 +26,8 @@ with FORWARD_CONFIG_PATH.open("r", encoding="utf-8") as file:
 WINDOW_LENGTH = config["data"]["window_length"]
 STRIDE = config["data"]["stride"]
 
-DATA_ROOT = PROJECT_DIR / "dataset" / "mixed_ukdale_refit_5w_house_split"
+# Change data.dataset_name in Stage-1 config to select a prepared dataset.
+DATA_ROOT = PROJECT_DIR / "dataset" / config["data"]["dataset_name"]
 
 SPLIT_FILES = {
     "training": DATA_ROOT / "training" / "multi_appliance_training.csv",
