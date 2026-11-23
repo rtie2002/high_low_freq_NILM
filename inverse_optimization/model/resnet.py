@@ -30,18 +30,23 @@ class ResNet_NILM(nn.Module):
     the total-meter waveform. Stride is always 1, so no time samples are lost.
     """
 
-    def __init__(self, input_size, hidden_size, num_blocks, kernel_size):
+    def __init__(self, input_size, hidden_size, num_blocks, kernel_size, head_size):
         super().__init__()
         self.input_layer = nn.Conv1d(input_size, hidden_size, kernel_size=1)
         self.blocks = nn.Sequential(
             *(ResidualBlock(hidden_size, kernel_size) for _ in range(num_blocks))
         )
-        self.output_layer = nn.Conv1d(hidden_size, 1, kernel_size=1)
+        self.output_head = nn.Sequential(
+            nn.Linear(hidden_size, head_size),
+            nn.ReLU(),
+            nn.Linear(head_size, 1),
+        )
 
     def forward(self, appliance_power):
         # Conv1d expects [batch, channels, time], while the loader returns [B, T, C].
         x = appliance_power.transpose(1, 2)
         x = self.input_layer(x)
         x = self.blocks(x)
-        aggregate = self.output_layer(x)  # [B, 1, T]
-        return aggregate.squeeze(1)  # [B, T]
+        x = x.transpose(1, 2)  # [B, T, hidden_size]
+        aggregate = self.output_head(x)  # [B, T, 1]
+        return aggregate.squeeze(-1)  # [B, T]
