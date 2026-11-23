@@ -2,7 +2,6 @@
 
 import csv
 import sys
-from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 
@@ -171,6 +170,18 @@ def save_aggregate_metrics(metrics, normalized_mse, training_seconds, run_dir):
     return csv_path, table_path
 
 
+def create_run_dir(experiment_name):
+    """Create results/<experiment_name>, adding (2), (3), ... if needed."""
+    results_dir = Path(__file__).resolve().parents[1] / "results"
+    run_dir = results_dir / experiment_name
+    number = 2
+    while run_dir.exists():
+        run_dir = results_dir / f"{experiment_name} ({number})"
+        number += 1
+    run_dir.mkdir(parents=True)
+    return run_dir
+
+
 def main():
     settings = config["training"]
     use_calendar_features = config["data"]["use_calendar_features"]
@@ -209,16 +220,10 @@ def main():
     parameter_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"{device} | {parameter_count:,} trainable parameters")
 
-    # Keep every experiment under results/<experiment_name>_<timestamp>/.
-    # The timestamp prevents a second run from overwriting an earlier checkpoint.
+    # Keep the folder name easy to read. Existing experiments are preserved as
+    # "name (2)", "name (3)", and so on instead of adding a timestamp.
     experiment_name = settings["experiment_name"].strip()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    run_dir = (
-        Path(__file__).resolve().parents[1]
-        / "results"
-        / f"{experiment_name}_{timestamp}"
-    )
-    run_dir.mkdir(parents=True)
+    run_dir = create_run_dir(experiment_name)
     checkpoint_path = run_dir / "best.pt"
     print(f"Checkpoint: {checkpoint_path}")
 

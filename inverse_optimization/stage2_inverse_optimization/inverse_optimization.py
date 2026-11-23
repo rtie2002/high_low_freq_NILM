@@ -7,7 +7,6 @@ candidate appliance-power input instead of the LSTM weights.
 import argparse
 import csv
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -200,6 +199,18 @@ def plot_appliance_on_events(
     )
 
 
+def create_run_dir(experiment_name):
+    """Create results/<experiment_name>, adding (2), (3), ... if needed."""
+    results_dir = Path(__file__).resolve().parents[1] / "results"
+    run_dir = results_dir / experiment_name
+    number = 2
+    while run_dir.exists():
+        run_dir = results_dir / f"{experiment_name} ({number})"
+        number += 1
+    run_dir.mkdir(parents=True)
+    return run_dir
+
+
 def main():
     # /************************************************************
     #  * STEP 0 - Read config and choose the Stage-1 checkpoint
@@ -308,10 +319,7 @@ def main():
     active_counts = (state_windows[window_indices].sum(axis=1) > 0).sum(axis=1)
     plot_index = int(window_indices[active_counts.argmax()])
 
-    run_dir = Path(__file__).resolve().parents[1] / "results" / (
-        f"{settings['experiment_name']}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
-    )
-    run_dir.mkdir(parents=True)
+    run_dir = create_run_dir(settings["experiment_name"].strip())
 
     # /************************************************************
     #  * STEP 3 - Prepare disk storage for every inferred window
