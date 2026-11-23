@@ -26,3 +26,24 @@ training-validation distribution gap.
 
 Remote result folder:
 `D:\Raymond\high_low_freq_NILM\inverse_optimization\results\forward_lstm_background_cleaning (2)`
+
+## 2026-11-23 background cleaning with normal windows
+
+Change: remove abnormal training rows using the same background rule, then
+slide normal 512-sample windows within each original recording. Deleted rows
+do not cause additional window rejection. Validation and test data remained raw.
+
+Training windows: 5,977. The aggregate mean and standard deviation entering
+training were 480.50 W and 574.23 W.
+
+Selected checkpoint: epoch 14.
+
+| Metric | Value |
+| --- | ---: |
+| MAE | 180.41 W |
+| RMSE | 289.13 W |
+| R2 | 0.562 |
+| Pearson correlation | 0.799 |
+
+Remote result folder:
+`D:\Raymond\high_low_freq_NILM\inverse_optimization\results\forward_lstm_background_normal_windows`
