@@ -185,17 +185,25 @@ def create_run_dir(experiment_name):
 def main():
     settings = config["training"]
     use_calendar_features = config["data"]["use_calendar_features"]
+    clean_background = config["data"]["clean_background"]
+    background_std_multiplier = config["data"]["background_std_multiplier"]
     torch.manual_seed(settings["seed"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     started = perf_counter()
 
     # 1. Load aligned windows in watts. Fit z-score statistics on training only.
     x_train, y_train, _ = load_windows(
-        "training", include_calendar_features=use_calendar_features
+        "training",
+        include_calendar_features=use_calendar_features,
+        clean_background=clean_background,
+        background_std_multiplier=background_std_multiplier,
     )
     del _
     x_val, y_val, _ = load_windows(
-        "validating", include_calendar_features=use_calendar_features
+        "validating",
+        include_calendar_features=use_calendar_features,
+        clean_background=clean_background,
+        background_std_multiplier=background_std_multiplier,
     )
     del _
     x_train, y_train = torch.from_numpy(x_train), torch.from_numpy(y_train)
@@ -285,7 +293,10 @@ def main():
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     x_test, y_test, _ = load_windows(
-        "testing", include_calendar_features=use_calendar_features
+        "testing",
+        include_calendar_features=use_calendar_features,
+        clean_background=clean_background,
+        background_std_multiplier=background_std_multiplier,
     )
     test = TensorDataset(
         (torch.from_numpy(x_test) - x_mean) / x_std,

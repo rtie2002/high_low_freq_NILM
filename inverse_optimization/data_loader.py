@@ -58,12 +58,38 @@ STATE_COLUMNS = [
 ]
 
 
+def clean_background_rows(data, std_multiplier):
+    """Remove rows whose background is negative or unusually large."""
+    on_power = data[POWER_COLUMNS].to_numpy() * data[STATE_COLUMNS].to_numpy()
+    background = data["aggregate"] - on_power.sum(axis=1)
+    upper_limit = background.mean() + std_multiplier * background.std()
+    clean_rows = (background >= 0) & (background < upper_limit)
+    data = data.loc[clean_rows].copy()
+
+    # Removing a row creates a time gap. Mark it as a new sequence so a
+    # sliding window never treats non-adjacent samples as consecutive.
+    recording_columns = ["dataset", "house", "sequence_id"]
+    new_recording = data[recording_columns].ne(
+        data[recording_columns].shift()
+    ).any(axis=1)
+    time_gap = data["unix_time"].diff().ne(8)
+    data["clean_sequence_id"] = (new_recording | time_gap).cumsum()
+
+    print(
+        f"Background cleaning: kept {len(data):,}/{len(clean_rows):,} rows | "
+        f"upper limit {upper_limit:.2f} W"
+    )
+    return data
+
+
 def load_windows(
     split_name: str,
     stride: int | None = None,
     dataset: str | None = None,
     house: int | None = None,
     include_calendar_features: bool = False,
+    clean_background: bool = False,
+    background_std_multiplier: float = 2.0,
 ):
     """Load only one split and return aligned power, aggregate, and state windows.
 
@@ -82,6 +108,9 @@ def load_windows(
     include_calendar_features:
         When true, append four known local-time features to the five appliance
         powers, producing a nine-feature forward-model input.
+    clean_background:
+        When true, remove rows with negative or unusually large background
+        before windows are created.
 
     Returns
     -------
@@ -106,6 +135,8 @@ def load_windows(
 
     # Ensure each group is in real time order before making windows.
     data = data.sort_values(["dataset", "house", "sequence_id", "unix_time"])
+    if clean_background:
+        data = clean_background_rows(data, background_std_multiplier)
     if include_calendar_features:
         data = add_calendar_features(data)
     input_columns = INPUT_COLUMNS if include_calendar_features else POWER_COLUMNS
@@ -116,7 +147,10 @@ def load_windows(
 
     # A window stays within one continuous recording and never crosses a house
     # or recording boundary.
-    groups = data.groupby(["dataset", "house", "sequence_id"], sort=False)
+    group_columns = ["dataset", "house", "sequence_id"]
+    if clean_background:
+        group_columns = ["dataset", "house", "clean_sequence_id"]
+    groups = data.groupby(group_columns, sort=False)
     for _, one_sequence in groups:
         sequence_power = one_sequence[input_columns].to_numpy(dtype=np.float32)
         sequence_aggregate = one_sequence["aggregate"].to_numpy(dtype=np.float32)

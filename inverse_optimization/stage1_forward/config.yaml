@@ -5,6 +5,9 @@ data:
   stride: 256
   # Append day_sin, day_cos, week_sin, and week_cos to the five appliance inputs.
   use_calendar_features: true
+  # Apply the same background cleaning rule to training, validation, and test.
+  clean_background: true
+  background_std_multiplier: 2.0
 
 # Stage-1 forward model:
 # five appliance powers plus known calendar features -> LSTM -> aggregate power.
@@ -13,7 +16,7 @@ model:
 
 training:
   # Change this name for each experiment. It becomes part of the result folder.
-  experiment_name: forward_lstm_calendar_features
+  experiment_name: forward_lstm_background_cleaning
   seed: 2026
   batch_size: 16
   epochs: 100
