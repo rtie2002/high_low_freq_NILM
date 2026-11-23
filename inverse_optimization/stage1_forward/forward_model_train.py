@@ -212,6 +212,14 @@ def main():
     x_std = x_train.std(dim=(0, 1), unbiased=False).clamp_min(1e-6)
     y_mean = y_train.mean()
     y_std = y_train.std(unbiased=False).clamp_min(1e-6)
+    print(
+        f"Training aggregate: mean {y_mean.item():.2f} W | "
+        f"std {y_std.item():.2f} W"
+    )
+    print(
+        f"Validation aggregate: mean {y_val.mean().item():.2f} W | "
+        f"std {y_val.std(unbiased=False).item():.2f} W"
+    )
 
     # Normalize the input data and create PyTorch Dataset and DataLoader objects.
     train = TensorDataset((x_train - x_mean) / x_std, (y_train - y_mean) / y_std)
@@ -266,7 +274,13 @@ def main():
         val_mse = val_error / val_points
         training_losses.append(train_mse)
         validation_losses.append(val_mse)
-        print(f"Epoch {epoch:02d} | train MSE {train_mse:.5f} | val MSE {val_mse:.5f}")
+        train_rmse_w = train_mse**0.5 * y_std.item()
+        val_rmse_w = val_mse**0.5 * y_std.item()
+        print(
+            f"Epoch {epoch:02d} | train MSE {train_mse:.5f} | "
+            f"val MSE {val_mse:.5f} | train RMSE {train_rmse_w:.2f} W | "
+            f"val RMSE {val_rmse_w:.2f} W"
+        )
         if val_mse < best_val_mse:
             best_val_mse = val_mse
             best_epoch = epoch
