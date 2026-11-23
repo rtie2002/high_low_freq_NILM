@@ -1,8 +1,8 @@
 # Sliding Windows
 
 data:
-  window_length: 512
-  stride: 256
+  window_length: 256
+  stride: 128
   # Append day_sin, day_cos, week_sin, and week_cos to the five appliance inputs.
   use_calendar_features: false
   # Apply background cleaning only to training data.
@@ -19,7 +19,7 @@ model:
 
 training:
   # Change this name for each experiment. It becomes part of the result folder.
-  experiment_name: forward_resnet_baseline
+  experiment_name: forward_resnet_256
   seed: 2026
   batch_size: 16
   epochs: 100
