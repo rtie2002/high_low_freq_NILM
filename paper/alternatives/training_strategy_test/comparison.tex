@@ -1,0 +1,42 @@
+\documentclass[10pt]{article}
+\usepackage[margin=22mm]{geometry}
+\usepackage{mathptmx,amsmath,booktabs}
+\newcommand{\mstd}[2]{\shortstack{#1\\[-2pt]{$\pm$#2}}}
+\newcommand{\bestmstd}[2]{{\bfseries\shortstack{#1\\[-2pt]{$\boldsymbol{\pm}$#2}}}}
+\pagestyle{empty}
+\begin{document}
+\begin{center}\large Training-strategy ablation: validation and test comparison\end{center}
+\noindent Values are mean $\pm$ sample standard deviation over seeds 2026, 2027, and 2028. Within each seed, the five appliance metrics are averaged within each house, followed by equal averaging of the two houses. Power errors are in watts. Bold identifies the best displayed mean within each table. $\dagger$ denotes a proposed training strategy.
+
+\begin{table}[h!]
+\centering
+\caption{Validation houses: UK-DALE house 5 and REFIT house 2 (existing table).}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}lcccc@{}}
+\toprule
+Training strategy & MAE $\downarrow$ & ON MAE $\downarrow$ & SAE $\downarrow$ & Macro-F1 $\uparrow$ \\
+\midrule
+Standard joint training & \mstd{21.164}{0.394} & \mstd{357.808}{19.280} & \mstd{15.938}{0.348} & \mstd{0.605}{0.012} \\
+$+$ Focal-event mixing$^\dagger$ & \mstd{21.679}{0.144} & \bestmstd{301.623}{16.196} & \mstd{15.601}{0.365} & \mstd{0.649}{0.016} \\
+$+$ Appliance-wise balancing$^\dagger$ & \mstd{20.929}{0.065} & \mstd{334.862}{10.888} & \mstd{15.175}{0.322} & \mstd{0.661}{0.014} \\
+\textbf{Complete MART-NILM}$^\dagger$ & \bestmstd{20.791}{0.175} & \mstd{315.408}{10.405} & \bestmstd{15.016}{0.385} & \bestmstd{0.687}{0.003} \\
+\bottomrule
+\end{tabular*}
+\end{table}
+\begin{table}[h!]
+\centering
+\caption{Training-strategy ablation on the two held-out test houses.}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}lcccc@{}}
+\toprule
+Training strategy & MAE $\downarrow$ & ON MAE $\downarrow$ & SAE $\downarrow$ & Macro-F1 $\uparrow$ \\
+\midrule
+Standard joint training & \mstd{9.820}{0.238} & \mstd{341.852}{5.546} & \mstd{6.069}{0.227} & \mstd{0.703}{0.011} \\
+$+$ Focal-event mixing$^\dagger$ & \mstd{9.694}{0.178} & \bestmstd{240.508}{16.179} & \mstd{5.935}{0.285} & \mstd{0.763}{0.002} \\
+$+$ Appliance-wise balancing$^\dagger$ & \mstd{9.689}{0.294} & \mstd{307.541}{11.899} & \mstd{5.976}{0.420} & \mstd{0.752}{0.002} \\
+\textbf{Complete MART-NILM}$^\dagger$ & \bestmstd{9.124}{0.140} & \mstd{242.940}{5.327} & \bestmstd{5.584}{0.173} & \bestmstd{0.796}{0.008} \\
+\bottomrule
+\end{tabular*}
+\end{table}
+\noindent\textbf{Protocol note.} Both tables refer to the reference training objective including the relative-energy loss (weight 0.25). Test evaluation uses frozen validation-selected checkpoints and saved validation-calibrated thresholds. No model is retrained or selected using these test results. The updated model in manuscript Table III uses a different objective and must not be substituted into one row of this comparison.
+\end{document}

@@ -1,5 +1,6 @@
 """Train the Stage 1 model on five appliance traces and total-meter targets."""
 
+import csv
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -99,6 +100,71 @@ def plot_appliance_scenarios(examples, predictions, run_dir):
         predictions,
         config["training"]["seed"],
     )
+
+
+def aggregate_accuracy_metrics(predicted_watts, true_watts):
+    """Measure final aggregate-meter accuracy in physical units, not z-scores."""
+    predicted = predicted_watts.reshape(-1).float()
+    true = true_watts.reshape(-1).float()
+    error = predicted - true
+
+    # One sample represents 8 seconds of power. W × hours becomes Wh.
+    sample_hours = 8 / 3600
+    relative_energy_error = error.sum().abs() / true.sum().abs().clamp_min(1e-6)
+    centered_true = true - true.mean()
+    centered_predicted = predicted - predicted.mean()
+    correlation = (centered_true * centered_predicted).sum() / (
+        centered_true.square().sum().sqrt()
+        * centered_predicted.square().sum().sqrt()
+    ).clamp_min(1e-6)
+    r_squared = 1 - error.square().sum() / centered_true.square().sum().clamp_min(1e-6)
+
+    return {
+        "MAE (W)": error.abs().mean().item(),
+        "RMSE (W)": error.square().mean().sqrt().item(),
+        "Absolute energy error (kWh)": (error.sum().abs() * sample_hours / 1000).item(),
+        "Relative energy error (%)": (relative_energy_error * 100).item(),
+        "R2": r_squared.item(),
+        "Pearson correlation": correlation.item(),
+    }
+
+
+def save_aggregate_metrics(metrics, normalized_mse, run_dir):
+    """Save the final held-out aggregate-meter metrics as CSV and PNG."""
+    metrics_dir = run_dir / "figures" / "metrics"
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    values = {"Normalized test MSE": normalized_mse, **metrics}
+
+    csv_path = metrics_dir / "forward_test_aggregate_metrics.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(["metric", "value"])
+        writer.writerows(values.items())
+
+    table_path = metrics_dir / "forward_test_aggregate_metrics.png"
+    rows = [[name, f"{value:.5f}"] for name, value in values.items()]
+    figure, axis = plt.subplots(figsize=(7, 3.6))
+    axis.axis("off")
+    table = axis.table(
+        cellText=rows,
+        colLabels=["Forward-model test metric", "Value"],
+        cellLoc="center",
+        loc="center",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1, 1.55)
+    for (row, _), cell in table.get_celld().items():
+        if row == 0:
+            cell.set_facecolor("#1f3b63")
+            cell.set_text_props(color="white", weight="bold")
+        elif row % 2 == 0:
+            cell.set_facecolor("#edf2f7")
+    axis.set_title("Stage 1: Aggregate-Meter Accuracy on Held-Out Test Data", weight="bold", pad=14)
+    figure.tight_layout()
+    figure.savefig(table_path, dpi=300, bbox_inches="tight")
+    plt.close(figure)
+    return csv_path, table_path
 
 
 def main():
@@ -209,13 +275,28 @@ def main():
 
     model.eval()
     test_error, test_points = 0.0, 0
+    predicted_watts, true_watts = [], []
     with torch.no_grad():
         for x, y in test_loader:
             x, y = x.to(device), y.to(device)
-            test_error += loss_fn(model(x), y).item() * y.numel()
+            predicted_normalized = model(x)
+            test_error += loss_fn(predicted_normalized, y).item() * y.numel()
             test_points += y.numel()
+            predicted_watts.append((predicted_normalized * y_std + y_mean).cpu())
+            true_watts.append((y * y_std + y_mean).cpu())
     test_mse = test_error / test_points
     print(f"Best epoch {best_epoch:02d} | test MSE {test_mse:.5f}")
+
+    aggregate_metrics = aggregate_accuracy_metrics(
+        torch.cat(predicted_watts), torch.cat(true_watts)
+    )
+    metrics_csv, metrics_plot = save_aggregate_metrics(
+        aggregate_metrics, test_mse, run_dir
+    )
+    for name, value in aggregate_metrics.items():
+        print(f"Test aggregate {name}: {value:.5f}")
+    print(f"Aggregate metrics CSV: {metrics_csv}")
+    print(f"Aggregate metrics table: {metrics_plot}")
 
     # Test MSE is a single point because the test split is evaluated only
     # for the checkpoint selected using validation loss.

@@ -1,0 +1,15 @@
+\begin{table}[h!]
+\centering
+\caption{Training-strategy ablation on the two held-out test houses.}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}lcccc@{}}
+\toprule
+Training strategy & MAE $\downarrow$ & ON MAE $\downarrow$ & SAE $\downarrow$ & Macro-F1 $\uparrow$ \\
+\midrule
+Standard joint training & \mstd{9.820}{0.238} & \mstd{341.852}{5.546} & \mstd{6.069}{0.227} & \mstd{0.703}{0.011} \\
+$+$ Focal-event mixing$^\dagger$ & \mstd{9.694}{0.178} & \bestmstd{240.508}{16.179} & \mstd{5.935}{0.285} & \mstd{0.763}{0.002} \\
+$+$ Appliance-wise balancing$^\dagger$ & \mstd{9.689}{0.294} & \mstd{307.541}{11.899} & \mstd{5.976}{0.420} & \mstd{0.752}{0.002} \\
+\textbf{Complete MART-NILM}$^\dagger$ & \bestmstd{9.124}{0.140} & \mstd{242.940}{5.327} & \bestmstd{5.584}{0.173} & \bestmstd{0.796}{0.008} \\
+\bottomrule
+\end{tabular*}
+\end{table}

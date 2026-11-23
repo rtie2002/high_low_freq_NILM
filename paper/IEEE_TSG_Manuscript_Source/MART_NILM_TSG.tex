@@ -1,0 +1,687 @@
+\documentclass[journal]{IEEEtran}
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{multirow}
+\usepackage{tabularx}
+\usepackage{booktabs}
+
+% Keep float separation compact rather than stretching gaps to fill columns.
+\setlength{\floatsep}{8pt plus 1pt minus 1pt}
+\setlength{\textfloatsep}{10pt plus 1pt minus 2pt}
+\setlength{\dblfloatsep}{8pt plus 1pt minus 1pt}
+\setlength{\dbltextfloatsep}{10pt plus 1pt minus 2pt}
+
+% Use only ordinary short hyphens throughout the manuscript.
+% IEEEtran otherwise inserts em dashes after the Abstract and Index Terms labels
+% and an en dash in compressed citation ranges.
+\makeatletter
+\def\abstract{\normalfont
+    \if@twocolumn
+      \@IEEEabskeysecsize\bfseries\textit{\abstractname}-\relax
+    \else
+      \bgroup\par\addvspace{0.5\baselineskip}\centering\vspace{-1.78ex}\@IEEEabskeysecsize\textbf{\abstractname}\par\addvspace{0.5\baselineskip}\egroup\quotation\@IEEEabskeysecsize
+    \fi\@IEEEgobbleleadPARNLSP}
+\def\IEEEkeywords{\normalfont
+    \if@twocolumn
+      \@IEEEabskeysecsize\bfseries\textit{\IEEEkeywordsname}-\relax
+    \else
+      \bgroup\par\addvspace{0.5\baselineskip}\centering\@IEEEabskeysecsize\textbf{\IEEEkeywordsname}\par\addvspace{0.5\baselineskip}\egroup\quotation\@IEEEabskeysecsize
+    \fi\@IEEEgobbleleadPARNLSP}
+\def\citedash{]-[}
+\makeatother
+
+
+% Mean and standard deviation stacked in two rows with matching font size.
+\newcommand{\mstd}[2]{\shortstack{#1\\[-2pt]{$\pm$#2}}}
+\newcommand{\bestmstd}[2]{{\bfseries\shortstack{#1\\[-2pt]{$\boldsymbol{\pm}$#2}}}}
+
+\begin{document}
+\bstctlcite{IEEEReferenceStyle}
+\raggedbottom
+
+\title{MART-NILM: A Compact Multi-Appliance Representation Temporal Network for Joint Power-State Estimation in Non-Intrusive Load Monitoring}
+
+\author{Raymond Siou Hin Tie, Wen-Shan Tan, Senior Member, IEEE, Ze Yang Ding,
+Mirza Rayana Sanzana, Member, IEEE, and Haval Kamil%
+\thanks{Raymond Siou Hin Tie, Wen-Shan Tan, and Ze Yang Ding are with the
+Department of Electrical and Robotics and the Centre for Net-Zero Technology,
+Monash University Malaysia, Bandar Sunway, Malaysia
+(e-mail: tan.wenshan@monash.edu).}%
+\thanks{Mirza Rayana Sanzana is with the School of Information Technology,
+Monash University Malaysia, Bandar Sunway, Malaysia.}%
+\thanks{Haval Kamil is with the Department of Air Conditioning and
+Refrigeration, College of Engineering Technology, Al-Kitab University,
+Kirkuk, Iraq.}}
+
+\maketitle
+
+\begin{abstract}
+Multi-appliance non-intrusive load monitoring (NILM) estimates appliance power and ON/OFF states for multiple target appliances from aggregate measurements using a single model. However, compact joint learning is challenged by sparse appliance activations observed under limited background-demand conditions and unequal power-state loss scales across appliances. This paper proposes the Multi-Appliance Representation Temporal Network for NILM (MART-NILM), combining shared temporal encoding, appliance-specific decoding, and cross-appliance feature exchange. Two training-only strategies address these challenges. Focal-event background-stratified mixing pairs selected ON-event traces with recorded residual backgrounds sampled across power strata, while bounded appliance-wise balancing calibrates power and state loss contributions separately for each appliance. Experiments on the UK Domestic Appliance-Level Electricity (UK-DALE) and REFIT Electrical Load Measurements datasets, with disjoint training, validation, and test houses, show that MART-NILM outperforms three reproduced joint multi-appliance baselines in appliance-average power error and macro-F1. It achieves mean absolute errors of 7.3 and 10.9~W and macro-F1 scores of 0.88 and 0.72, respectively. Compared with the strongest baseline, ON-state mean absolute error decreases by 58.4\% and 34.4\%, with 54.6\% fewer parameters (1.373 million). These results demonstrate improved accuracy with fewer parameters for multi-appliance power-state estimation.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Energy disaggregation, multi-appliance estimation, multi-label classification, multi-task learning, non-intrusive load monitoring, power-state estimation.
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Effective residential demand-side management requires appliance-level visibility into both electricity consumption and operating states. Power estimates quantify appliance demand, whereas state estimates expose activation timing; aggregate metering reveals neither directly. Appliance-level feedback can support energy conservation~\cite{delmas2013information}, but dedicated submetering requires installing and maintaining additional sensors. Non-intrusive load monitoring (NILM) estimates appliance-level power consumption and operating states from aggregate measurements without additional appliance-level sensors~\cite{gopinath2020energy}. Joint estimation of these outputs is important because a low average power error can still mask missed operating periods, especially for sparsely active appliances.
+
+Classical NILM identifies appliance signatures and infers appliance states using finite-state or factorial hidden Markov models~\cite{hart1992nilm,kolter2012fhmm}. Deep learning approaches extract representations from aggregate measurements~\cite{kelly2015neural}, reducing reliance on manually specified appliance signatures and state-transition models. Regardless of the method used, the aggregate power measured at the main meter includes demand from loads outside the monitored target set. For $N$ target appliances, the aggregate power is expressed as
+\begin{equation}
+x_t = \sum_{i=1}^{N} P_{t,i} + b_t + \epsilon_t
+\label{eq:aggregate}
+\end{equation}
+where $P_{t,i}$ is target power, $b_t$ is background demand from unmonitored loads, and $\epsilon_t$ represents measurement and timing discrepancies. Background demand can exceed the power of low-consumption appliances and vary substantially across households, making appliance signatures difficult to distinguish from aggregate measurements. Consequently, an appliance activation observed under a particular background condition during training may appear under a different background condition in an unseen household.
+
+Deep NILM approaches can be broadly categorized into single-appliance and multi-appliance estimation, with power regression and ON-OFF state detection~\cite{singhal2019multilabel,tanoni2023weaklabels} as two complementary prediction tasks. Single-appliance approaches train separate predictors for individual loads~\cite{wang2022transformer,petralia2025nilmformer}, duplicating temporal feature extraction and model storage as the number of target appliances increases. Multi-appliance approaches reduce this redundancy by jointly estimating the power traces and ON-state probabilities of multiple target appliances using a shared model~\cite{faustine2020unet,alami2023convnilm,virtsionis2023multitarget,dash2024joint,sun2025transfer}. However, sharing temporal representations introduces a trade-off between computational efficiency and appliance-specific feature learning.
+
+Concurrent appliance activations provide useful contextual information, but overlapping power signatures and background demand can obscure individual targets~\cite{liu2026recomposition}. An effective joint model must therefore preserve appliance-specific representations while exploiting shared temporal information and contextual interactions among appliances.
+
+Beyond representation design, joint multi-appliance power-state learning faces two additional challenges related to training-data coverage and task optimization. First, sparse appliance activations may be observed under a limited range of background-demand conditions, restricting the event-background combinations available for training. Such limited coverage may encourage models to rely on incidental associations between appliance activations and background demand, which may not transfer to unseen households~\cite{liu2026recomposition}. Second, appliances exhibit different power characteristics and activation frequencies, and their regression and classification losses can differ substantially in scale. Several existing joint NILM objectives employ fixed or globally adapted regression-classification weights~\cite{sun2025transfer,liu2022samnet}. A shared task weight does not explicitly account for appliance-specific power-state loss ratios. When this weight is derived from aggregate losses, large regression errors from one appliance may influence the state-loss weighting applied to other appliances. These challenges motivate controlled event-background sampling and appliance-specific calibration of power-state learning objectives.
+
+To address these challenges, we propose the Multi-Appliance Representation Temporal Network for NILM (MART-NILM), a compact framework for joint power-state estimation. MART-NILM integrates compact representation learning with two training-only strategies targeting event-background coverage and appliance-specific task imbalance.
+
+The main contributions are threefold:
+\begin{enumerate}
+    \item \textbf{Compact multi-appliance architecture:} MART-NILM employs a shared temporal encoder to avoid duplicating sequence modeling across target appliances. Lightweight appliance-specific decoders preserve specialized representations, while gated cross-appliance attention enables contextual feature exchange. The architecture jointly predicts five appliance power-state pairs in a single forward pass with $1.373$ million parameters, a $2.2$-fold reduction relative to the smallest baseline in the comparison.
+
+    \item \textbf{Complementary training-only strategies:} Focal-event background-stratified mixing expands event-background coverage by pairing appliance traces sampled from windows containing ON activity with recorded residual backgrounds selected across power strata. Bounded appliance-wise balancing calibrates each appliance's state-classification loss relative to its power-regression loss, constraining the local loss ratio around a global reference. Together, these training-only strategies improve performance across multiple metrics without adding inference-time computation.
+
+    \item \textbf{Cross-house experimental validation:} MART-NILM is evaluated on two public residential datasets using disjoint training, validation, and test houses. Comparisons with three reproduced joint multi-appliance baselines, three-seed evaluations, and targeted ablation analyses assess prediction accuracy, training-strategy effectiveness, and computational efficiency. MART-NILM achieves lower appliance-average power errors and higher macro-F1 with fewer parameters than the evaluated baselines.
+\end{enumerate}
+
+\section{Related Work}
+\label{sec:background-related-work}
+
+Viewed from a multi-task learning (MTL) perspective~\cite{vandenhende2022survey}, joint multi-appliance power-state estimation combines two interacting design levels. Within each appliance, power regression and state classification must be coordinated; across appliances, feature sharing must reduce duplicated computation without suppressing appliance-specific information. This nested setting has been described as ``multi-task-multi-appliance''~\cite{faustine2020unet} and ``multi-appliance-task''~\cite{xiong2024matnilm,sun2025transfer}. Prior NILM architectures are commonly distinguished by their temporal backbones, including convolutional neural networks (CNNs)~\cite{faustine2020unet,xiong2024matnilm}, recurrent neural networks (RNNs)~\cite{murray2019transferability}, temporal convolutional networks (TCNs)~\cite{alami2023convnilm,dash2024jestie}, and Transformers~\cite{sun2025transfer}. For joint multi-appliance power-state estimation, however, backbone choice addresses only temporal feature extraction. The central design questions are how the appliance head couples power regression with state classification and how the model body shares, specializes, and exchanges representations across appliances. Training strategies must additionally address sparse appliance events, limited background-demand coverage, and unequal power-state loss scales. The following review therefore considers appliance-head design, cross-appliance body design, and training strategies for joint power-state estimation.
+
+\subsection{Appliance-Head Design}
+\label{sec:related-head}
+
+Existing NILM studies on joint power-state estimation have mainly examined how state information guides power estimation for each target appliance. Fig.~\ref{fig:appliance-head} organizes representative appliance-head designs according to where this coupling is introduced.
+
+Murray \emph{et al.}~\cite{murray2019transferability} concatenate predicted states with power features (Fig.~\ref{fig:appliance-head}(a)), but the regressor remains free to produce nonzero power for an OFF prediction. The subtask-gated network (SGN)~\cite{shin2019sgn} instead gates regression outputs with ON-state probabilities (Fig.~\ref{fig:appliance-head}(b)), suppressing inactive power while making reconstruction sensitive to missed activations. The scale- and context-aware network (SCANet)~\cite{chen2020sca} adds parallel dilated branches and self-attention (Fig.~\ref{fig:appliance-head}(c)), increasing processing within each target model. These designs address within-appliance power-state coupling, but their original single-appliance formulations require separate models for different targets, repeating aggregate feature extraction and providing no explicit exchange among appliance-specific representations.
+
+\begin{figure}[!t]
+    \centering
+    \setlength{\abovecaptionskip}{3pt}
+    \includegraphics[width=\columnwidth]{figures/fig1_appliance_head.pdf}
+    \caption{Schematic within-appliance power-state heads: (a) state-informed concatenation (Murray \emph{et al.}~\cite{murray2019transferability}); (b) output gating (SGN~\cite{shin2019sgn}); and (c) multi-scale fusion (SCANet~\cite{chen2020sca}).}
+    \label{fig:appliance-head}
+\end{figure}
+
+\subsection{Cross-Appliance Body Design}
+\label{sec:related-body}
+
+Cross-appliance body design determines which representations remain shared, which are decoded separately, and where appliance-specific streams exchange information. Multi-Appliance-Task NILM (MATNilm)~\cite{xiong2024matnilm} reduces this duplication through shared encoding and private appliance decoders (Fig.~\ref{fig:model-body-design}(a)). Its temporal and appliance-wise attention captures both dependencies, but repeats temporal attention and feed-forward processing in the private branches. The model of Sun \emph{et al.}~\cite{sun2025transfer} (here labeled ``Multi-task net.'') uses the same sharing pattern with Transformer blocks in shared and appliance-specific layers (Fig.~\ref{fig:model-body-design}(a)). Downsampling reduces shared attention cost, but temporal attention is still repeated for individual appliances. Both support joint multi-appliance power and state estimation; their private sequence-processing blocks nevertheless add computation beyond the shared encoder.
+
+UNet-NILM~\cite{faustine2020unet} follows the shared-body/task-head pattern (Fig.~\ref{fig:model-body-design}(b)), predicting multiple appliance powers and states from common features. It avoids private temporal blocks, but leaves appliance differentiation to shared features and output heads, without dedicated appliance-specific decoder streams or explicit exchange between such streams.
+
+Cross-appliance interaction (Fig.~\ref{fig:model-body-design}(c)) complements these designs by exchanging context among specialized representations. MATNilm uses appliance-wise attention to exchange context~\cite{xiong2024matnilm}, while message passing provides a related mechanism in dense prediction~\cite{xu2018padnet}. These designs motivate examining how appliance-specific decoding and relation attention can be retained while reducing repeated temporal processing.
+
+\begin{figure}[!t]
+    \centering
+    \setlength{\abovecaptionskip}{3pt}
+    \includegraphics[width=\columnwidth]{figures/fig2_body_design.pdf}
+    \caption{Schematic multi-appliance body mechanisms: (a) shared encoder/private decoders (MATNilm~\cite{xiong2024matnilm} and Multi-task net.~\cite{sun2025transfer}); (b) shared body/task heads (UNet-NILM~\cite{faustine2020unet}); and (c) private-stream interaction (MATNilm~\cite{xiong2024matnilm} and the proposed MART-NILM).}
+    \label{fig:model-body-design}
+\end{figure}
+
+\subsection{Training Strategies for Joint Power-State Estimation}
+\label{sec:related-training}
+
+Training a joint multi-appliance power-state model also requires sufficient exposure to appliance activations under different background-demand conditions. Neural NILM constructs synthetic aggregates to increase training diversity~\cite{kelly2015neural}, SCANet augments ON-state examples~\cite{chen2020sca}, and aggregate recomposition varies background demand while preserving target labels~\cite{liu2026recomposition}. These approaches address limited training coverage, but input diversity alone does not ensure that sparse ON events are sampled across a controlled range of recorded background demand. This distinction matters when event-background correlations change across houses.
+
+A separate issue is the unequal scale of power and state losses. Gradient normalization (GradNorm) balances task updates in generic MTL~\cite{chen2018gradnorm}, whereas SAMNet adapts a power-state loss ratio for joint NILM~\cite{liu2022samnet}. In a multi-appliance setting, a balance derived from aggregate losses may be driven by appliances with larger regression losses and may not reflect the power-state loss ratio of each appliance. This motivates appliance-wise balancing with bounds that limit extreme weights.
+
+These gaps motivate a compact architecture with shared temporal modeling and training strategies for event-background coverage and appliance-wise loss calibration.
+
+\section{Methodology}
+\label{sec:method}
+
+\subsection{Problem Formulation}
+\label{sec:problem}
+
+Following Equation~\eqref{eq:aggregate}, let $\mathbf{x}=(x_1,\ldots,x_T)$ denote an aggregate window of length $T$. The problem is to jointly estimate the power traces and ON-state probabilities of $N$ target appliances:
+\begin{equation}
+\left(\hat{\mathbf{Y}},\hat{\mathbf{S}}\right)=f_{\boldsymbol{\theta}}(\mathbf{x}),
+\qquad
+\hat{\mathbf{Y}}\in\mathbb{R}^{T\times N},\quad
+\hat{\mathbf{S}}\in[0,1]^{T\times N}
+\label{eq:joint-estimation}
+\end{equation}
+Here $\boldsymbol{\theta}$ denotes the model parameters, and $\hat{\mathbf{Y}}$ and $\hat{\mathbf{S}}$ collect the estimated power traces and ON-state probabilities, respectively. To make the multi-appliance and multi-label output structure explicit, the time-$t$ output slice of \eqref{eq:joint-estimation} is
+\begin{equation}
+f_{\boldsymbol{\theta},t}(\mathbf{x})=
+\underbrace{\bigl(\hat y_{t,1},\hat s_{t,1},\ldots,
+\hat y_{t,N},\hat s_{t,N}\bigr)}_{N\text{ appliance power-state pairs}},
+\quad t=1,\ldots,T
+\label{eq:paired-outputs}
+\end{equation}
+Power estimation is a regression task, while state detection is formulated as multi-label classification, allowing multiple appliances to be active simultaneously. Binary ON-OFF labels describe appliance activity without distinguishing internal operating modes.
+
+\subsection{Model Architecture}
+\label{sec:architecture}
+
+The implementation uses instance-batch normalization (IBN)~\cite{pan2018ibn}, batch normalization (BN), the rectified linear unit (ReLU) activation, and fully connected (FC) output layers.
+
+\begin{figure*}[!t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/fig3_martnilm_architecture.pdf}
+    \caption{Model architecture of MART-NILM.}
+    \label{fig:martnilm-architecture}
+\end{figure*}
+
+Fig.~\ref{fig:martnilm-architecture} presents MART-NILM, combining the private-stream interaction body in Fig.~\ref{fig:model-body-design}(c) with the state-gated heads in Fig.~\ref{fig:appliance-head}(b). The components are described below in processing order, using the same names as the architecture-ablation variants.
+
+\textbf{Multi-scale CNN:}
+Parallel convolutional branches~\cite{szegedy2015inception} extract local features at complementary time scales from the standardized aggregate $\bar{\mathbf{x}}$:
+\begin{equation}
+\mathbf{Z}=\mathcal{F}\!\left(
+[\mathcal{B}_{3}(\bar{\mathbf{x}});\mathcal{B}_{5}(\bar{\mathbf{x}});
+\mathcal{B}_{9}(\bar{\mathbf{x}})]\right)+\mathcal{S}(\bar{\mathbf{x}})
+\label{eq:multiscale-fusion}
+\end{equation}
+Here $\mathcal{B}_{k}$ is a kernel-$k$ convolution followed by IBN and ReLU; $[\cdot;\cdot]$ denotes channel concatenation. The $1\times1$ fusion $\mathcal{F}$ combines the branches, while the projected shortcut $\mathcal{S}$ retains a direct input path. IBN applies instance normalization (IN) and BN to separate channel halves.
+
+\textbf{Feature Encoder:}
+Two convolution-IBN-ReLU stages combine the local features into a shared representation $\mathbf{H}^{(0)}\in\mathbb{R}^{128\times T}$. Feature extraction is performed once for all appliances.
+
+\textbf{Shared Temporal Encoder:}
+Residual dilated TCN blocks~\cite{lea2017tcn} extend temporal context:
+\begin{equation}
+\mathbf{H}^{(\ell+1)}=\mathbf{H}^{(\ell)}+
+\mathcal{T}_{2^{\ell}}(\mathbf{H}^{(\ell)}),
+\qquad \ell\in\{0,1,2,3,4\}
+\label{eq:temporal-block}
+\end{equation}
+Here $\mathcal{T}_{d}$ comprises a dilation-$d$ convolution, BN, ReLU, and dropout. Increasing dilation expands context, while residual connections and symmetric padding retain the incoming features and temporal alignment. The output is $\mathbf{H}=\mathbf{H}^{(5)}$.
+
+\textbf{Appliance Decoders:}
+Each decoder applies a channel gate, inspired by channel recalibration~\cite{hu2018senet}, and a local residual transformation to obtain an appliance-specific representation $\mathbf{F}_i$. These private streams adapt the shared temporal features to individual load characteristics.
+
+\textbf{Cross-Appliance Relation Attention:}
+The relation module draws on the cross-task information-sharing principle of the Multi-Tasks Guided Prediction-and-Distillation Network (PAD-Net)~\cite{xu2018padnet} to exchange context among appliance-specific feature streams. Scaled dot-product attention~\cite{vaswani2017attention} is evaluated across appliances at each time $t$:
+\begin{equation}
+\mathbf{A}_t=\operatorname{softmax}\!\left(
+\frac{\mathbf{Q}_t\mathbf{K}_t^{\mathsf T}}{\sqrt{d}}
+\right),\qquad
+\mathbf{M}_t=\mathbf{A}_t\mathbf{V}_t
+\label{eq:relation-attention}
+\end{equation}
+Here $\mathbf{Q}_t$, $\mathbf{K}_t$, and $\mathbf{V}_t$ are learned projections of the stacked appliance representations, and $d$ is their projection width. The attended context is projected back to the feature dimension and added to each private stream through a gated residual connection.
+
+\textbf{Power-State Output Heads:}
+For each appliance, two time-shared FC heads predict raw standardized power $\hat y_i^{\mathrm{raw}}(t)$ and a state logit $a_i(t)$. Following the state-gating principle of SGN~\cite{shin2019sgn}, the ON-state probability $\hat s_i(t)=\operatorname{sigmoid}(a_i(t))$ softly gates the power prediction:
+\begin{equation}
+\hat y_i(t)=\hat s_i(t)\hat y_i^{\mathrm{raw}}(t)
++[1-\hat s_i(t)]y_i^{(0)}
+\label{eq:soft-power-gate}
+\end{equation}
+where $y_i^{(0)}=-\mu_i/\sigma_i$ is the standardized zero-power anchor. Hence, a low ON-state probability smoothly moves the estimate towards zero power. Predictions are converted back to watts using the appliance training mean $\mu_i$ and standard deviation $\sigma_i$, and negative values are clipped to zero. The gate couples the state and power predictions while retaining a separate waveform regressor.
+
+\subsection{Loss Function}
+\label{sec:loss}
+
+The model is trained jointly over all appliances, as in multi-task NILM~\cite{faustine2020unet,xiong2024matnilm,sun2025transfer}. Let $\mathcal{L}_{\mathrm{power},i}$ and $\mathcal{L}_{\mathrm{state},i}$ denote the power and state losses for appliance $i$, respectively. The joint objective is
+\begin{equation}
+\mathcal{L}=\sum_{i=1}^{N}\left(
+\mathcal{L}_{\mathrm{power},i}
++\lambda r_i\mathcal{L}_{\mathrm{state},i}
+\right),
+\qquad \lambda=0.8
+\label{eq:loss}
+\end{equation}
+Here $r_i$ is the appliance-wise balancing factor defined in Section~\ref{sec:balancing}.
+
+\textbf{Power loss:}
+The power objective combines waveform fidelity and switching fidelity:
+\begin{equation}
+\mathcal{L}_{\mathrm{power},i}=
+\underbrace{\mathcal{L}_{\mathrm{wave},i}}_{\text{power-level fidelity}}
++\underbrace{0.15\,\mathcal{L}_{\mathrm{trans},i}}_{\text{transition fidelity}}
+\label{eq:power-loss}
+\end{equation}
+The waveform and transition terms both use mean squared error (MSE), applied to power values and temporal differences, respectively. The expressions below are written for one window; in implementation, both terms are averaged over the batch and time dimensions. Let $y_i(t)$ and $\hat y_i(t)$ denote standardized target and predicted power, and let $z_i(t)\in\{0,1\}$ denote the ON-OFF label. For a temporal index set $\mathcal{S}$, define
+\begin{equation}
+\operatorname{MSE}_{\mathcal{S}}(u,v)=
+\frac{1}{\max(|\mathcal{S}|,1)}
+\sum_{t\in\mathcal{S}}\bigl(u(t)-v(t)\bigr)^2
+\label{eq:temporal-mse}
+\end{equation}
+The waveform term evaluates power errors over all samples $\mathcal{T}_0=\{1,\ldots,T\}$, ON-state samples $\mathcal{T}^{\mathrm{on}}_i=\{t\in\mathcal{T}_0:z_i(t)=1\}$, and OFF-state samples $\mathcal{T}^{\mathrm{off}}_i=\{t\in\mathcal{T}_0:z_i(t)=0\}$:
+\begin{equation}
+\begin{aligned}
+\mathcal{L}_{\mathrm{wave},i}={}&
+\operatorname{MSE}_{\mathcal{T}_0}(y_i,\hat y_i)
++\operatorname{MSE}_{\mathcal{T}^{\mathrm{on}}_i}(y_i,\hat y_i)\\
+&+0.5\,\operatorname{MSE}_{\mathcal{T}^{\mathrm{off}}_i}(y_i,\hat y_i)
+\end{aligned}
+\label{eq:waveform-loss}
+\end{equation}
+The first term measures global waveform fidelity; the ON-state term prevents sparse activations from being dominated by OFF samples, and the lower-weight OFF-state term constrains inactive predictions.
+
+To additionally constrain changes in power, let $\Delta y_i(t)=y_i(t)-y_i(t-1)$ and define $\Delta\hat y_i(t)$ analogously. The transition term compares these differences whenever the appliance is ON at either adjacent sample, over $\mathcal{T}^{\Delta}_i=\{t\in\{2,\ldots,T\}:z_i(t)=1\ \text{or}\ z_i(t-1)=1\}$:
+\begin{equation}
+\mathcal{L}_{\mathrm{trans},i}=
+\operatorname{MSE}_{\mathcal{T}^{\Delta}_i}(\Delta y_i,\Delta\hat y_i)
+\label{eq:transition-loss}
+\end{equation}
+
+\textbf{State loss:}
+The state objective combines weighted binary cross-entropy (BCE) with explicit false-positive control:
+\begin{equation}
+\mathcal{L}_{\mathrm{state},i}=
+\underbrace{\mathcal{L}_{\mathrm{BCE},i}}_{\text{class-balanced state detection}}
++\underbrace{\mathcal{L}_{\mathrm{fp},i}}_{\text{false-positive control}}
+\label{eq:state-loss}
+\end{equation}
+For a mini-batch of $B$ windows, let $\hat s_{b,t,i}\in(0,1)$ be the predicted ON-state probability and $z_{b,t,i}\in\{0,1\}$ the target label. The class-balanced BCE term uses $w_i=\min\{(1-\pi_i)/\pi_i,12\}$, determined by the training ON-state proportion $\pi_i$:
+\begin{equation}
+\begin{aligned}
+\mathcal{L}_{\mathrm{BCE},i}=-\frac{1}{BT}\sum_{b,t}\bigl[&
+w_i z_{b,t,i}\log\hat s_{b,t,i}\\
+&+(1-z_{b,t,i})\log(1-\hat s_{b,t,i})\bigr]
+\end{aligned}
+\label{eq:weighted-bce}
+\end{equation}
+The false-positive term penalizes confident ON-state predictions on OFF samples:
+\begin{equation}
+\mathcal{L}_{\mathrm{fp},i}=
+\frac{\sum_{b,t}(1-z_{b,t,i})\hat s_{b,t,i}^{2}}
+{\max\left(\sum_{b,t}(1-z_{b,t,i}),1\right)}
+\label{eq:false-positive-loss}
+\end{equation}
+
+\subsection{Bounded Appliance-Wise Balancing}
+\label{sec:balancing}
+
+To account for the different numerical scales of regression and classification losses, a bounded loss-ratio weighting is used. It is motivated by loss-ratio balancing in SAMNet~\cite{liu2022samnet} and differs from gradient-norm balancing in GradNorm~\cite{chen2018gradnorm}. The global reference ratio $g$ bounds the appliance-specific ratio $r_i$:
+\begin{equation}
+\begin{aligned}
+g&=
+\frac{\sum_{j=1}^{N}\mathcal{L}_{\mathrm{power},j}}
+{\sum_{j=1}^{N}\mathcal{L}_{\mathrm{state},j}},\\[-1pt]
+r_i&=\min\!\left\{3g,\max\!\left\{
+\frac{g}{3},
+\frac{\mathcal{L}_{\mathrm{power},i}}
+{\mathcal{L}_{\mathrm{state},i}}
+\right\}\right\}
+\end{aligned}
+\label{eq:balanced-ratio}
+\end{equation}
+At each mini-batch update, $g$ and $r_i$ are evaluated from the current losses and held fixed during back-propagation. The three-fold bounds limit each local ratio to $[g/3,3g]$, preventing extreme weights from dominating optimization.
+
+\subsection{Focal-Event Background-Stratified Mixing}
+\label{sec:training-strategy}
+
+Training samples recorded and recomposed aggregate windows with equal probability. Building on synthetic aggregate construction~\cite{kelly2015neural} and aggregate recomposition~\cite{liu2026recomposition}, focal-event background-stratified mixing combines ON-event selection with residual-background sampling across power strata. For a recorded sequence, the background demand is estimated by the nonnegative residual
+\begin{equation}
+R_t=\left[x_t-\sum_{i=1}^{N}P_{t,i}\right]_+
+\label{eq:training-residual}
+\end{equation}
+Here $[u]_+=\max(u,0)$. Unlike $b_t$ in Equation~\eqref{eq:aggregate}, $R_t$ can also include measurement and timing discrepancies. For each recomposed window, the residual and appliance traces are drawn from independently selected training windows:
+\begin{equation}
+\tilde{x}_t=R_t^{(k_0)}+\sum_{i=1}^{N}P_{t,i}^{(k_i)},
+\qquad
+\tilde{P}_{t,i}=P_{t,i}^{(k_i)},\quad
+\tilde{z}_{t,i}=z_{t,i}^{(k_i)}
+\label{eq:training-recomposition}
+\end{equation}
+where $k_0,k_1,\ldots,k_N$ denote independently sampled window indices. In Step~1 of Fig.~\ref{fig:focal-mix}, one focal appliance $i^\star$ is selected uniformly, and its trace is drawn from a window containing at least one ON sample; the remaining appliance traces are sampled independently. In Step~2, a non-empty bin of median residual power is selected uniformly from $[0,100)$, $[100,200)$, $[200,400)$, $[400,800)$, and $[800,\infty)$~W, and a background window is sampled uniformly within that bin. The selected traces and background are then added according to Equation~\eqref{eq:training-recomposition}, as illustrated in the lower panel of Fig.~\ref{fig:focal-mix}. The power and state labels of every selected appliance trace are retained. Recomposition is used only during training; validation and test use recorded aggregates and aligned labels.
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig4_focal_event_mixing.pdf}
+\caption{Focal-event background-stratified mixing. A focal ON-event trace, independently sampled target traces, and a residual window selected by median-power bin form a recomposed training window.}
+\label{fig:focal-mix}
+\end{figure}
+
+
+\section{Experimental Evaluation}
+\label{sec:setup}
+
+\subsection{Dataset}
+Two public residential datasets are used: the UK Domestic Appliance-Level Electricity (UK-DALE) dataset~\cite{kelly2015ukdale} and the REFIT electrical-load dataset~\cite{murray2017refit}. The target appliances are the kettle, fridge, dishwasher, washer, and microwave, and all signals are resampled at 8~s.
+
+The experiment uses a whole-house split: UK-DALE house 1 and REFIT houses 3, 5, 9, and 11 for training; UK-DALE house 5 and REFIT house 2 for validation; and UK-DALE house 2 and REFIT house 20 for testing. The resulting training-validation-test ratio is $5{:}2{:}2$ by house count. Because each house contributes one continuous 5-week block, this also corresponds to 55.6\%, 22.2\%, and 22.2\% of the nominal recording duration, respectively. The held-out blocks are centred within the previously established eight-week recording intervals and are selected without reference to appliance events or model performance. Normalization statistics are estimated from the training houses only.
+
+\subsection{Data Preprocessing}
+\label{sec:preprocess}
+
+After 8~s resampling, no additional temporal alignment is applied; residual timing discrepancies remain a measurement limitation. Rows missing any required aggregate, appliance-power, or state-label value are excluded, and windows do not cross timestamp discontinuities.
+
+Let $n$ index windows and $t$ index samples within a window. The aggregate mean and standard deviation, $\mu_x$ and $\sigma_x$, and the corresponding appliance-$i$ statistics, $\mu_i$ and $\sigma_i$, are estimated from the training houses. The standardized input power, $\bar{x}_{n,t}$, and target power, $y_{n,t,i}$, are defined as
+\begin{equation}
+\bar x_{n,t}=\frac{x_{n,t}-\mu_x}{\sigma_x},
+\qquad
+y_{n,t,i}=\frac{P_{n,t,i}-\mu_i}{\sigma_i}
+\label{eq:power-normalization}
+\end{equation}
+
+State labels are precomputed before windowing. For appliances marked in Table~\ref{tab:label}, detected isolated spikes are initially labeled OFF without altering the recorded power values. Other samples are labeled ON when their power reaches the appliance-specific threshold $\tau_i^{P}$. OFF gaps of at most $G_i$ are merged; subsequently, complete ON runs shorter than $D_i$ are removed. Runs touching a sequence boundary are retained because their full duration is unobserved. Table~\ref{tab:label} specifies the physical-time values of these parameters, which are converted to 8~s samples by half-up rounding before labeling.
+
+\begin{table}[!t]
+\caption{ON-OFF label parameters. $\tau^{P}$, $G$, and $D$ denote the ON-power threshold, maximum OFF-gap duration, and minimum ON duration, respectively. Durations are listed as UK-DALE / REFIT.}
+\label{tab:label}
+\centering
+\renewcommand{\arraystretch}{1.15}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}l*{3}{>{\centering\arraybackslash}X}@{}}
+\hline
+Appliance & $\tau^{P}$ (W) & $G$ (s) & $D$ (s) \\
+\hline
+Kettle & 200 & 0 / 0 & 12 / 12 \\
+Fridge$^{\dagger}$ & 50 & \shortstack{12 (H5: 30) / 12} & 60 / 60 \\
+Dishwasher$^{\dagger}$ & 50 & 1800 / 1800 & 960 / 960 \\
+Washer$^{\dagger}$ & 20 & 960 / 960 & 960 / 960 \\
+Microwave & 200 & 30 / 30 & 12 / 6 \\
+\hline
+\end{tabularx}
+\vspace{1pt}
+\raggedright\footnotesize $^{\dagger}$ For each sample, a five-sample local-median filter sets its label-generation power to zero when at least 60\% of its four surrounding values are below 50~W and the sample exceeds both three times their median and 100~W. Endpoint windows use edge replication.
+\end{table}
+\subsection{Experimental Setup}
+\label{sec:design}
+
+All experiments were conducted on a single NVIDIA GeForce RTX 4090 graphics processing unit (GPU; 24~GB) using PyTorch~2.6.0 with Compute Unified Device Architecture (CUDA)~12.4. MART-NILM is compared with UNet-NILM~\cite{faustine2020unet}, the convolutional variant of MATNilm~\cite{xiong2024matnilm}, and Multi-task net.~\cite{sun2025transfer}. Each baseline retains the architecture, objective, and training hyperparameters of its source paper, while all models use the common cross-house data protocol. Table~\ref{tab:cost} lists their settings.
+
+MART-NILM is optimized with Adam using an initial learning rate of $10^{-4}$, weight decay of $10^{-4}$, and unit-norm gradient clipping. The learning rate is reduced by a factor of 0.5 after 12 epochs without improvement in the validation score, to a minimum of $10^{-5}$. At 8~s per sample, each 1024-sample input-output window spans 136.5~min of household measurements.
+\begin{table}[!t]
+\caption{Training windowing and batch settings. All window lengths and strides are in samples.}
+\label{tab:cost}
+\centering
+\renewcommand{\arraystretch}{1.15}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}l*{6}{>{\centering\arraybackslash}X}@{}}
+\hline
+Model & Input & Output & Stride & Batch & Optimizer & Epochs \\
+\hline
+UNet-NILM~\cite{faustine2020unet} & 100 & 1 & 1 & 128 & Adam & 50 \\
+MATNilm~\cite{xiong2024matnilm} & 864 & 64 & 64 & 64 & Adam & 200 \\
+Multi-task net.~\cite{sun2025transfer} & 480 & 480 & 240 & 32 & Adam & 100 \\
+MART-NILM & 1024 & 1024 & 512 & 64 & Adam & 150 \\
+\hline
+\end{tabularx}
+\end{table}
+
+For MART-NILM, checkpoint selection uses only the validation houses. Mean absolute error (MAE) in standardized power coordinates and average precision (AP) are computed from the validation outputs, and the retained checkpoint minimizes
+\begin{equation}
+S_{\mathrm{val}}=\mathrm{MAE}^{\mathrm{norm}}_{\mathrm{val}}
++1-\mathrm{AP}^{\mathrm{macro}}_{\mathrm{val}}
+\label{eq:checkpoint-score}
+\end{equation}
+where $\mathrm{MAE}^{\mathrm{norm}}_{\mathrm{val}}$ is the macro mean
+absolute error over appliances in standardized power coordinates, and the AP
+term summarizes the precision-recall curve without selecting a decision
+threshold. For each model and appliance $i$, let
+$\hat s_{t,i}\in[0,1]$ denote the predicted ON probability at sample $t$.
+After checkpoint selection, an appliance-specific probability cutoff $\gamma_i$ is selected on the validation houses to maximize F1, with temporal post-processing used to suppress brief spurious activations and bridge short interruptions. At test time, the decoded state label, $\hat{z}_{t,i}$, is obtained as
+\begin{equation}
+\hat z_{t,i}=\mathbb{I}[\hat s_{t,i}\geq\gamma_i]
+\label{eq:state-decoding}
+\end{equation}
+where $\mathbb{I}[\cdot]$ is the indicator function. The decoded state is also applied to the power output,
+$\hat P^{\mathrm{eval}}_{t,i}=\hat z_{t,i}\hat P_{t,i}$. Thresholds and
+temporal rules are frozen before testing and applied unchanged to both test
+houses; test labels are not used to select $\gamma_i$.
+
+\subsection{Evaluation Metrics}
+\label{sec:metrics}
+
+Each appliance is evaluated on power and on the ON-OFF state. For an evaluated record of length $T_{\mathrm{rec}}$, $P_t$ is the recorded power in watts and $\hat P_t^{\mathrm{eval}}$ is the state-decoded prediction. The label $z_t$ equals 1 when the appliance is recorded ON and 0 when it is OFF. $\hat z_t$ is the predicted label.
+
+Metrics are computed separately for the held-out UK-DALE house~2 and REFIT house~20. Within each test house, the average (Avg.) column is the macro average over the five appliances; architecture- and training-strategy-ablation summaries give the two houses equal weight within each seed. Performance metrics are reported as mean $\pm$ standard deviation over three random seeds on the fixed cross-house split, so the standard deviation reflects optimization variability. The evaluation considers complementary power-estimation and state-detection metrics.
+
+\subsubsection{Power}
+Power error is reported using MAE, ON-state MAE (ON MAE), and blockwise signal aggregate error (SAE). MAE uses every sample; ON MAE is the same quantity evaluated only at samples with $z_t=1$, so that reconstruction quality during appliance operation remains visible:
+\begin{equation}
+\mathrm{MAE}=\frac{1}{T_{\mathrm{rec}}}\sum_{t=1}^{T_{\mathrm{rec}}}\left|P_t-\hat P_t^{\mathrm{eval}}\right|
+\label{eq:mae}
+\end{equation}
+SAE measures the mean absolute error of average power over $K=\lfloor T_{\mathrm{rec}}/L\rfloor$ non-overlapping 160~min blocks ($L=1200$ samples):
+\begin{equation}
+\mathrm{SAE}=\frac{1}{K}\sum_{k=1}^{K}\left|\frac{1}{L}\sum_{t=(k-1)L+1}^{kL}\left(P_t-\hat P_t^{\mathrm{eval}}\right)\right|
+\label{eq:sae}
+\end{equation}
+
+\subsubsection{On-Off State}
+The recorded label $z_t$ follows the rules in Table~\ref{tab:label}, and $\hat{z}_t$ is the predicted binary state. For each appliance, $\mathrm{TP}$ (true positives) counts samples correctly identified as ON ($z_t=1, \hat{z}_t=1$), $\mathrm{FP}$ (false positives) counts inactive samples falsely detected as ON ($z_t=0, \hat{z}_t=1$), and $\mathrm{FN}$ (false negatives) counts active samples missed as OFF ($z_t=1, \hat{z}_t=0$):
+\begin{equation}
+\mathrm{Precision}=\frac{\mathrm{TP}}{\mathrm{TP}+\mathrm{FP}},\qquad
+\mathrm{Recall}=\frac{\mathrm{TP}}{\mathrm{TP}+\mathrm{FN}}
+\label{eq:precision}
+\end{equation}
+\begin{equation}
+\mathrm{F1}=\frac{2\cdot\mathrm{Precision}\cdot\mathrm{Recall}}{\mathrm{Precision}+\mathrm{Recall}}
+\label{eq:f1}
+\end{equation}
+Precision is the fraction of predicted ON samples that are truly ON, and recall is the fraction of actual ON samples detected. F1 is their harmonic mean; true negatives ($\mathrm{TN}$, $z_t=0, \hat{z}_t=0$) are excluded to prevent long idle background periods from artificially inflating the score.
+To evaluate state ranking independently of the calibrated decision threshold, we also report AP from the continuous state probability. Let $\mathcal{P}_n$ and $\mathcal{R}_n$ denote precision and recall after the $n$th distinct probability threshold, with $\mathcal{R}_0=0$. The non-interpolated AP is
+\begin{equation}
+\mathrm{AP}=\sum_n\left(\mathcal{R}_n-\mathcal{R}_{n-1}\right)\mathcal{P}_n
+\label{eq:average-precision}
+\end{equation}
+Unlike F1, AP does not use the appliance-specific threshold or the temporal state post-processing fitted on the validation houses.
+
+\section{Results and Discussion}
+
+\subsection{Joint Power and State Estimation}
+\label{sec:power-state}
+
+Table~\ref{tab:results} compares joint power-estimation and ON-OFF state-detection performance on the two held-out test houses. A displayed zero standard deviation indicates a value below the shown precision.
+
+\begin{table*}[!t]
+\begingroup
+\renewcommand{\mstd}[2]{{\fontsize{5.4}{5.9}\selectfont #1$\pm$#2}}
+\renewcommand{\bestmstd}[2]{{\fontsize{5.4}{5.9}\selectfont\bfseries #1$\boldsymbol{\pm}$#2}}
+\caption{Power and ON-OFF results (mean $\pm$ standard deviation over three seeds; MAE, ON MAE, and SAE are in W). Bold denotes the best displayed mean, including ties.}
+\label{tab:results}
+\centering
+\renewcommand{\arraystretch}{1.08}
+\fontsize{6.0}{6.6}\selectfont
+\setlength{\tabcolsep}{1.5pt}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash\fontsize{5.0}{5.5}\selectfont}p{0.24in}>{\raggedright\arraybackslash\fontsize{5.0}{5.5}\selectfont}p{0.48in}|*{6}{>{\centering\arraybackslash}X}|*{6}{>{\centering\arraybackslash}X}@{}}
+\hline
+\multirow{2}{*}{Metric} & \multirow{2}{*}{Method}
+ & \multicolumn{6}{c|}{UK-DALE} & \multicolumn{6}{c}{REFIT} \\
+\cline{3-14}
+ & & Kettle & Fridge & Dishwasher & Washer & Microwave & Avg.
+ & Kettle & Fridge & Dishwasher & Washer & Microwave & Avg. \\
+\hline
+\multirow{4}{*}{MAE}
+ & Multi-task net. & \mstd{8.8}{1.7} & \mstd{34.4}{3.0} & \mstd{14.7}{6.2} & \mstd{15.5}{5.0} & \mstd{6.3}{0.1} & \mstd{15.9}{1.3} & \mstd{10.9}{1.6} & \mstd{35.6}{1.8} & \mstd{9.0}{1.2} & \mstd{18.0}{7.3} & \mstd{6.7}{0.1} & \mstd{16.1}{0.8} \\
+ & UNet-NILM & \mstd{9.2}{2.1} & \mstd{29.1}{0.9} & \mstd{22.6}{5.1} & \mstd{9.1}{0.1} & \mstd{6.1}{0.3} & \mstd{15.2}{1.1} & \mstd{8.6}{0.9} & \mstd{35.0}{1.7} & \mstd{12.1}{1.1} & \mstd{7.6}{0.1} & \mstd{7.4}{0.3} & \mstd{14.2}{0.3} \\
+ & MATNilm & \mstd{5.5}{1.6} & \bestmstd{18.4}{0.7} & \mstd{8.9}{2.1} & \mstd{9.6}{1.4} & \mstd{5.3}{0.4} & \mstd{9.5}{1.1} & \bestmstd{5.4}{0.4} & \mstd{40.8}{0.1} & \mstd{5.4}{0.8} & \mstd{6.2}{2.3} & \bestmstd{6.0}{0.7} & \mstd{12.8}{0.6} \\
+ & \textbf{MART-NILM} & \bestmstd{3.8}{0.2} & \mstd{19.8}{0.7} & \bestmstd{4.2}{0.4} & \bestmstd{5.3}{0.3} & \bestmstd{3.4}{0.1} & \bestmstd{7.3}{0.2} & \mstd{5.9}{0.1} & \bestmstd{33.0}{1.2} & \bestmstd{4.9}{0.2} & \bestmstd{4.1}{0.8} & \mstd{6.8}{0.1} & \bestmstd{10.9}{0.2} \\
+\hline
+\multirow{4}{*}{SAE}
+ & Multi-task net. & \mstd{7.3}{1.4} & \mstd{32.1}{3.5} & \mstd{12.0}{5.9} & \mstd{14.5}{4.9} & \mstd{6.2}{0.1} & \mstd{14.4}{1.4} & \mstd{7.1}{1.1} & \mstd{21.7}{4.4} & \mstd{7.9}{1.3} & \mstd{13.0}{5.5} & \mstd{6.6}{0.0} & \mstd{11.3}{0.7} \\
+ & UNet-NILM & \mstd{8.4}{2.6} & \mstd{24.5}{2.5} & \mstd{21.1}{6.5} & \mstd{9.0}{0.1} & \mstd{6.0}{0.4} & \mstd{13.8}{1.3} & \mstd{5.6}{1.1} & \mstd{25.9}{2.6} & \mstd{9.8}{0.3} & \mstd{7.1}{0.3} & \mstd{7.0}{0.2} & \mstd{11.1}{0.7} \\
+ & MATNilm & \mstd{4.3}{1.2} & \bestmstd{10.0}{1.0} & \mstd{6.7}{1.4} & \mstd{8.8}{1.3} & \mstd{5.0}{0.4} & \mstd{6.9}{0.8} & \mstd{2.9}{0.3} & \mstd{23.7}{0.6} & \mstd{4.5}{1.0} & \mstd{5.0}{1.8} & \bestmstd{5.2}{0.5} & \mstd{8.3}{0.5} \\
+& \textbf{MART-NILM} & \bestmstd{2.9}{0.1} & \mstd{12.8}{1.5} & \bestmstd{2.6}{0.7} & \bestmstd{4.0}{0.4} & \bestmstd{2.9}{0.1} & \bestmstd{5.1}{0.4} & \bestmstd{2.6}{0.1} & \bestmstd{15.4}{1.6} & \bestmstd{3.7}{0.2} & \bestmstd{3.1}{0.9} & \bestmstd{5.2}{0.1} & \bestmstd{6.0}{0.2} \\
+\hline
+\multirow{4}{*}{\shortstack{ON\\MAE}}
+ & Multi-task net. & \mstd{807.3}{69.1} & \mstd{61.0}{7.1} & \mstd{449.8}{212.8} & \mstd{478.2}{28.0} & \mstd{1215.2}{19.2} & \mstd{602.3}{44.3} & \mstd{1012.0}{65.7} & \mstd{59.1}{6.4} & \mstd{437.1}{91.3} & \mstd{306.7}{17.6} & \mstd{1224.2}{5.6} & \mstd{607.8}{16.5} \\
+ & UNet-NILM & \mstd{1296.5}{443.8} & \mstd{48.4}{4.0} & \mstd{747.7}{180.9} & \mstd{462.6}{7.3} & \mstd{1178.8}{93.3} & \mstd{746.8}{110.0} & \mstd{1289.1}{190.7} & \mstd{63.4}{3.4} & \mstd{398.3}{93.1} & \mstd{306.1}{6.7} & \mstd{1196.7}{58.0} & \mstd{650.7}{59.1} \\
+ & MATNilm & \mstd{547.5}{180.2} & \bestmstd{22.1}{1.6} & \mstd{206.9}{46.2} & \mstd{385.7}{59.1} & \mstd{946.4}{99.8} & \mstd{421.7}{75.2} & \mstd{850.7}{44.4} & \mstd{46.3}{2.5} & \mstd{208.2}{21.0} & \mstd{195.6}{10.1} & \mstd{1062.2}{90.6} & \mstd{472.6}{29.3} \\
+ & \textbf{MART-NILM} & \bestmstd{383.4}{15.9} & \mstd{25.4}{2.1} & \bestmstd{87.0}{7.4} & \bestmstd{161.8}{17.0} & \bestmstd{218.8}{23.9} & \bestmstd{175.3}{6.9} & \bestmstd{785.2}{17.4} & \bestmstd{40.4}{1.5} & \bestmstd{139.5}{6.0} & \bestmstd{155.9}{5.3} & \bestmstd{429.0}{40.8} & \bestmstd{310.0}{3.5} \\
+\hline
+\multirow{4}{*}{AP}
+ & Multi-task net. & \mstd{0.930}{0.016} & \mstd{0.915}{0.030} & \mstd{0.838}{0.094} & \mstd{0.207}{0.128} & \mstd{0.514}{0.194} & \mstd{0.681}{0.075} & \mstd{0.660}{0.090} & \mstd{0.641}{0.053} & \mstd{0.615}{0.040} & \mstd{0.123}{0.019} & \mstd{0.160}{0.069} & \mstd{0.440}{0.000} \\
+ & UNet-NILM & \mstd{0.908}{0.016} & \mstd{0.873}{0.041} & \mstd{0.580}{0.274} & \mstd{0.866}{0.026} & \mstd{0.535}{0.024} & \mstd{0.753}{0.049} & \mstd{0.653}{0.036} & \mstd{0.657}{0.030} & \mstd{0.269}{0.056} & \mstd{0.654}{0.129} & \mstd{0.136}{0.046} & \mstd{0.474}{0.024} \\
+& MATNilm & \mstd{0.968}{0.020} & \mstd{0.951}{0.006} & \mstd{0.868}{0.039} & \mstd{0.555}{0.191} & \mstd{0.718}{0.063} & \mstd{0.812}{0.051} & \mstd{0.801}{0.018} & \mstd{0.537}{0.005} & \mstd{0.736}{0.040} & \mstd{0.653}{0.066} & \mstd{0.152}{0.046} & \mstd{0.576}{0.024} \\
+ & \textbf{MART-NILM} & \bestmstd{0.997}{0.000} & \bestmstd{0.970}{0.001} & \bestmstd{0.959}{0.002} & \bestmstd{0.985}{0.007} & \bestmstd{0.722}{0.046} & \bestmstd{0.926}{0.010} & \bestmstd{0.848}{0.007} & \bestmstd{0.736}{0.030} & \bestmstd{0.759}{0.014} & \bestmstd{0.914}{0.010} & \bestmstd{0.547}{0.056} & \bestmstd{0.761}{0.016} \\
+\hline
+\multirow{4}{*}{Precision}
+ & Multi-task net. & \mstd{0.74}{0.08} & \mstd{0.87}{0.01} & \mstd{0.51}{0.16} & \mstd{0.22}{0.09} & \mstd{0.55}{0.49} & \mstd{0.58}{0.11} & \mstd{0.57}{0.08} & \mstd{0.63}{0.00} & \mstd{0.54}{0.09} & \mstd{0.14}{0.02} & \mstd{0.37}{0.28} & \mstd{0.45}{0.04} \\
+ & UNet-NILM & \mstd{0.80}{0.09} & \mstd{0.74}{0.09} & \mstd{0.55}{0.19} & \mstd{0.84}{0.09} & \mstd{0.57}{0.07} & \mstd{0.70}{0.03} & \mstd{0.63}{0.08} & \mstd{0.60}{0.12} & \mstd{0.26}{0.06} & \bestmstd{0.89}{0.05} & \mstd{0.18}{0.07} & \mstd{0.51}{0.04} \\
+ & MATNilm & \mstd{0.82}{0.10} & \mstd{0.76}{0.03} & \mstd{0.47}{0.05} & \mstd{0.61}{0.18} & \mstd{0.71}{0.09} & \mstd{0.67}{0.08} & \mstd{0.70}{0.10} & \mstd{0.59}{0.00} & \mstd{0.42}{0.06} & \mstd{0.59}{0.07} & \mstd{0.16}{0.03} & \mstd{0.49}{0.04} \\
+ & \textbf{MART-NILM} & \bestmstd{0.93}{0.01} & \bestmstd{0.89}{0.02} & \bestmstd{0.65}{0.03} & \bestmstd{0.92}{0.01} & \bestmstd{0.72}{0.00} & \bestmstd{0.82}{0.00} & \bestmstd{0.74}{0.01} & \bestmstd{0.64}{0.01} & \bestmstd{0.63}{0.02} & \mstd{0.83}{0.07} & \bestmstd{0.46}{0.02} & \bestmstd{0.66}{0.01} \\
+\hline
+\multirow{4}{*}{Recall}
+ & Multi-task net. & \mstd{0.92}{0.03} & \mstd{0.94}{0.01} & \mstd{0.89}{0.14} & \mstd{0.56}{0.06} & \mstd{0.08}{0.07} & \mstd{0.68}{0.05} & \mstd{0.75}{0.05} & \mstd{0.78}{0.01} & \mstd{0.77}{0.08} & \mstd{0.50}{0.12} & \mstd{0.03}{0.02} & \mstd{0.57}{0.01} \\
+ & UNet-NILM & \mstd{0.87}{0.08} & \mstd{0.82}{0.14} & \mstd{0.65}{0.21} & \mstd{0.78}{0.04} & \mstd{0.57}{0.07} & \mstd{0.74}{0.05} & \mstd{0.73}{0.03} & \mstd{0.65}{0.18} & \mstd{0.46}{0.07} & \mstd{0.43}{0.13} & \mstd{0.37}{0.04} & \mstd{0.53}{0.07} \\
+ & MATNilm & \mstd{0.97}{0.01} & \bestmstd{0.98}{0.02} & \mstd{0.98}{0.02} & \mstd{0.49}{0.18} & \mstd{0.67}{0.13} & \mstd{0.82}{0.02} & \mstd{0.78}{0.03} & \bestmstd{0.93}{0.06} & \bestmstd{0.83}{0.02} & \mstd{0.76}{0.21} & \mstd{0.42}{0.25} & \mstd{0.74}{0.11} \\
+ & \textbf{MART-NILM} & \bestmstd{1.00}{0.00} & \mstd{0.94}{0.01} & \bestmstd{0.99}{0.01} & \bestmstd{0.97}{0.01} & \bestmstd{0.90}{0.02} & \bestmstd{0.96}{0.00} & \bestmstd{0.82}{0.01} & \mstd{0.78}{0.04} & \mstd{0.75}{0.03} & \bestmstd{0.88}{0.03} & \bestmstd{0.72}{0.04} & \bestmstd{0.79}{0.02} \\
+\hline
+\multirow{4}{*}{F1}
+ & Multi-task net. & \mstd{0.82}{0.04} & \bestmstd{0.91}{0.00} & \mstd{0.64}{0.14} & \mstd{0.30}{0.09} & \mstd{0.15}{0.13} & \mstd{0.56}{0.05} & \mstd{0.64}{0.03} & \mstd{0.70}{0.00} & \mstd{0.63}{0.05} & \mstd{0.21}{0.01} & \mstd{0.06}{0.04} & \mstd{0.45}{0.00} \\
+ & UNet-NILM & \mstd{0.83}{0.03} & \mstd{0.77}{0.07} & \mstd{0.60}{0.20} & \mstd{0.81}{0.03} & \mstd{0.57}{0.04} & \mstd{0.71}{0.03} & \mstd{0.67}{0.03} & \mstd{0.61}{0.08} & \mstd{0.33}{0.07} & \mstd{0.58}{0.12} & \mstd{0.23}{0.05} & \mstd{0.48}{0.04} \\
+ & MATNilm & \mstd{0.89}{0.06} & \mstd{0.86}{0.01} & \mstd{0.63}{0.04} & \mstd{0.54}{0.17} & \mstd{0.68}{0.06} & \mstd{0.72}{0.05} & \mstd{0.73}{0.05} & \bestmstd{0.72}{0.02} & \mstd{0.55}{0.05} & \mstd{0.65}{0.06} & \mstd{0.23}{0.08} & \mstd{0.58}{0.02} \\
+ & \textbf{MART-NILM} & \bestmstd{0.96}{0.00} & \bestmstd{0.91}{0.00} & \bestmstd{0.79}{0.02} & \bestmstd{0.94}{0.01} & \bestmstd{0.80}{0.01} & \bestmstd{0.88}{0.00} & \bestmstd{0.78}{0.01} & \mstd{0.71}{0.01} & \bestmstd{0.69}{0.00} & \bestmstd{0.85}{0.03} & \bestmstd{0.56}{0.03} & \bestmstd{0.72}{0.00} \\
+\hline
+\end{tabularx}
+\endgroup
+\end{table*}
+
+MART-NILM achieves the lowest appliance-average MAE and highest macro-F1 on both test houses among the evaluated models, outperforming MATNilm, the strongest baseline in overall performance. Relative to MATNilm, MART-NILM reduces overall MAE by $23.6\%$ and $14.5\%$ on UK-DALE and REFIT, respectively. More pronounced improvements are observed during appliance operation, with ON MAE decreasing by $58.4\%$ and $34.4\%$, respectively. Blockwise SAE also decreases by $27.0\%$ and $27.8\%$. State-detection performance improves consistently at the macro level: macro-F1 increases from $0.72$ to $0.88$ on UK-DALE and from $0.58$ to $0.72$ on REFIT. Threshold-independent macro-AP also rises from $0.812$ to $0.926$ and from $0.576$ to $0.761$, respectively, indicating improvements in state-probability ranking beyond the selected decision thresholds. MART-NILM also achieves the highest mean AP across all ten appliance-dataset combinations.
+
+The improvements are not uniform across individual appliances. MATNilm retains lower MAE for the UK-DALE fridge and REFIT kettle and microwave, while its REFIT fridge F1 is marginally higher. Nevertheless, the REFIT microwave illustrates the importance of joint power-state evaluation: although MART-NILM has a higher overall MAE ($6.8$ versus $6.0$~W), it substantially reduces ON MAE from $1062.2$ to $429.0$~W and improves F1 from $0.23$ to $0.56$. These appliance-level differences show that the complete framework improves the overall balance between power estimation and state detection, rather than uniformly outperforming the baselines on every metric.
+
+Fig.~\ref{fig:baseline-waveforms} provides a qualitative view of the same comparison. MART-NILM generally follows activation boundaries and multi-stage plateaus while suppressing inactive-period power, although minimal amplitude and timing errors remain.
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig5_waveform_comparison.pdf}
+\caption{Waveform comparisons on the two test houses.}
+\label{fig:baseline-waveforms}
+\end{figure*}
+
+\subsection{Performance and Model Efficiency}
+\label{sec:cost}
+
+\begin{table}[!ht]
+\caption{Model size and observed computational cost. M and MiB denote millions of parameters and mebibytes, respectively.}
+\label{tab:time}
+\centering
+\renewcommand{\arraystretch}{1.15}
+\footnotesize
+\setlength{\tabcolsep}{2pt}
+\begin{tabularx}{\linewidth}{@{}l*{4}{>{\centering\arraybackslash}X}@{}}
+\hline
+Model & Params (M) & Size (MiB) & Training (s) & Inference (s) \\
+\hline
+UNet-NILM & 5.832 & 22.299 & 17,455.8 & 80.40 \\
+MATNilm & 3.022 & 11.611 & 10,354.9 & 14.67 \\
+Multi-task net. & 7.829 & 59.793 & 16,493.8 & 23.50 \\
+MART-NILM & \textbf{1.373} & \textbf{5.335} & \textbf{485.2} & \textbf{1.14} \\
+\hline
+\end{tabularx}
+\end{table}
+
+Table~\ref{tab:time} shows that MART-NILM uses only $1.373$ million parameters, representing reductions of $54.6\%$, $76.5\%$, and $82.5\%$ relative to MATNilm, UNet-NILM, and Multi-task net., respectively. Together with the improvements in appliance-average MAE and macro-F1 in Table~\ref{tab:results}, these results demonstrate a favorable accuracy-capacity trade-off: stronger joint prediction performance is achieved with substantially fewer model parameters. MART-NILM also has the smallest checkpoint and the shortest observed training and end-to-end inference times under the evaluated protocols. The complete prediction pipeline processes both test records in $1.14$~s, compared with $14.67$~s for MATNilm, $23.50$~s for Multi-task net., and $80.40$~s for UNet-NILM. The benchmark includes data transfer and output reconstruction under each model's native windowing protocol, so it measures the complete prediction pipeline rather than isolated forward-pass latency. MART-NILM benefits from producing long output sequences: its 1024-sample windows advance by 512 samples, requiring substantially fewer windows than sequence-to-point inference while preserving dense temporal predictions.
+
+\begin{figure*}[!t]
+\centering
+\begin{minipage}[t]{0.40\textwidth}
+\centering
+\includegraphics[width=\linewidth]{figures/fig6a_recall_by_background.pdf}\\[-2pt]
+\footnotesize (a)
+\end{minipage}\hspace{0.06\textwidth}
+\begin{minipage}[t]{0.40\textwidth}
+\centering
+\includegraphics[width=\linewidth]{figures/fig6b_on_mae_by_background.pdf}\\[-2pt]
+\footnotesize (b)
+\end{minipage}
+\caption{Effect of focal-event mixing across validation background-demand intervals: (a) active-state recall change in percentage points; (b) ON MAE reduction in watts. Positive values indicate improvement.}
+\label{fig:focal-background}
+\end{figure*}
+
+\subsection{Architecture Ablation Study}
+\label{sec:ablation}
+
+Table~\ref{tab:architecture-ablation} examines the contributions of individual architectural components while preserving the joint five-appliance prediction task.
+
+\begin{table}[!ht]
+\caption{Architecture ablation.}
+\label{tab:architecture-ablation}
+\centering
+\renewcommand{\arraystretch}{1.08}
+\fontsize{6.0}{6.8}\selectfont
+\setlength{\tabcolsep}{1.2pt}
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}lccccc@{}}
+\toprule
+Variant & Params (M) & MAE $\downarrow$ & ON MAE $\downarrow$ & SAE $\downarrow$ & Macro-F1 $\uparrow$ \\
+\midrule
+Single-scale CNN                           & 1.372 & \mstd{9.22}{0.18}  & \mstd{241.75}{8.76}     & \mstd{5.66}{0.17}     & \mstd{0.795}{0.001} \\
+Without feature encoder                    & 1.326 & \mstd{9.16}{0.06}  & \mstd{252.01}{2.21}     & \mstd{5.59}{0.07}     & \mstd{0.790}{0.006} \\
+Without shared temporal encoder            & 0.634 & \mstd{10.56}{0.33} & \mstd{288.07}{10.25}    & \mstd{6.56}{0.16}     & \mstd{0.710}{0.013} \\
+Without appliance decoders                 & 0.836 & \mstd{9.22}{0.66}  & \mstd{265.84}{4.30}     & \mstd{5.63}{0.63}     & \mstd{0.783}{0.015} \\
+Without cross-appliance relation attention & 1.332 & \mstd{9.18}{0.09}  & \bestmstd{230.84}{14.69} & \bestmstd{5.55}{0.04} & \mstd{0.790}{0.015} \\
+\textbf{MART-NILM}                         & 1.373 & \bestmstd{9.12}{0.14} & \mstd{242.94}{5.35}  & \mstd{5.58}{0.17}     & \bestmstd{0.796}{0.008} \\
+\bottomrule
+\end{tabular*}
+\end{table}
+
+The largest performance degradation occurs when the shared temporal encoder is removed: MAE increases from $9.12$ to $10.56$~W, and macro-F1 decreases from $0.796$ to $0.710$. This result highlights the importance of temporal feature extraction within the proposed compact architecture, although the ablation also changes model capacity. Removing the appliance-specific decoders increases ON MAE from $242.94$ to $265.84$~W and reduces macro-F1 to $0.783$, supporting the use of lightweight specialized refinement alongside shared temporal modeling.
+
+The remaining components produce smaller and less uniform effects. Removing the feature encoder slightly degrades the aggregate metrics, while the multi-scale CNN provides mixed improvements. Cross-appliance relation attention increases macro-F1 from $0.790$ to $0.796$ but also increases ON MAE from $230.84$ to $242.94$~W. Thus, the results primarily support shared temporal modeling and appliance-specific refinement, with cross-appliance exchange providing a modest additional detection benefit rather than uniform power-error reductions.
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=0.84\columnwidth]{figures/fig7_balance_scale.pdf}
+\caption{Power-state scale alignment produced by appliance-wise balancing. Bars show the median effective state-term-to-power-loss ratio pooled over epochs 20 onward and three seeds; error bars denote the interquartile range.}
+\label{fig:balance-scale}
+\end{figure}
+
+\subsection{Effects of the Training Strategies}
+
+Table~\ref{tab:training-ablation} evaluates the two training strategies individually and jointly on the test houses, with the architecture held fixed.
+
+\begin{table}[!ht]
+\caption{Training-strategy ablation on the test houses. $\dagger$~denotes a strategy proposed in this work.}
+\label{tab:training-ablation}
+\centering
+\renewcommand{\arraystretch}{1.15}
+\footnotesize
+\setlength{\tabcolsep}{2pt}
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}lcccc@{}}
+\toprule
+Training strategy & MAE $\downarrow$ & ON MAE $\downarrow$ & SAE $\downarrow$ & Macro-F1 $\uparrow$ \\
+\midrule
+\hspace{3pt}Standard joint training       & \mstd{9.82}{0.24} & \mstd{341.85}{5.55} & \mstd{6.07}{0.23} & \mstd{0.703}{0.011} \\
+\hspace{3pt}$+$ Focal-event mixing$^\dagger$       & \mstd{9.69}{0.18} & \bestmstd{240.51}{16.18} & \mstd{5.94}{0.29} & \mstd{0.763}{0.002} \\
+\hspace{1pt}$+$ Appliance-wise balancing$^\dagger$ & \mstd{9.69}{0.29} & \mstd{307.54}{11.90} & \mstd{5.98}{0.42} & \mstd{0.752}{0.002} \\
+\textbf{Complete MART-NILM}$^\dagger$  & \bestmstd{9.12}{0.14} & \mstd{242.94}{5.33} & \bestmstd{5.58}{0.17} & \bestmstd{0.796}{0.008} \\
+\bottomrule
+\end{tabular*}
+\end{table}
+
+Focal-event mixing decreases ON MAE from $341.85$ to $240.51$~W and increases macro-F1 from $0.703$ to $0.763$, while also reducing MAE and SAE. Appliance-wise balancing independently improves all four reported metrics relative to standard joint training. Combining both strategies yields the lowest test MAE ($9.12$~W), lowest SAE ($5.58$~W), and highest macro-F1 ($0.796$), while focal-event mixing alone achieves the lowest ON MAE.
+
+
+
+Fig.~\ref{fig:focal-background} examines validation-house predictions and further reveals that the effect of focal-event mixing depends on appliance type and residual-background conditions. Washer recall improves across all five evaluated background strata, with increases ranging from $11.4$ to $24.9$ percentage points. Microwave recall improves by $14.8$-$26.1$ percentage points across the $100$-$800$~W strata but decreases by $7.9$ percentage points below $100$~W. The corresponding microwave ON MAE reductions are particularly pronounced in the intermediate background ranges.
+
+
+
+Fig.~\ref{fig:balance-scale} provides complementary evidence for the loss-balancing mechanism. Under fixed task weighting ($r_i=1$ for all appliances), the median effective state-loss contributions are only $2.0\%$ and $0.8\%$ of the corresponding power losses for kettle and microwave, respectively. Bounded appliance-wise balancing increases these ratios to $28.5\%$ and $15.1\%$, reducing the numerical disparity between the objectives. This scale calibration accompanies the improvements across all four metrics observed with appliance-wise balancing in Table~\ref{tab:training-ablation}.
+
+\subsection{Limitations and Future Work}
+
+The results reveal limitations in appliance-specific improvements, background sensitivity, and cross-house evaluation coverage. Microwave detection remains challenging, particularly on REFIT, where MART-NILM achieves an F1 score of $0.56$ despite improving on the reproduced baselines. Earlier neural and multi-appliance studies likewise report weaker or highly variable microwave performance~\cite{kelly2015neural,faustine2020unet,xiong2024matnilm}, while SAMNet shows that similar-power background loads can be mistaken for the target appliance~\cite{liu2022samnet}. Short, intermittent activations and overlapping background loads compound this ambiguity.
+
+Performance also remains sensitive to residual-background demand. Focal-event mixing reduces microwave errors in several background strata (Fig.~\ref{fig:focal-background}) but does not eliminate them. Under high aggregate demand, overlapping non-target activity can obscure transitions even when the target signature is unchanged. Evaluation is also limited to one held-out test house per dataset. Future work should extend cross-house evaluation and jointly model appliance-signature shifts and changes in household background composition.
+
+\section{Conclusion}
+
+This paper presented MART-NILM, a compact framework for joint multi-appliance power estimation and multi-label ON-OFF state detection. The framework combines shared temporal encoding, appliance-specific refinement, and two training-only strategies targeting event-background coverage and appliance-specific power-state loss imbalance.
+
+On the held-out UK-DALE and REFIT test houses, MART-NILM achieves appliance-average MAEs of $7.3$ and $10.9$~W and macro-F1 scores of $0.88$ and $0.72$, respectively. Relative to MATNilm, ON MAE decreases by $58.4\%$ and $34.4\%$, while the proposed model uses $54.6\%$ fewer parameters. Appliance-level comparisons further show that lower overall power error does not necessarily correspond to better reconstruction of appliance operation.
+
+Architecture ablations highlight the role of shared temporal modeling and appliance-specific refinement, while training-strategy ablations reveal complementary effects on the test houses. Overall, the results demonstrate a favorable accuracy-capacity trade-off under the evaluated protocols, supporting compact joint NILM as a means of improving both appliance-level power estimation and operating-state visibility.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references/references}
+
+\end{document}

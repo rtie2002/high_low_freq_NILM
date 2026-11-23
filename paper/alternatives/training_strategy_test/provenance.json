@@ -1,0 +1,86 @@
+[
+  {
+    "variant": "standard_joint_training",
+    "seed": 2026,
+    "checkpoint": "D:\\Raymond\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\table_viii\\standard_joint_training\\seed_2026\\best.pt",
+    "best_epoch": 139,
+    "energy_relative_weight": 0.25
+  },
+  {
+    "variant": "standard_joint_training",
+    "seed": 2027,
+    "checkpoint": "D:\\Raymond\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\table_viii\\standard_joint_training\\seed_2027\\best.pt",
+    "best_epoch": 144,
+    "energy_relative_weight": 0.25
+  },
+  {
+    "variant": "standard_joint_training",
+    "seed": 2028,
+    "checkpoint": "D:\\Raymond\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\table_viii\\standard_joint_training\\seed_2028\\best.pt",
+    "best_epoch": 146,
+    "energy_relative_weight": 0.25
+  },
+  {
+    "variant": "focal_event_mixing",
+    "seed": 2026,
+    "checkpoint": "D:\\Raymond\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\table_viii\\focal_event_mixing\\seed_2026\\best.pt",
+    "best_epoch": 144,
+    "energy_relative_weight": 0.25
+  },
+  {
+    "variant": "focal_event_mixing",
+    "seed": 2027,
+    "checkpoint": "D:\\Raymond\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\table_viii\\focal_event_mixing\\seed_2027\\best.pt",
+    "best_epoch": 107,
+    "energy_relative_weight": 0.25
+  },
+  {
+    "variant": "focal_event_mixing",
+    "seed": 2028,
+    "checkpoint": "D:\\Raymond\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\table_viii\\focal_event_mixing\\seed_2028\\best.pt",
+    "best_epoch": 104,
+    "energy_relative_weight": 0.25
+  },
+  {
+    "variant": "appliance_wise_balancing",
+    "seed": 2026,
+    "checkpoint": "D:\\Raymond\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\table_viii\\appliance_wise_balancing\\seed_2026\\best.pt",
+    "best_epoch": 65,
+    "energy_relative_weight": 0.25
+  },
+  {
+    "variant": "appliance_wise_balancing",
+    "seed": 2027,
+    "checkpoint": "D:\\Raymond\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\table_viii\\appliance_wise_balancing\\seed_2027\\best.pt",
+    "best_epoch": 80,
+    "energy_relative_weight": 0.25
+  },
+  {
+    "variant": "appliance_wise_balancing",
+    "seed": 2028,
+    "checkpoint": "D:\\Raymond\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\table_viii\\appliance_wise_balancing\\seed_2028\\best.pt",
+    "best_epoch": 47,
+    "energy_relative_weight": 0.25
+  },
+  {
+    "variant": "complete",
+    "seed": 2026,
+    "checkpoint": "D:\\Raymond\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\table_v\\mart_nilm\\seed_2026\\best.pt",
+    "best_epoch": 134,
+    "energy_relative_weight": 0.25
+  },
+  {
+    "variant": "complete",
+    "seed": 2027,
+    "checkpoint": "D:\\Raymond\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\table_v\\mart_nilm\\seed_2027\\best.pt",
+    "best_epoch": 107,
+    "energy_relative_weight": 0.25
+  },
+  {
+    "variant": "complete",
+    "seed": 2028,
+    "checkpoint": "D:\\Raymond\\high_low_freq_NILM\\multi_appliances_NILM\\runs\\paper_5w\\table_v\\mart_nilm\\seed_2028\\best.pt",
+    "best_epoch": 144,
+    "energy_relative_weight": 0.25
+  }
+]

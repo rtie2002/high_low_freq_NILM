@@ -1,0 +1,56 @@
+\documentclass[10pt]{article}
+\usepackage[letterpaper,margin=1in]{geometry}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em}
+
+\begin{document}
+
+\begin{flushright}
+\today\\[1.25em]
+\textbf{Raymond Siou Hin Tie}, First Author\\
+Department of Electrical and Robotics\\
+Centre for Net-Zero Technology\\
+Monash University Malaysia, Bandar Sunway, Malaysia
+\end{flushright}
+
+\vspace{1em}
+
+Editor-in-Chief\\
+\textit{IEEE Transactions on Smart Grid}
+
+\vspace{0.9em}
+
+\textbf{Re: Submission of ``MART-NILM: A Compact Multi-Appliance Representation Temporal Network for Joint Power-State Estimation in Non-Intrusive Load Monitoring''}
+
+Dear Editor-in-Chief,
+
+On behalf of my co-authors, I submit the above-titled manuscript for consideration as a research paper in \textit{IEEE Transactions on Smart Grid}.
+
+An appliance monitor can achieve a low average power error while still missing brief operating periods. This challenge is acute when activations are sparse and background demand changes across households. Our study addresses how to recover both appliance power and operating states from aggregate measurements with a compact model.
+
+The manuscript brings together three contributions:
+\begin{itemize}
+    \setlength{\itemsep}{0.25em}
+    \setlength{\topsep}{0.25em}
+    \item \textbf{Compact joint estimation.} MART-NILM predicts five appliance power-state pairs using shared temporal encoding, lightweight appliance-specific decoders, and cross-appliance relation attention. It retains specialized representations while avoiding repeated temporal processing for individual appliances.
+    \item \textbf{Training targeted at sparse activations.} Focal-event background-stratified mixing exposes appliance events to diverse recorded backgrounds, while bounded appliance-wise balancing calibrates power and state losses separately for each appliance. Both strategies operate only during training and add no inference-time computation.
+    \item \textbf{Measured gains on unseen households.} Using two public residential datasets with disjoint training, validation, and test houses, MART-NILM achieves lower appliance-average power errors and higher macro-F1 than three reproduced baselines. Relative to the strongest baseline, ON-state mean absolute error decreases by 58.4\% and 34.4\% on the two test houses, respectively, with 54.6\% fewer parameters (1.373 million). Three-seed evaluations and ablations assess the architecture and training strategies.
+\end{itemize}
+
+The work aligns with the journal's focus on smart metering, data analytics, and demand-side management by improving visibility into both appliance demand and activation timing from aggregate household measurements.
+
+The manuscript is original, has not been published previously, and is not under consideration by another journal or conference. All authors have approved this submission.
+
+Thank you for your consideration.
+
+Sincerely,
+
+\vspace{1.5em}
+
+\textbf{Raymond Siou Hin Tie}\\
+First Author, on behalf of all authors
+
+Corresponding author: Wen-Shan Tan (tan.wenshan@monash.edu).
+
+\end{document}
