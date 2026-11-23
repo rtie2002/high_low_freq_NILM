@@ -18,6 +18,8 @@ def build_model(model_config):
     config_path = Path(__file__).resolve().parent / "config" / f"{model_name}.yaml"
     with config_path.open(encoding="utf-8") as file:
         settings = yaml.safe_load(file)
+    if "input_size" in model_config:
+        settings["input_size"] = model_config["input_size"]
     model = MODEL_CLASSES[model_name](**settings)
     model.model_name = model_name
     model.model_settings = settings
