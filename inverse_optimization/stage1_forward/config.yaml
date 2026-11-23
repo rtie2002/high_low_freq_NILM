@@ -5,7 +5,8 @@ data:
   stride: 256
   # Append day_sin, day_cos, week_sin, and week_cos to the five appliance inputs.
   use_calendar_features: true
-  # Apply the same background cleaning rule to training, validation, and test.
+  # Apply background cleaning only to training data.
+  # Validation and testing remain raw to represent deployment data.
   clean_background: true
   background_std_multiplier: 2.0
 

@@ -202,8 +202,6 @@ def main():
     x_val, y_val, _ = load_windows(
         "validating",
         include_calendar_features=use_calendar_features,
-        clean_background=clean_background,
-        background_std_multiplier=background_std_multiplier,
     )
     del _
     x_train, y_train = torch.from_numpy(x_train), torch.from_numpy(y_train)
@@ -295,8 +293,6 @@ def main():
     x_test, y_test, _ = load_windows(
         "testing",
         include_calendar_features=use_calendar_features,
-        clean_background=clean_background,
-        background_std_multiplier=background_std_multiplier,
     )
     test = TensorDataset(
         (torch.from_numpy(x_test) - x_mean) / x_std,
