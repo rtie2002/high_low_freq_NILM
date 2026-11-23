@@ -250,6 +250,11 @@ def main():
     #  ************************************************************/
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
     assert list(checkpoint["appliances"]) == APPLIANCES
+    if checkpoint["config"]["data"].get("use_state_features", False):
+        raise ValueError(
+            "This checkpoint uses ground-truth ON/OFF state features. "
+            "Stage 2 cannot use it because those states are unknown during inverse optimisation."
+        )
     use_calendar_features = checkpoint["x_mean"].numel() == len(POWER_COLUMNS) + len(TIME_FEATURE_COLUMNS)
 
     model = build_model_from_checkpoint(checkpoint).to(device)

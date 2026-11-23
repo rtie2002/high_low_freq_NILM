@@ -1,7 +1,7 @@
 """Load one NILM split and cut its continuous recordings into windows.
 
 Stage 1 forward learning:
-    five appliance powers plus optional calendar inputs -> aggregate [windows, time]
+    five appliance powers plus optional calendar and ON/OFF inputs -> aggregate
 
 The ON/OFF labels are returned for evaluation, not used as model inputs.
 """
@@ -47,7 +47,6 @@ POWER_COLUMNS = [
 # These are known at inference time. They describe the local UK calendar, not
 # appliance power, so Stage 2 must never optimise them.
 TIME_FEATURE_COLUMNS = ["day_sin", "day_cos", "week_sin", "week_cos"]
-INPUT_COLUMNS = POWER_COLUMNS + TIME_FEATURE_COLUMNS
 
 STATE_COLUMNS = [
     "kettle_on",
@@ -56,6 +55,16 @@ STATE_COLUMNS = [
     "washingmachine_on",
     "microwave_on",
 ]
+
+
+def get_input_columns(include_calendar_features, include_state_features):
+    """Return Stage-1 features in the model's fixed column order."""
+    columns = POWER_COLUMNS.copy()
+    if include_calendar_features:
+        columns += TIME_FEATURE_COLUMNS
+    if include_state_features:
+        columns += STATE_COLUMNS
+    return columns
 
 
 def clean_background_rows(data, std_multiplier):
@@ -79,6 +88,7 @@ def load_windows(
     dataset: str | None = None,
     house: int | None = None,
     include_calendar_features: bool = False,
+    include_state_features: bool = False,
     clean_background: bool = False,
     background_std_multiplier: float = 2.0,
 ):
@@ -98,7 +108,10 @@ def load_windows(
         for reporting one test house at a time.
     include_calendar_features:
         When true, append four known local-time features to the five appliance
-        powers, producing a nine-feature forward-model input.
+        powers.
+    include_state_features:
+        When true, append five appliance ON/OFF labels. These labels are only
+        available in the supervised forward-model experiment.
     clean_background:
         When true, remove rows with negative or unusually large background
         before normal sliding windows are created.
@@ -106,7 +119,7 @@ def load_windows(
     Returns
     -------
     appliance_power:
-        float32 array [number_of_windows, WINDOW_LENGTH, 5 or 9].
+        float32 array [number_of_windows, WINDOW_LENGTH, 5, 9, 10, or 14].
         This is the Stage-1 LSTM input. The optional four extra columns are
         fixed calendar features, never appliance labels.
     aggregate_power:
@@ -130,7 +143,7 @@ def load_windows(
         data = clean_background_rows(data, background_std_multiplier)
     if include_calendar_features:
         data = add_calendar_features(data)
-    input_columns = INPUT_COLUMNS if include_calendar_features else POWER_COLUMNS
+    input_columns = get_input_columns(include_calendar_features, include_state_features)
 
     power_windows = []
     aggregate_windows = []
@@ -178,7 +191,11 @@ def add_calendar_features(data):
 
 
 def load_random_continuous_interval(
-    split_name: str, length: int, seed: int, include_calendar_features: bool = False
+    split_name: str,
+    length: int,
+    seed: int,
+    include_calendar_features: bool = False,
+    include_state_features: bool = False,
 ):
     """Return one reproducibly random interval that has no time gaps.
 
@@ -190,7 +207,7 @@ def load_random_continuous_interval(
     )
     if include_calendar_features:
         data = add_calendar_features(data)
-    input_columns = INPUT_COLUMNS if include_calendar_features else POWER_COLUMNS
+    input_columns = get_input_columns(include_calendar_features, include_state_features)
     groups = data.groupby(["dataset", "house", "sequence_id"], sort=False)
     eligible_groups = groups.size()
     eligible_groups = eligible_groups[eligible_groups >= length]
@@ -211,7 +228,11 @@ def load_random_continuous_interval(
 
 
 def load_random_appliance_event_windows(
-    split_name: str, length: int, seed: int, include_calendar_features: bool = False
+    split_name: str,
+    length: int,
+    seed: int,
+    include_calendar_features: bool = False,
+    include_state_features: bool = False,
 ):
     """Return one continuous ON-event interval and CSV ON/OFF labels per appliance."""
     data = pd.read_csv(SPLIT_FILES[split_name]).sort_values(
@@ -219,7 +240,7 @@ def load_random_appliance_event_windows(
     )
     if include_calendar_features:
         data = add_calendar_features(data)
-    input_columns = INPUT_COLUMNS if include_calendar_features else POWER_COLUMNS
+    input_columns = get_input_columns(include_calendar_features, include_state_features)
     groups = data.groupby(["dataset", "house", "sequence_id"], sort=False)
     rng = np.random.default_rng(seed)
     examples = {}

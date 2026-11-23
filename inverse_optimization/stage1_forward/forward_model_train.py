@@ -185,6 +185,7 @@ def create_run_dir(experiment_name):
 def main():
     settings = config["training"]
     use_calendar_features = config["data"]["use_calendar_features"]
+    use_state_features = config["data"]["use_state_features"]
     clean_background = config["data"]["clean_background"]
     background_std_multiplier = config["data"]["background_std_multiplier"]
     torch.manual_seed(settings["seed"])
@@ -195,6 +196,7 @@ def main():
     x_train, y_train, _ = load_windows(
         "training",
         include_calendar_features=use_calendar_features,
+        include_state_features=use_state_features,
         clean_background=clean_background,
         background_std_multiplier=background_std_multiplier,
     )
@@ -202,6 +204,7 @@ def main():
     x_val, y_val, _ = load_windows(
         "validating",
         include_calendar_features=use_calendar_features,
+        include_state_features=use_state_features,
     )
     del _
     x_train, y_train = torch.from_numpy(x_train), torch.from_numpy(y_train)
@@ -307,6 +310,7 @@ def main():
     x_test, y_test, _ = load_windows(
         "testing",
         include_calendar_features=use_calendar_features,
+        include_state_features=use_state_features,
     )
     test = TensorDataset(
         (torch.from_numpy(x_test) - x_mean) / x_std,
@@ -354,6 +358,7 @@ def main():
     week_power, week_aggregate = load_random_continuous_interval(
         "testing", week_samples, settings["seed"],
         include_calendar_features=use_calendar_features,
+        include_state_features=use_state_features,
     )
 
     # Predict the selected week, then convert predictions from normalized
@@ -378,6 +383,7 @@ def main():
     event_examples = load_random_appliance_event_windows(
         "testing", 8192, settings["seed"],
         include_calendar_features=use_calendar_features,
+        include_state_features=use_state_features,
     )
     event_power = np.stack([event_examples[appliance][0] for appliance in APPLIANCES])
     with torch.no_grad():

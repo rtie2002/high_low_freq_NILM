@@ -5,21 +5,24 @@ data:
   stride: 128
   # Append day_sin, day_cos, week_sin, and week_cos to the five appliance inputs.
   use_calendar_features: true
+  # Append five ground-truth appliance ON/OFF labels to the Stage-1 input.
+  # This experiment cannot be used for real Stage-2 inverse optimisation.
+  use_state_features: true
   # Apply background cleaning only to training data.
   # Validation and testing remain raw to represent deployment data.
   clean_background: true
   background_std_multiplier: 2.0
 
 # Stage-1 forward model:
-# five appliance powers plus known calendar features -> forward model -> aggregate power.
+# Five appliance powers, four calendar values, and five ON/OFF states -> aggregate.
 model:
   name: resnet
-  # 5 when use_calendar_features is false, 9 when it is true.
-  input_size: 9
+  # 5 powers + 4 calendar values + 5 appliance ON/OFF states.
+  input_size: 14
 
 training:
   # Change this name for each experiment. It becomes part of the result folder.
-  experiment_name: forward_resnet_256_time
+  experiment_name: forward_resnet_256_time_state_features
   seed: 2026
   batch_size: 16
   epochs: 100
