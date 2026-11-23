@@ -7,7 +7,7 @@ data:
   use_calendar_features: true
   # Apply background cleaning only to training data.
   # Validation and testing remain raw to represent deployment data.
-  clean_background: false
+  clean_background: true
   background_std_multiplier: 2.0
 
 # Stage-1 forward model:
@@ -17,7 +17,7 @@ model:
 
 training:
   # Change this name for each experiment. It becomes part of the result folder.
-  experiment_name: forward_lstm_background_cleaning
+  experiment_name: forward_lstm_background_normal_windows
   seed: 2026
   batch_size: 16
   epochs: 100

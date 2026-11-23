@@ -66,15 +66,6 @@ def clean_background_rows(data, std_multiplier):
     clean_rows = (background >= 0) & (background < upper_limit)
     data = data.loc[clean_rows].copy()
 
-    # Removing a row creates a time gap. Mark it as a new sequence so a
-    # sliding window never treats non-adjacent samples as consecutive.
-    recording_columns = ["dataset", "house", "sequence_id"]
-    new_recording = data[recording_columns].ne(
-        data[recording_columns].shift()
-    ).any(axis=1)
-    time_gap = data["unix_time"].diff().ne(8)
-    data["clean_sequence_id"] = (new_recording | time_gap).cumsum()
-
     print(
         f"Background cleaning: kept {len(data):,}/{len(clean_rows):,} rows | "
         f"upper limit {upper_limit:.2f} W"
@@ -110,7 +101,7 @@ def load_windows(
         powers, producing a nine-feature forward-model input.
     clean_background:
         When true, remove rows with negative or unusually large background
-        before windows are created.
+        before normal sliding windows are created.
 
     Returns
     -------
@@ -147,10 +138,7 @@ def load_windows(
 
     # A window stays within one continuous recording and never crosses a house
     # or recording boundary.
-    group_columns = ["dataset", "house", "sequence_id"]
-    if clean_background:
-        group_columns = ["dataset", "house", "clean_sequence_id"]
-    groups = data.groupby(group_columns, sort=False)
+    groups = data.groupby(["dataset", "house", "sequence_id"], sort=False)
     for _, one_sequence in groups:
         sequence_power = one_sequence[input_columns].to_numpy(dtype=np.float32)
         sequence_aggregate = one_sequence["aggregate"].to_numpy(dtype=np.float32)
