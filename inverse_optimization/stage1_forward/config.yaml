@@ -15,7 +15,7 @@ data:
 model:
   name: resnet
   # 5 when use_calendar_features is false, 9 when it is true.
-  input_size: 5
+  input_size: 9
 
 training:
   # Change this name for each experiment. It becomes part of the result folder.
