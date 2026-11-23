@@ -7,7 +7,7 @@ data:
   use_calendar_features: false
   # Apply background cleaning only to training data.
   # Validation and testing remain raw to represent deployment data.
-  clean_background: false
+  clean_background: true
   background_std_multiplier: 2.0
 
 # Stage-1 forward model:
