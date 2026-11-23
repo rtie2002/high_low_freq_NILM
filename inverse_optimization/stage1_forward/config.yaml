@@ -4,7 +4,7 @@ data:
   window_length: 256
   stride: 128
   # Append day_sin, day_cos, week_sin, and week_cos to the five appliance inputs.
-  use_calendar_features: false
+  use_calendar_features: true
   # Apply background cleaning only to training data.
   # Validation and testing remain raw to represent deployment data.
   clean_background: true
@@ -19,7 +19,7 @@ model:
 
 training:
   # Change this name for each experiment. It becomes part of the result folder.
-  experiment_name: forward_resnet_256
+  experiment_name: forward_resnet_256_time
   seed: 2026
   batch_size: 16
   epochs: 100
