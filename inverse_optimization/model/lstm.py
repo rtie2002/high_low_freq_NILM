@@ -1,4 +1,4 @@
-"""Predict a total-meter waveform from five appliance power traces."""
+"""Predict a total-meter waveform from appliance powers and known inputs."""
 
 from pathlib import Path
 

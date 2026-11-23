@@ -3,15 +3,17 @@
 data:
   window_length: 512
   stride: 256
+  # Append day_sin, day_cos, week_sin, and week_cos to the five appliance inputs.
+  use_calendar_features: true
 
 # Stage-1 forward model:
-# five appliance powers -> LSTM -> predicted aggregate power.
+# five appliance powers plus known calendar features -> LSTM -> aggregate power.
 model:
   name: lstm
 
 training:
   # Change this name for each experiment. It becomes part of the result folder.
-  experiment_name: forward_lstm_baseline
+  experiment_name: forward_lstm_calendar_features
   seed: 2026
   batch_size: 16
   epochs: 100

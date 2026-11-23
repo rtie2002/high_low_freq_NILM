@@ -19,7 +19,7 @@ from torch import nn
 
 # Support both module execution and an IDE Run button.
 if __package__:
-    from ..data_loader import APPLIANCES, load_windows
+    from ..data_loader import APPLIANCES, POWER_COLUMNS, TIME_FEATURE_COLUMNS, load_windows
     from ..metrics import average_precision, f1, mae, off_mae, on_mae, precision, recall, sae
     from ..model import build_model_from_checkpoint
     from ..waveform_plots import save_appliance_event_waveforms
@@ -27,7 +27,7 @@ if __package__:
 else:
     project_dir = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(project_dir))
-    from data_loader import APPLIANCES, load_windows
+    from data_loader import APPLIANCES, POWER_COLUMNS, TIME_FEATURE_COLUMNS, load_windows
     from metrics import average_precision, f1, mae, off_mae, on_mae, precision, recall, sae
     from model import build_model_from_checkpoint
     from waveform_plots import save_appliance_event_waveforms
@@ -239,6 +239,7 @@ def main():
     #  ************************************************************/
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
     assert list(checkpoint["appliances"]) == APPLIANCES
+    use_calendar_features = checkpoint["x_mean"].numel() == len(POWER_COLUMNS) + len(TIME_FEATURE_COLUMNS)
 
     model = build_model_from_checkpoint(checkpoint).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -262,14 +263,20 @@ def main():
     #  * P_true and states are never used during optimisation.
     #  * They are retained only for evaluation after inference.
     #  ************************************************************/
-    appliance_windows, aggregate_windows, state_windows = load_windows(
-        split_name, stride=window_stride, dataset=args.dataset, house=args.house
+    input_windows, aggregate_windows, state_windows = load_windows(
+        split_name, stride=window_stride, dataset=args.dataset, house=args.house,
+        include_calendar_features=use_calendar_features,
     )
-    training_power, _, _ = load_windows("training")
-    training_power = torch.from_numpy(training_power)
+    training_input, _, _ = load_windows(
+        "training", include_calendar_features=use_calendar_features
+    )
+    appliance_windows = input_windows[:, :, :len(POWER_COLUMNS)]
+    training_power = torch.from_numpy(training_input[:, :, :len(POWER_COLUMNS)])
 
     x_mean = checkpoint["x_mean"].to(device)
     x_std = checkpoint["x_std"].to(device)
+    appliance_x_mean = x_mean[:len(POWER_COLUMNS)]
+    appliance_x_std = x_std[:len(POWER_COLUMNS)]
     y_mean = checkpoint["y_mean"].to(device)
     y_std = checkpoint["y_std"].to(device)
 
@@ -280,15 +287,15 @@ def main():
     # Adam stores Z in z-score coordinates. Convert the configured physical
     # watt limits into that same coordinate system once.
     appliance_min = torch.tensor(
-        settings["appliance_min_w"], dtype=x_mean.dtype, device=device
+        settings["appliance_min_w"], dtype=appliance_x_mean.dtype, device=device
     ).view(1, 1, -1)
     appliance_max = torch.tensor(
-        settings["appliance_max_w"], dtype=x_mean.dtype, device=device
+        settings["appliance_max_w"], dtype=appliance_x_mean.dtype, device=device
     ).view(1, 1, -1)
     # $$Z_{i,\min}=(P_{i,\min}-\mu_i)/\sigma_i$$
     # $$Z_{i,\max}=(P_{i,\max}-\mu_i)/\sigma_i$$
-    candidate_min = (appliance_min - x_mean) / x_std
-    candidate_max = (appliance_max - x_mean) / x_std
+    candidate_min = (appliance_min - appliance_x_mean) / appliance_x_std
+    candidate_max = (appliance_max - appliance_x_mean) / appliance_x_std
 
     start = settings["window_index"]
     available = len(aggregate_windows) - start
@@ -358,6 +365,14 @@ def main():
         # then repeat each meter trace R times: one target for each restart.
         # target[r, t] is \tilde y_obs(t). Shape: [B*R, T].
         target = ((observed - y_mean) / y_std).repeat_interleave(restarts, dim=0)
+        fixed_calendar = None
+        if use_calendar_features:
+            calendar = torch.from_numpy(
+                input_windows[batch_indices, :, len(POWER_COLUMNS):]
+            ).to(device)
+            fixed_calendar = ((calendar - x_mean[len(POWER_COLUMNS):]) / x_std[len(POWER_COLUMNS):]).repeat_interleave(
+                restarts, dim=0
+            )
 
         # ------------------------------------------------------------
         # STEP 4B - Initialise B*R five-appliance candidates.
@@ -376,7 +391,7 @@ def main():
         # then collapse [B, R, T, 5] into [B*R, T, 5].
         # candidate is the ONLY tensor Adam is allowed to change.
         candidate = nn.Parameter(
-            ((initial_power - x_mean) / x_std).reshape(
+            ((initial_power - appliance_x_mean) / appliance_x_std).reshape(
                 -1, initial_power.shape[2], initial_power.shape[3]
             ).clone()
         )
@@ -406,11 +421,14 @@ def main():
             # Z^(k) through F_hat to obtain a predicted aggregate.
             # prediction shape: [B*R, T].
             # $$\widehat{\mathbf y}^{(k)}=F_{\hat\theta}(\mathbf Z^{(k)})$$
-            prediction = model(candidate)
+            forward_input = candidate if fixed_calendar is None else torch.cat(
+                [candidate, fixed_calendar], dim=-1
+            )
+            prediction = model(forward_input)
 
             # (2) Convert the same candidate to watts for physical penalties.
             # This is P^(k) = Z^(k) * sigma_x + mu_x, shape [B*R, T, 5].
-            candidate_power = candidate * x_std + x_mean
+            candidate_power = candidate * appliance_x_std + appliance_x_mean
 
             # (3) Calculate the scalar objective L used for Adam.
             # For each restart r, L_meter,r is the mean time-wise squared
@@ -481,11 +499,14 @@ def main():
         # Recompute the complete objective after the last projection. The
         # stored loss inside the loop was measured before Adam's last update.
         with torch.no_grad():
-            final_prediction = model(candidate)
+            forward_input = candidate if fixed_calendar is None else torch.cat(
+                [candidate, fixed_calendar], dim=-1
+            )
+            final_prediction = model(forward_input)
             _, _, _, final_total_loss = inverse_optimization_loss(
                 final_prediction,
                 target,
-                candidate * x_std + x_mean,
+                candidate * appliance_x_std + appliance_x_mean,
                 power_min,
                 power_max,
                 settings["boundary_weight"],
@@ -529,14 +550,26 @@ def main():
             # $$\widehat{\mathbf P}=\widehat{\mathbf Z}\odot\sigma_x+\mu_x$$
             model.eval()
             with torch.no_grad():
-                estimated_appliance = candidate_normalized * x_std + x_mean
-                predicted_normalized = model(candidate_normalized.unsqueeze(0))[0]
+                estimated_appliance = candidate_normalized * appliance_x_std + appliance_x_mean
+                calendar_for_window = None
+                if use_calendar_features:
+                    calendar_for_window = (
+                        torch.from_numpy(input_windows[window_index, :, len(POWER_COLUMNS):]).to(device)
+                        - x_mean[len(POWER_COLUMNS):]
+                    ) / x_std[len(POWER_COLUMNS):]
+                    calendar_for_window = calendar_for_window.unsqueeze(0)
+                forward_input = candidate_normalized.unsqueeze(0)
+                if calendar_for_window is not None:
+                    forward_input = torch.cat([forward_input, calendar_for_window], dim=-1)
+                predicted_normalized = model(forward_input)[0]
                 predicted_aggregate = predicted_normalized * y_std + y_mean
 
                 # Oracle diagnostic: even true appliances may not reproduce the
                 # meter accurately because unmonitored load remains in y_obs.
-                oracle_input = (true_appliance - x_mean) / x_std
-                oracle_prediction = model(oracle_input.unsqueeze(0))[0]
+                oracle_input = ((true_appliance - appliance_x_mean) / appliance_x_std).unsqueeze(0)
+                if calendar_for_window is not None:
+                    oracle_input = torch.cat([oracle_input, calendar_for_window], dim=-1)
+                oracle_prediction = model(oracle_input)[0]
                 oracle_aggregate = oracle_prediction * y_std + y_mean
 
             metric_values = {

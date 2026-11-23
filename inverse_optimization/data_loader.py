@@ -1,7 +1,7 @@
 """Load one NILM split and cut its continuous recordings into windows.
 
 Stage 1 forward learning:
-    five appliance powers [windows, time, 5] -> aggregate [windows, time]
+    five appliance powers plus optional calendar inputs -> aggregate [windows, time]
 
 The ON/OFF labels are returned for evaluation, not used as model inputs.
 """
@@ -44,6 +44,11 @@ POWER_COLUMNS = [
     "microwave_power",
 ]
 
+# These are known at inference time. They describe the local UK calendar, not
+# appliance power, so Stage 2 must never optimise them.
+TIME_FEATURE_COLUMNS = ["day_sin", "day_cos", "week_sin", "week_cos"]
+INPUT_COLUMNS = POWER_COLUMNS + TIME_FEATURE_COLUMNS
+
 STATE_COLUMNS = [
     "kettle_on",
     "fridge_on",
@@ -58,6 +63,7 @@ def load_windows(
     stride: int | None = None,
     dataset: str | None = None,
     house: int | None = None,
+    include_calendar_features: bool = False,
 ):
     """Load only one split and return aligned power, aggregate, and state windows.
 
@@ -73,12 +79,16 @@ def load_windows(
     dataset, house:
         Optional held-out dataset and house filter. Stage 2 uses these only
         for reporting one test house at a time.
+    include_calendar_features:
+        When true, append four known local-time features to the five appliance
+        powers, producing a nine-feature forward-model input.
 
     Returns
     -------
     appliance_power:
-        float32 array [number_of_windows, WINDOW_LENGTH, 5].
-        This is the Stage-1 GRU/LSTM input.
+        float32 array [number_of_windows, WINDOW_LENGTH, 5 or 9].
+        This is the Stage-1 LSTM input. The optional four extra columns are
+        fixed calendar features, never appliance labels.
     aggregate_power:
         float32 array [number_of_windows, WINDOW_LENGTH].
         This is the Stage-1 GRU/LSTM target.
@@ -96,6 +106,9 @@ def load_windows(
 
     # Ensure each group is in real time order before making windows.
     data = data.sort_values(["dataset", "house", "sequence_id", "unix_time"])
+    if include_calendar_features:
+        data = add_calendar_features(data)
+    input_columns = INPUT_COLUMNS if include_calendar_features else POWER_COLUMNS
 
     power_windows = []
     aggregate_windows = []
@@ -105,7 +118,7 @@ def load_windows(
     # or recording boundary.
     groups = data.groupby(["dataset", "house", "sequence_id"], sort=False)
     for _, one_sequence in groups:
-        sequence_power = one_sequence[POWER_COLUMNS].to_numpy(dtype=np.float32)
+        sequence_power = one_sequence[input_columns].to_numpy(dtype=np.float32)
         sequence_aggregate = one_sequence["aggregate"].to_numpy(dtype=np.float32)
         sequence_state = one_sequence[STATE_COLUMNS].to_numpy(dtype=np.int64)
 
@@ -122,7 +135,29 @@ def load_windows(
     )
 
 
-def load_random_continuous_interval(split_name: str, length: int, seed: int):
+def add_calendar_features(data):
+    """Add fixed cyclic local-time inputs for the UK NILM datasets."""
+    local_time = pd.to_datetime(data["readable_time"], utc=True).dt.tz_convert(
+        "Europe/London"
+    )
+    seconds_in_day = 24 * 60 * 60
+    time_of_day = (
+        local_time.dt.hour * 3600
+        + local_time.dt.minute * 60
+        + local_time.dt.second
+    )
+    day_of_week = local_time.dt.dayofweek
+    data = data.copy()
+    data["day_sin"] = np.sin(2 * np.pi * time_of_day / seconds_in_day)
+    data["day_cos"] = np.cos(2 * np.pi * time_of_day / seconds_in_day)
+    data["week_sin"] = np.sin(2 * np.pi * day_of_week / 7.0)
+    data["week_cos"] = np.cos(2 * np.pi * day_of_week / 7.0)
+    return data
+
+
+def load_random_continuous_interval(
+    split_name: str, length: int, seed: int, include_calendar_features: bool = False
+):
     """Return one reproducibly random interval that has no time gaps.
 
     The interval is selected from one dataset/house/sequence_id group, so it
@@ -131,6 +166,9 @@ def load_random_continuous_interval(split_name: str, length: int, seed: int):
     data = pd.read_csv(SPLIT_FILES[split_name]).sort_values(
         ["dataset", "house", "sequence_id", "unix_time"]
     )
+    if include_calendar_features:
+        data = add_calendar_features(data)
+    input_columns = INPUT_COLUMNS if include_calendar_features else POWER_COLUMNS
     groups = data.groupby(["dataset", "house", "sequence_id"], sort=False)
     eligible_groups = groups.size()
     eligible_groups = eligible_groups[eligible_groups >= length]
@@ -145,16 +183,21 @@ def load_random_continuous_interval(split_name: str, length: int, seed: int):
     start = rng.integers(len(one_sequence) - length + 1)
     interval = one_sequence.iloc[start:start + length]
     return (
-        interval[POWER_COLUMNS].to_numpy(dtype=np.float32),
+        interval[input_columns].to_numpy(dtype=np.float32),
         interval["aggregate"].to_numpy(dtype=np.float32),
     )
 
 
-def load_random_appliance_event_windows(split_name: str, length: int, seed: int):
+def load_random_appliance_event_windows(
+    split_name: str, length: int, seed: int, include_calendar_features: bool = False
+):
     """Return one continuous ON-event interval and CSV ON/OFF labels per appliance."""
     data = pd.read_csv(SPLIT_FILES[split_name]).sort_values(
         ["dataset", "house", "sequence_id", "unix_time"]
     )
+    if include_calendar_features:
+        data = add_calendar_features(data)
+    input_columns = INPUT_COLUMNS if include_calendar_features else POWER_COLUMNS
     groups = data.groupby(["dataset", "house", "sequence_id"], sort=False)
     rng = np.random.default_rng(seed)
     examples = {}
@@ -177,7 +220,7 @@ def load_random_appliance_event_windows(split_name: str, length: int, seed: int)
         start = min(max(center - length // 2, 0), len(one_sequence) - length)
         interval = one_sequence.iloc[start:start + length]
         examples[appliance] = (
-            interval[POWER_COLUMNS].to_numpy(dtype=np.float32),
+            interval[input_columns].to_numpy(dtype=np.float32),
             interval["aggregate"].to_numpy(dtype=np.float32),
             interval[STATE_COLUMNS].to_numpy(dtype=np.int64),
         )

@@ -129,11 +129,15 @@ def aggregate_accuracy_metrics(predicted_watts, true_watts):
     }
 
 
-def save_aggregate_metrics(metrics, normalized_mse, run_dir):
+def save_aggregate_metrics(metrics, normalized_mse, training_seconds, run_dir):
     """Save the final held-out aggregate-meter metrics as CSV and PNG."""
     metrics_dir = run_dir / "figures" / "metrics"
     metrics_dir.mkdir(parents=True, exist_ok=True)
-    values = {"Normalized test MSE": normalized_mse, **metrics}
+    values = {
+        "Stage 1 training time (minutes)": training_seconds / 60,
+        "Normalized test MSE": normalized_mse,
+        **metrics,
+    }
 
     csv_path = metrics_dir / "forward_test_aggregate_metrics.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as file:
@@ -169,14 +173,19 @@ def save_aggregate_metrics(metrics, normalized_mse, run_dir):
 
 def main():
     settings = config["training"]
+    use_calendar_features = config["data"]["use_calendar_features"]
     torch.manual_seed(settings["seed"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     started = perf_counter()
 
     # 1. Load aligned windows in watts. Fit z-score statistics on training only.
-    x_train, y_train, _ = load_windows("training")
+    x_train, y_train, _ = load_windows(
+        "training", include_calendar_features=use_calendar_features
+    )
     del _
-    x_val, y_val, _ = load_windows("validating")
+    x_val, y_val, _ = load_windows(
+        "validating", include_calendar_features=use_calendar_features
+    )
     del _
     x_train, y_train = torch.from_numpy(x_train), torch.from_numpy(y_train)
     x_val, y_val = torch.from_numpy(x_val), torch.from_numpy(y_val)
@@ -262,11 +271,17 @@ def main():
                 "parameter_count": parameter_count,
             }, checkpoint_path)
 
+    # This records Stage-1 setup, training, validation, and checkpoint saving.
+    # It excludes the held-out test evaluation and figure generation below.
+    training_seconds = perf_counter() - started
+
     # Test the checkpoint chosen by validation loss only once. This keeps
     # the test split independent from model selection during training.
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
-    x_test, y_test, _ = load_windows("testing")
+    x_test, y_test, _ = load_windows(
+        "testing", include_calendar_features=use_calendar_features
+    )
     test = TensorDataset(
         (torch.from_numpy(x_test) - x_mean) / x_std,
         (torch.from_numpy(y_test) - y_mean) / y_std,
@@ -291,8 +306,9 @@ def main():
         torch.cat(predicted_watts), torch.cat(true_watts)
     )
     metrics_csv, metrics_plot = save_aggregate_metrics(
-        aggregate_metrics, test_mse, run_dir
+        aggregate_metrics, test_mse, training_seconds, run_dir
     )
+    print(f"Stage 1 training time: {training_seconds / 60:.2f} minutes")
     for name, value in aggregate_metrics.items():
         print(f"Test aggregate {name}: {value:.5f}")
     print(f"Aggregate metrics CSV: {metrics_csv}")
@@ -310,7 +326,8 @@ def main():
     sample_seconds = 8
     week_samples = 7 * 24 * 60 * 60 // sample_seconds
     week_power, week_aggregate = load_random_continuous_interval(
-        "testing", week_samples, settings["seed"]
+        "testing", week_samples, settings["seed"],
+        include_calendar_features=use_calendar_features,
     )
 
     # Predict the selected week, then convert predictions from normalized
@@ -332,7 +349,10 @@ def main():
 
     # Select an 8,192-sample continuous test interval per appliance. The
     # focused ON-event plot and its 10x context are cropped from this interval.
-    event_examples = load_random_appliance_event_windows("testing", 8192, settings["seed"])
+    event_examples = load_random_appliance_event_windows(
+        "testing", 8192, settings["seed"],
+        include_calendar_features=use_calendar_features,
+    )
     event_power = np.stack([event_examples[appliance][0] for appliance in APPLIANCES])
     with torch.no_grad():
         event_input = (torch.from_numpy(event_power) - x_mean) / x_std
