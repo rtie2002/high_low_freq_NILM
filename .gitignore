@@ -47,3 +47,4 @@ __pycache__/
 /tmp_label_audit.csv
 /multi-applainces_paper.pdf
 /Neural-adjoint inverse optimization/runs
+*.csv
