@@ -28,11 +28,13 @@ else:
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_ROOT = PROJECT_ROOT / "dataset" / "appliance_waveform reference"
 RESULTS_ROOT = PROJECT_ROOT / "results" / "stage1"
-EXPERIMENT_NAME = "reference_encoder"
+EXPERIMENT_NAME = "reference_encoder_house_balanced"
 
 SEED = 2026
 CHECK_DATA_ONLY = False           # Print data counts without starting training.
 EPOCHS = 100
+EARLY_STOP_PATIENCE = 12          # Stop after this many epochs without lower validation loss.
+USE_BATCH_NORM = False           # Events are encoded one at a time, even within a batch.
 BATCH_SIZE = 20
 TRAIN_STEPS_PER_EPOCH = 100
 VALIDATION_EVENTS_PER_CLASS_HOUSE = 200  # None scores every validation event
@@ -41,7 +43,7 @@ WEIGHT_DECAY = 1e-4
 NUM_WORKERS = 0                   # Keep waveform arrays in one process on Windows
 SAMPLE_SECONDS = 8
 
-STAGE1_VALIDATION_HOUSES = {("refit", 6), ("refit", 10)}
+STAGE1_VALIDATION_HOUSES = {("refit", 6), ("refit", 7), ("refit", 10)}
 MART_RESERVED_HOUSES = {("refit", 2), ("refit", 20), ("ukdale", 2), ("ukdale", 5)}
 
 
@@ -68,6 +70,11 @@ def load_reference_events(root: Path) -> list[ReferenceEvent]:
         | manifest["off_pre_samples"].lt(1)
         | manifest["off_post_samples"].lt(1)
     )
+    if incomplete_events.any():
+        raise ValueError(
+            f"Reference manifest contains {int(incomplete_events.sum()):,} incomplete events. "
+            "Regenerate the reference export with applainces_event_selection.py before training."
+        )
 
     events = []
     for class_id, appliance in enumerate(APPLIANCES):
@@ -77,6 +84,12 @@ def load_reference_events(root: Path) -> list[ReferenceEvent]:
         event_lengths = file_events["samples"].to_numpy()
         first_rows = file_events["sample_start_row"].to_numpy()
         last_rows = file_events["sample_end_row"].to_numpy()  # Inclusive.
+        if (file_events.empty
+                or not file_events["sample_period_sec"].eq(SAMPLE_SECONDS).all()
+                or (event_lengths < 2).any()
+                or not np.array_equal(first_rows, np.cumsum(event_lengths) - event_lengths)
+                or not np.array_equal(last_rows, first_rows + event_lengths - 1)):
+            raise ValueError(f"Invalid reference manifest rows for {relative_path}.")
 
         print(f"Reading {relative_path} ...", flush=True)
         samples = pd.read_csv(
@@ -85,6 +98,8 @@ def load_reference_events(root: Path) -> list[ReferenceEvent]:
             dtype={"appliance_power_w": np.float32},
         )
         power_watts = samples["appliance_power_w"].to_numpy()
+        if len(power_watts) != event_lengths.sum() or not np.isfinite(power_watts).all():
+            raise ValueError(f"Invalid power data or CSV/manifest row count mismatch in {relative_path}.")
 
         # A row range represents one complete event. Keep its original length.
         previous_count = len(events)
@@ -129,13 +144,14 @@ def collate_events(batch) -> tuple[list[torch.Tensor], torch.Tensor]:
 
 
 # ============================================================
-# Validation: calculate loss and accuracy without updating weights.
+# Validation: calculate loss, accuracy and per-appliance F1.
 # ============================================================
 def evaluate(model, loader, loss_function, device, batch_limit=None):
     model.eval()
     loss_sum = 0.0
-    correct_count = 0
     event_count = 0
+    class_count = len(APPLIANCES)
+    confusion = torch.zeros((class_count, class_count), dtype=torch.long, device=device)
     with torch.no_grad():
         for waveforms, true_classes in islice(loader, batch_limit):
             waveforms = [waveform.to(device) for waveform in waveforms]
@@ -146,10 +162,17 @@ def evaluate(model, loader, loss_function, device, batch_limit=None):
 
             # The loss is a batch mean. Multiply by the batch size before summing.
             loss_sum += loss.item() * len(true_classes)
-            correct_count += (predictions == true_classes).sum().item()
+            # Rows are true classes. Columns are predicted classes.
+            pairs = true_classes * class_count + predictions
+            confusion += torch.bincount(pairs, minlength=class_count ** 2).reshape(class_count, class_count)
             event_count += len(true_classes)
 
-    return loss_sum / event_count, correct_count / event_count
+    correct_by_class = confusion.diag()
+    true_counts = confusion.sum(dim=1)
+    predicted_counts = confusion.sum(dim=0)
+    f1_by_class = 2 * correct_by_class / (true_counts + predicted_counts).clamp_min(1)
+    accuracy = correct_by_class.sum().item() / event_count
+    return loss_sum / event_count, accuracy, f1_by_class.tolist(), confusion.tolist()
 
 
 # ============================================================
@@ -162,6 +185,10 @@ def main():
     args = parser.parse_args()
     check_data_only = CHECK_DATA_ONLY or args.check_data_only
 
+    if not check_data_only and not torch.cuda.is_available():
+        raise SystemExit("CUDA is required for Stage 1 training.")
+    if STAGE1_VALIDATION_HOUSES & MART_RESERVED_HOUSES:
+        raise ValueError("Stage 1 validation houses must not include MART-reserved houses.")
     torch.manual_seed(SEED)
 
     # Step 1. Read already-selected events and hold out whole houses.
@@ -179,8 +206,17 @@ def main():
         ("Train", train_class_counts), ("Validation", validation_class_counts),
     ):
         counts_by_appliance = dict(zip(APPLIANCES, class_counts.tolist()))
-
+        if (class_counts == 0).any():
+            raise ValueError(f"{split_name} must contain all five classes: {counts_by_appliance}")
         print(f"{split_name}: {class_counts.sum():,} events | {counts_by_appliance}", flush=True)
+
+    validation_houses_by_class = [set() for _ in APPLIANCES]
+    for event in validation_events:
+        validation_houses_by_class[event.class_id].add(event.house)
+    for appliance, houses in zip(APPLIANCES, validation_houses_by_class):
+        print(f"  Validation {appliance}: {sorted(houses)}", flush=True)
+        if len(houses) == 1:
+            print("    Warning: this class is only validated on one house.", flush=True)
 
     first_event = train_events[0]
     sample_count = len(first_event.power_watts)
@@ -195,7 +231,11 @@ def main():
         return
 
     device = torch.device("cuda")
-    print(f"Stage 1 | CUDA: {torch.cuda.get_device_name(device)} | normalization: Z-score", flush=True)
+    print(
+        f"Stage 1 | CUDA: {torch.cuda.get_device_name(device)} | "
+        f"normalization: Z-score | BatchNorm: {USE_BATCH_NORM}",
+        flush=True,
+    )
 
     # Step 2. Select the validation subset once, then reuse it in every epoch.
     if VALIDATION_EVENTS_PER_CLASS_HOUSE is not None:
@@ -211,23 +251,41 @@ def main():
         validation_random.shuffle(validation_events)
     print(f"Validation used each epoch: {len(validation_events):,} events.", flush=True)
 
-    # Step 3. Fit one Z-score using all training time points.
-    # Both DataLoaders use this same mean and standard deviation.
-    sample_count = sum(event.power_watts.size for event in train_events)
-    total_power = sum(event.power_watts.sum(dtype=np.float64) for event in train_events)
-    mean_watts = total_power / sample_count
-    squared_differences = sum(
-        np.square(event.power_watts.astype(np.float64) - mean_watts).sum()
+    # Step 3. Give equal weight to each appliance, then each house in that
+    # appliance, then each event from that house. A large fridge file should
+    # not dominate either the Z-score or the training batches.
+    train_group_counts = defaultdict(int)
+    train_houses_by_class = [set() for _ in APPLIANCES]
+    for event in train_events:
+        train_group_counts[event.class_id, event.house] += 1
+        train_houses_by_class[event.class_id].add(event.house)
+    event_weights = [
+        1.0 / (len(train_houses_by_class[event.class_id]) * train_group_counts[event.class_id, event.house])
         for event in train_events
-    )
-    std_watts = float(np.sqrt(squared_differences / sample_count))
-   
-    # The checkpoint uses offset for the training mean and scale for the training std.
-    normalization = {"method": "zscore", "offset": float(mean_watts), "scale": std_watts}
+    ]
 
-    # Step 4. Give rare classes larger sampling weights. Across many draws,
-    # each class is equally likely. The class counts in one batch can vary.
-    event_weights = [1.0 / train_class_counts[event.class_id] for event in train_events]
+    # Fit one shared Z-score from training data. First take the mean within
+    # each event, so a long event does not get extra weight just for its length.
+    total_weight = sum(event_weights)
+    mean_watts = sum(
+        weight * event.power_watts.mean(dtype=np.float64)
+        for event, weight in zip(train_events, event_weights)
+    ) / total_weight
+    squared_differences = sum(
+        weight * np.square(event.power_watts.astype(np.float64) - mean_watts).mean()
+        for event, weight in zip(train_events, event_weights)
+    )
+    std_watts = float(np.sqrt(squared_differences / total_weight))
+    if not np.isfinite(std_watts) or std_watts <= 0:
+        raise ValueError("Training power must have a finite, positive standard deviation.")
+    normalization = {
+        "method": "zscore", "offset": float(mean_watts), "scale": std_watts,
+        "weighting": "equal_class_then_house_then_event",
+    }
+    print(f"Training scale: mean {mean_watts:.2f} W | std {std_watts:.2f} W", flush=True)
+
+    # Step 4. Use the same weights for drawing batches. Each appliance gets
+    # 20% of the probability, and houses within that appliance are equally likely.
     train_sampler = WeightedRandomSampler(
         event_weights, num_samples=BATCH_SIZE * TRAIN_STEPS_PER_EPOCH, replacement=True
     )
@@ -242,7 +300,7 @@ def main():
     )
 
     # Step 5. Create the model, classification loss, and optimizer.
-    model = ApplianceReferenceEncoder().to(device)
+    model = ApplianceReferenceEncoder(use_batch_norm=USE_BATCH_NORM).to(device)
     loss_function = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     best_validation_loss = float("inf")
@@ -285,14 +343,18 @@ def main():
         train_loss = train_loss_sum / train_event_count
 
         # Step 7. Measure loss and accuracy on held-out houses.
-        validation_loss, validation_accuracy = evaluate(
+        validation_loss, validation_accuracy, validation_f1, validation_confusion = evaluate(
             model, validation_loader, loss_function, device, batch_limit
         )
+        if not np.isfinite(validation_loss):
+            raise ValueError("Validation loss is not finite. Check the input waveforms and Z-score.")
+        validation_macro_f1 = sum(validation_f1) / len(APPLIANCES)
         train_losses.append(train_loss)
         validation_losses.append(validation_loss)
         print(
             f"Epoch {epoch:02d} | train CE {train_loss:.4f} | "
-            f"val CE {validation_loss:.4f} | val accuracy {validation_accuracy:.3f}",
+            f"val CE {validation_loss:.4f} | val accuracy {validation_accuracy:.3f} | "
+            f"val macro-F1 {validation_macro_f1:.3f}",
             flush=True,
         )
         # Step 8. Keep the weights from the epoch with the lowest validation loss.
@@ -307,6 +369,10 @@ def main():
                     "epoch": epoch,
                     "val_loss": validation_loss,
                     "val_accuracy": validation_accuracy,
+                    "val_macro_f1": validation_macro_f1,
+                    "val_f1_by_appliance": dict(zip(APPLIANCES, validation_f1)),
+                    "val_confusion_matrix": validation_confusion,
+                    "use_batch_norm": USE_BATCH_NORM,
                     "train_houses": sorted({event.house for event in train_events}),
                     "validation_houses": sorted({event.house for event in validation_events}),
                     "sampling_interval_sec": SAMPLE_SECONDS,
@@ -314,6 +380,11 @@ def main():
                 },
                 checkpoint,
             )
+            print(f"  Best epoch F1: {dict(zip(APPLIANCES, [round(f1, 3) for f1 in validation_f1]))}", flush=True)
+
+        if best_epoch is not None and epoch - best_epoch >= EARLY_STOP_PATIENCE:
+            print(f"Early stop: validation loss has not improved for {EARLY_STOP_PATIENCE} epochs.", flush=True)
+            break
 
     if checkpoint is not None:
         # Step 9. Save both loss curves after training. Each point is one epoch.

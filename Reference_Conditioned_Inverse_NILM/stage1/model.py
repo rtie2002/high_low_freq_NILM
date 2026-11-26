@@ -19,23 +19,24 @@ class ApplianceReferenceEncoder(nn.Module):
     B is the number of events. L_i is the number of samples in event i.
     """
 
-    def __init__(self):
+    def __init__(self, use_batch_norm=True):
         super().__init__()
 
         # L = timestamps
         # 1. Feature extractor: [1, 1, L] -> [1, 64, L].
         # The axes are [events, channels, time]. Encode one event at a time.
         # Unit stride and symmetric padding keep all L positions at each layer.
-        # BatchNorm uses the event's time positions during training, so L >= 2.
+        # When enabled, BatchNorm uses one event's time positions during training.
+        # Use Identity to compare the same CNN without these per-event statistics.
         self.features = nn.Sequential(
             nn.Conv1d(in_channels=1, out_channels=32, kernel_size=5, padding=2),   # [1, 1, L]  -> [1, 32, L]
-            nn.BatchNorm1d(num_features=32),
+            nn.BatchNorm1d(num_features=32) if use_batch_norm else nn.Identity(),
             nn.ReLU(),
             nn.Conv1d(in_channels=32, out_channels=64, kernel_size=3, padding=1),  # [1, 32, L] -> [1, 64, L]
-            nn.BatchNorm1d(num_features=64),
+            nn.BatchNorm1d(num_features=64) if use_batch_norm else nn.Identity(),
             nn.ReLU(),
             nn.Conv1d(in_channels=64, out_channels=64, kernel_size=3, padding=1),  # [1, 64, L] -> [1, 64, L]
-            nn.BatchNorm1d(num_features=64),
+            nn.BatchNorm1d(num_features=64) if use_batch_norm else nn.Identity(),
             nn.ReLU(),
         )
 
