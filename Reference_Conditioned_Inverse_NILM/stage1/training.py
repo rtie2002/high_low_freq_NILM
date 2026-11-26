@@ -84,6 +84,7 @@ def load_reference_events(root: Path) -> list[ReferenceEvent]:
             usecols=["appliance_power_w"],
             dtype={"appliance_power_w": np.float32},
         )
+        power_watts = samples["appliance_power_w"].to_numpy()
 
         # A row range represents one complete event. Keep its original length.
         previous_count = len(events)
