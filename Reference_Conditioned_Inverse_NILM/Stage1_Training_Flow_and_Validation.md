@@ -69,7 +69,7 @@ optimizer.step()                             # AdamW 根据梯度更新权重
 
 这里的 `labels` 对应代码中的 `true_classes`。`loss.backward()` 算梯度，`optimizer.step()` 才更新共享编码器和分类层。分类层为学习参考向量提供监督。后续建立参考库时，使用的是分类层之前的 **128 维向量**。当前代码实现的是交叉熵基线。VoiceFilter 的原版说话人编码器使用基于相似度的训练目标，未来可以把类似的损失作为单独对照。 [VoiceFilter 原论文，§2.1](https://www.isca-archive.org/interspeech_2019/wang19h_interspeech.pdf)
 
-当前最多训练 **100 轮**，AdamW 学习率为 **0.0003**，训练设备为 CUDA。验证记录交叉熵、准确率和宏平均 F1（五类等权）。代码按最低验证交叉熵保存 `best.pt`，其中还保存每类 F1 和混淆矩阵。验证交叉熵连续 **12 轮**没有改善时提前停止。训练结束时保存 `loss_curve.png`，用于查看训练和验证是否同时改善。 [曲线绘制脚本](stage1/plot_loss.py)
+当前最多训练 **100 轮**，AdamW 初始学习率为 **0.0003**，训练设备为 CUDA。验证记录交叉熵、准确率和宏平均 F1（五类等权）。验证交叉熵连续三轮没有下降超过 0.001 时，下一轮的学习率减半，最低为 0.00001。代码仍按实际最低验证交叉熵保存 `best.pt`，其中还保存每类 F1 和混淆矩阵。验证交叉熵连续 **12 轮**没有刷新最低值时提前停止。训练结束时保存 `loss_curve.png` 和 `training_history.csv`，后者记录每轮实际使用的学习率和验证指标。 [曲线绘制脚本](stage1/plot_loss.py)
 
 ## 4. 模型会不会只记住「短波形就是水壶或微波炉」？
 
@@ -117,4 +117,6 @@ python stage1/evaluate_embeddings.py --split validation
 python stage1/evaluate_embeddings.py --split test
 ```
 
-结果保存在 `results/stage1/reference_encoder_8_3_3/`。默认评估该目录下的 `best.pt`。如果训练生成了带编号的新目录，用 `--checkpoint` 指向对应权重。新版 checkpoint 固定三个房屋集合、验证事件 ID、每类参考数和训练时所用清单的哈希。评估使用相同 Z-score，并按固定种子从训练房屋生成参考库。测试报告为 `embedding_test.md`，包含五分类头与余弦匹配的结果及两张混淆矩阵。 [向量评估脚本](stage1/evaluate_embeddings.py)
+带学习率调整的结果保存在 `results/stage1/reference_encoder_8_3_3_lr_plateau/`，原始固定学习率结果在 `reference_encoder_8_3_3/`。默认评估新版目录下的 `best.pt`。如果要评估原实验或训练生成的带编号目录，用 `--checkpoint` 指向对应权重。新版 checkpoint 固定三个房屋集合、验证事件 ID、每类参考数和训练时所用清单的哈希。评估使用相同 Z-score，并按固定种子从训练房屋生成参考库。测试报告为 `embedding_test.md`，包含五分类头与余弦匹配的结果及两张混淆矩阵。 [向量评估脚本](stage1/evaluate_embeddings.py)
+
+每次评估还会保存与 Markdown 报告同名的 PNG，上方为每类指标表，下方为两张混淆矩阵。格内数字是事件数量，颜色表示该真实类别中落入该预测类别的比例。验证可以加 `--reference-matching nearest-reference`。它用相同的训练参考事件逐条比较，每类取最高余弦相似度，报告以 `_nearest_reference` 区分。正式测试沿用预先固定的平均向量规则。

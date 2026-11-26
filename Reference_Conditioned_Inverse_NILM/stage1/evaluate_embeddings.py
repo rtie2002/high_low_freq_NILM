@@ -1,7 +1,10 @@
 """Compare Stage 1 classification scores and reference-vector matching."""
 
 import argparse
+import json
 import random
+import subprocess
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -64,11 +67,15 @@ def main():
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
     parser.add_argument("--split", choices=("validation", "test"), default="validation")
     parser.add_argument("--references-per-class", type=int, help="Override the bank size for validation only.")
+    parser.add_argument(
+        "--reference-matching", choices=("centroid", "nearest-reference"), default="centroid",
+        help="Use the mean reference vector or compare individual reference vectors on validation.",
+    )
     args = parser.parse_args()
     if args.references_per_class is not None and args.references_per_class < 1:
         parser.error("--references-per-class must be at least 1.")
-    if args.split == "test" and args.references_per_class is not None:
-        parser.error("Test uses the reference count fixed in the checkpoint.")
+    if args.split == "test" and (args.references_per_class is not None or args.reference_matching != "centroid"):
+        parser.error("Test uses the fixed reference count and centroid matching.")
 
     # Step 1. Read the model's original house split and normalization.
     if not args.checkpoint.is_file():
@@ -113,8 +120,7 @@ def main():
     if {event.class_id for event in evaluation_events} != set(range(len(appliances))):
         raise ValueError(f"The {args.split} data must contain all five appliance classes.")
 
-    # Step 2. Build one prototype per class from training-house reference events.
-    # Normalize each reference vector, average within its class, then normalize the mean.
+    # Step 2. Select the same training-house references for either matching method.
     references_per_class = args.references_per_class or checkpoint.get("references_per_class", training.REFERENCES_PER_CLASS)
     reference_groups = select_references(train_events, references_per_class, checkpoint["seed"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -133,16 +139,26 @@ def main():
     classifier_confusion = torch.zeros((class_count, class_count), dtype=torch.long, device=device)
     embedding_confusion = torch.zeros_like(classifier_confusion)
     with torch.inference_mode():
-        prototypes = []
+        reference_vectors = []
         for reference_events in reference_groups:
             reference_data = training.ReferenceDataset(reference_events, normalization)
             vectors = torch.stack([model.encode(waveform.to(device)) for waveform, _ in reference_data])
-            prototypes.append(normalize(vectors, dim=1).mean(dim=0))
-        prototypes = normalize(torch.stack(prototypes), dim=1)
+            reference_vectors.append(normalize(vectors, dim=1))
+        if args.reference_matching == "centroid":
+            # Build one vector per class by averaging normalized reference vectors.
+            prototypes = normalize(torch.stack([vectors.mean(dim=0) for vectors in reference_vectors]), dim=1)
 
         for waveforms, true_classes in evaluation_loader:
             vectors, class_scores = model([waveform.to(device) for waveform in waveforms])
-            cosine_scores = normalize(vectors, dim=1) @ prototypes.T
+            unit_vectors = normalize(vectors, dim=1)
+            if args.reference_matching == "centroid":
+                cosine_scores = unit_vectors @ prototypes.T
+            else:
+                # Each class score is the best match among that class's references.
+                cosine_scores = torch.stack([
+                    (unit_vectors @ class_references.T).amax(dim=1)
+                    for class_references in reference_vectors
+                ], dim=1)
             true_classes = true_classes.to(device)
             for scores, confusion in ((class_scores, classifier_confusion), (cosine_scores, embedding_confusion)):
                 predictions = scores.argmax(dim=1)
@@ -160,11 +176,20 @@ def main():
             split_note += " Warning: the classifier confusion matrix differs from the checkpoint."
 
     split_title = args.split.capitalize()
+    matching_note = (
+        "One mean reference vector per appliance."
+        if args.reference_matching == "centroid"
+        else "Each appliance is scored by its closest individual training reference."
+    )
+    output_suffix = "_test" if args.split == "test" else ""
+    if args.reference_matching == "nearest-reference":
+        output_suffix = "_nearest_reference"
     report = [
         f"# Stage 1 {args.split}: classifier and embedding matching", "",
         f"Checkpoint: `{args.checkpoint.name}` (epoch {checkpoint['epoch']}).",
         f"{split_title} events: **{len(evaluation_events):,}**. {split_note}",
         f"{split_title} houses: {', '.join(f'{dataset} H{house}' for dataset, house in sorted(evaluation_houses))}.",
+        f"Embedding matching: {matching_note}",
         "", "Each event receives one predicted appliance label.",
         "This evaluates labeled events; it does not detect ON/OFF times in aggregate power.",
         "", "## Training-house reference bank", "",
@@ -175,12 +200,21 @@ def main():
         house_names = ", ".join(f"{dataset} H{house}" for dataset, house in houses)
         report.append(f"| {appliance} | {len(references)} | {house_names} |")
 
+    figure_metrics = []
     for title, name, matrix in (
         ("Five-class classifier", "classifier", classifier_confusion),
         ("Cosine matching with the 128-dimensional embedding", "embedding", embedding_confusion),
     ):
         actual, correct, precision, recall, f1 = measure_confusion(matrix)
         accuracy = correct.sum() / actual.sum()
+        figure_metrics.append({
+            "matrix": matrix.tolist(),
+            "correct": correct.tolist(),
+            "recall": recall.tolist(),
+            "f1": f1.tolist(),
+            "accuracy": float(accuracy),
+            "macro_f1": float(f1.mean()),
+        })
         report.extend([
             "", f"## {title}", "",
             f"Overall accuracy: **{accuracy:.2%}** ({correct.sum():,}/{actual.sum():,}). "
@@ -201,14 +235,30 @@ def main():
         ])
         for appliance, row in zip(appliances, matrix):
             report.append(f"| {appliance} | " + " | ".join(str(count) for count in row) + " |")
-        suffix = "_test" if args.split == "test" else ""
-        csv_path = args.checkpoint.with_name(f"{name}{suffix}_confusion.csv")
+        csv_path = args.checkpoint.with_name(f"{name}{output_suffix}_confusion.csv")
         pd.DataFrame(matrix, index=appliances, columns=appliances).to_csv(csv_path, index_label="true_label")
         print(f"{title}: {correct.sum():,}/{actual.sum():,} correct | accuracy {accuracy:.2%} | macro-F1 {f1.mean():.3f}")
 
-    report_path = args.checkpoint.with_name(f"embedding_{args.split}.md")
+    report_suffix = "_nearest_reference" if args.reference_matching == "nearest-reference" else ""
+    report_path = args.checkpoint.with_name(f"embedding_{args.split}{report_suffix}.md")
     report_path.write_text("\n".join(report) + "\n", encoding="utf-8")
     print(f"Report: {report_path}")
+    figure_path = report_path.with_suffix(".png")
+    # Keep Matplotlib in its own process to avoid the PyTorch OpenMP conflict.
+    subprocess.run(
+        [sys.executable, str(Path(__file__).with_name("plot_embedding_evaluation.py")), str(figure_path)],
+        input=json.dumps({
+            "split": split_title,
+            "epoch": checkpoint["epoch"],
+            "event_count": len(evaluation_events),
+            "appliances": appliances,
+            "reference_matching": args.reference_matching,
+            "metrics": figure_metrics,
+        }),
+        text=True,
+        check=True,
+    )
+    print(f"Evaluation figure: {figure_path}")
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ else:
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_ROOT = PROJECT_ROOT / "dataset" / "appliance_waveform reference"
 RESULTS_ROOT = PROJECT_ROOT / "results" / "stage1"
-EXPERIMENT_NAME = "reference_encoder_8_3_3"
+EXPERIMENT_NAME = "reference_encoder_8_3_3_lr_plateau"
 
 SEED = 2026
 CHECK_DATA_ONLY = False           # Print data counts without starting training.
@@ -40,6 +40,10 @@ BATCH_SIZE = 20
 TRAIN_STEPS_PER_EPOCH = 100
 VALIDATION_EVENTS_PER_CLASS_HOUSE = 200  # None scores every validation event
 LEARNING_RATE = 3e-4
+LR_REDUCE_FACTOR = 0.5
+LR_PATIENCE = 2                  # Allow two unimproved epochs; reduce after the third.
+LR_MIN_IMPROVEMENT = 1e-3        # Smaller validation loss changes do not reset the scheduler.
+MIN_LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 1e-4
 NUM_WORKERS = 0                   # Keep waveform arrays in one process on Windows
 SAMPLE_SECONDS = 8
@@ -330,10 +334,13 @@ def main():
     model = ApplianceReferenceEncoder(use_batch_norm=USE_BATCH_NORM).to(device)
     loss_function = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=LR_REDUCE_FACTOR, patience=LR_PATIENCE,
+        threshold=LR_MIN_IMPROVEMENT, threshold_mode="abs", min_lr=MIN_LEARNING_RATE,
+    )
     best_validation_loss = float("inf")
     best_epoch = None
-    train_losses = []
-    validation_losses = []
+    training_history = []
     batch_limit = 1 if args.smoke else None  # None means use every batch.
     epoch_count = 1 if args.smoke else EPOCHS
 
@@ -351,6 +358,7 @@ def main():
 
     for epoch in range(1, epoch_count + 1):
         # Step 6. Train. Each batch gives one update to the model weights.
+        learning_rate = optimizer.param_groups[0]["lr"]
         model.train()
         train_loss_sum = 0.0
         train_event_count = 0
@@ -376,14 +384,27 @@ def main():
         if not np.isfinite(validation_loss):
             raise ValueError("Validation loss is not finite. Check the input waveforms and Z-score.")
         validation_macro_f1 = sum(validation_f1) / len(APPLIANCES)
-        train_losses.append(train_loss)
-        validation_losses.append(validation_loss)
+
+        # Reduce the step size for the next epoch when validation loss stalls.
+        scheduler.step(validation_loss)
+        next_learning_rate = optimizer.param_groups[0]["lr"]
+        training_history.append({
+            "epoch": epoch,
+            "learning_rate": learning_rate,
+            "next_learning_rate": next_learning_rate,
+            "train_ce": train_loss,
+            "validation_ce": validation_loss,
+            "validation_accuracy": validation_accuracy,
+            "validation_macro_f1": validation_macro_f1,
+        })
         print(
-            f"Epoch {epoch:02d} | train CE {train_loss:.4f} | "
+            f"Epoch {epoch:02d} | lr {learning_rate:.2e} | train CE {train_loss:.4f} | "
             f"val CE {validation_loss:.4f} | val accuracy {validation_accuracy:.3f} | "
             f"val macro-F1 {validation_macro_f1:.3f}",
             flush=True,
         )
+        if next_learning_rate < learning_rate:
+            print(f"  Learning rate for next epoch: {next_learning_rate:.2e}", flush=True)
         # Step 8. Keep the weights from the epoch with the lowest validation loss.
         if checkpoint is not None and validation_loss < best_validation_loss:
             best_validation_loss = validation_loss
@@ -394,6 +415,7 @@ def main():
                     "appliances": APPLIANCES,
                     "normalization": normalization,
                     "epoch": epoch,
+                    "learning_rate": learning_rate,
                     "val_loss": validation_loss,
                     "val_accuracy": validation_accuracy,
                     "val_macro_f1": validation_macro_f1,
@@ -418,15 +440,22 @@ def main():
             break
 
     if checkpoint is not None:
-        # Step 9. Save both loss curves after training. Each point is one epoch.
+        # Step 9. Save the learning rate, metrics and loss curves for comparison.
         if best_epoch is not None:
             print(f"Best Stage 1 checkpoint: {checkpoint}", flush=True)
+        history_path = checkpoint.with_name("training_history.csv")
+        pd.DataFrame(training_history).to_csv(history_path, index=False)
+        print(f"Training history: {history_path}", flush=True)
         plot_path = checkpoint.with_name("loss_curve.png")
         # Use a separate process to avoid PyTorch/Matplotlib OpenMP conflicts on Windows.
         plot_script = Path(__file__).with_name("plot_loss.py")
         subprocess.run(
             [sys.executable, str(plot_script), str(plot_path)],
-            input=json.dumps({"train": train_losses, "validation": validation_losses, "best_epoch": best_epoch}),
+            input=json.dumps({
+                "train": [row["train_ce"] for row in training_history],
+                "validation": [row["validation_ce"] for row in training_history],
+                "best_epoch": best_epoch,
+            }),
             text=True,
             check=True,
         )
