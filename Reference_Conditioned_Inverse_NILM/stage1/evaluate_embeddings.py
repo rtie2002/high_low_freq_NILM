@@ -18,7 +18,6 @@ else:
 
 
 DEFAULT_CHECKPOINT = training.RESULTS_ROOT / training.EXPERIMENT_NAME / "best.pt"
-REFERENCES_PER_CLASS = 5
 
 
 def select_references(train_events, references_per_class, seed):
@@ -63,10 +62,13 @@ def measure_confusion(matrix):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
-    parser.add_argument("--references-per-class", type=int, default=REFERENCES_PER_CLASS)
+    parser.add_argument("--split", choices=("validation", "test"), default="validation")
+    parser.add_argument("--references-per-class", type=int, help="Override the bank size for validation only.")
     args = parser.parse_args()
-    if args.references_per_class < 1:
+    if args.references_per_class is not None and args.references_per_class < 1:
         parser.error("--references-per-class must be at least 1.")
+    if args.split == "test" and args.references_per_class is not None:
+        parser.error("Test uses the reference count fixed in the checkpoint.")
 
     # Step 1. Read the model's original house split and normalization.
     if not args.checkpoint.is_file():
@@ -77,39 +79,53 @@ def main():
         raise ValueError("The checkpoint's appliance order does not match the reference dataset.")
     train_houses = {tuple(house) for house in checkpoint["train_houses"]}
     validation_houses = {tuple(house) for house in checkpoint["validation_houses"]}
-    if train_houses & validation_houses:
-        raise ValueError("Training and validation houses overlap in the checkpoint.")
+    test_houses = {tuple(house) for house in checkpoint.get("test_houses", [])}
+    if (train_houses & validation_houses or train_houses & test_houses or validation_houses & test_houses):
+        raise ValueError("Training, validation and test houses must be disjoint.")
+    manifest_hash = checkpoint.get("reference_manifest_sha256")
+    if args.split == "test" and (not test_houses or not manifest_hash or "references_per_class" not in checkpoint):
+        raise ValueError("This checkpoint has no fixed test split. Train a new model using the 8/3/3 split.")
+    if manifest_hash is not None and training.reference_manifest_hash(training.REFERENCE_ROOT) != manifest_hash:
+        raise ValueError("The manifest is different from the one used for training. Use the original export.")
 
     events = training.load_reference_events(training.REFERENCE_ROOT)
     train_events = [event for event in events if event.house in train_houses]
-    validation_events = [event for event in events if event.house in validation_houses]
-    saved_ids = checkpoint.get("validation_event_ids")
-    if saved_ids is None:
-        validation_events = training.select_validation_events(
-            validation_events, training.VALIDATION_EVENTS_PER_CLASS_HOUSE, checkpoint["seed"]
-        )
-        validation_note = "Reconstructed from the saved houses and seed using the current validation limit."
+    evaluation_houses = test_houses if args.split == "test" else validation_houses
+    evaluation_events = [event for event in events if event.house in evaluation_houses]
+    if {event.house for event in evaluation_events} != evaluation_houses:
+        raise ValueError(f"Some saved {args.split} houses are missing from the reference export.")
+
+    if args.split == "test":
+        split_note = "Used all events from the test houses fixed before training."
     else:
-        events_by_id = {event.event_id: event for event in validation_events}
-        if any(event_id not in events_by_id for event_id in saved_ids):
-            raise ValueError("Some saved validation events are missing. Use the original reference export.")
-        validation_events = [events_by_id[event_id] for event_id in saved_ids]
-        validation_note = "Used the validation event IDs saved in the checkpoint."
-    if {event.class_id for event in validation_events} != set(range(len(appliances))):
-        raise ValueError("The validation data must contain all five appliance classes.")
+        saved_ids = checkpoint.get("validation_event_ids")
+        if saved_ids is None:
+            evaluation_events = training.select_validation_events(
+                evaluation_events, training.VALIDATION_EVENTS_PER_CLASS_HOUSE, checkpoint["seed"]
+            )
+            split_note = "Reconstructed from the saved houses and seed using the current validation limit."
+        else:
+            events_by_id = {event.event_id: event for event in evaluation_events}
+            if any(event_id not in events_by_id for event_id in saved_ids):
+                raise ValueError("Some saved validation events are missing. Use the original reference export.")
+            evaluation_events = [events_by_id[event_id] for event_id in saved_ids]
+            split_note = "Used the validation event IDs saved in the checkpoint."
+    if {event.class_id for event in evaluation_events} != set(range(len(appliances))):
+        raise ValueError(f"The {args.split} data must contain all five appliance classes.")
 
     # Step 2. Build one prototype per class from training-house reference events.
     # Normalize each reference vector, average within its class, then normalize the mean.
-    reference_groups = select_references(train_events, args.references_per_class, checkpoint["seed"])
+    references_per_class = args.references_per_class or checkpoint.get("references_per_class", training.REFERENCES_PER_CLASS)
+    reference_groups = select_references(train_events, references_per_class, checkpoint["seed"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = training.ApplianceReferenceEncoder(use_batch_norm=checkpoint.get("use_batch_norm", True))
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device).eval()
 
-    # Step 3. Make both predictions for the exact same validation waveforms.
+    # Step 3. Make both predictions for the exact same evaluation waveforms.
     normalization = checkpoint["normalization"]
-    validation_loader = DataLoader(
-        training.ReferenceDataset(validation_events, normalization),
+    evaluation_loader = DataLoader(
+        training.ReferenceDataset(evaluation_events, normalization),
         batch_size=training.BATCH_SIZE,
         collate_fn=training.collate_events,
     )
@@ -124,7 +140,7 @@ def main():
             prototypes.append(normalize(vectors, dim=1).mean(dim=0))
         prototypes = normalize(torch.stack(prototypes), dim=1)
 
-        for waveforms, true_classes in validation_loader:
+        for waveforms, true_classes in evaluation_loader:
             vectors, class_scores = model([waveform.to(device) for waveform in waveforms])
             cosine_scores = normalize(vectors, dim=1) @ prototypes.T
             true_classes = true_classes.to(device)
@@ -136,25 +152,28 @@ def main():
     # Step 4. Write the report and machine-readable confusion counts beside best.pt.
     classifier_confusion = classifier_confusion.cpu().numpy()
     embedding_confusion = embedding_confusion.cpu().numpy()
-    saved_confusion = checkpoint.get("val_confusion_matrix")
+    saved_confusion = checkpoint.get("val_confusion_matrix") if args.split == "validation" else None
     if saved_confusion is not None:
         if np.array_equal(classifier_confusion, saved_confusion):
-            validation_note += " The classifier confusion matrix matches the checkpoint."
+            split_note += " The classifier confusion matrix matches the checkpoint."
         else:
-            validation_note += " Warning: the classifier confusion matrix differs from the checkpoint."
+            split_note += " Warning: the classifier confusion matrix differs from the checkpoint."
 
+    split_title = args.split.capitalize()
     report = [
-        "# Stage 1 validation: classifier and embedding matching", "",
+        f"# Stage 1 {args.split}: classifier and embedding matching", "",
         f"Checkpoint: `{args.checkpoint.name}` (epoch {checkpoint['epoch']}).",
-        f"Validation events: **{len(validation_events):,}**. {validation_note}",
-        f"Validation houses: {', '.join(f'{dataset} H{house}' for dataset, house in sorted(validation_houses))}.",
-        "", "Each validation event receives one predicted appliance label.",
+        f"{split_title} events: **{len(evaluation_events):,}**. {split_note}",
+        f"{split_title} houses: {', '.join(f'{dataset} H{house}' for dataset, house in sorted(evaluation_houses))}.",
+        "", "Each event receives one predicted appliance label.",
         "This evaluates labeled events; it does not detect ON/OFF times in aggregate power.",
         "", "## Training-house reference bank", "",
         "| Appliance | Reference events | Reference houses |", "|---|---:|---:|",
     ]
     for appliance, references in zip(appliances, reference_groups):
-        report.append(f"| {appliance} | {len(references)} | {len({event.house for event in references})} |")
+        houses = sorted({event.house for event in references})
+        house_names = ", ".join(f"{dataset} H{house}" for dataset, house in houses)
+        report.append(f"| {appliance} | {len(references)} | {house_names} |")
 
     for title, name, matrix in (
         ("Five-class classifier", "classifier", classifier_confusion),
@@ -182,12 +201,12 @@ def main():
         ])
         for appliance, row in zip(appliances, matrix):
             report.append(f"| {appliance} | " + " | ".join(str(count) for count in row) + " |")
-        pd.DataFrame(matrix, index=appliances, columns=appliances).to_csv(
-            args.checkpoint.with_name(f"{name}_confusion.csv"), index_label="true_label"
-        )
+        suffix = "_test" if args.split == "test" else ""
+        csv_path = args.checkpoint.with_name(f"{name}{suffix}_confusion.csv")
+        pd.DataFrame(matrix, index=appliances, columns=appliances).to_csv(csv_path, index_label="true_label")
         print(f"{title}: {correct.sum():,}/{actual.sum():,} correct | accuracy {accuracy:.2%} | macro-F1 {f1.mean():.3f}")
 
-    report_path = args.checkpoint.with_name("embedding_validation.md")
+    report_path = args.checkpoint.with_name(f"embedding_{args.split}.md")
     report_path.write_text("\n".join(report) + "\n", encoding="utf-8")
     print(f"Report: {report_path}")
 

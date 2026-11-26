@@ -7,6 +7,7 @@ import subprocess
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
+from hashlib import sha256
 from itertools import islice
 from pathlib import Path
 
@@ -28,7 +29,7 @@ else:
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_ROOT = PROJECT_ROOT / "dataset" / "appliance_waveform reference"
 RESULTS_ROOT = PROJECT_ROOT / "results" / "stage1"
-EXPERIMENT_NAME = "reference_encoder_house_balanced"
+EXPERIMENT_NAME = "reference_encoder_8_3_3"
 
 SEED = 2026
 CHECK_DATA_ONLY = False           # Print data counts without starting training.
@@ -42,8 +43,14 @@ LEARNING_RATE = 3e-4
 WEIGHT_DECAY = 1e-4
 NUM_WORKERS = 0                   # Keep waveform arrays in one process on Windows
 SAMPLE_SECONDS = 8
+REFERENCES_PER_CLASS = 5        # Fixed before test evaluation.
 
+STAGE1_TRAIN_HOUSES = {
+    ("refit", 1), ("refit", 8), ("refit", 12), ("refit", 17),
+    ("refit", 18), ("refit", 19), ("refit", 21), ("ukdale", 3),
+}
 STAGE1_VALIDATION_HOUSES = {("refit", 6), ("refit", 7), ("refit", 10)}
+STAGE1_TEST_HOUSES = {("refit", 4), ("refit", 13), ("refit", 16)}
 MART_RESERVED_HOUSES = {("refit", 2), ("refit", 20), ("ukdale", 2), ("ukdale", 5)}
 
 
@@ -159,6 +166,11 @@ def select_validation_events(events, limit, seed):
     return selected_events
 
 
+def reference_manifest_hash(root: Path) -> str:
+    """Identify the event manifest used by a checkpoint."""
+    return sha256((root / "manifest.csv").read_bytes()).hexdigest()
+
+
 # ============================================================
 # Validation: calculate loss, accuracy and per-appliance F1.
 # ============================================================
@@ -203,36 +215,45 @@ def main():
 
     if not check_data_only and not torch.cuda.is_available():
         raise SystemExit("CUDA is required for Stage 1 training.")
-    if STAGE1_VALIDATION_HOUSES & MART_RESERVED_HOUSES:
-        raise ValueError("Stage 1 validation houses must not include MART-reserved houses.")
+    all_split_houses = STAGE1_TRAIN_HOUSES | STAGE1_VALIDATION_HOUSES | STAGE1_TEST_HOUSES
+    split_house_count = len(STAGE1_TRAIN_HOUSES) + len(STAGE1_VALIDATION_HOUSES) + len(STAGE1_TEST_HOUSES)
+    if len(all_split_houses) != split_house_count or all_split_houses & MART_RESERVED_HOUSES:
+        raise ValueError("Stage 1 house splits must be disjoint and exclude MART-reserved houses.")
     torch.manual_seed(SEED)
 
-    # Step 1. Read already-selected events and hold out whole houses.
+    # Step 1. Assign whole houses before fitting anything. The test partition
+    # is used here only to check coverage, and never enters a DataLoader.
+    manifest_hash = reference_manifest_hash(REFERENCE_ROOT)
     events = load_reference_events(REFERENCE_ROOT)
-    train_events = [event for event in events if event.house not in STAGE1_VALIDATION_HOUSES]
+    train_events = [event for event in events if event.house in STAGE1_TRAIN_HOUSES]
     validation_events = [event for event in events if event.house in STAGE1_VALIDATION_HOUSES]
+    test_events = [event for event in events if event.house in STAGE1_TEST_HOUSES]
 
-    train_class_counts = np.bincount(
-        [event.class_id for event in train_events], minlength=len(APPLIANCES)
-    )
-    validation_class_counts = np.bincount(
-        [event.class_id for event in validation_events], minlength=len(APPLIANCES)
-    )
-    for split_name, class_counts in (
-        ("Train", train_class_counts), ("Validation", validation_class_counts),
+    for split_name, split_events, expected_houses in (
+        ("Train", train_events, STAGE1_TRAIN_HOUSES),
+        ("Validation", validation_events, STAGE1_VALIDATION_HOUSES),
+        ("Test (held out)", test_events, STAGE1_TEST_HOUSES),
     ):
+        class_counts = np.bincount(
+            [event.class_id for event in split_events], minlength=len(APPLIANCES)
+        )
+        present_houses = {event.house for event in split_events}
+        if present_houses != expected_houses:
+            raise ValueError(f"{split_name} has missing houses: {sorted(expected_houses - present_houses)}")
         counts_by_appliance = dict(zip(APPLIANCES, class_counts.tolist()))
         if (class_counts == 0).any():
             raise ValueError(f"{split_name} must contain all five classes: {counts_by_appliance}")
-        print(f"{split_name}: {class_counts.sum():,} events | {counts_by_appliance}", flush=True)
-
-    validation_houses_by_class = [set() for _ in APPLIANCES]
-    for event in validation_events:
-        validation_houses_by_class[event.class_id].add(event.house)
-    for appliance, houses in zip(APPLIANCES, validation_houses_by_class):
-        print(f"  Validation {appliance}: {sorted(houses)}", flush=True)
-        if len(houses) == 1:
-            print("    Warning: this class is only validated on one house.", flush=True)
+        print(f"{split_name}: {len(present_houses)} houses | {len(split_events):,} events | {counts_by_appliance}", flush=True)
+        print(f"  Houses: {sorted(present_houses)}", flush=True)
+        if split_name != "Train":
+            houses_by_class = [set() for _ in APPLIANCES]
+            for event in split_events:
+                houses_by_class[event.class_id].add(event.house)
+            for appliance, houses in zip(APPLIANCES, houses_by_class):
+                print(f"  {appliance}: {sorted(houses)}", flush=True)
+                if len(houses) < 2:
+                    raise ValueError(f"{split_name} needs at least two houses for {appliance}.")
+    del test_events, split_events, events
 
     first_event = train_events[0]
     sample_count = len(first_event.power_watts)
@@ -382,6 +403,9 @@ def main():
                     "train_houses": sorted({event.house for event in train_events}),
                     "validation_houses": sorted({event.house for event in validation_events}),
                     "validation_event_ids": [event.event_id for event in validation_events],
+                    "test_houses": sorted(STAGE1_TEST_HOUSES),
+                    "reference_manifest_sha256": manifest_hash,
+                    "references_per_class": REFERENCES_PER_CLASS,
                     "sampling_interval_sec": SAMPLE_SECONDS,
                     "seed": SEED,
                 },

@@ -8,7 +8,7 @@ Stage 1 的任务是把一次**已知类别的单电器事件**编码成一个 1
 
 当前本地快照记录了 **134,863 个事件**，其中 **2,547 个事件**标为边界截断或缺少一侧 OFF 上下文。训练会拒绝这样的旧导出。训练机的数据可能已经重新生成，可用 `--check-data-only` 检查当前版本。 [事件提取器](<dataset/appliance_waveform reference/applainces_event_selection.py>)
 
-首轮 H6/H10 实验的训练交叉熵从 0.519 降到 0.055，验证交叉熵却从 1.611 升到 2.866（第 15 轮）。新版加入 H7，默认关闭逐事件 BN，并改为按类别和房屋平衡。新版的跨房屋成绩仍需训练验证。
+首轮 H6/H10 实验验证交叉熵从 1.611 升到 2.866（第 15 轮）。后续加入 H7、关闭逐事件 BN 并平衡类别与房屋后，第 7 轮验证准确率达到 92.2%。这项成绩来自原有训练/验证协议。当前 8／3／3 划分新留出 H4/H13/H16，需重新训练并另行评分。
 
 ## 1. 原始数据怎样变成一个 batch？
 
@@ -99,10 +99,22 @@ optimizer.step()                             # AdamW 根据梯度更新权重
 
 | 用途 | 当前规则 |
 |---|---|
+| Stage 1 训练 | REFIT H1、H8、H12、H17、H18、H19、H21，UK-DALE H3。根据与训练机日志吻合的清单重算，训练池有 65,184 条事件 |
 | Stage 1 验证 | REFIT H6、H7 和 H10 的参考事件。三栋房屋完全留出。H7 为冰箱和水壶各增加一个验证房屋 |
-| Stage 1 训练 | 清单里其他有资格的参考房屋 |
+| Stage 1 测试 | REFIT H4、H13、H16，测试池有 34,361 条事件。整个测试集在训练完、冻结 checkpoint 之后评分 |
 | Stage 1 全程排除 | REFIT H2、H20 和 UK-DALE H2、H5，保留给现有 MART 协议 |
 | 每轮实际验证样本 | 每个「类别 × 验证房屋」最多固定抽 200 条。全量验证可把 `VALIDATION_EVENTS_PER_CLASS_HOUSE` 设为 `None` |
 | Stage 1.5 参考库 | 从允许的训练来源选事件，并使用保存的训练 Z-score 和编码器权重 |
 
-按整屋划分更贴近「能否迁移到新房屋」的问题。H6/H7/H10 用于挑 checkpoint，所以承担验证用途。如果要建立独立的 Stage 1 测试结果，应再预留未参与训练和选模型的房屋。加入 H7 后，分数只能和采用同一划分的基线直接比较。 [当前配置](stage1/training.py)
+按整屋划分更贴近「能否迁移到新房屋」的问题。H6/H7/H10 用于挑 checkpoint。H4/H13/H16 从头训练时排除在训练、Z-score 和参考库之外。旧的第 7 轮模型训练时见过这些测试房屋，只能用来报告旧划分的验证结果。当前测试集约八成事件来自冰箱，正式报告应优先看宏平均 F1、每类 F1 和混淆矩阵，并同时报告总体准确率。 [当前配置](stage1/training.py)
+
+在项目目录运行以下命令。第二条从头训练，第三条报告同一验证子集，第四条报告全部测试事件。
+
+```powershell
+python stage1/training.py --check-data-only
+python stage1/training.py
+python stage1/evaluate_embeddings.py --split validation
+python stage1/evaluate_embeddings.py --split test
+```
+
+结果保存在 `results/stage1/reference_encoder_8_3_3/`。默认评估该目录下的 `best.pt`。如果训练生成了带编号的新目录，用 `--checkpoint` 指向对应权重。新版 checkpoint 固定三个房屋集合、验证事件 ID、每类参考数和训练时所用清单的哈希。评估使用相同 Z-score，并按固定种子从训练房屋生成参考库。测试报告为 `embedding_test.md`，包含五分类头与余弦匹配的结果及两张混淆矩阵。 [向量评估脚本](stage1/evaluate_embeddings.py)
