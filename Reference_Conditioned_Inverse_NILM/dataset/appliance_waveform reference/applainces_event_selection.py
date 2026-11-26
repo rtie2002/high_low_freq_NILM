@@ -49,8 +49,12 @@ EVENT_RULES = {
 }
 
 SAMPLE_SECONDS = 8
-MAX_RECORDING_GAP_SEC = SAMPLE_SECONDS  # Any missing grid bin splits events.
 MAX_RAW_FILL_GAP_SEC = 16  # Only short, bounded polling gaps may be held.
+
+# A long near-standby interval between two plausible programs makes a
+# washer/dishwasher reference ambiguous. Screen it rather than inventing a cut.
+AMBIGUOUS_IDLE_W = 5
+AMBIGUOUS_IDLE_SEC = 600
 
 # Conservative screening, NOT the strict official Issues rule. These are
 # adjustable quality-control heuristics, not universal appliance physics.
@@ -80,10 +84,12 @@ PROGRESS_EVERY_SECONDS = 5
 #
 # REFIT numbers refer to ApplianceN columns.
 # UK-DALE numbers refer to channel_N.dat files.
+# REFIT H12 A4 and A3 conflict with the cleaned release's appliance list.
+# Leave both out of the reference bank until the local H12 version is verified.
 # ============================================================
 REFERENCE_CHANNELS = {
     "refit": {
-        "kettle": {4: [9], 6: [7], 7: [9], 8: [9], 12: [4], 13: [9], 19: [5]},
+        "kettle": {4: [9], 6: [7], 7: [9], 8: [9], 13: [9], 19: [5]},
         "fridge": {
             1: [1], 4: [1, 3], 7: [1], 8: [1], 10: [4], 12: [1],
             16: [1, 2], 17: [2], 18: [1, 3], 21: [1],
@@ -93,7 +99,7 @@ REFERENCE_CHANNELS = {
             1: [5], 4: [4, 5], 6: [2], 7: [5], 8: [4], 10: [5],
             13: [3], 16: [5], 17: [4], 18: [5], 19: [2], 21: [3],
         },
-        "microwave": {4: [8], 6: [6], 8: [8], 10: [8], 12: [3], 13: [8], 17: [7], 18: [9], 19: [4]},
+        "microwave": {4: [8], 6: [6], 8: [8], 10: [8], 13: [8], 17: [7], 18: [9], 19: [4]},
     },
     "ukdale": {
         "kettle": {3: [2]},
@@ -137,8 +143,10 @@ def resample_power(data, columns):
     bounded[positions] &= (
         raw_seconds[following[positions]] - raw_seconds[previous[positions]] <= MAX_RAW_FILL_GAP_SEC
     )
-    fill = bins.size().eq(0).to_numpy() & bounded
+    sample_observed = bins.size().gt(0).to_numpy()
+    fill = ~sample_observed & bounded
     grid.loc[fill] = grid.ffill(limit=1).loc[fill]
+    grid["sample_observed"] = sample_observed
     grid.index.name = "timestamp"
     return grid
 
@@ -158,7 +166,8 @@ def read_refit(house: int, channel: int) -> pd.DataFrame:
     """Read one REFIT appliance channel and its aligned aggregate."""
     appliance_column = f"Appliance{channel}"
     data = read_refit_house(house)
-    return data[["timestamp", "unix_time", "aggregate_power_w", appliance_column, "refit_issues"]].rename(
+    return data[["timestamp", "unix_time", "aggregate_power_w", appliance_column, "refit_issues",
+                 "sample_observed"]].rename(
         columns={appliance_column: "appliance_power_w"}
     ).dropna(subset=["aggregate_power_w", "appliance_power_w"]).reset_index(drop=True)
 
@@ -174,7 +183,7 @@ def read_ukdale(house: int, channel: int) -> pd.DataFrame:
     house_dir = RAW_DATA_ROOT / "UK_DALE" / f"house_{house}"
     aggregate = read_ukdale_channel(
         house_dir / "channel_1.dat", "aggregate_power_w"
-    )
+    )[["aggregate_power_w"]]
     appliance = read_ukdale_channel(
         house_dir / f"channel_{channel}.dat", "appliance_power_w"
     )
@@ -235,7 +244,7 @@ def find_on_events(
 
     # Timestamp discontinuities start a new recording sequence.
     dt = np.diff(unix_time)
-    sequence_breaks = np.flatnonzero((dt > MAX_RECORDING_GAP_SEC) | (dt <= 0)) + 1
+    sequence_breaks = np.flatnonzero(dt != SAMPLE_SECONDS) + 1
     boundaries = np.r_[0, sequence_breaks, len(power_w)]
 
     for sequence_start, sequence_end in zip(boundaries[:-1], boundaries[1:]):
@@ -266,7 +275,7 @@ def available_off_context(
     while pre < max_pre and on_start - pre - 1 >= 0:
         if is_on[on_start - pre - 1]:
             break
-        if not 0 < unix_time[on_start - pre] - unix_time[on_start - pre - 1] <= MAX_RECORDING_GAP_SEC:
+        if unix_time[on_start - pre] - unix_time[on_start - pre - 1] != SAMPLE_SECONDS:
             break
         pre += 1
 
@@ -274,10 +283,31 @@ def available_off_context(
     while post < max_post and on_end + post + 1 < len(is_on):
         if is_on[on_end + post + 1]:
             break
-        if not 0 < unix_time[on_end + post + 1] - unix_time[on_end + post] <= MAX_RECORDING_GAP_SEC:
+        if unix_time[on_end + post + 1] - unix_time[on_end + post] != SAMPLE_SECONDS:
             break
         post += 1
     return pre, post
+
+
+def has_ambiguous_idle_gap(power_w, above_threshold, min_cycle_sec):
+    """Check for an idle gap with a plausible program-length span on each side."""
+    idle = power_w <= AMBIGUOUS_IDLE_W
+    edges = np.diff(np.r_[0, idle.astype(np.int8), 0])
+    gap_starts = np.flatnonzero(edges == 1)
+    gap_ends = np.flatnonzero(edges == -1)
+    active = np.flatnonzero(above_threshold)
+    for start, end in zip(gap_starts, gap_ends):
+        if (end - start) * SAMPLE_SECONDS < AMBIGUOUS_IDLE_SEC:
+            continue
+        left = np.searchsorted(active, start)
+        right = np.searchsorted(active, end)
+        if left == 0 or right == len(active):
+            continue
+        left_sec = (active[left - 1] - active[0] + 1) * SAMPLE_SECONDS
+        right_sec = (active[-1] - active[right] + 1) * SAMPLE_SECONDS
+        if min(left_sec, right_sec) >= min_cycle_sec:
+            return True
+    return False
 
 
 def longest_severe_mismatch(power_w, aggregate_w, unix_time, right_edges):
@@ -323,6 +353,7 @@ def save_source_events(
     """Append events from one source channel to its appliance CSV."""
     power_w = data["appliance_power_w"].to_numpy(dtype=np.float64)
     unix_time = data["unix_time"].to_numpy(dtype=np.int64)
+    sample_observed = data["sample_observed"].to_numpy(dtype=bool)
     print("  Detecting ON events...", flush=True)
     is_on, events = find_on_events(power_w, unix_time, appliance)
     threshold = EVENT_RULES[appliance]["threshold_w"]
@@ -332,18 +363,32 @@ def save_source_events(
     right_edges = sample_end_times(unix_time)
     max_pre, max_post = OFF_CONTEXT_SAMPLES[appliance]
     minimum_context = {"fridge": FRIDGE_MIN_OFF_CONTEXT_SAMPLES,
-                       "dishwasher": DISHWASHER_MIN_OFF_CONTEXT_SAMPLES}.get(appliance)
-    if minimum_context is not None:
-        complete = []
+                       "dishwasher": DISHWASHER_MIN_OFF_CONTEXT_SAMPLES}.get(appliance, 1)
+    off_context = {}
+    complete = []
+    for start, end in events:
+        pre, post = available_off_context(
+            context_blocked, start, end, max_pre, max_post, unix_time
+        )
+        # A forward-held bin can preserve continuity, but cannot establish OFF.
+        if (pre >= minimum_context and post >= minimum_context
+                and sample_observed[start - pre:start].any()
+                and sample_observed[end + 1:end + 1 + post].any()):
+            complete.append((start, end))
+            off_context[start] = (pre, post)
+    print(f"  Completeness: {len(events) - len(complete):,} references excluded", flush=True)
+    events = complete
+
+    if appliance in ("dishwasher", "washingmachine"):
+        min_cycle_sec = EVENT_RULES[appliance]["min_on_sec"]
+        retained = []
         for start, end in events:
-            pre, post = available_off_context(
-                context_blocked, start, end, max_pre, max_post, unix_time
-            )
-            if pre >= minimum_context and post >= minimum_context:
-                complete.append((start, end))
-        print(f"  {appliance} completeness: {len(events) - len(complete):,} incomplete references excluded",
+            window = slice(start, end + 1)
+            if not has_ambiguous_idle_gap(power_w[window], above_threshold[window], min_cycle_sec):
+                retained.append((start, end))
+        print(f"  Ambiguous cycle boundaries: {len(events) - len(retained):,} references excluded",
               flush=True)
-        events = complete
+        events = retained
     mismatch_seconds = {}
     mismatch_fraction = {}
     if dataset == "refit":
@@ -366,8 +411,6 @@ def save_source_events(
                   flush=True)
             events = retained
     print(f"  Found {len(events):,} events; writing CSV...", flush=True)
-    max_pre, max_post = OFF_CONTEXT_SAMPLES[appliance]
-
     appliance_dir = OUTPUT_ROOT / appliance
     appliance_dir.mkdir(parents=True, exist_ok=True)
     events_file = appliance_dir / "events.csv"
@@ -383,9 +426,7 @@ def save_source_events(
     write_header = not events_file.exists()
     with events_file.open("a", encoding="utf-8", newline="") as stream:
         for event_number, (on_start, on_end) in enumerate(events, start=1):
-            off_pre, off_post = available_off_context(
-                context_blocked, on_start, on_end, max_pre, max_post, unix_time
-            )
+            off_pre, off_post = off_context[on_start]
             ref_start = on_start - off_pre
             ref_end = on_end + off_post
             event_id = (
@@ -395,8 +436,8 @@ def save_source_events(
 
             on_power = power_w[on_start:on_end + 1]
             duration_sec = int(right_edges[on_end] - unix_time[on_start])
-            start_censored = on_start == 0 or not (
-                0 < unix_time[on_start] - unix_time[on_start - 1] <= MAX_RECORDING_GAP_SEC
+            start_censored = on_start == 0 or (
+                unix_time[on_start] - unix_time[on_start - 1] != SAMPLE_SECONDS
             )
             end_censored = on_end == len(unix_time) - 1 or (
                 unix_time[on_end + 1] - unix_time[on_end] != SAMPLE_SECONDS
@@ -503,7 +544,7 @@ def main() -> None:
             if dataset == "refit":
                 data = house_data[[
                     "timestamp", "unix_time", "aggregate_power_w", f"Appliance{channel}",
-                    "refit_issues",
+                    "refit_issues", "sample_observed",
                 ]].rename(columns={f"Appliance{channel}": "appliance_power_w"}).dropna(
                     subset=["aggregate_power_w", "appliance_power_w"]
                 ).reset_index(drop=True)

@@ -63,12 +63,20 @@ the manifest. `duration_censored` marks events touching a recording boundary;
 their duration may be incomplete. Minimum duration tests use these same edges.
 
 An internal OFF gap is measured from its first below-threshold timestamp to the
-next above-threshold timestamp. Events and context cannot cross a recording gap
-larger than eight seconds or a nonpositive time step.
+next above-threshold timestamp. Events and context require consecutive
+eight-second timestamps. For dishwasher and washing machine references,
+exclude events with a continuous near-idle interval (at most 5 W for at least
+600 seconds) between two active spans that each meet the appliance's minimum
+event duration. This flags an ambiguous program boundary without assigning a
+new start or end time. The thresholds are conservative screening parameters.
 
 OFF context stops at any above-threshold or invalid appliance sample, even when
 that sample was removed from the retained event mask as a short activation.
-Context lengths are maxima, not required lengths. Missing context is not padded.
+All references need at least one actually measured OFF bin on each side.
+Fridge and dishwasher references also require at least eight and sixteen
+contiguous OFF-context bins per side, respectively. A forward-held bin can be
+part of this context but cannot provide the only evidence of an OFF boundary.
+Missing context is not padded. Older exports can still contain censored events.
 
 `peak_power_w` and `mean_on_power_w` retain their existing meaning: maximum and
 arithmetic sample mean over the complete event, including joined internal OFF
