@@ -143,6 +143,22 @@ def collate_events(batch) -> tuple[list[torch.Tensor], torch.Tensor]:
     return list(waveforms), torch.tensor(class_ids, dtype=torch.long)
 
 
+def select_validation_events(events, limit, seed):
+    """Use the same fixed sample for training-time and later validation."""
+    if limit is None:
+        return events
+    groups = defaultdict(list)
+    for event in events:
+        groups[event.class_id, event.house].append(event)
+
+    validation_random = random.Random(seed)
+    selected_events = []
+    for group in groups.values():
+        selected_events.extend(validation_random.sample(group, min(len(group), limit)))
+    validation_random.shuffle(selected_events)
+    return selected_events
+
+
 # ============================================================
 # Validation: calculate loss, accuracy and per-appliance F1.
 # ============================================================
@@ -238,17 +254,7 @@ def main():
     )
 
     # Step 2. Select the validation subset once, then reuse it in every epoch.
-    if VALIDATION_EVENTS_PER_CLASS_HOUSE is not None:
-        validation_groups = defaultdict(list)
-        for event in validation_events:
-            validation_groups[event.class_id, event.house].append(event)
-
-        validation_random = random.Random(SEED)
-        validation_events = []
-        for group in validation_groups.values():
-            count = min(len(group), VALIDATION_EVENTS_PER_CLASS_HOUSE)
-            validation_events.extend(validation_random.sample(group, count))
-        validation_random.shuffle(validation_events)
+    validation_events = select_validation_events(validation_events, VALIDATION_EVENTS_PER_CLASS_HOUSE, SEED)
     print(f"Validation used each epoch: {len(validation_events):,} events.", flush=True)
 
     # Step 3. Give equal weight to each appliance, then each house in that
@@ -375,6 +381,7 @@ def main():
                     "use_batch_norm": USE_BATCH_NORM,
                     "train_houses": sorted({event.house for event in train_events}),
                     "validation_houses": sorted({event.house for event in validation_events}),
+                    "validation_event_ids": [event.event_id for event in validation_events],
                     "sampling_interval_sec": SAMPLE_SECONDS,
                     "seed": SEED,
                 },
