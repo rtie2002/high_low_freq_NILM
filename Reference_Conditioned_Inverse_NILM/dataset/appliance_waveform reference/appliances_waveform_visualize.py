@@ -159,9 +159,11 @@ class EventViewer:
 
         plot_frame = ttk.Frame(body)
         body.add(plot_frame, weight=4)
-        self.figure = Figure(figsize=(10, 7), constrained_layout=True)
-        self.axes = self.figure.subplots(3, 1, sharex=True,
-                                         gridspec_kw={"height_ratios": [3, 3, 1]})
+        # The appliance waveform already shows aggregate power as an optional
+        # grey background. A separate aggregate-only plot repeated that view.
+        self.figure = Figure(figsize=(10, 6), constrained_layout=True)
+        self.axes = self.figure.subplots(2, 1, sharex=True,
+                                         gridspec_kw={"height_ratios": [4, 1]})
         self.canvas = FigureCanvasTkAgg(self.figure, master=plot_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
         NavigationToolbar2Tk(self.canvas, plot_frame)
@@ -327,25 +329,23 @@ class EventViewer:
             on_end_time = event.loc[on, "sample_end_unix"].iloc[-1] - event["unix_time"].iloc[0]
         else:
             on_end_time = on_time[-1]
-        for ax, column, label, color in zip(
-            self.axes, ["aggregate_power_w", "appliance_power_w"],
-            ["Aggregate", self.appliance.get().capitalize()], ["#777777", "#1678b4"]
-        ):
-            ax.clear()
-            if column == "appliance_power_w" and self.show_aggregate_background:
-                ax.plot(seconds, event["aggregate_power_w"], color="#999999",
-                        alpha=0.55, linewidth=1.0, zorder=1,
-                        drawstyle="steps-post" if self.plot_style == "step" else "default",
-                        label="Aggregate (background)")
-            ax.plot(seconds, event[column], marker="o", markersize=3,
-                    drawstyle="steps-post" if self.plot_style == "step" else "default",
-                    color=color, linewidth=1.2, zorder=2, label=label + " (sample values)")
-            if len(on_time):
-                ax.axvspan(on_time[0], on_end_time,
-                           color="#74bf83", alpha=0.22, label="ON event")
-            ax.set_ylabel("Power (W)")
-            ax.grid(alpha=0.2)
-            ax.legend(loc="upper right")
+        power_ax = self.axes[0]
+        power_ax.clear()
+        if self.show_aggregate_background:
+            power_ax.plot(seconds, event["aggregate_power_w"], color="#999999",
+                          alpha=0.55, linewidth=1.0, zorder=1,
+                          drawstyle="steps-post" if self.plot_style == "step" else "default",
+                          label="Aggregate (background)")
+        power_ax.plot(seconds, event["appliance_power_w"], marker="o", markersize=3,
+                      drawstyle="steps-post" if self.plot_style == "step" else "default",
+                      color="#1678b4", linewidth=1.2, zorder=2,
+                      label=self.appliance.get().capitalize() + " (sample values)")
+        if len(on_time):
+            power_ax.axvspan(on_time[0], on_end_time,
+                             color="#74bf83", alpha=0.22, label="ON event")
+        power_ax.set_ylabel("Power (W)")
+        power_ax.grid(alpha=0.2)
+        power_ax.legend(loc="upper right")
         labels_ax = self.axes[-1]
         labels_ax.clear()
         labels_ax.step(seconds, on.astype(int), where="post", label="Event ON", color="#348a4c")
