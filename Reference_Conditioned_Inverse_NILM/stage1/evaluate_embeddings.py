@@ -124,7 +124,10 @@ def main():
     references_per_class = args.references_per_class or checkpoint.get("references_per_class", training.REFERENCES_PER_CLASS)
     reference_groups = select_references(train_events, references_per_class, checkpoint["seed"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = training.ApplianceReferenceEncoder(use_batch_norm=checkpoint.get("use_batch_norm", True))
+    temporal_pooling = checkpoint.get("temporal_pooling", False)
+    model = training.ApplianceReferenceEncoder(
+        use_batch_norm=checkpoint.get("use_batch_norm", True), temporal_pooling=temporal_pooling,
+    )
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device).eval()
 
@@ -189,6 +192,7 @@ def main():
         f"Checkpoint: `{args.checkpoint.name}` (epoch {checkpoint['epoch']}).",
         f"{split_title} events: **{len(evaluation_events):,}**. {split_note}",
         f"{split_title} houses: {', '.join(f'{dataset} H{house}' for dataset, house in sorted(evaluation_houses))}.",
+        f"Encoder pooling: {'Whole event plus three time regions' if temporal_pooling else 'Whole event'}.",
         f"Embedding matching: {matching_note}",
         "", "Each event receives one predicted appliance label.",
         "This evaluates labeled events; it does not detect ON/OFF times in aggregate power.",

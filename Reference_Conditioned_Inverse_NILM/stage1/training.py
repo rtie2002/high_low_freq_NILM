@@ -29,13 +29,14 @@ else:
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_ROOT = PROJECT_ROOT / "dataset" / "appliance_waveform reference"
 RESULTS_ROOT = PROJECT_ROOT / "results" / "stage1"
-EXPERIMENT_NAME = "reference_encoder_8_3_3_lr_plateau"
+EXPERIMENT_NAME = "reference_encoder_8_3_3_temporal_pooling"
 
 SEED = 2026
 CHECK_DATA_ONLY = False           # Print data counts without starting training.
 EPOCHS = 100
 EARLY_STOP_PATIENCE = 12          # Stop after this many epochs without lower validation loss.
 USE_BATCH_NORM = False           # Events are encoded one at a time, even within a batch.
+TEMPORAL_POOLING = True          # Pool over the whole event and its early, middle and late regions.
 BATCH_SIZE = 20
 TRAIN_STEPS_PER_EPOCH = 100
 VALIDATION_EVENTS_PER_CLASS_HOUSE = 200  # None scores every validation event
@@ -331,7 +332,9 @@ def main():
     )
 
     # Step 5. Create the model, classification loss, and optimizer.
-    model = ApplianceReferenceEncoder(use_batch_norm=USE_BATCH_NORM).to(device)
+    model = ApplianceReferenceEncoder(
+        use_batch_norm=USE_BATCH_NORM, temporal_pooling=TEMPORAL_POOLING,
+    ).to(device)
     loss_function = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -422,6 +425,7 @@ def main():
                     "val_f1_by_appliance": dict(zip(APPLIANCES, validation_f1)),
                     "val_confusion_matrix": validation_confusion,
                     "use_batch_norm": USE_BATCH_NORM,
+                    "temporal_pooling": TEMPORAL_POOLING,
                     "train_houses": sorted({event.house for event in train_events}),
                     "validation_houses": sorted({event.house for event in validation_events}),
                     "validation_event_ids": [event.event_id for event in validation_events],
