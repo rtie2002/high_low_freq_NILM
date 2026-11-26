@@ -5,7 +5,7 @@ Run this file directly. Samples from every detected event are appended to:
     dataset/appliance_waveform reference/<appliance>/events.csv
 
 The dataset, house, channel, and event ID columns identify the source of every
-sample. The original appliance and aggregate powers are kept in watts. A
+sample. Appliance and aggregate powers use eight-second bins in watts. A
 manifest with one summary row per event is saved at the dataset root.
 """
 
@@ -37,17 +37,38 @@ OFF_CONTEXT_SAMPLES = {
 
 
 # ============================================================
-# 3. ON-event rules at the common 8-second resolution
+# 3. Physical event rules in seconds (shared by both datasets)
+# Thresholds are unchanged. Durations follow the existing preprocessing YAMLs.
 # ============================================================
 EVENT_RULES = {
-    "kettle": {"threshold_w": 200, "min_on_samples": 2, "max_off_gap": 0},
-    "microwave": {"threshold_w": 200, "min_on_samples": 1, "max_off_gap": 4},
-    "fridge": {"threshold_w": 50, "min_on_samples": 8, "max_off_gap": 2},
-    "dishwasher": {"threshold_w": 50, "min_on_samples": 120, "max_off_gap": 225},
-    "washingmachine": {"threshold_w": 20, "min_on_samples": 120, "max_off_gap": 120},
+    "kettle": {"threshold_w": 200, "min_on_sec": 12, "max_off_gap_sec": 0},
+    "microwave": {"threshold_w": 200, "min_on_sec": 6, "max_off_gap_sec": 30},
+    "fridge": {"threshold_w": 50, "min_on_sec": 60, "max_off_gap_sec": 12},
+    "dishwasher": {"threshold_w": 50, "min_on_sec": 960, "max_off_gap_sec": 1800},
+    "washingmachine": {"threshold_w": 20, "min_on_sec": 960, "max_off_gap_sec": 960},
 }
 
 SAMPLE_SECONDS = 8
+MAX_RECORDING_GAP_SEC = SAMPLE_SECONDS  # Any missing grid bin splits events.
+MAX_RAW_FILL_GAP_SEC = 16  # Only short, bounded polling gaps may be held.
+
+# Conservative screening, NOT the strict official Issues rule. These are
+# adjustable quality-control heuristics, not universal appliance physics.
+# Reject only sustained large target-vs-aggregate deficits inside the ON event.
+# Keep short sensor lags. Never delete individual samples or shift signals.
+FILTER_SEVERE_REFIT_MISMATCH = True
+SEVERE_DEFICIT_W = 300
+SEVERE_DEFICIT_FRACTION = 0.30
+MIN_SEVERE_DURATION_SEC = 60
+# Fridge reference cycles need observed OFF on BOTH sides, not invented zeros.
+FRIDGE_MIN_OFF_CONTEXT_SAMPLES = 8
+# Dishwasher references also need a complete OFF -> cycle -> OFF observation.
+DISHWASHER_MIN_OFF_CONTEXT_SAMPLES = 16
+# Short heating events can be entirely mismatched yet last less than 60 seconds.
+# Reject when >=90% of above-threshold duration has a large deficit (same
+# 300 W / 30% rule). This screens pair usability; it does not diagnose the sensor.
+SHORT_APPLIANCE_MAX_BAD_FRACTION = 0.90
+REFIT_POWER_COLUMNS = [f"Appliance{i}" for i in range(1, 10)]
 
 # Bound CSV buffering so long events do not accumulate across a whole house.
 WRITE_BATCH_ROWS = 100_000
@@ -84,30 +105,68 @@ REFERENCE_CHANNELS = {
 }
 
 
+def refit_issues(data: pd.DataFrame) -> np.ndarray:
+    """Reconstruct the published sum-of-IAMs consistency flag.
+
+    All nine channels are required, not only the five target appliances.
+    Missing/nonfinite readings are additionally rejected because their sum
+    cannot establish consistency; they must not silently become zeros.
+    """
+    power = data[REFIT_POWER_COLUMNS].to_numpy(dtype=np.float64)
+    aggregate = data["Aggregate"].to_numpy(dtype=np.float64)
+    return ((power.sum(axis=1) > aggregate)
+            | ~np.isfinite(power).all(axis=1) | ~np.isfinite(aggregate))
+
+
+def resample_power(data, columns):
+    """Common UTC grid: mean in [t,t+8), bounded one-bin forward hold.
+
+    Hold only completely empty bins bracketed by raw timestamps <=16 s apart.
+    No interpolation, zero padding, or extrapolation across long outages.
+    """
+    times = pd.to_datetime(data["unix_time"], unit="s", utc=True)
+    source = data[columns].replace([np.inf, -np.inf], np.nan).set_index(times).sort_index()
+    bins = source.resample(f"{SAMPLE_SECONDS}s", origin="epoch", closed="left", label="left")
+    grid = bins.mean()
+    raw_seconds = source.index.as_unit("ns").asi8 // 1_000_000_000
+    grid_seconds = grid.index.as_unit("ns").asi8 // 1_000_000_000
+    previous = np.searchsorted(raw_seconds, grid_seconds, side="right") - 1
+    following = np.searchsorted(raw_seconds, grid_seconds, side="left")
+    bounded = (previous >= 0) & (following < len(raw_seconds))
+    positions = np.flatnonzero(bounded)
+    bounded[positions] &= (
+        raw_seconds[following[positions]] - raw_seconds[previous[positions]] <= MAX_RAW_FILL_GAP_SEC
+    )
+    fill = bins.size().eq(0).to_numpy() & bounded
+    grid.loc[fill] = grid.ffill(limit=1).loc[fill]
+    grid.index.name = "timestamp"
+    return grid
+
+
+def read_refit_house(house):
+    data = pd.read_csv(RAW_DATA_ROOT / "REFIT" / f"House_{house}.csv",
+                       usecols=["Unix", "Aggregate"] + REFIT_POWER_COLUMNS)
+    data.rename(columns={"Unix": "unix_time"}, inplace=True)
+    grid = resample_power(data, ["Aggregate"] + REFIT_POWER_COLUMNS).reset_index()
+    grid["unix_time"] = grid["timestamp"].astype("int64") // 1_000_000_000
+    grid["timestamp"] = grid["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
+    grid["refit_issues"] = refit_issues(grid)
+    return grid.rename(columns={"Aggregate": "aggregate_power_w"})
+
+
 def read_refit(house: int, channel: int) -> pd.DataFrame:
     """Read one REFIT appliance channel and its aligned aggregate."""
-    source = RAW_DATA_ROOT / "REFIT" / f"House_{house}.csv"
     appliance_column = f"Appliance{channel}"
-    data = pd.read_csv(
-        source,
-        usecols=["Time", "Unix", "Aggregate", appliance_column],
-    )
-    return data.rename(
-        columns={
-            "Time": "timestamp",
-            "Unix": "unix_time",
-            "Aggregate": "aggregate_power_w",
-            appliance_column: "appliance_power_w",
-        }
-    ).reset_index(drop=True)
+    data = read_refit_house(house)
+    return data[["timestamp", "unix_time", "aggregate_power_w", appliance_column, "refit_issues"]].rename(
+        columns={appliance_column: "appliance_power_w"}
+    ).dropna(subset=["aggregate_power_w", "appliance_power_w"]).reset_index(drop=True)
 
 
 def read_ukdale_channel(path: Path, power_name: str) -> pd.DataFrame:
     """Read and place one UK-DALE channel on the common 8-second grid."""
     data = pd.read_csv(path, sep=r"\s+", names=["unix_time", power_name])
-    data["timestamp"] = pd.to_datetime(data["unix_time"], unit="s", utc=True)
-    data = data.set_index("timestamp")[[power_name]]
-    return data.resample(f"{SAMPLE_SECONDS}s").mean().interpolate(limit=2)
+    return resample_power(data, [power_name])
 
 
 def read_ukdale(house: int, channel: int) -> pd.DataFrame:
@@ -126,7 +185,7 @@ def read_ukdale(house: int, channel: int) -> pd.DataFrame:
     return data.reset_index(drop=True)
 
 
-def fill_short_off_gaps(is_on: np.ndarray, max_off_gap: int) -> np.ndarray:
+def fill_short_off_gaps(is_on: np.ndarray, unix_time: np.ndarray, max_off_gap: int) -> np.ndarray:
     """Join parts of one operation separated by a short below-threshold gap."""
     state = is_on.copy()
     if max_off_gap == 0 or not state.any():
@@ -138,20 +197,27 @@ def fill_short_off_gaps(is_on: np.ndarray, max_off_gap: int) -> np.ndarray:
 
     gap_starts = on_ends[:-1] + 1
     gap_ends = on_starts[1:]
-    short_gaps = gap_ends - gap_starts <= max_off_gap
+    # Measure from the first OFF timestamp to the next ON timestamp.
+    short_gaps = unix_time[gap_ends] - unix_time[gap_starts] <= max_off_gap
     for gap_start, gap_end in zip(gap_starts[short_gaps], gap_ends[short_gaps]):
         state[gap_start:gap_end] = True
     return state
 
 
-def remove_short_on_events(is_on: np.ndarray, min_on_samples: int) -> np.ndarray:
-    """Remove threshold crossings that are too short to be a real operation."""
+def sample_end_times(unix_time: np.ndarray) -> np.ndarray:
+    """Each retained grid bin represents [timestamp, timestamp + 8 seconds)."""
+    return unix_time + SAMPLE_SECONDS
+
+
+def remove_short_on_events(is_on: np.ndarray, unix_time: np.ndarray, min_on_sec: int) -> np.ndarray:
+    """Remove segments shorter than the configured physical duration."""
     state = is_on.copy()
     changes = np.diff(np.r_[0, state.astype(np.int8), 0])
     starts = np.flatnonzero(changes == 1)
     ends = np.flatnonzero(changes == -1)
 
-    short_events = ends - starts < min_on_samples
+    right_edges = sample_end_times(unix_time)
+    short_events = right_edges[ends - 1] - unix_time[starts] < min_on_sec
     for start, end_exclusive in zip(starts[short_events], ends[short_events]):
         state[start:end_exclusive] = False
     return state
@@ -167,14 +233,16 @@ def find_on_events(
     final_is_on = np.zeros(len(power_w), dtype=bool)
     events = []
 
-    # A gap larger than two expected samples starts a new recording sequence.
-    sequence_breaks = np.flatnonzero(np.diff(unix_time) > 2 * SAMPLE_SECONDS) + 1
+    # Timestamp discontinuities start a new recording sequence.
+    dt = np.diff(unix_time)
+    sequence_breaks = np.flatnonzero((dt > MAX_RECORDING_GAP_SEC) | (dt <= 0)) + 1
     boundaries = np.r_[0, sequence_breaks, len(power_w)]
 
     for sequence_start, sequence_end in zip(boundaries[:-1], boundaries[1:]):
         state = power_w[sequence_start:sequence_end] >= rule["threshold_w"]
-        state = fill_short_off_gaps(state, rule["max_off_gap"])
-        state = remove_short_on_events(state, rule["min_on_samples"])
+        times = unix_time[sequence_start:sequence_end]
+        state = fill_short_off_gaps(state, times, rule["max_off_gap_sec"])
+        state = remove_short_on_events(state, times, rule["min_on_sec"])
         final_is_on[sequence_start:sequence_end] = state
 
         changes = np.diff(np.r_[0, state.astype(np.int8), 0])
@@ -198,7 +266,7 @@ def available_off_context(
     while pre < max_pre and on_start - pre - 1 >= 0:
         if is_on[on_start - pre - 1]:
             break
-        if unix_time[on_start - pre] - unix_time[on_start - pre - 1] > 2 * SAMPLE_SECONDS:
+        if not 0 < unix_time[on_start - pre] - unix_time[on_start - pre - 1] <= MAX_RECORDING_GAP_SEC:
             break
         pre += 1
 
@@ -206,10 +274,42 @@ def available_off_context(
     while post < max_post and on_end + post + 1 < len(is_on):
         if is_on[on_end + post + 1]:
             break
-        if unix_time[on_end + post + 1] - unix_time[on_end + post] > 2 * SAMPLE_SECONDS:
+        if not 0 < unix_time[on_end + post + 1] - unix_time[on_end + post] <= MAX_RECORDING_GAP_SEC:
             break
         post += 1
     return pre, post
+
+
+def longest_severe_mismatch(power_w, aggregate_w, unix_time, right_edges):
+    """Longest continuous large deficit, measured in seconds, within an event.
+
+    Other household loads need not resemble the appliance waveform. Only the
+    target substantially exceeding the aggregate is screened here. This is a
+    quality flag, not proof of the underlying sensor fault or its cause.
+    """
+    deficit = power_w - aggregate_w
+    bad = ((deficit > SEVERE_DEFICIT_W)
+           & (deficit > SEVERE_DEFICIT_FRACTION * power_w))
+    changes = np.diff(np.r_[0, bad.astype(np.int8), 0])
+    starts = np.flatnonzero(changes == 1)
+    ends = np.flatnonzero(changes == -1) - 1
+    if not len(starts):
+        return 0
+    return int((right_edges[ends] - unix_time[starts]).max())
+
+
+def severe_active_fraction(power_w, aggregate_w, unix_time, right_edges, threshold):
+    """Time fraction of measured active power severely unsupported by aggregate.
+
+    Actual irregular sample widths are used. Joined OFF phases are excluded.
+    No alignment search, time shifting, or waveform changes are performed.
+    """
+    widths = right_edges - unix_time
+    active = power_w >= threshold
+    deficit = power_w - aggregate_w
+    bad = active & (deficit > SEVERE_DEFICIT_W) & (deficit > SEVERE_DEFICIT_FRACTION * power_w)
+    active_seconds = widths[active].sum()
+    return float(widths[bad].sum() / active_seconds) if active_seconds else 0.0
 
 
 def save_source_events(
@@ -225,6 +325,46 @@ def save_source_events(
     unix_time = data["unix_time"].to_numpy(dtype=np.int64)
     print("  Detecting ON events...", flush=True)
     is_on, events = find_on_events(power_w, unix_time, appliance)
+    threshold = EVENT_RULES[appliance]["threshold_w"]
+    above_threshold = power_w >= threshold
+    # Invalid readings also stop OFF context; they are not evidence of OFF.
+    context_blocked = above_threshold | ~np.isfinite(power_w)
+    right_edges = sample_end_times(unix_time)
+    max_pre, max_post = OFF_CONTEXT_SAMPLES[appliance]
+    minimum_context = {"fridge": FRIDGE_MIN_OFF_CONTEXT_SAMPLES,
+                       "dishwasher": DISHWASHER_MIN_OFF_CONTEXT_SAMPLES}.get(appliance)
+    if minimum_context is not None:
+        complete = []
+        for start, end in events:
+            pre, post = available_off_context(
+                context_blocked, start, end, max_pre, max_post, unix_time
+            )
+            if pre >= minimum_context and post >= minimum_context:
+                complete.append((start, end))
+        print(f"  {appliance} completeness: {len(events) - len(complete):,} incomplete references excluded",
+              flush=True)
+        events = complete
+    mismatch_seconds = {}
+    mismatch_fraction = {}
+    if dataset == "refit":
+        aggregate_w = data["aggregate_power_w"].to_numpy(dtype=np.float64)
+        for start, end in events:
+            window = slice(start, end + 1)
+            mismatch_seconds[start] = longest_severe_mismatch(
+                power_w[window], aggregate_w[window], unix_time[window], right_edges[window]
+            )
+            if appliance in ("kettle", "microwave"):
+                mismatch_fraction[start] = severe_active_fraction(
+                    power_w[window], aggregate_w[window], unix_time[window], right_edges[window], threshold
+                )
+        if FILTER_SEVERE_REFIT_MISMATCH:
+            retained = [(start, end) for start, end in events
+                        if mismatch_seconds[start] < MIN_SEVERE_DURATION_SEC
+                        and mismatch_fraction.get(start, 0) < SHORT_APPLIANCE_MAX_BAD_FRACTION]
+            print(f"  Severe mismatch screening: {len(events):,} candidates | "
+                  f"{len(events) - len(retained):,} rejected | {len(retained):,} retained",
+                  flush=True)
+            events = retained
     print(f"  Found {len(events):,} events; writing CSV...", flush=True)
     max_pre, max_post = OFF_CONTEXT_SAMPLES[appliance]
 
@@ -244,7 +384,7 @@ def save_source_events(
     with events_file.open("a", encoding="utf-8", newline="") as stream:
         for event_number, (on_start, on_end) in enumerate(events, start=1):
             off_pre, off_post = available_off_context(
-                is_on, on_start, on_end, max_pre, max_post, unix_time
+                context_blocked, on_start, on_end, max_pre, max_post, unix_time
             )
             ref_start = on_start - off_pre
             ref_end = on_end + off_post
@@ -254,7 +394,13 @@ def save_source_events(
             )
 
             on_power = power_w[on_start:on_end + 1]
-            duration_sec = int(unix_time[on_end] - unix_time[on_start] + SAMPLE_SECONDS)
+            duration_sec = int(right_edges[on_end] - unix_time[on_start])
+            start_censored = on_start == 0 or not (
+                0 < unix_time[on_start] - unix_time[on_start - 1] <= MAX_RECORDING_GAP_SEC
+            )
+            end_censored = on_end == len(unix_time) - 1 or (
+                unix_time[on_end + 1] - unix_time[on_end] != SAMPLE_SECONDS
+            )
 
             metadata = {
                 "event_id": event_id,
@@ -270,12 +416,19 @@ def save_source_events(
                 "duration_sec": duration_sec,
                 "peak_power_w": float(on_power.max()),
                 "mean_on_power_w": float(on_power.mean()),
+                "duration_censored": bool(start_censored or end_censored),
+                "on_end_unix": int(right_edges[on_end]),
+                "sample_period_sec": SAMPLE_SECONDS,
             }
 
             # Build columns together instead of repeatedly inserting columns.
             event_data = pd.DataFrame({
-                **metadata,
-                "is_on": is_on[ref_start:ref_end + 1].astype(np.int8),
+                "event_id": event_id,
+                "dataset": dataset,
+                "house": house,
+                "channel": channel_label,
+                "event_on": is_on[ref_start:ref_end + 1].astype(np.int8),
+                "above_threshold": above_threshold[ref_start:ref_end + 1].astype(np.int8),
                 "source_idx": np.arange(ref_start, ref_end + 1),
                 **{name: values[ref_start:ref_end + 1]
                    for name, values in source_columns.items()},
@@ -339,15 +492,7 @@ def main() -> None:
         print(f"\nLoading {dataset} house {house:02d}...", flush=True)
         load_start = perf_counter()
         if dataset == "refit":
-            columns = ["Time", "Unix", "Aggregate"] + sorted({
-                f"Appliance{channel}" for _, channel in sources
-            })
-            house_data = pd.read_csv(
-                RAW_DATA_ROOT / "REFIT" / f"House_{house}.csv", usecols=columns
-            ).rename(columns={
-                "Time": "timestamp", "Unix": "unix_time",
-                "Aggregate": "aggregate_power_w",
-            })
+            house_data = read_refit_house(house)
             print(f"  Loaded {len(house_data):,} rows in "
                   f"{perf_counter() - load_start:.1f}s", flush=True)
 
@@ -357,8 +502,11 @@ def main() -> None:
                   f"house {house:02d} | {appliance} | channel {channel}", flush=True)
             if dataset == "refit":
                 data = house_data[[
-                    "timestamp", "unix_time", "aggregate_power_w", f"Appliance{channel}"
-                ]].rename(columns={f"Appliance{channel}": "appliance_power_w"})
+                    "timestamp", "unix_time", "aggregate_power_w", f"Appliance{channel}",
+                    "refit_issues",
+                ]].rename(columns={f"Appliance{channel}": "appliance_power_w"}).dropna(
+                    subset=["aggregate_power_w", "appliance_power_w"]
+                ).reset_index(drop=True)
             else:
                 data = read_ukdale(house, channel)
                 print(f"  Loaded {len(data):,} aligned rows in "

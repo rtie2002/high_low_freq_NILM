@@ -83,6 +83,9 @@ as incomplete-house reference providers.
 
 ## Recommended reference-file organization
 
+See [event_label_definitions.md](event_label_definitions.md) for the timestamp-based
+duration rules, the two state labels, and treatment of incomplete event boundaries.
+
 Save all sample rows for one appliance in one long-format CSV. The `dataset`,
 `house`, `channel`, and `event_id` columns retain the source information:
 
